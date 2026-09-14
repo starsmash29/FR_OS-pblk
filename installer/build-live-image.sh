@@ -30,6 +30,23 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
+# live-build's chroot hooks run via a plain `chroot`, which inherits
+# this shell's environment as-is. Some build hosts (anything behind a
+# TLS-inspecting proxy -- CI runners, corporate networks, this project's
+# own sandboxed dev environment) export CA-bundle override variables
+# (PIP_CERT, SSL_CERT_FILE, ...) pointing at a path on the *host*
+# filesystem. Inherited unchanged into the chroot, that path doesn't
+# exist there, and pip fails with a confusing
+# "Could not find a suitable TLS CA certificate bundle" instead of just
+# using the chroot's own ca-certificates trust store like a normal,
+# unproxied build would. Unsetting them here is a no-op on a plain
+# build host and fixes it on a proxied one.
+unset PIP_CERT REQUESTS_CA_BUNDLE CURL_CA_BUNDLE SSL_CERT_FILE \
+    NODE_EXTRA_CA_CERTS GIT_SSL_CAINFO NIX_SSL_CERT_FILE \
+    CARGO_HTTP_CAINFO DENO_CERT HTTPLIB2_CA_CERTS AWS_CA_BUNDLE \
+    CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE GRPC_DEFAULT_SSL_ROOTS_FILE_PATH \
+    HEX_CACERTS_PATH
+
 echo "==> Staging repo source into $STAGE_DIR"
 rm -rf "$STAGE_DIR"
 mkdir -p "$STAGE_DIR"
