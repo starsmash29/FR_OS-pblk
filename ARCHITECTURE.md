@@ -161,6 +161,108 @@ A napi újratanítási óra ütemezését (`ai_ids.retrain_time`, alapból
 `retrain_time` config-értéket — ennek szinkronizálása egy jövőbeli
 finomítás (nyitott kérdés, ld. ROADMAP.md).
 
+## XDP/eBPF gyors útvonal (tervezés)
+
+**Státusz: döntés + technikai előkészítés kész, tényleges eBPF-kód még
+nem íródott** — a felhasználóval egyeztetve, mivel az implementáció
+valós 10G/40GbE teszthardvert igényel ahhoz, hogy a ROADMAP.md
+elfogadási kritériuma (mért teljesítményjavulás) egyáltalán
+értelmezhető legyen. Ez a szakasz a döntést és a konkrét tervet rögzíti,
+hogy a tényleges kódolás ne nulláról induljon, amikor lesz mire mérni.
+
+### Hatókör-döntés: fast-drop blocklist, nem "nftables újraírva eBPF-ben"
+
+Egy teljes, stateful, zóna-alapú tűzfal újraírása eBPF-ben (connection
+tracking, minden protokoll, minden akció, amit az 1. fázis `frfw.nft`
+motorja már tud) önmagában akkora projekt lenne, mint az eddigi 1-3.
+fázis együttvéve — és a kernel saját nftables/conntrack alrendszerét
+próbálná feleslegesen kiváltani, amit valójában jól optimalizáltak.
+
+Ehelyett a döntés: egy **XDP fast-drop blocklist**, ami a legkorábbi
+lehetséges ponton (a hálózati driver recv-hook-jában, még a kernel
+hálózati stackje és így az nftables előtt) eldobja az ismert rossz
+forrás-IP-kről érkező csomagokat, egy BPF hash map alapján. Ez
+*kiegészíti*, nem helyettesíti a meglévő nftables-motort — pontosan
+úgy, ahogy a valós DDoS-védelmi rendszerek (pl. Cloudflare L4Drop,
+Facebook/Meta Katran) használják az XDP-t: nem általános tűzfalként,
+hanem egy szűk, nagyon gyors előszűrőként a lassabb, teljes-funkciójú
+útvonal előtt.
+
+### Technikai megvalósíthatóság — ellenőrizve (nem 10G hardveren, de valósan)
+
+A fejlesztői sandboxban (nem célhardver, generic/SKB XDP mód egy veth
+párra) végigment a teljes build→load→map-frissítés pipeline:
+
+1. **Fordítás**: `clang -O2 -g -target bpf -I<arch include dir> -c
+   xdp_fastdrop.c -o xdp_fastdrop.o`. A `-g` (debug info) szükséges,
+   mert a modern, BTF-alapú `SEC(".maps")` map-deklarációs szintaxis
+   BTF-et igényel a betöltéshez — enélkül `libbpf: BTF is required, but
+   is missing`-gal elhasal.
+2. **Betöltés/csatolás**: `ip link set dev <iface> {xdpgeneric|xdpdrv}
+   obj xdp_fastdrop.o sec xdp` — ugyanaz a "shell ki a rendszer saját
+   eszközéhez" minta, mint `frfw.nft`/`frfw.kea`/`frfw.ifaddr`-nál,
+   nincs szükség egyedi Python libbpf-bindinghoz. `xdpgeneric` (SKB
+   mód) bármilyen NIC-en működik driver-támogatás nélkül — ez a
+   biztonságos alapértelmezett, összhangban a "széles NIC-kompatibilitás"
+   céllal. `xdpdrv` (natív mód) valós teljesítménynövekedéshez kell, de
+   csak XDP-t támogató driverrel rendelkező NIC-eken érhető el.
+3. **Map perzisztencia/frissítés**: egy `__uint(pinning,
+   LIBBPF_PIN_BY_NAME);` annotációval ellátott BPF map betöltéskor
+   automatikusan pinnelődik `/sys/fs/bpf/tc/globals/<map neve>` alá
+   (iproute2 beépített libbpf-je kezeli ezt, nincs szükség külön
+   `bpftool`-lal történő pinnelésre). Ez a pinnelt map aztán élőben,
+   újratöltés nélkül frissíthető: `bpftool map update/delete pinned
+   /sys/fs/bpf/tc/globals/blocklist_map key ... value ...` — ez adja a
+   gyors "blokkolj/engedj fel egy IP-t" primitívet.
+4. **Ismert buktató, amire figyelni kell célrendszeren**: Debian
+   csomagolásban a `bpftool` a futó kernelhez illesztett csomagból jön
+   (`linux-perf`/kernel-specifikus), tehát ált. konzisztens — de ha egy
+   `bpftool` becsomagolt wrapper-szkript "nem található a kernelhez"
+   hibát ad (ahogy ebben a sandboxban is, ahol a csomagolt kernel-verzió
+   string nem egyezett a fordítási célverzióval), a tényleges bináris
+   ilyenkor is elérhető `/usr/lib/linux-tools-<verzió>/bpftool` alatt —
+   érdemes a `frfw.xdp`-be egy ilyen fallback-keresést beépíteni.
+
+### Tervezett architektúra (implementáció előtt)
+
+- **Config-séma**: egy `fast_path` szekció (`enabled`, `mode: generic |
+  driver`, `zones: [wan]` — mely zónák interfészeire csatolódjon a
+  program —, `blocklist: [ip, ...]`). Egyetlen, megosztott blocklist
+  minden fast-path-szal ellátott interfészen (nem zónánként külön map),
+  mivel egy támadó IP-t minden interfészen blokkolni akarunk.
+- **`frfw.xdp` modul**: `compile_program()` (clang hívás),
+  `attach()`/`detach()` (`ip link set` hívás), `sync_blocklist()`
+  (bpftool map update/delete a config és a jelenlegi map-tartalom
+  diffje alapján). Ugyanaz a "generál → validál → alkalmaz" minta, mint
+  `frfw.nft`/`frfw.kea`-nál.
+- **`frfw.provision.apply_all`**: negyedik lépésként hívná
+  `frfw.xdp.apply_fast_path(config, dry_run=...)`, cím → nftables →
+  DHCP → XDP sorrendben — így sem a CLI-nek, sem a webUI-nak nem kell
+  külön tudnia az XDP-ről, ugyanúgy, ahogy a DHCP bevezetése sem
+  igényelt hívó-oldali változást a már meglévő lépéseken kívül.
+- **WebUI**: egy "Fast Path" képernyő (be/ki kapcsolás, mód választás,
+  blocklist szerkesztés) — a NAT/DHCP képernyők mintájára, a meglévő
+  `try_save`/`save_config` infrastruktúrát újrahasználva.
+- **Új rendszerfüggőségek**, amik csak akkor kellenek, ha valaki
+  bekapcsolja a fast path-t: `clang`, `llvm` (fordításhoz), `libbpf-dev`
+  + a kernel fejlécei (BPF header-ökhöz), `bpftool` (map-kezeléshez).
+  Ezek nem kerülnek be az alap `frfw` függőségek közé — külön extra-ként
+  (`pip install frfw[xdp]`-hez hasonlóan, illetve a Debian
+  csomagszinten egy opcionális csomagcsoportként) tervezett.
+
+### Miért nem íródott meg most a tényleges kód
+
+A `xdpgeneric` (SKB) mód bármilyen gépen tesztelhető lenne funkcionálisan
+(ahogy fent be is bizonyosodott) — de a ROADMAP.md fázis-4
+elfogadási kritériuma kifejezetten *mért teljesítményjavulást* kér XDP
+be/ki állapot között, ami csak akkor értelmezhető, ha van mihez
+viszonyítani: valós 10G/40GbE forgalom, és ideális esetben natív
+(`xdpdrv`) módot támogató NIC. Kód nélkül, találgatott
+teljesítményszámokkal dokumentálni a fázist megtévesztő lenne — ehelyett
+a döntés és a pontos terv áll készen, hogy a tényleges implementáció (a
+fenti tervezet alapján) gyorsan végigmehessen, mihelyt lesz
+teszthardver.
+
 ## Rendszerintegráció
 
 Kanonikus elérési utak (`frfw.paths`):

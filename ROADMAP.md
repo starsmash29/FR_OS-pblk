@@ -154,10 +154,40 @@ fut tovább (141 összesen).
 timer-drop-in újraírás kellene — kis hatókörű, de nem triviális
 kiegészítés).
 
-## 4. fázis – XDP/eBPF gyors útvonal
+## 4. fázis – XDP/eBPF gyors útvonal — **tervezés kész, kód még nem**
 
-- [ ] XDP program a nagy forgalmú interfészeken (kernel-stack megkerülése)
-- [ ] Teljesítményteszt (iperf3) 10G/40GbE hardveren, ha elérhető
+A hardverigényes rész miatt ebben a fázisban most csak a döntés és a
+konkrét megvalósítási terv készült el (a felhasználóval egyeztetve),
+**tényleges eBPF-kód még nem** — az implementáció valós 10G/40GbE
+tesztkörnyezetig vár. A döntés és a technikai előkészítés részletei:
+[ARCHITECTURE.md](ARCHITECTURE.md#xdpebpf-gyors-útvonal-tervezés).
+
+- [x] **Hatókör-döntés**: nem egy teljes, stateful nftables-ekvivalens
+      tűzfal újraírása eBPF-ben (hónapokos, önmagában is akkora projekt,
+      mint az eddigi 1-3. fázis együttvéve) — helyette egy XDP
+      **fast-drop blocklist**, ami a legkorábbi ponton (még nftables
+      előtt) eldobja az ismert rossz forrás-IP-k forgalmát, kiegészítve
+      (nem helyettesítve) a meglévő nftables-motort. Ez a valós
+      DDoS-védelmi gyakorlat (pl. Cloudflare L4Drop, Facebook Katran)
+      bevált mintája.
+- [x] **Technikai megvalósíthatóság ellenőrizve** ebben a sandboxban
+      (nem valós 10G hardver, de a build/load/map-frissítés pipeline
+      valósan tesztelt): `clang -O2 -g -target bpf` fordítja a C forrást
+      BPF objektummá (a `-g` kell a BTF-hez, ami a modern
+      `SEC(".maps")` map-deklarációhoz szükséges); `ip link set dev
+      <iface> {xdpgeneric|xdpdrv} obj prog.o sec xdp` tölti be és
+      csatolja (ugyanaz a "shell ki a rendszer saját eszközéhez" minta,
+      mint `nft`/`kea-dhcp4`/`ip addr`-nál); egy `LIBBPF_PIN_BY_NAME`
+      annotációval ellátott BPF map automatikusan pinnelődik
+      `/sys/fs/bpf/tc/globals/<mapname>` alá betöltéskor, amit
+      `bpftool map update/delete pinned ...` tud élőben módosítani —
+      így a blocklist újratöltés nélkül, gyorsan frissíthető userspace-ből.
+- [ ] A tényleges `bpf/xdp_fastdrop.c` forrás + `frfw.xdp` Python
+      orchestrator + `fast_path` config-szekció + webUI képernyő
+      megírása — **valós hardveren** (vagy legalább egy driver-szintű
+      XDP-t támogató NIC-en, ha csak azt teszteljük) történő fejlesztés
+      és a teljesítményteszt előtt/közben, ld. terv az ARCHITECTURE.md-ben.
+- [ ] Teljesítményteszt (iperf3) 10G/40GbE hardveren
 - [ ] Döntés: elég-e az XDP, vagy szükséges a DPDK
 - [ ] **AI IDS valós adatgyűjtés**: a mock `frfw.ai_ids` motor lecserélése
       valós per-eszköz flow-jellemzőkre (csomagméret/-időzítés eloszlás,
