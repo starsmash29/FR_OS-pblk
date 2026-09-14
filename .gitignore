@@ -62,3 +62,5 @@ installer/live-build/chroot.headers
 installer/live-build/chroot.packages.install
 installer/live-build/chroot.packages.live
 installer/live-build/binary.packages
+installer/live-build/binary.contents
+installer/live-build/*.zsync.xz

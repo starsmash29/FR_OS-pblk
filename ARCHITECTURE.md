@@ -263,6 +263,103 @@ a döntés és a pontos terv áll készen, hogy a tényleges implementáció (a
 fenti tervezet alapján) gyorsan végigmehessen, mihelyt lesz
 teszthardver.
 
+## Automatikus installer (fázis 5)
+
+Cél: USB-ről bootolva, terminálmunka nélkül működő FR_OS rendszer. A
+választott megközelítés live-build-alapú hibrid live ISO (a három
+felmerült opció -- Debian preseed installer, live-build hibrid image,
+előre elkészített dd-elhető appliance image -- közül a live-build
+hibrid image lett kiválasztva, a nehezebb, de rugalmasabb út).
+
+### Build pipeline
+
+`installer/live-build/` a live-build konfigurációs fa (`auto/config`,
+`config/package-lists/`, `config/hooks/`, `config/bootloaders/`).
+`installer/build-live-image.sh` orkesztrálja: beszinkronizálja a repo
+forrását a chroot `includes.chroot/opt/frfw-src`-be (hogy a chroot hook
+onnan pip-telepíthesse a frfw-t), majd `lb clean && lb config && lb
+build`. `.github/workflows/build-installer.yml` `workflow_dispatch`-csal
+CI-ból is indítható.
+
+A chroot hook (`config/hooks/0100-install-frfw.hook.chroot`) a
+build **chroot** stádiumában fut le -- tehát a squashfs image részévé
+válik minden, amit csinál: telepíti a frfw csomagot (`pip install
+frfw[webui]`), lemásolja a systemd unitokat és a scripteket, majd
+engedélyezi a `fr-first-boot.service`-t (ez az egyetlen unit, amit a
+build maga engedélyez -- a többit a first-boot script kapcsolja be,
+lásd lent).
+
+### First boot
+
+`scripts/fr-first-boot.sh` + `systemd/fr-first-boot.service` (oneshot,
+`ConditionPathExists=!/etc/fr_os/.first-boot-done`) -- ez fut le
+pontosan egyszer, valódi (nem live-demo) telepítés/boot után:
+
+1. Admin jelszó generálása (`firewall-cli set-admin-password
+   --generate` -- nem-interaktív, kriptográfiailag véletlen jelszó,
+   `secrets` modullal)
+2. Hálózati interfészek automatikus detekciója
+3. Az összes `fr-*.service`/`.timer` egység engedélyezése és indítása
+4. Marker fájl létrehozása, hogy újrafutás ne történjen
+
+Ez a lépés valósítja meg a "terminálmunka nélkül" kritériumot: minden,
+ami *image-be süthető* (csomagok, kód, unit fájlok), már a build
+időben megtörtént; ami *gépspecifikus* (melyik NIC melyik, jelszó, TLS
+kulcsok), az itt, első bootkor generálódik.
+
+### Ellenőrzés -- valós, végponttól-végpontig futtatott build
+
+A `installer/build-live-image.sh` pipeline ténylegesen lefutott ebben a
+sandboxban, és egy valódi, bootolható hibrid ISO-t adott (`file`
+szerint "ISO 9660 CD-ROM filesystem data (DOS/MBR boot sector),
+bootable", ~327 MB). A squashfs-t kicsomagolva és ellenőrizve:
+
+- `frfw` pip-pel telepítve (`dist-packages/frfw`,
+  `frfw-0.1.0.dist-info`), `firewall-cli` a helyén
+- mind a 7 `fr-*.service`/`.timer` egység a helyén
+  (`fr-firewall`, `fr-apply-helper.socket/.service`, `fr-webui`,
+  `fr-ai-ids-retrain.service/.timer`, `fr-first-boot`)
+- `fr-first-boot.service` engedélyezve
+  (`/etc/systemd/system/multi-user.target.wants/`-ban szimlinkelve)
+- az ideiglenes `/opt/frfw-src` forráskönyvtár helyesen eltávolítva a
+  hook végén (nem marad a végleges image-ben)
+
+Ez a build/squashfs szintű, statikus ellenőrzés -- a tényleges USB-ről
+bootolás és a first-boot script valós lefutása friss VM-en/gépen még
+nincs kipróbálva (lásd ROADMAP.md fázis 5 nyitott pontjai).
+
+### Ennek az egy live-build snapshotnak a limitációi
+
+A build host ebben a sandboxban egy nagyon régi, Ubuntu-patch-elt
+live-build csomagot futtat (`3.0~a57`, 2012-es belső theme fájlokkal),
+nem Debian saját, aktuális live-build csomagját. Több, forráskód-szinten
+ellenőrzött inkompatibilitást kellett emiatt megkerülni -- mindegyik
+részletesen dokumentálva közvetlenül `installer/live-build/auto/config`
+fejlécében és `installer/live-build/config/bootloaders/README.md`-ben:
+
+- Ubuntu-specifikus mirror/kulcs/kernel-csomagnév alapértelmezések
+  (`--mode debian` explicit mirror/keyring/linux-flavour felülírásokkal)
+- `--debian-installer false`: a beépített "telepítsd lemezre" varázsló
+  egy nem létező csomaglistát (`lilo`, `linux-image-2.6-amd64`)
+  próbálna telepíteni minden nem-Ubuntu módban, felülírás nélkül --
+  emiatt a jelenlegi ISO egy teljes, működő **live** rendszer, nem egy
+  klasszikus "másold lemezre" telepítő varázsló
+- hiányzó `rsvg` bináris (a splash grafika renderelése emiatt el lett
+  hagyva -- egyszerű háttérszín helyettesíti)
+- hiányzó `bootlogo` cpio archívum (üres, érvényes archívum pótolja)
+- `isohybrid` rossz csomagnévről (`syslinux` a helyes `syslinux-utils`
+  helyett) történő keresése a chroot-ban
+- a chroot hook-ok helye: ez a snapshot csak `config/hooks/*.chroot`-ot
+  néz, a newer live-build `config/hooks/live/` almappa-konvencióját nem
+  ismeri (csendben, hibaüzenet nélkül kihagyja onnan a hook-okat --
+  ez volt a legalattomosabb hiba: az első teljes build sikeresen
+  lefutott, de a frfw egyáltalán nem került bele az image-be)
+
+Egy friss (Debian saját, aktuális) live-build csomaggal ezek közül több
+valószínűleg magától sem jelentkezne -- minden egyes pont mellett ott a
+konkrét megjegyzés, hogy mit érdemes elsőként visszaállítani/kipróbálni
+ott.
+
 ## Rendszerintegráció
 
 Kanonikus elérési utak (`frfw.paths`):

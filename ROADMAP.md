@@ -200,13 +200,62 @@ kikapcsolt állapot között, ugyanazon a hardveren.
 
 ## 5. fázis – Automatikus installer
 
-- [ ] Debian preseed / live-build alapú telepítő image
-- [ ] First-boot script: firewall-motor, webUI, systemd service-ek
-      automatikus telepítése, biztonságos alapkonfiggal
-- [ ] Bootolható ISO/USB image build pipeline (később CI-ból is)
+- [x] live-build alapú hibrid live ISO (`installer/live-build/`,
+      `installer/build-live-image.sh`) -- teljes frfw stack (nftables,
+      Kea DHCP, Python/pip csomagok, webUI, AI IDS mock) előre telepítve
+      a squashfs image-be
+- [x] First-boot script (`scripts/fr-first-boot.sh` +
+      `systemd/fr-first-boot.service`): admin jelszó generálás
+      (`firewall-cli set-admin-password --generate`), interfész-detekció,
+      összes fr-*.service engedélyezése és elindítása -- idempotens, csak
+      egyszer fut le
+- [x] Build pipeline CI-ból is indítható (`.github/workflows/build-installer.yml`,
+      `workflow_dispatch`)
+- [x] **Valós, végponttól-végpontig futtatott build ellenőrizve**: a teljes
+      `installer/build-live-image.sh` pipeline ténylegesen lefutott, és egy
+      valódi, bootolható (`file`: "ISO 9660 CD-ROM filesystem data
+      (DOS/MBR boot sector), bootable") ~327 MB hibrid ISO-t adott --
+      a squashfs-t kicsomagolva és ellenőrizve: a `frfw` csomag pip-pel
+      telepítve, `firewall-cli` a helyén, mind a 7 `fr-*.service`/`.timer`
+      egység a helyén, `fr-first-boot.service` engedélyezve
+      (`multi-user.target.wants/`-ban), az ideiglenes `/opt/frfw-src`
+      forráskönyvtár helyesen eltávolítva. A first-boot hook logikáját
+      (pip install + service enable) manuálisan, chroot-on belül külön is
+      lefuttattam ugyanezzel az eredménnyel.
+- [ ] **Még nem ellenőrzött**: az ISO tényleges elindítása virtuális vagy
+      valódi gépen (BIOS boot, first-boot script valós lefutása friss
+      rendszeren, webUI elérése első bootnál) -- a fenti ellenőrzés a
+      build kimenetét (squashfs tartalma) validálta statikusan, nem egy
+      élő boot-ot.
+
+**Ismert korlátozások** (ennek az egy konkrét, nagyon régi,
+Ubuntu-patch-elt live-build snapshotnak (`3.0~a57`) a limitációi -- lásd
+`installer/live-build/auto/config` fejléc-kommentjeit a teljes,
+forráskód-szintű indoklásért minden pontról):
+- Csak BIOS/syslinux, nincs UEFI támogatás.
+- `--debian-installer false`: a live-build saját "telepítsd a lemezre"
+  varázslója (`--debian-installer live`) nincs bekapcsolva, mert ez a
+  snapshot egy hardcode-olt, nem létező csomaglistát (`lilo`,
+  `linux-image-2.6-amd64`) próbálna telepíteni hozzá minden nem-Ubuntu
+  módban. Emiatt a jelenlegi ISO egy **teljes, működő live rendszer**,
+  amibe be lehet bootolni és rögtön használható -- de nem egy "másold a
+  lemezre" klasszikus telepítő varázsló. Egy friss (nem ennek a
+  sandboxnak az) live-build csomaggal ez valószínűleg simán bekapcsolható.
+- Több apró, ugyanennek a snapshotnak Debian-inkompatibilis
+  alapértelmezéséből eredő hiba lett kézzel javítva/dokumentálva:
+  Ubuntu-specifikus mirror/kulcs/kernel-csomagnevek, hiányzó `rsvg`
+  bináris (splash grafika eltávolítva), hiányzó `bootlogo` cpio
+  archívum, `isohybrid` rossz csomagnévről történő keresése, és a
+  chroot hook-oknak egy régebbi `config/hooks/*.chroot` konvenciót kell
+  használniuk (`config/hooks/live/` almappa itt csendben figyelmen
+  kívül van hagyva).
 
 **Elfogadási kritérium**: USB-ről telepítve, semmilyen manuális
 csomagtelepítés/terminálmunka nélkül működő webUI-t kap a felhasználó.
+A build oldal (squashfs tartalma) ellenőrizve, ✅. A tényleges USB-ről
+bootolás + first-boot élmény valós/virtuális gépen még nincs
+kipróbálva -- ez a fázis lezárása előtti utolsó, hardver/VM-hozzáférést
+igénylő lépés.
 
 ## 6. fázis – Frissítési mechanizmus
 
