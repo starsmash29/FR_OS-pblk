@@ -36,6 +36,23 @@ chroot, restore `splash.svg.in` from live-build's own bundled theme
 (`/usr/share/live/build/bootloaders/isolinux/splash.svg.in` in this
 snapshot) and the `menu background splash.png` line in `stdmenu.cfg`.
 
+**`bootlogo` (empty cpio archive, added):** near the end of
+`lb_binary_syslinux` there's an unconditional "hack around the removal of
+support in gfxboot" step that does `cpio -i < ${_TARGET}/bootlogo`
+regardless of distribution. But the only code path in this snapshot that
+ever *creates* `${_TARGET}/bootlogo` is gated on `LB_MODE = ubuntu` (it
+untars Ubuntu's `gfxboot-theme-ubuntu` package into the theme dir) -- so
+under `--mode debian` no `bootlogo` file is ever produced, and that later
+unconditional read always fails with "No such file". Since this whole
+gfxboot/bootlogo mechanism is Ubuntu-specific and irrelevant to the plain
+isolinux/vesamenu theme used here, the fix is to ship an already-valid,
+empty cpio archive named `bootlogo` in this theme override -- it copies
+into place alongside the other theme files, the unconditional step reads
+it successfully (finds nothing to add, since none of `*.fnt/*.hlp/*.jpg/
+*.pcx/*.tr/*.cfg` exist standalone in this theme), and re-writes it back
+out unchanged. Generated with:
+`(cd "$(mktemp -d)" && ls -1 | cpio --quiet -o) > bootlogo`.
+
 **On a current live-build** (Debian's own package on a real Debian host,
 not this sandbox's ancient snapshot) the isolinux.bin/vesamenu.c32
 override likely isn't needed at all -- try removing this directory first
