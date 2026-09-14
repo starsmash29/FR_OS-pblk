@@ -1,0 +1,13 @@
+[Unit]
+Description=FR_OS privileged apply-helper socket
+
+[Socket]
+ExecStartPre=/bin/mkdir -p /run/fr_os
+ListenStream=/run/fr_os/apply.sock
+SocketMode=0660
+SocketUser=root
+SocketGroup=fr_os-webui
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

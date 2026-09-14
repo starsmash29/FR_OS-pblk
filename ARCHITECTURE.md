@@ -80,13 +80,53 @@ Minden generált szabály tartalmaz egy megjegyzést (`comment`) a forrás YAML
 szabály nevével, hogy a `nft list ruleset` kimenete visszakövethető legyen a
 konfigurációra.
 
-## Biztonsági modell (előretekintés a 2. fázisra)
+## Rendszerintegráció (2. fázis)
 
-A webUI nem futhat rootként. A tervezett megoldás: a webUI egy Unix socketen
-keresztül küld kérést egy minimális jogosultságú, root alatt futó "apply
-helper" systemd service-nek, ami kizárólag a `frfw` config-apply műveletet
-tudja elvégezni — nem általános parancsvégrehajtást. Ez a döntés a 2. fázisban
-kerül részletezésre és implementálásra.
+Kanonikus elérési utak (`frfw.paths`):
+
+| Mi | Hol |
+|---|---|
+| Konfiguráció | `/etc/fr_os/config.yaml` |
+| Ruleset-backupok | `/etc/fr_os/backups/ruleset-<timestamp>.nft` (alapból 10 megőrizve) |
+| Apply-helper socket | `/run/fr_os/apply.sock` |
+
+systemd unit-ok (`systemd/`):
+
+- `fr-firewall.service` — boot-kor alkalmazza a kanonikus configot, a
+  Debian `nftables.service`-ét követő ordering-gel (korai boot,
+  `network-pre.target` előtt, hogy a szabályok a hálózat felállása előtt
+  már érvényben legyenek).
+- `fr-apply-helper.socket` + `fr-apply-helper.service` — a privilegizált
+  apply-helper, socket-activation-nel (ld. Biztonsági modell lent).
+- `fr-webui.service` — placeholder a 3. fázisig, egy üzenetet kiíró
+  bináris a tényleges FastAPI app helyén, hogy a service-függőségek
+  (`fr-apply-helper.socket`) már most tesztelhetők legyenek.
+
+`scripts/install-system-integration.sh` végzi a rendszerbe-illesztést egy
+friss gépen: `/etc/fr_os` létrehozása, alap config telepítése (ha még
+nincs), `fr_os-webui` csoport létrehozása, systemd unit-ok telepítése.
+
+## Biztonsági modell
+
+A webUI nem futhat rootként. A 2. fázisban implementált megoldás: a webUI egy
+Unix socketen (`/run/fr_os/apply.sock`, `frfw.helper`) keresztül küld kérést
+egy root alatt futó "apply-helper" systemd service-nek
+(`fr-apply-helper.service`, socket-activation-nel indítva
+`fr-apply-helper.socket` által). A socket-fájl csoport-tulajdonosa egy
+dedikált `fr_os-webui` csoport (`SocketGroup=` a `.socket` unit-ban) — ez a
+hozzáférés-vezérlés, nem a protokoll maga.
+
+A protokoll szándékosan minimális: egyetlen JSON-objektum soronként, három
+parancs (`ping`/`apply`/`rollback`), egyik sem fogad el a hívótól kapott
+fájlútvonalat — a helper mindig a saját maga indításakor kapott kanonikus
+config- és backup-útvonalat használja (alapból `frfw.paths.CONFIG_PATH` /
+`BACKUP_DIR`). Ez azt jelenti, hogy a webUI kompromittálódása esetén sem
+válik a helper általános root-szintű fájlolvasási/-írási vagy
+parancsvégrehajtási primitívvé — kizárólag a tűzfal-konfiguráció
+alkalmazására/visszaállítására korlátozott.
+
+Lásd még: [`frfw/helper/`](src/frfw/helper/) (szerver + kliens),
+[`systemd/fr-apply-helper.socket`](systemd/fr-apply-helper.socket).
 
 ## Nem lezárt döntések
 

@@ -1,0 +1,68 @@
+"""Client for the apply-helper Unix socket, for use by the future webUI.
+
+Not exercised by the CLI (which talks to frfw.apply directly, since it
+already runs with whatever privileges the operator invoked it with) --
+this exists for phase 3, where the webUI runs unprivileged and must go
+through the socket instead.
+"""
+
+from __future__ import annotations
+
+import json
+import socket
+from pathlib import Path
+
+from frfw import paths
+from frfw.helper.protocol import MAX_LINE_BYTES
+
+
+class HelperError(Exception):
+    """Raised on a transport failure talking to the apply-helper."""
+
+
+def send_command(
+    cmd: dict, socket_path: Path = paths.APPLY_SOCKET_PATH, timeout: float = 10.0
+) -> dict:
+    """Send one JSON request and return the decoded JSON response.
+
+    Note this only reports transport-level failures as `HelperError`; an
+    application-level failure (bad config, nft rejecting the ruleset) comes
+    back as a normal `{"ok": False, "message": ...}` response.
+    """
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(timeout)
+            sock.connect(str(socket_path))
+            sock.sendall(json.dumps(cmd).encode() + b"\n")
+            sock.shutdown(socket.SHUT_WR)
+
+            chunks = []
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                if sum(len(c) for c in chunks) > MAX_LINE_BYTES:
+                    raise HelperError("response from apply-helper exceeded size limit")
+    except OSError as exc:
+        raise HelperError(f"cannot reach apply-helper at {socket_path}: {exc}") from exc
+
+    raw = b"".join(chunks).strip()
+    if not raw:
+        raise HelperError("apply-helper closed the connection without a response")
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise HelperError(f"invalid response from apply-helper: {raw!r}") from exc
+
+
+def ping(socket_path: Path = paths.APPLY_SOCKET_PATH) -> dict:
+    return send_command({"cmd": "ping"}, socket_path)
+
+
+def apply_config(dry_run: bool = False, socket_path: Path = paths.APPLY_SOCKET_PATH) -> dict:
+    return send_command({"cmd": "apply", "dry_run": dry_run}, socket_path)
+
+
+def rollback(socket_path: Path = paths.APPLY_SOCKET_PATH) -> dict:
+    return send_command({"cmd": "rollback"}, socket_path)

@@ -18,6 +18,8 @@ dev = ["pytest>=8.0"]
 
 [project.scripts]
 firewall-cli = "frfw.cli:main"
+firewall-helper = "frfw.helper.server:main"
+fr-webui-placeholder = "frfw.webui_placeholder:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

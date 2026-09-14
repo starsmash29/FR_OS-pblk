@@ -4,7 +4,7 @@ Fázisonkénti fejlesztési terv. Minden fázis végén a rendszernek működő,
 tesztelhető állapotban kell lennie egy sima Debian VM-en, mielőtt a következő
 fázis elkezdődik. Az architektúra döntéseket lásd: [ARCHITECTURE.md](ARCHITECTURE.md).
 
-## 1. fázis – Firewall-motor magja — **folyamatban**
+## 1. fázis – Firewall-motor magja — **kész**
 
 - [x] `ARCHITECTURE.md` / `ROADMAP.md`
 - [x] YAML konfig-séma tervezése (interfészek, zónák, szabályok, NAT)
@@ -18,20 +18,45 @@ fázis elkezdődik. Az architektúra döntéseket lásd: [ARCHITECTURE.md](ARCHI
 Debian VM-en (nftables telepítve) hibamentesen legenerálja és betölti a
 ruleset-et, `nft list ruleset` a várt szabályokat mutatja.
 
-## 2. fázis – Rendszerintegráció
+## 2. fázis – Rendszerintegráció — **kész**
 
-- [ ] systemd unit a firewall-motorhoz (boot-kori automatikus config-apply)
-- [ ] systemd unit a webUI-hoz (előkészítés, tényleges UI a 3. fázisban)
-- [ ] Hálózati interfészek automatikus felismerése (`ip link` alapján),
-      WAN/LAN/OPT hozzárendelési segédlet (pfSense-szerű telepítő lépés)
-- [ ] Konfig-perzisztencia: `/etc/fr_os/config.yaml` kanonikus hely,
-      alkalmazás előtti backup/rollback logika
-- [ ] Root-jogosultság elválasztás: unprivileged webUI + privileged
-      "apply helper" service, jól definiált (unix socket) interfésszel
+- [x] systemd unit a firewall-motorhoz (boot-kori automatikus config-apply):
+      `systemd/fr-firewall.service`, a Debian `nftables.service`
+      mintáját követve (korai boot, `Before=network-pre.target`)
+- [x] systemd unit a webUI-hoz: `systemd/fr-webui.service`, egyelőre egy
+      placeholder binárisra mutat (`fr-webui-placeholder`), a tényleges
+      FastAPI app a 3. fázisban kerül be
+- [x] Hálózati interfészek automatikus felismerése -- a tervezettől
+      eltérően nem az `ip link` parancs kimenetét parse-oljuk, hanem
+      közvetlenül a `/sys/class/net/` sysfs fát olvassuk
+      (`frfw.netdetect`): ugyanazt az információt adja, függőségmentes,
+      és sokkal egyszerűbb tesztelni (fake sysfs fa egy tmp könyvtárban).
+      `firewall-cli detect-interfaces` listázza a talált NIC-eket,
+      `firewall-cli assign-interfaces --wan ... --lan ... [--opt zone:dev]`
+      pedig ebből generál egy minimális, érvényes konfigurációt
+      (pfSense-szerű "melyik NIC micsoda" telepítési lépés,
+      nem-interaktív/szkriptelhető formában)
+- [x] Konfig-perzisztencia: `/etc/fr_os/config.yaml` kanonikus hely
+      (`frfw.paths`), a CLI minden parancsa erre defaultol; minden valós
+      (nem dry-run) `apply` előtt a futó ruleset-et időbélyegzett backupba
+      menti (`/etc/fr_os/backups/`, alapból 10 megőrzött verzió),
+      `firewall-cli rollback [--list]` a legutóbbira áll vissza
+- [x] Root-jogosultság elválasztás: `frfw.helper` -- root alatt futó
+      "apply-helper" démon (`firewall-helper` / `fr-apply-helper.service`)
+      egy Unix socketen (`fr-apply-helper.socket`, socket-activation,
+      csoport-alapú hozzáférés-vezérléssel) fogad egy minimális
+      JSON-protokollt (`ping`/`apply`/`rollback`); a végpont sosem fogad
+      el hívótól kapott fájlútvonalat, mindig a kanonikus configot/backup
+      könyvtárat használja -- így a jövőbeli unprivileged webUI sem
+      kaphat általános fájlolvasási/-írási vagy parancsvégrehajtási
+      képességet a root démonon keresztül
 
-**Elfogadási kritérium**: friss Debian VM-en `systemctl enable --now
-fr-firewall` után a rendszer boot-kor automatikusan alkalmazza az utoljára
-mentett konfigurációt; interfész-felismerés parancssorból lefuttatható.
+**Elfogadási kritérium**: friss Debian VM-en `scripts/install-system-integration.sh`
+lefuttatása után `systemctl enable --now fr-firewall` a rendszer boot-kor
+automatikusan alkalmazza az utoljára mentett konfigurációt (`/etc/fr_os/config.yaml`);
+interfész-felismerés és -hozzárendelés parancssorból lefuttatható
+(`firewall-cli detect-interfaces`, `firewall-cli assign-interfaces`); rossz
+config alkalmazása után `firewall-cli rollback` visszaállítja az előzőt.
 
 ## 3. fázis – WebUI
 

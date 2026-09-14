@@ -1,0 +1,12 @@
+[Unit]
+Description=FR_OS webUI (placeholder; real service ships in phase 3)
+Documentation=https://github.com/starsmash29/FR_OS-pblk
+After=fr-apply-helper.socket network.target
+Wants=fr-apply-helper.socket
+
+[Service]
+Type=oneshot
+ExecStart=fr-webui-placeholder
+
+[Install]
+WantedBy=multi-user.target
