@@ -3,7 +3,7 @@
 #
 # Stages this repo's source into the live-build tree's includes.chroot
 # (so the in-chroot hook can `pip install` it -- see
-# config/hooks/live/0100-install-frfw.hook.chroot), then runs `lb config`
+# config/hooks/0100-install-frfw.hook.chroot), then runs `lb config`
 # + `lb build`. Must run as root: live-build chroots, mounts, and device
 # nodes all need it. Needs `live-build`, `debootstrap`, `xorriso`,
 # `squashfs-tools`, `librsvg2-bin`, `syslinux-utils` and friends installed

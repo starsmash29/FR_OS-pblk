@@ -42,7 +42,7 @@ def test_live_build_auto_config_exists_and_is_executable():
 
 
 def test_live_build_hook_exists_and_is_executable():
-    hook = LIVE_BUILD_DIR / "config" / "hooks" / "live" / "0100-install-frfw.hook.chroot"
+    hook = LIVE_BUILD_DIR / "config" / "hooks" / "0100-install-frfw.hook.chroot"
     assert hook.is_file()
     assert hook.stat().st_mode & 0o111, "the chroot hook must be executable"
 
@@ -79,7 +79,7 @@ def test_bash_scripts_pass_shellcheck(path: Path):
     "path",
     [
         LIVE_BUILD_DIR / "auto" / "config",
-        LIVE_BUILD_DIR / "config" / "hooks" / "live" / "0100-install-frfw.hook.chroot",
+        LIVE_BUILD_DIR / "config" / "hooks" / "0100-install-frfw.hook.chroot",
     ],
 )
 def test_posix_sh_scripts_pass_shellcheck(path: Path):

@@ -49,6 +49,18 @@
 #   build *host* for isohybrid and rsvg-convert (librsvg2-bin) -- see
 #   installer/build-live-image.sh's header comment.
 #
+# - config/hooks/*.chroot, not config/hooks/live/*.chroot: this
+#   snapshot's lb_chroot_hooks only globs `config/hooks/*.chroot`
+#   directly (confirmed by reading it) -- the `hooks/live/` and
+#   `hooks/normal/` subdirectory convention is a newer live-build
+#   feature this snapshot predates. A hook placed under hooks/live/
+#   is silently never run (lb_chroot_hooks logs "Begin executing
+#   hooks..." and immediately moves on, no error) -- confirmed the hard
+#   way: the whole frfw install was silently skipped on the first real
+#   build until the hook was moved up to config/hooks/ directly. Flip
+#   back to hooks/live/ on a current live-build if organizing multiple
+#   hooks by stage is wanted there.
+#
 # Every *-volatile and debian-installer mirror is repeated explicitly
 # for both the plain and --parent- variants: this live-build's Ubuntu
 # packaging otherwise defaults those specific two to archive.ubuntu.com

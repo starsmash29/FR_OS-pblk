@@ -7,7 +7,7 @@
 # What "no manual package installation/terminal work" (the phase 5
 # acceptance criterion) means in practice here: frfw and its
 # dependencies are already installed into the image at build time (see
-# installer/live-build/config/hooks/live/); this script only creates
+# installer/live-build/config/hooks/); this script only creates
 # PER-MACHINE state that cannot be baked into the image (which NIC is
 # which, the admin password, TLS keys) and starts the services. The
 # admin still has to read the generated password off the console and
