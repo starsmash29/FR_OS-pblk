@@ -13,11 +13,33 @@ into `/usr/lib/syslinux/modules/bios/`, years ago). Those symlinks 404
 during the binary-image assembly step every time, with no config flag to
 fix it.
 
-This directory is a copy of that same bundled theme with just the two
-symlinks repointed at the correct modern paths; everything else
-(`isolinux.cfg`, `menu.cfg`, `splash.svg.in`, ...) is untouched.
+This directory is a copy of that same bundled theme with the two symlinks
+repointed at the correct modern paths, and the SVG splash graphic dropped
+(see below); everything else (`isolinux.cfg`, `menu.cfg`, ...) is
+untouched.
+
+**`splash.svg.in` removed, `menu background splash.png` line dropped from
+`stdmenu.cfg`:** rendering the splash graphic (`lb_binary_syslinux`,
+guarded by `if [ -e "${_TARGET}/splash.svg.in" ]`) shells out to a plain
+`rsvg --format png ...` command. That binary was dropped from
+`librsvg2-bin` years ago in favor of `rsvg-convert` -- confirmed missing
+both inside the build chroot (Debian bookworm's librsvg2-bin 2.54.7) and
+on this sandbox's Ubuntu host, so it's not a this-old-live-build-only
+problem, and there's no config flag to swap in `rsvg-convert` instead.
+Since the whole splash step is purely a cosmetic PNG background behind
+the BIOS boot menu, removing `splash.svg.in` (which skips the guard
+entirely) and the now-dangling `menu background` line was the simplest
+fix -- boots to a plain-color vesamenu instead of a branded splash image.
+To get the splash back on an environment where `rsvg` (or a shim calling
+`rsvg-convert`) is actually resolvable both on the host and inside the
+chroot, restore `splash.svg.in` from live-build's own bundled theme
+(`/usr/share/live/build/bootloaders/isolinux/splash.svg.in` in this
+snapshot) and the `menu background splash.png` line in `stdmenu.cfg`.
 
 **On a current live-build** (Debian's own package on a real Debian host,
-not this sandbox's ancient snapshot) this override likely isn't needed at
-all -- try removing this directory first when building for real, and only
-keep it if the same symlink targets turn out to still be wrong there too.
+not this sandbox's ancient snapshot) the isolinux.bin/vesamenu.c32
+override likely isn't needed at all -- try removing this directory first
+when building for real, and only keep it if the same symlink targets
+turn out to still be wrong there too. The splash removal is unrelated to
+the snapshot's age (current Debian's librsvg2-bin has the same gap) and
+should be revisited independently.
