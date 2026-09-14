@@ -36,6 +36,18 @@
 #   defaults to "ubuntu-oneiric" (a codename from 2011), which needs the
 #   nonexistent-in-Debian package syslinux-themes-ubuntu-oneiric.
 #   "live-build" is the tool's own bundled theme, needs no extra package.
+#   See config/bootloaders/README.md for what else that theme choice
+#   needed (splash-graphic removal, an empty bootlogo cpio archive).
+# - `syslinux-utils` added to config/package-lists/frfw.list.chroot:
+#   lb_binary_iso's isohybrid step (`Chroot chroot "sh binary.sh"`, so it
+#   runs *inside* the build chroot, not on the host) does
+#   `Check_package chroot/usr/bin/isohybrid syslinux` -- which installs
+#   the wrong package if isohybrid is missing, since Debian split
+#   isohybrid into syslinux-utils years ago. Pre-installing syslinux-utils
+#   via the chroot package list means that check finds the file already
+#   there and never hits the buggy auto-install path. Same story on the
+#   build *host* for isohybrid and rsvg-convert (librsvg2-bin) -- see
+#   installer/build-live-image.sh's header comment.
 #
 # Every *-volatile and debian-installer mirror is repeated explicitly
 # for both the plain and --parent- variants: this live-build's Ubuntu

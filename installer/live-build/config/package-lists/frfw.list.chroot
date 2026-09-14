@@ -10,3 +10,4 @@ openssh-server
 sudo
 isolinux
 syslinux-common
+syslinux-utils
