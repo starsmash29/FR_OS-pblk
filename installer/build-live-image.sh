@@ -6,12 +6,19 @@
 # config/hooks/live/0100-install-frfw.hook.chroot), then runs `lb config`
 # + `lb build`. Must run as root: live-build chroots, mounts, and device
 # nodes all need it. Needs `live-build`, `debootstrap`, `xorriso`,
-# `squashfs-tools` and friends installed (`apt-get install live-build
-# debootstrap xorriso squashfs-tools isolinux syslinux-efi grub-pc-bin
-# grub-efi-amd64-bin mtools dosfstools`), and network access to Debian's
-# mirrors -- expect this to take a while (debootstrap downloads a base
-# system, then every package in frfw.list.chroot, then assembles and
-# compresses a squashfs).
+# `squashfs-tools`, `librsvg2-bin`, `syslinux-utils` and friends installed
+# (`apt-get install live-build debootstrap xorriso squashfs-tools isolinux
+# syslinux-efi syslinux-utils librsvg2-bin grub-pc-bin grub-efi-amd64-bin
+# mtools dosfstools`), and network access to Debian's mirrors -- expect
+# this to take a while (debootstrap downloads a base system, then every
+# package in frfw.list.chroot, then assembles and compresses a squashfs).
+#
+# `syslinux-utils` (for `isohybrid`, used by --binary-images iso-hybrid)
+# and `librsvg2-bin` are easy to miss: nothing in the chroot package list
+# needs them, since they're build-*host* tools invoked directly by
+# lb_binary_syslinux/lb_binary_iso outside the chroot -- a host missing
+# either fails late, well into `lb build`, with an unrelated-looking
+# error ("isohybrid: not found" / "rsvg: No such file or directory").
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
