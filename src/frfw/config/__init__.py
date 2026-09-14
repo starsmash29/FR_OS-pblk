@@ -2,6 +2,7 @@ from frfw.config.errors import ConfigError
 from frfw.config.loader import load_config, parse_config
 from frfw.config.schema import (
     Action,
+    AiIdsConfig,
     Config,
     DhcpConfig,
     DhcpPool,
@@ -17,6 +18,7 @@ from frfw.config.schema import (
 
 __all__ = [
     "Action",
+    "AiIdsConfig",
     "Config",
     "ConfigError",
     "DhcpConfig",

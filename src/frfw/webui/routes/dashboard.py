@@ -3,9 +3,10 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Request
 
 from frfw import netdetect
+from frfw.ai_ids import AIIDSEngine
 from frfw.apply import list_backups
 from frfw.config import ConfigError, parse_config
-from frfw.webui.deps import get_helper, get_raw_config, require_login
+from frfw.webui.deps import get_ai_ids_state_path, get_helper, get_raw_config, require_login
 from frfw.webui.helper_client import HelperClient
 from frfw.webui.responses import redirect_with
 from frfw.webui.templating import templates
@@ -18,11 +19,17 @@ def dashboard(
     request: Request,
     username: str = Depends(require_login),
     raw: dict = Depends(get_raw_config),
+    ai_ids_state_path=Depends(get_ai_ids_state_path),
 ):
     try:
         config = parse_config(raw)
     except ConfigError:
         config = None
+
+    ai_ids_enabled = bool(config is not None and config.ai_ids.enabled)
+    ai_ids_progress = None
+    if ai_ids_enabled:
+        ai_ids_progress = round(AIIDSEngine(config, ai_ids_state_path).global_learning_progress())
 
     interface_rows = []
     if config is not None:
@@ -51,6 +58,8 @@ def dashboard(
             "dhcp_zone_count": len(raw.get("dhcp") or {}),
             "backup_count": len(list_backups()),
             "interface_rows": interface_rows,
+            "ai_ids_enabled": ai_ids_enabled,
+            "ai_ids_progress": ai_ids_progress,
             "error": request.query_params.get("error"),
             "success": request.query_params.get("success"),
         },

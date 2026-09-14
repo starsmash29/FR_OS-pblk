@@ -22,6 +22,7 @@ zones: {...}         # kötelező, ld. lent
 rules: [...]         # opcionális, alapértelmezett: []
 nat: {...}           # opcionális, alapértelmezett: üres
 dhcp: {...}          # opcionális, alapértelmezett: üres
+ai_ids: {...}        # opcionális, alapértelmezett: üres (kikapcsolva)
 ```
 
 ## `interfaces`
@@ -124,6 +125,26 @@ Előfeltételek egy zóna DHCP-kiszolgálásához:
   interfész saját) címével.
 - A foglalások címei/MAC-jei zónán belül egyediek kell legyenek; a MAC-ek
   kisbetűsre normalizálódnak.
+
+## `ai_ids`
+
+> ⚠ **Ez a szekció egy MOCK motort vezérel** (`frfw.ai_ids`), ami kitalált
+> adatokat generál — nincs mögötte valós forgalomelemzés a Phase 4
+> (XDP/eBPF adatgyűjtés) előtt. Ld. [ROADMAP.md](../ROADMAP.md).
+
+```yaml
+ai_ids:
+  enabled: true               # opcionális, alapértelmezett: false
+  learning_days: 7              # opcionális, alapértelmezett: 7, pozitív egész
+  retrain_time: "03:30"           # opcionális, alapértelmezett: "03:30", 24h "HH:MM"
+  excluded_macs:                    # opcionális, alapértelmezett: []
+    - aa:bb:cc:dd:ee:ff                # aa:bb:cc:dd:ee:ff formátum, kisbetűsre normalizált
+```
+
+A motor a DHCP statikus foglalásokból (`dhcp.<zone>.reservations`) állítja
+össze az "ismert eszközök" listáját — dinamikusan lízingelt (nem
+foglalt) eszközök egyelőre nem jelennek meg. Az `excluded_macs`-ben
+felsorolt eszközök sosem kerülnek profilozásra.
 
 ## Ismert korlátok
 

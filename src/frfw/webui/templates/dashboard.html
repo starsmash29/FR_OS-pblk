@@ -18,6 +18,14 @@
   <p class="muted">Ruleset backups available for rollback: {{ backup_count }}</p>
 </div>
 
+{% if ai_ids_enabled %}
+<div class="card">
+  <h3>AI IDS/IPS learning progress <span class="muted">(mock, see <a href="/ai-ids">AI IDS/IPS</a>)</span></h3>
+  <div class="progress-track"><div class="progress-fill" style="width: {{ ai_ids_progress }}%;"></div></div>
+  <div class="progress-label">{{ ai_ids_progress }}% learned</div>
+</div>
+{% endif %}
+
 <div class="card">
   <h3>Interfaces</h3>
   <table>

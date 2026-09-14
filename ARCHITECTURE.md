@@ -116,6 +116,51 @@ Alkalmazáskor a `frfw.kea.apply_dhcp_config` felülírja
 service-t — ugyanaz a "generált fájl, sosem kézzel szerkesztett" elv, mint
 az nftables ruleset-nél.
 
+## AI IDS/IPS (mock)
+
+> ⚠ A `frfw.ai_ids` modul **jelenleg teljes egészében kitalált adatot
+> szolgáltat**. Nincs valós csomag-/forgalomelemzés a Phase 4 (XDP/eBPF)
+> előtt — a modul azért készült el most, hogy a config-séma, a webUI és
+> az ütemezett-újratanítás infrastruktúra (CLI parancs + systemd timer)
+> már összeálljon és tesztelhető legyen, mire a valós adatgyűjtés
+> megérkezik. Minden képernyő/API-válasz, ami ezt az adatot mutatja,
+> kötelezően jelöli a mock jelleget (ld. `ai_ids.html` figyelmeztető
+> sávja) — ez sosem kezelhető valós biztonsági jelzésként.
+
+Az "ismert eszközök" listája a `dhcp.<zone>.reservations` statikus
+foglalásokból jön (a legközelebbi dolog egy "ismert eszköz" fogalomhoz
+valós forgalomfigyelés nélkül). Minden eszközhöz egy MAC-cím alapján
+determinisztikus (nem újra-random) mock profil generálódik — kockázati
+címke, "top protokollok", ismert domainek száma —, valamint egy
+`/etc/fr_os/webui/ai_ids_state.json` fájlban perzisztált, valódi
+állapotot hordozó rész: a szimulált tanulási % (a `retrain_started_at`
+óta eltelt idő / `learning_days` alapján) és a "locked" flag.
+
+**Biztonsági modell — szándékos eltérés a többi képernyőtől**: a "Force
+Retrain" és "Lock Profile" műveletek *nem* mennek a `frfw.helper`
+privilegizált démonon keresztül. A helper kizárólag root-jogosultságot
+igénylő műveletekre való (nft, `ip addr`, Kea újraindítás); az AI IDS
+motor sosem nyúl a kernelhez vagy rendszerszolgáltatáshoz, tisztán
+userspace JSON-állapotot módosít a webUI saját (unprivileged, már írható)
+könyvtárában — ezt a root démonba tenni feleslegesen bővítené a
+támadási felületét. Az `ai_ids` *config-szekció* (enabled/learning_days/
+retrain_time/excluded_macs) mentése viszont a megszokott módon a helper
+`save_config` parancsán megy át, mint minden más YAML-módosítás.
+
+Jövőbeli integrációs pont: `frfw.ai_ids.train_isolation_forest` egy
+explicit `NotImplementedError`-t dobó stub a scikit-learn
+`IsolationForest`-hez — a `scikit-learn` szándékosan nem függősége sem a
+core csomagnak, sem a `webui` extra-nak, amíg ez nincs ténylegesen
+megvalósítva.
+
+A napi újratanítási óra ütemezését (`ai_ids.retrain_time`, alapból
+`03:30`) a `systemd/fr-ai-ids-retrain.timer` + `.service` pár végzi,
+`fr_os-webui` userként (ugyanaz, mint a webUI, mert ugyanazt az
+állapot-fájlt írja). A timer jelenleg egy statikus `OnCalendar=*-*-*
+03:30:00`-t használ, ami **nem követi automatikusan** egy egyedi
+`retrain_time` config-értéket — ennek szinkronizálása egy jövőbeli
+finomítás (nyitott kérdés, ld. ROADMAP.md).
+
 ## Rendszerintegráció
 
 Kanonikus elérési utak (`frfw.paths`):
@@ -124,7 +169,7 @@ Kanonikus elérési utak (`frfw.paths`):
 |---|---|
 | Konfiguráció | `/etc/fr_os/config.yaml` (root:fr_os-webui, 0640 — a webUI csak olvassa) |
 | Ruleset-backupok | `/etc/fr_os/backups/ruleset-<timestamp>.nft` (alapból 10 megőrizve, root-only) |
-| WebUI saját állapota | `/etc/fr_os/webui/` (TLS kulcspár, admin fiók, session-secret — fr_os-webui tulajdonában, ld. lent) |
+| WebUI saját állapota | `/etc/fr_os/webui/` (TLS kulcspár, admin fiók, session-secret, AI IDS mock-állapot — fr_os-webui tulajdonában, ld. lent) |
 | Apply-helper socket | `/run/fr_os/apply.sock` |
 
 systemd unit-ok (`systemd/`):
@@ -140,6 +185,9 @@ systemd unit-ok (`systemd/`):
   kötéshez nem root kell, hanem `AmbientCapabilities=CAP_NET_BIND_SERVICE`
   + `NoNewPrivileges=yes` — ugyanaz a minta, amit a Kea saját
   (`kea-dhcp4-server.service`) unit-ja is használ `_kea` userrel.
+- `fr-ai-ids-retrain.timer` + `.service` — naponta (alapból 03:30-kor)
+  lefuttatja `firewall-cli ai-ids-retrain`-t `fr_os-webui` userként (root
+  nélkül, ld. AI IDS/IPS szekció fent).
 
 `scripts/install-system-integration.sh` végzi a rendszerbe-illesztést egy
 friss gépen: `/etc/fr_os` létrehozása, alap config telepítése (ha még

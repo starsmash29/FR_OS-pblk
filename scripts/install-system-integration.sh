@@ -49,6 +49,8 @@ install -m 0644 "$REPO_ROOT/systemd/fr-firewall.service" "$SYSTEMD_DIR/"
 install -m 0644 "$REPO_ROOT/systemd/fr-apply-helper.socket" "$SYSTEMD_DIR/"
 install -m 0644 "$REPO_ROOT/systemd/fr-apply-helper.service" "$SYSTEMD_DIR/"
 install -m 0644 "$REPO_ROOT/systemd/fr-webui.service" "$SYSTEMD_DIR/"
+install -m 0644 "$REPO_ROOT/systemd/fr-ai-ids-retrain.service" "$SYSTEMD_DIR/"
+install -m 0644 "$REPO_ROOT/systemd/fr-ai-ids-retrain.timer" "$SYSTEMD_DIR/"
 
 echo "==> Reloading systemd"
 systemctl daemon-reload
@@ -60,8 +62,12 @@ Done. Next steps:
   systemctl enable --now fr-firewall
   systemctl enable --now fr-apply-helper.socket
   systemctl enable --now fr-webui        # https://<router-ip>/
+  systemctl enable --now fr-ai-ids-retrain.timer   # daily mock AI IDS retrain
 
 The webUI's self-signed TLS cert is generated on its first start
 (stored under $WEBUI_STATE_DIR); your browser will warn about it until
 you replace it with a real certificate.
+
+Note: the AI IDS/IPS screen is a mock pending phase 4's real traffic
+capture -- see ROADMAP.md and the frfw.ai_ids module docstring.
 EOF

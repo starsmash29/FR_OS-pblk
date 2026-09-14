@@ -110,11 +110,60 @@ teljes WAN/LAN/NAT configot, amit aztán `frfw.config.load_config` +
 `frfw.nft.build_ruleset` dolgoz fel -- ugyanazon a kódúton, amin a CLI is
 menne.
 
+## Kiegészítés – AI IDS/IPS (mock) — **kész**
+
+A 3. fázis után, a 4. fázis (XDP/eBPF) előtt beillesztett kiegészítés,
+mivel a UI és a konfigurációs mag már készen állt a fogadására. **Nem
+része az eredeti 6 fázisnak** — ide azért került, mert a valós
+megvalósítás előfeltétele (a Phase 4 traffic capture) még nem létezik.
+
+- [x] `ai_ids` séma-szekció (`enabled`/`learning_days`/`retrain_time`/
+      `excluded_macs`), teljes `frfw.config.loader` validációval
+- [x] `frfw.ai_ids.AIIDSEngine` — **explicit mock motor**: a DHCP statikus
+      foglalásokból építi az "ismert eszközök" listáját, MAC-alapú
+      determinisztikus (nem re-random) kitalált profilokkal (kockázati
+      címke, top protokollok, ismert domainek száma), és egy perzisztált
+      állapottal (locked/retrain-időbélyeg) a szimulált tanulási %-hoz.
+      `train_isolation_forest` egy explicit `NotImplementedError`-t dobó
+      stub a jövőbeli scikit-learn integrációhoz.
+- [x] `firewall-cli ai-ids-retrain` (unprivileged) +
+      `fr-ai-ids-retrain.timer`/`.service` (napi, alapból 03:30) —
+      infrastruktúra a napi újratanításhoz, magát a (mock) újratanítást
+      végrehajtva
+- [x] WebUI: "AI IDS/IPS" képernyő (eszköztáblázat, Force
+      Retrain/Lock Profile gombok, beállítások), dashboard globális
+      tanulási progress bar — mindegyik jól látható "MOCK DATA"
+      figyelmeztetéssel
+- [x] **Biztonsági modell konzisztencia**: a Force Retrain/Lock Profile
+      *nem* megy a `frfw.helper`-en át (nincs rá szükség, root-mentes
+      userspace állapotváltás) — csak a config-mentés (`ai_ids` szekció)
+      megy a szokásos `save_config`-on keresztül. Ld.
+      [ARCHITECTURE.md](ARCHITECTURE.md#ai-idsips-mock).
+
+**Elfogadási kritérium**: a webUI-n keresztül be- és kikapcsolható az AI
+IDS, az eszköztáblázat DHCP-foglalásokból populálódik, Force
+Retrain/Lock Profile azonnal látható hatással jár, és a képernyő
+egyértelműen jelzi, hogy az adatok mock-ok. ✅ Ellenőrizve:
+`tests/test_ai_ids_schema.py`, `tests/test_ai_ids_engine.py`,
+`tests/webui/test_ai_ids_routes.py` — a meglévő 108 teszt is hibátlanul
+fut tovább (141 összesen).
+
+**Nyitva maradt kérdés a jövőre**: a `fr-ai-ids-retrain.timer` statikus
+`OnCalendar=03:30`-at használ, nem követi automatikusan az
+`ai_ids.retrain_time` config-értéket (ehhez egy privilegizált
+timer-drop-in újraírás kellene — kis hatókörű, de nem triviális
+kiegészítés).
+
 ## 4. fázis – XDP/eBPF gyors útvonal
 
 - [ ] XDP program a nagy forgalmú interfészeken (kernel-stack megkerülése)
 - [ ] Teljesítményteszt (iperf3) 10G/40GbE hardveren, ha elérhető
 - [ ] Döntés: elég-e az XDP, vagy szükséges a DPDK
+- [ ] **AI IDS valós adatgyűjtés**: a mock `frfw.ai_ids` motor lecserélése
+      valós per-eszköz flow-jellemzőkre (csomagméret/-időzítés eloszlás,
+      protokoll-mix, cél-diverzitás) épülő detekcióra, `scikit-learn`
+      `IsolationForest`-tel (`frfw.ai_ids.train_isolation_forest` már
+      előkészített, de jelenleg `NotImplementedError`-t dobó stub)
 
 **Elfogadási kritérium**: mért, dokumentált teljesítményjavulás XDP be- és
 kikapcsolt állapot között, ugyanazon a hardveren.

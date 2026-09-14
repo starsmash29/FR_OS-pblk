@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}AI IDS/IPS - FR_OS{% endblock %}
+{% block content %}
+<h1>AI IDS/IPS</h1>
+
+<div class="flash-mock">
+  ⚠ MOCK DATA — this screen shows fabricated learning/risk figures, not
+  real traffic analysis. Real anomaly detection needs phase 4's XDP/eBPF
+  traffic capture first (see ROADMAP.md).
+</div>
+
+{% if config_error %}
+<div class="flash-error">Config does not currently pass validation: {{ config_error }}</div>
+{% endif %}
+
+<div class="card">
+  <h3>Settings</h3>
+  <form method="post" action="/ai-ids/settings">
+    <label><input type="checkbox" name="enabled" value="true" {{ "checked" if enabled else "" }} style="display:inline;width:auto;"> Enabled</label>
+    <label>Learning period (days)</label>
+    <input type="number" name="learning_days" value="{{ learning_days }}" min="1" required>
+    <label>Daily retrain time (24h, HH:MM)</label>
+    <input type="text" name="retrain_time" value="{{ retrain_time }}" pattern="[0-2][0-9]:[0-5][0-9]" required>
+    <label>Excluded MAC addresses (comma-separated)</label>
+    <input type="text" name="excluded_macs" value="{{ excluded_macs }}" placeholder="aa:bb:cc:dd:ee:ff, 11:22:33:44:55:66">
+    <button type="submit">Save settings</button>
+  </form>
+</div>
+
+{% if enabled %}
+<div class="card">
+  <h3>Global learning progress</h3>
+  <div class="progress-track"><div class="progress-fill" style="width: {{ global_progress }}%;"></div></div>
+  <div class="progress-label">{{ global_progress }}% across {{ devices|length }} device(s)</div>
+  <form method="post" action="/ai-ids/retrain-all" onsubmit="return confirm('Reset the retrain clock for ALL devices?')">
+    <button type="submit" class="secondary">Force retrain all devices</button>
+  </form>
+</div>
+
+<div class="card">
+  <h3>Devices</h3>
+  {% if not devices %}
+  <p class="muted">No devices to profile yet -- add DHCP static reservations on the DHCP screen (that's currently the only "known device" source).</p>
+  {% else %}
+  <table>
+    <tr>
+      <th>Device</th><th>IP</th><th>MAC</th><th>Learning</th><th>Risk profile</th>
+      <th>Top protocols</th><th>Known domains</th><th></th>
+    </tr>
+    {% for d in devices %}
+    <tr>
+      <td>{{ d.hostname }}</td>
+      <td>{{ d.ip or "-" }}</td>
+      <td>{{ d.mac }}</td>
+      <td>
+        <div class="progress-track" style="max-width:120px;"><div class="progress-fill" style="width: {{ d.learning_percent }}%;"></div></div>
+        <span class="muted">{{ d.learning_percent }}%{{ " (locked)" if d.locked else "" }}</span>
+      </td>
+      <td><span class="badge">{{ d.risk_label }}</span></td>
+      <td>{{ d.top_protocols|join(", ") }}</td>
+      <td>{{ d.known_domains_count }}</td>
+      <td>
+        <form class="inline" method="post" action="/ai-ids/{{ d.mac }}/retrain">
+          <button type="submit" class="secondary">Force Retrain</button>
+        </form>
+        <form class="inline" method="post" action="/ai-ids/{{ d.mac }}/lock">
+          <button type="submit" {{ "disabled" if d.locked else "" }}>{{ "Locked" if d.locked else "Lock Profile" }}</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+</div>
+{% else %}
+<div class="card">AI IDS is disabled. Enable it above to start (mock) profiling of DHCP-reserved devices.</div>
+{% endif %}
+{% endblock %}

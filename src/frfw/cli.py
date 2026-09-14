@@ -6,6 +6,8 @@
     firewall-cli rollback [--list]
     firewall-cli detect-interfaces [--include-virtual]
     firewall-cli assign-interfaces --wan DEV --lan DEV [--opt NAME:DEV ...] [--out PATH]
+    firewall-cli set-admin-password [--username admin]
+    firewall-cli ai-ids-retrain [config.yaml] [--mac AA:BB:CC:DD:EE:FF]
 
 `config.yaml` defaults to the canonical /etc/fr_os/config.yaml location
 (see frfw.paths) wherever a config path is optional, so that on a real
@@ -21,6 +23,7 @@ from pathlib import Path
 
 from frfw import netdetect, paths, skeleton
 from frfw.admin_account import AdminStore
+from frfw.ai_ids import AIIDSEngine
 from frfw.apply import NftError, list_backups, rollback_last
 from frfw.config import ConfigError, load_config
 from frfw.ifaddr import IfaddrError
@@ -130,6 +133,16 @@ def _build_parser() -> argparse.ArgumentParser:
     p_admin.add_argument("--username", default="admin")
     p_admin.set_defaults(handler=_cmd_set_admin_password)
 
+    p_retrain = sub.add_parser(
+        "ai-ids-retrain",
+        help="reset the (mock) AI IDS learning clock; run daily by fr-ai-ids-retrain.timer",
+    )
+    add_config_arg(p_retrain)
+    p_retrain.add_argument(
+        "--mac", default=None, help="retrain only this device (default: all known devices)"
+    )
+    p_retrain.set_defaults(handler=_cmd_ai_ids_retrain)
+
     return parser
 
 
@@ -223,6 +236,20 @@ def _cmd_set_admin_password(args: argparse.Namespace) -> int:
 
     AdminStore().set_password(args.username, password)
     print(f"Admin account {args.username!r} set")
+    return 0
+
+
+def _cmd_ai_ids_retrain(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    engine = AIIDSEngine(config)
+    try:
+        engine.force_retrain(args.mac)
+    except KeyError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    target = args.mac or "all known devices"
+    print(f"AI IDS: retrain clock reset for {target} (mock engine, see ROADMAP.md)")
     return 0
 
 

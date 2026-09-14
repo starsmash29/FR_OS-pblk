@@ -31,7 +31,12 @@
   button.secondary { background: #5c6b78; }
   .flash-error { background: #fbe1e1; border: 1px solid #a83232; color: #6b1717; padding: 0.6rem 1rem; border-radius: 4px; margin-bottom: 1rem; }
   .flash-success { background: #e1f2e1; border: 1px solid #2f7d32; color: #1c4b1e; padding: 0.6rem 1rem; border-radius: 4px; margin-bottom: 1rem; }
+  .flash-mock { background: #fff4d6; border: 1px solid #b8860b; color: #6b4e00; padding: 0.6rem 1rem; border-radius: 4px; margin-bottom: 1rem; font-weight: 600; }
   .muted { color: #667; font-size: 0.85rem; }
+  .progress-track { background: #e4e8ec; border-radius: 999px; height: 0.9rem; overflow: hidden; width: 100%; }
+  .progress-fill { background: #2f7d32; height: 100%; border-radius: 999px 0 0 999px; transition: width 0.3s ease; }
+  .progress-label { font-size: 0.8rem; color: #556; margin-top: 0.3rem; }
+  .badge { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 999px; font-size: 0.78rem; background: #eef2f6; border: 1px solid #dde3e8; }
 </style>
 </head>
 <body>
@@ -44,6 +49,7 @@
     <a href="/rules">Rules</a>
     <a href="/nat">NAT</a>
     <a href="/dhcp">DHCP</a>
+    <a href="/ai-ids">AI IDS/IPS</a>
   </div>
   <form method="post" action="/logout">
     <span style="margin-right:0.8rem;">{{ username }}</span>

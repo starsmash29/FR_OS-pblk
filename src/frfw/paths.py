@@ -38,3 +38,9 @@ WEBUI_CERT_PATH = WEBUI_STATE_DIR / "cert.pem"
 WEBUI_KEY_PATH = WEBUI_STATE_DIR / "key.pem"
 WEBUI_AUTH_PATH = WEBUI_STATE_DIR / "auth.json"
 WEBUI_SECRET_KEY_PATH = WEBUI_STATE_DIR / "secret.key"
+
+#: Mock AI IDS engine's persisted per-device state (locked/retrain
+#: timestamps -- see frfw.ai_ids). Needs no root, so it lives alongside
+#: the webUI's other unprivileged state rather than under root-owned
+#: /etc/fr_os directly.
+AI_IDS_STATE_PATH = WEBUI_STATE_DIR / "ai_ids_state.json"

@@ -125,6 +125,19 @@ class DhcpConfig:
 
 
 @dataclass(frozen=True)
+class AiIdsConfig:
+    """Settings for the (currently mock -- see frfw.ai_ids) anomaly
+    detection engine. `excluded_macs` are devices never profiled (e.g. the
+    router's own interfaces, or noisy IoT devices the admin doesn't want
+    flagged)."""
+
+    enabled: bool = False
+    learning_days: int = 7
+    retrain_time: str = "03:30"
+    excluded_macs: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class Config:
     version: int
     hostname: str
@@ -133,3 +146,4 @@ class Config:
     rules: list[Rule]
     nat: NatConfig
     dhcp: DhcpConfig = field(default_factory=DhcpConfig)
+    ai_ids: AiIdsConfig = field(default_factory=AiIdsConfig)

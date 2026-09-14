@@ -30,6 +30,10 @@ def get_config_path(request: Request) -> Path:
     return request.app.state.config_path
 
 
+def get_ai_ids_state_path(request: Request) -> Path:
+    return request.app.state.ai_ids_state_path
+
+
 def get_raw_config(config_path: Path = Depends(get_config_path)) -> dict:
     return load_raw(config_path)
 

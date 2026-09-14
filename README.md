@@ -31,6 +31,11 @@ kiszolgálás Kea-val (`frfw.kea`), amit a webUI-n kívül a CLI is használ
 (`firewall-cli apply` mostantól címeket és DHCP-t is alkalmaz, nem csak
 tűzfalszabályokat).
 
+**AI IDS/IPS (mock)** — kész, előkészítésként a 4. fázis (XDP/eBPF) valós
+forgalomelemzéséhez. ⚠ Jelenleg **teljes egészében kitalált adatot**
+mutat (nincs valós anomália-detekció) — ld.
+[ARCHITECTURE.md](ARCHITECTURE.md#ai-idsips-mock).
+
 ## Gyorsindítás
 
 Igényel: Debian (vagy más Linux) `nftables` csomaggal, Python 3.11+.
@@ -101,6 +106,20 @@ Fejlesztői/teszt indítás root/systemd nélkül:
 
 ```bash
 fr-webui --host 127.0.0.1 --port 8443 --config examples/config.yaml
+```
+
+## AI IDS/IPS (mock)
+
+A "AI IDS/IPS" menüpont a `dhcp.<zone>.reservations`-ban szereplő
+eszközökhöz generál kitalált tanulási/kockázati adatokat (a képernyőn
+jól látható figyelmeztetéssel). Bekapcsolás a képernyőn magán, vagy
+YAML-ből: `ai_ids: {enabled: true}` (ld.
+[docs/CONFIG_SCHEMA.md](docs/CONFIG_SCHEMA.md#ai_ids)).
+
+```bash
+# Napi újratanítás manuálisan (amit a systemd timer is meghív)
+firewall-cli ai-ids-retrain
+sudo systemctl enable --now fr-ai-ids-retrain.timer
 ```
 
 ## Licenc

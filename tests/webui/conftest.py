@@ -52,6 +52,7 @@ def webui_env(tmp_path):
         "admin_store": AdminStore(tmp_path / "auth.json"),
         "session_manager": SessionManager(tmp_path / "secret.key"),
         "helper": FakeHelper(config_path),
+        "ai_ids_state_path": tmp_path / "ai_ids_state.json",
     }
 
 

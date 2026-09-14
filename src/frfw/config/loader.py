@@ -18,6 +18,7 @@ from frfw.config.errors import ConfigError
 from frfw.config.schema import (
     SELF_ZONE,
     Action,
+    AiIdsConfig,
     Config,
     DhcpConfig,
     DhcpPool,
@@ -34,6 +35,7 @@ from frfw.config.schema import (
 _NAME_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
 _PORT_RANGE_RE = re.compile(r"^(\d{1,5})-(\d{1,5})$")
 _MAC_RE = re.compile(r"^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
+_TIME_OF_DAY_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 _SUPPORTED_VERSION = 1
 
 
@@ -73,6 +75,7 @@ def parse_config(raw: Any) -> Config:
     rules = _parse_rules(raw.get("rules", []), zones)
     nat = _parse_nat(raw.get("nat", {}) or {}, zones)
     dhcp = _parse_dhcp(raw.get("dhcp", {}) or {}, zones, interfaces)
+    ai_ids = _parse_ai_ids(raw.get("ai_ids", {}) or {})
 
     return Config(
         version=version,
@@ -82,6 +85,7 @@ def parse_config(raw: Any) -> Config:
         rules=rules,
         nat=nat,
         dhcp=dhcp,
+        ai_ids=ai_ids,
     )
 
 
@@ -472,3 +476,38 @@ def _parse_dhcp_reservations(
         )
 
     return reservations
+
+
+def _parse_ai_ids(raw: Any) -> AiIdsConfig:
+    if not isinstance(raw, dict):
+        raise ConfigError("'ai_ids' must be a mapping")
+
+    enabled = raw.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ConfigError("ai_ids.enabled must be a boolean")
+
+    learning_days = raw.get("learning_days", 7)
+    if not isinstance(learning_days, int) or isinstance(learning_days, bool) or learning_days <= 0:
+        raise ConfigError("ai_ids.learning_days must be a positive integer")
+
+    retrain_time = raw.get("retrain_time", "03:30")
+    if not isinstance(retrain_time, str) or not _TIME_OF_DAY_RE.match(retrain_time):
+        raise ConfigError(
+            f"ai_ids.retrain_time must be a 24h 'HH:MM' string, got {retrain_time!r}"
+        )
+
+    excluded_raw = raw.get("excluded_macs", [])
+    if not isinstance(excluded_raw, list):
+        raise ConfigError("ai_ids.excluded_macs must be a list")
+    excluded_macs = []
+    for i, mac in enumerate(excluded_raw):
+        if not isinstance(mac, str) or not _MAC_RE.match(mac):
+            raise ConfigError(f"ai_ids.excluded_macs[{i}]: invalid MAC address {mac!r}")
+        excluded_macs.append(mac.lower())
+
+    return AiIdsConfig(
+        enabled=enabled,
+        learning_days=learning_days,
+        retrain_time=retrain_time,
+        excluded_macs=excluded_macs,
+    )
