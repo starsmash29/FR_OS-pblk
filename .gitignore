@@ -47,6 +47,7 @@ installer/live-build/config/includes.chroot/opt/frfw-src/
 # need this; a proxy-internal CA has no business being trusted by a
 # shipped image regardless.
 installer/live-build/config/includes.chroot/usr/local/share/verify-only-ca-bundle.crt
+installer/live-build/config/environment.chroot
 
 # lb_config's own generated state (a full dump of every live-build(7)
 # variable, derived entirely from auto/config -- not authored, and
