@@ -6,7 +6,7 @@
     firewall-cli rollback [--list]
     firewall-cli detect-interfaces [--include-virtual]
     firewall-cli assign-interfaces --wan DEV --lan DEV [--opt NAME:DEV ...] [--out PATH]
-    firewall-cli set-admin-password [--username admin]
+    firewall-cli set-admin-password [--username admin] [--generate]
     firewall-cli ai-ids-retrain [config.yaml] [--mac AA:BB:CC:DD:EE:FF]
 
 `config.yaml` defaults to the canonical /etc/fr_os/config.yaml location
@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import secrets
 import sys
 from pathlib import Path
 
@@ -131,6 +132,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "set-admin-password", help="set/reset the webUI's local admin account"
     )
     p_admin.add_argument("--username", default="admin")
+    p_admin.add_argument(
+        "--generate",
+        action="store_true",
+        help="generate a random password instead of prompting, and print only "
+        "the password to stdout (for non-interactive first-boot use)",
+    )
     p_admin.set_defaults(handler=_cmd_set_admin_password)
 
     p_retrain = sub.add_parser(
@@ -225,6 +232,16 @@ def _cmd_assign_interfaces(args: argparse.Namespace) -> int:
 
 
 def _cmd_set_admin_password(args: argparse.Namespace) -> int:
+    if args.generate:
+        # Non-interactive path for fr-first-boot.sh: no prompts, and the
+        # only thing printed to stdout is the password itself, so a
+        # caller can safely capture it (e.g. `pw=$(firewall-cli
+        # set-admin-password --generate)`) without scraping other output.
+        password = secrets.token_urlsafe(18)
+        AdminStore().set_password(args.username, password)
+        print(password)
+        return 0
+
     password = getpass.getpass("New password: ")
     confirm = getpass.getpass("Confirm password: ")
     if password != confirm:

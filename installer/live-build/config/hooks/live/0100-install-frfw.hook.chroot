@@ -1,0 +1,33 @@
+#!/bin/sh
+# Runs inside the live-build chroot, after packages and includes.chroot
+# are in place. Installs frfw itself (bundled source, staged into
+# /opt/frfw-src by installer/build-live-image.sh before `lb build`
+# runs -- see that script), stages the systemd units and scripts, and
+# enables the one service the image actually auto-starts on first real
+# boot (fr-first-boot.service; it enables everything else itself, see
+# scripts/fr-first-boot.sh).
+set -e
+
+echo "frfw: installing from bundled source (/opt/frfw-src)..."
+pip3 install --break-system-packages --no-cache-dir /opt/frfw-src[webui]
+
+echo "frfw: staging scripts and systemd units..."
+install -m 0755 /opt/frfw-src/scripts/fr-first-boot.sh /usr/local/sbin/fr-first-boot.sh
+install -m 0755 /opt/frfw-src/scripts/install-system-integration.sh /usr/local/sbin/install-system-integration.sh
+
+for unit in \
+    fr-first-boot.service \
+    fr-firewall.service \
+    fr-apply-helper.socket \
+    fr-apply-helper.service \
+    fr-webui.service \
+    fr-ai-ids-retrain.service \
+    fr-ai-ids-retrain.timer
+do
+    install -m 0644 "/opt/frfw-src/systemd/$unit" "/etc/systemd/system/$unit"
+done
+
+systemctl enable fr-first-boot.service
+
+echo "frfw: removing bundled source (already installed via pip)..."
+rm -rf /opt/frfw-src

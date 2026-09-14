@@ -191,3 +191,36 @@ def test_set_admin_password_too_short_fails(tmp_path, monkeypatch, capsys):
     err = capsys.readouterr().err
     assert exit_code == 1
     assert "at least 8 characters" in err
+
+
+def test_set_admin_password_generate_is_noninteractive(tmp_path, monkeypatch, capsys):
+    from frfw.admin_account import AdminStore
+
+    store = AdminStore(tmp_path / "auth.json")
+    monkeypatch.setattr("frfw.cli.AdminStore", lambda: store)
+
+    def _fail_if_prompted(prompt=""):
+        raise AssertionError("--generate must not prompt")
+
+    monkeypatch.setattr("getpass.getpass", _fail_if_prompted)
+
+    exit_code = main(["set-admin-password", "--generate"])
+    out = capsys.readouterr().out.strip()
+
+    assert exit_code == 0
+    assert len(out.splitlines()) == 1  # only the password, nothing else
+    assert store.verify("admin", out)
+
+
+def test_set_admin_password_generate_uses_username(tmp_path, monkeypatch, capsys):
+    from frfw.admin_account import AdminStore
+
+    store = AdminStore(tmp_path / "auth.json")
+    monkeypatch.setattr("frfw.cli.AdminStore", lambda: store)
+
+    exit_code = main(["set-admin-password", "--generate", "--username", "root-admin"])
+    password = capsys.readouterr().out.strip()
+
+    assert exit_code == 0
+    assert store.verify("root-admin", password)
+    assert not store.verify("admin", password)

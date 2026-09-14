@@ -1,0 +1,88 @@
+#!/bin/sh
+# live-build "auto script" -- `lb config` (run with no arguments, from
+# this directory) detects and executes this file instead of its own
+# default config generation. See ARCHITECTURE.md's installer section and
+# ROADMAP.md phase 5 for the overall design.
+#
+# Produces a bootable hybrid live ISO -- boots straight into a full,
+# working FR_OS session (everything from frfw to the webUI is installed
+# and functional, see the phase 5 first-boot flow). It does NOT yet embed
+# a "copy this to your disk" installer wizard; see the `--debian-installer
+# false` note below for exactly what's blocking that and how to unblock it.
+#
+# Known limitations, both tracked in ROADMAP.md phase 5:
+# - BIOS/syslinux only, not UEFI.
+# - `--debian-installer false`: `--debian-installer live` (which is what
+#   makes the ISO a hybrid live+install image, per the original plan) is
+#   disabled because this specific live-build build (3.0~a57, an old
+#   Ubuntu-patched snapshot -- not Debian's own current live-build
+#   package) hardcodes, with NO override flag, an installer-support
+#   package list for its "download additional packages" step
+#   (lb_binary_debian-installer, ~line 347) of `lilo grub grub-pc
+#   linux-image-2.6-amd64` for any non-ubuntu/kubuntu LB_MODE -- both
+#   `lilo` and the "2.6" kernel package naming predate every currently
+#   supported Debian release by over a decade, so that apt install
+#   always 404s. Confirmed by reading that script directly; there is no
+#   config flag that reaches this list. Building with a *current*
+#   live-build (Debian's own package on a real Debian host, not this
+#   container's ancient Ubuntu snapshot) should not hit this at all --
+#   flip this back to `live` there as the first thing to try.
+# - `--security false`: the same old live-build's lb_chroot_archives
+#   hardcodes the security suite as "<codename>/updates" instead of the
+#   "<codename>-security" every Debian release since stretch actually
+#   uses -- so the security line 404s. Flip back to `true` on current
+#   live-build too.
+# - `--syslinux-theme live-build`: this snapshot's LB_SYSLINUX_THEME
+#   defaults to "ubuntu-oneiric" (a codename from 2011), which needs the
+#   nonexistent-in-Debian package syslinux-themes-ubuntu-oneiric.
+#   "live-build" is the tool's own bundled theme, needs no extra package.
+#
+# Every *-volatile and debian-installer mirror is repeated explicitly
+# for both the plain and --parent- variants: this live-build's Ubuntu
+# packaging otherwise defaults those specific two to archive.ubuntu.com
+# even with --mode debian set (confirmed by inspecting the generated
+# config/bootstrap) -- Debian's own live-build package may not need this
+# either, but it's harmless there. Same story for --keyring-packages
+# (defaults to the nonexistent-in-Debian "ubuntu-keyring") and
+# --linux-flavours (defaults to Ubuntu's "generic", not Debian's
+# "amd64"); combined with the default --linux-packages "linux" that
+# would still compute "linux-amd64", which also doesn't exist -- Debian's
+# actual meta-package is "linux-image-amd64", hence --linux-packages
+# linux-image below.
+set -e
+
+DEBIAN_MIRROR=http://deb.debian.org/debian/
+
+lb config noauto \
+    --mode debian \
+    --architecture amd64 \
+    --distribution bookworm \
+    --archive-areas "main contrib non-free non-free-firmware" \
+    --parent-archive-areas "main contrib non-free non-free-firmware" \
+    --mirror-bootstrap "$DEBIAN_MIRROR" \
+    --mirror-chroot "$DEBIAN_MIRROR" \
+    --mirror-binary "$DEBIAN_MIRROR" \
+    --mirror-chroot-volatile "$DEBIAN_MIRROR" \
+    --mirror-binary-volatile "$DEBIAN_MIRROR" \
+    --mirror-debian-installer "$DEBIAN_MIRROR" \
+    --parent-mirror-bootstrap "$DEBIAN_MIRROR" \
+    --parent-mirror-chroot "$DEBIAN_MIRROR" \
+    --parent-mirror-binary "$DEBIAN_MIRROR" \
+    --parent-mirror-chroot-volatile "$DEBIAN_MIRROR" \
+    --parent-mirror-binary-volatile "$DEBIAN_MIRROR" \
+    --parent-mirror-debian-installer "$DEBIAN_MIRROR" \
+    --linux-flavours amd64 \
+    --linux-packages linux-image \
+    --binary-images iso-hybrid \
+    --bootloader syslinux \
+    --syslinux-theme live-build \
+    --debian-installer false \
+    --debian-installer-gui false \
+    --iso-application "FR_OS" \
+    --iso-publisher "FR_OS project (github.com/starsmash29/FR_OS-pblk)" \
+    --iso-volume "FR_OS" \
+    --memtest none \
+    --security false \
+    --apt-recommends false \
+    --keyring-packages debian-archive-keyring \
+    "${@}"

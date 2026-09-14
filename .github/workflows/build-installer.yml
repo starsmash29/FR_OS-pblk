@@ -1,0 +1,33 @@
+name: Build installer ISO
+
+# Manual only, not on every push: a full live-build run downloads and
+# assembles an entire Debian system (tens of minutes, real bandwidth),
+# which is wasteful to run on every commit. Trigger it explicitly from
+# the Actions tab when the installer/ tree changes and you want a fresh
+# ISO to test.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install live-build tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            live-build debootstrap xorriso squashfs-tools isolinux \
+            syslinux-efi grub-pc-bin grub-efi-amd64-bin mtools dosfstools \
+            debian-archive-keyring rsync
+
+      - name: Build hybrid live/installer ISO
+        run: sudo ./installer/build-live-image.sh
+
+      - name: Upload ISO
+        uses: actions/upload-artifact@v4
+        with:
+          name: fr-os-installer
+          path: installer/live-build/*.iso
+          if-no-files-found: error
