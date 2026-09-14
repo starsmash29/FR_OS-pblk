@@ -19,6 +19,9 @@ from frfw.config.schema import (
     SELF_ZONE,
     Action,
     Config,
+    DhcpConfig,
+    DhcpPool,
+    DhcpReservation,
     Interface,
     Masquerade,
     NatConfig,
@@ -30,6 +33,7 @@ from frfw.config.schema import (
 
 _NAME_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
 _PORT_RANGE_RE = re.compile(r"^(\d{1,5})-(\d{1,5})$")
+_MAC_RE = re.compile(r"^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
 _SUPPORTED_VERSION = 1
 
 
@@ -68,6 +72,7 @@ def parse_config(raw: Any) -> Config:
     interfaces = _parse_interfaces(raw.get("interfaces", {}), zones)
     rules = _parse_rules(raw.get("rules", []), zones)
     nat = _parse_nat(raw.get("nat", {}) or {}, zones)
+    dhcp = _parse_dhcp(raw.get("dhcp", {}) or {}, zones, interfaces)
 
     return Config(
         version=version,
@@ -76,6 +81,7 @@ def parse_config(raw: Any) -> Config:
         zones=zones,
         rules=rules,
         nat=nat,
+        dhcp=dhcp,
     )
 
 
@@ -131,9 +137,13 @@ def _parse_interfaces(raw: Any, zones: dict[str, Zone]) -> dict[str, Interface]:
                 f"declare it under 'zones' first"
             )
 
+        address = body.get("address")
+        if address is not None:
+            address = _validate_interface_address(address, f"Interface {name!r} address")
+
         description = body.get("description", "")
         interfaces[name] = Interface(
-            name=name, device=device, zone=zone, description=description
+            name=name, device=device, zone=zone, address=address, description=description
         )
 
     used_zones = {iface.zone for iface in interfaces.values()}
@@ -260,6 +270,21 @@ def _validate_address(value: Any, what: str) -> None:
         raise ConfigError(f"{what}: invalid IPv4 address {value!r}: {exc}") from exc
 
 
+def _validate_interface_address(value: Any, what: str) -> str:
+    # An interface address is a host address *with* a prefix length (e.g.
+    # "10.0.0.1/24") -- IPv4Interface (unlike IPv4Network) keeps the host
+    # bits, which is exactly what "the router's own address" means.
+    if not isinstance(value, str):
+        raise ConfigError(f"{what}: expected a string, got {value!r}")
+    try:
+        return str(ipaddress.IPv4Interface(value))
+    except ValueError as exc:
+        raise ConfigError(
+            f"{what}: expected an IPv4 address with prefix length (e.g. "
+            f"'10.0.0.1/24'), got {value!r}: {exc}"
+        ) from exc
+
+
 def _parse_nat(raw: Any, zones: dict[str, Zone]) -> NatConfig:
     if not isinstance(raw, dict):
         raise ConfigError("'nat' must be a mapping")
@@ -329,3 +354,121 @@ def _parse_nat(raw: Any, zones: dict[str, Zone]) -> NatConfig:
         )
 
     return NatConfig(masquerade=masquerade, port_forwards=port_forwards)
+
+
+def _parse_dhcp(
+    raw: Any, zones: dict[str, Zone], interfaces: dict[str, Interface]
+) -> DhcpConfig:
+    if not isinstance(raw, dict):
+        raise ConfigError("'dhcp' must be a mapping of zone name -> pool settings")
+
+    interfaces_by_zone: dict[str, list[Interface]] = {}
+    for iface in interfaces.values():
+        interfaces_by_zone.setdefault(iface.zone, []).append(iface)
+
+    pools: dict[str, DhcpPool] = {}
+    for zone_name, body in raw.items():
+        if zone_name not in zones:
+            raise ConfigError(f"dhcp: undefined zone {zone_name!r}")
+        if not isinstance(body, dict):
+            raise ConfigError(f"dhcp[{zone_name!r}] must be a mapping")
+
+        zone_interfaces = interfaces_by_zone.get(zone_name, [])
+        if len(zone_interfaces) != 1:
+            raise ConfigError(
+                f"dhcp[{zone_name!r}]: DHCP requires exactly one interface in "
+                f"this zone, found {len(zone_interfaces)}"
+            )
+        iface = zone_interfaces[0]
+        if iface.address is None:
+            raise ConfigError(
+                f"dhcp[{zone_name!r}]: interface {iface.name!r} needs a static "
+                f"'address' before it can serve DHCP on this zone"
+            )
+        network = ipaddress.IPv4Interface(iface.address).network
+        gateway = ipaddress.IPv4Interface(iface.address).ip
+
+        what = f"dhcp[{zone_name!r}]"
+        range_start = _validate_pool_address(body.get("range_start"), network, gateway, f"{what} range_start")
+        range_end = _validate_pool_address(body.get("range_end"), network, gateway, f"{what} range_end")
+        if range_start > range_end:
+            raise ConfigError(f"{what}: range_start must not be after range_end")
+
+        dns_servers = body.get("dns_servers")
+        if not isinstance(dns_servers, list) or not dns_servers:
+            raise ConfigError(f"{what}: 'dns_servers' must be a non-empty list of IPv4 addresses")
+        for dns in dns_servers:
+            _validate_address(dns, f"{what} dns_servers")
+
+        lease_time = body.get("lease_time", 3600)
+        if not isinstance(lease_time, int) or lease_time <= 0:
+            raise ConfigError(f"{what}: 'lease_time' must be a positive integer (seconds)")
+
+        reservations = _parse_dhcp_reservations(body.get("reservations", []), network, gateway, what)
+
+        pools[zone_name] = DhcpPool(
+            zone=zone_name,
+            range_start=str(range_start),
+            range_end=str(range_end),
+            dns_servers=[str(ipaddress.IPv4Address(d)) for d in dns_servers],
+            lease_time=lease_time,
+            reservations=reservations,
+        )
+
+    return DhcpConfig(zones=pools)
+
+
+def _validate_pool_address(
+    value: Any, network: ipaddress.IPv4Network, gateway: ipaddress.IPv4Address, what: str
+) -> ipaddress.IPv4Address:
+    if not isinstance(value, str):
+        raise ConfigError(f"{what}: expected a string, got {value!r}")
+    try:
+        address = ipaddress.IPv4Address(value)
+    except ValueError as exc:
+        raise ConfigError(f"{what}: invalid IPv4 address {value!r}: {exc}") from exc
+    if address not in network:
+        raise ConfigError(f"{what}: {address} is not inside subnet {network}")
+    if address == gateway:
+        raise ConfigError(f"{what}: {address} is the gateway address, cannot be in the pool")
+    return address
+
+
+def _parse_dhcp_reservations(
+    raw: Any, network: ipaddress.IPv4Network, gateway: ipaddress.IPv4Address, what: str
+) -> list[DhcpReservation]:
+    if not isinstance(raw, list):
+        raise ConfigError(f"{what}: 'reservations' must be a list")
+
+    reservations: list[DhcpReservation] = []
+    seen_macs: set[str] = set()
+    seen_addresses: set[str] = set()
+    for i, body in enumerate(raw):
+        if not isinstance(body, dict):
+            raise ConfigError(f"{what} reservations[{i}] must be a mapping")
+
+        mac = body.get("mac")
+        if not isinstance(mac, str) or not _MAC_RE.match(mac):
+            raise ConfigError(
+                f"{what} reservations[{i}]: invalid MAC address {mac!r} "
+                "(expected aa:bb:cc:dd:ee:ff)"
+            )
+        mac = mac.lower()
+        if mac in seen_macs:
+            raise ConfigError(f"{what} reservations[{i}]: duplicate MAC address {mac!r}")
+        seen_macs.add(mac)
+
+        address = _validate_pool_address(body.get("address"), network, gateway, f"{what} reservations[{i}] address")
+        if str(address) in seen_addresses:
+            raise ConfigError(f"{what} reservations[{i}]: duplicate address {address}")
+        seen_addresses.add(str(address))
+
+        hostname = body.get("hostname", "")
+        if not isinstance(hostname, str):
+            raise ConfigError(f"{what} reservations[{i}]: 'hostname' must be a string")
+
+        reservations.append(
+            DhcpReservation(mac_address=mac, address=str(address), hostname=hostname)
+        )
+
+    return reservations

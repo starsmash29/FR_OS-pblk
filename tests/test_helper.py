@@ -68,7 +68,8 @@ def test_apply_dry_run(running_server):
 
 def test_apply_real_then_rollback_roundtrip(running_server):
     first = client.apply_config(dry_run=False, socket_path=running_server)
-    assert first == {"ok": True, "message": "Ruleset applied"}
+    assert first["ok"] is True
+    assert "Ruleset applied" in first["message"]
 
     second = client.apply_config(dry_run=False, socket_path=running_server)
     assert second["ok"] is True

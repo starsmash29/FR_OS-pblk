@@ -21,6 +21,7 @@ interfaces: {...}    # kötelező, ld. lent
 zones: {...}         # kötelező, ld. lent
 rules: [...]         # opcionális, alapértelmezett: []
 nat: {...}           # opcionális, alapértelmezett: üres
+dhcp: {...}          # opcionális, alapértelmezett: üres
 ```
 
 ## `interfaces`
@@ -32,8 +33,14 @@ interfaces:
   wan:
     device: eth0        # kötelező, egyedi kell legyen (egy eszköz = egy interfész)
     zone: wan            # kötelező, a zones alatt deklarált zóna neve
+    address: 10.0.0.1/24  # opcionális, IPv4 cím CIDR-prefixel; frfw.ifaddr alkalmazza
     description: "..."   # opcionális, szabad szöveg
 ```
+
+Az `address` a router saját, statikus IPv4 címe azon az interfészen —
+`ip addr replace`-el kerül alkalmazásra (`frfw.ifaddr`). Csak akkor
+kötelező, ha a zónának DHCP pool-t akarunk adni (ld. `dhcp` lent); egy
+DHCP-kliens által menedzselt (pl. tipikus WAN) interfészen hagyjuk üresen.
 
 ## `zones`
 
@@ -90,13 +97,47 @@ nat:
       to_port: 443                         # opcionális, alapértelmezett: dst_port
 ```
 
-## Ismert korlátok (1. fázis)
+## `dhcp`
+
+Zónánkénti DHCPv4 pool, Kea-val kiszolgálva (`frfw.kea`).
+
+```yaml
+dhcp:
+  lan:
+    range_start: 10.0.0.100      # kötelező, IPv4 cím, az interfész alhálózatán belül
+    range_end: 10.0.0.200          # kötelező, IPv4 cím, range_start-nál nem korábbi
+    dns_servers: [1.1.1.1, 9.9.9.9]  # kötelező, nem üres lista, IPv4 címek
+    lease_time: 3600                   # opcionális, alapértelmezett: 3600 (mp)
+    reservations:                       # opcionális, alapértelmezett: []
+      - mac: aa:bb:cc:dd:ee:ff             # kötelező, aa:bb:cc:dd:ee:ff formátum
+        address: 10.0.0.50                  # kötelező, az alhálózaton belül
+        hostname: nas                         # opcionális
+```
+
+Előfeltételek egy zóna DHCP-kiszolgálásához:
+
+- A zónának **pontosan egy** interfésze lehet, és annak `address` mezője
+  kötelezően ki van töltve — ebből számolódik a pool alhálózata és
+  gateway-e (`routers` option a Kea configban).
+- `range_start`/`range_end` és minden foglalás címe az interfész
+  alhálózatán belül kell legyen, és nem eshet egybe a gateway (az
+  interfész saját) címével.
+- A foglalások címei/MAC-jei zónán belül egyediek kell legyenek; a MAC-ek
+  kisbetűsre normalizálódnak.
+
+## Ismert korlátok
 
 - Csak IPv4 címek/hálózatok támogatottak `src_address`/`dst_address`/
-  `to_address` mezőkben (IPv6 tervezett, ld. [ROADMAP.md](../ROADMAP.md)).
+  `to_address`/`address` mezőkben (IPv6 tervezett, ld. [ROADMAP.md](../ROADMAP.md)).
 - Nincs hairpin/reflection NAT a port-forwardokhoz (belső kliens nem éri el
   a saját WAN-oldali portforwardolt szolgáltatását a publikus IP-n
   keresztül) — ez később, igény szerint kerül be.
 - Egy `apply` mindig a teljes nftables ruleset-et lecseréli (`flush
   ruleset` + betöltés), nem lehet kézzel írt, frfw-n kívüli szabályokkal
   keverni.
+- DHCP csak olyan zónán állítható be, aminek pontosan egy interfésze van;
+  több interfészes zóna (pl. bridge-elt LAN portok) DHCP-kiszolgálása egy
+  jövőbeli iteráció.
+- `frfw.ifaddr` csak alkalmaz/frissít címeket, nem távolítja el azokat,
+  amik kikerülnek a configból — egy törölt `address:` után a régi cím a
+  gépen marad, amíg kézzel vagy újraindításkor el nem tűnik.

@@ -20,15 +20,23 @@ integráció és a webUI (3. fázis) is közösen használ.
 **2. fázis (rendszerintegráció)** — kész. Kanonikus config-hely
 (`/etc/fr_os/config.yaml`), boot-kori automatikus alkalmazás systemd-vel,
 ruleset backup/rollback, hálózati interfész-felismerés és
-WAN/LAN/OPT-hozzárendelési segédlet, illetve a jövőbeli (3. fázis) webUI-nak
-szánt privilegizált apply-helper egy Unix socketen keresztül.
+WAN/LAN/OPT-hozzárendelési segédlet, illetve a privilegizált apply-helper
+egy Unix socketen keresztül.
+
+**3. fázis (webUI)** — kész. FastAPI + szerver-renderelt felület
+(dashboard, interfészek, szabályok, NAT, DHCP), helyi admin bejelentkezés,
+HTTPS önaláírt tanúsítvánnyal, és — menet közben szükségesnek bizonyult
+kiegészítésként — statikus interfész-címek (`frfw.ifaddr`) és DHCP
+kiszolgálás Kea-val (`frfw.kea`), amit a webUI-n kívül a CLI is használ
+(`firewall-cli apply` mostantól címeket és DHCP-t is alkalmaz, nem csak
+tűzfalszabályokat).
 
 ## Gyorsindítás
 
 Igényel: Debian (vagy más Linux) `nftables` csomaggal, Python 3.11+.
 
 ```bash
-pip install -e ".[dev]"
+pip install -e ".[dev,webui]"
 
 # Konfig ellenőrzése (séma-validáció, nftables-t nem érinti)
 firewall-cli validate examples/config.yaml
@@ -36,7 +44,7 @@ firewall-cli validate examples/config.yaml
 # A generált nftables ruleset kiírása (nem alkalmazza)
 firewall-cli render examples/config.yaml
 
-# Alkalmazás: szintaxis-ellenőrzés (nft -c), majd tényleges betöltés (root kell)
+# Alkalmazás: interfész-címek, nftables ruleset, DHCP (Kea) -- root kell
 sudo firewall-cli apply examples/config.yaml
 
 # Csak ellenőrzés, tényleges alkalmazás nélkül
@@ -73,9 +81,27 @@ sudo firewall-cli rollback
 ```
 
 Az apply-helper (`fr-apply-helper.socket`/`.service`) egy Unix socketen
-fogad `apply`/`rollback` kéréseket root jogosultsággal, hogy a 3. fázis
-unprivileged webUI-ja ne igényeljen root-ot. Részletek:
+fogad `apply`/`rollback`/`save_config` kéréseket root jogosultsággal, hogy
+az unprivileged webUI ne igényeljen root-ot. Részletek:
 [ARCHITECTURE.md](ARCHITECTURE.md#biztonsági-modell).
+
+## WebUI (3. fázis)
+
+Az install script már beállítja a `fr_os-webui` felhasználót és a
+szükséges jogosultságokat; ezután:
+
+```bash
+sudo firewall-cli set-admin-password   # admin jelszó beállítása (interaktív)
+sudo systemctl enable --now fr-webui
+```
+
+Böngészőből: `https://<router-ip>/` — a böngésző figyelmeztetni fog az
+önaláírt tanúsítványra, amíg valódira nem cseréled (`/etc/fr_os/webui/`).
+Fejlesztői/teszt indítás root/systemd nélkül:
+
+```bash
+fr-webui --host 127.0.0.1 --port 8443 --config examples/config.yaml
+```
 
 ## Licenc
 

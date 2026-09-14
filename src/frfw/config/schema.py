@@ -33,11 +33,20 @@ class Protocol(str, Enum):
 @dataclass(frozen=True)
 class Interface:
     """A logical interface: a name used elsewhere in the config, mapped to
-    a physical/logical Linux device name and a zone."""
+    a physical/logical Linux device name and a zone.
+
+    `address` (a CIDR string like "10.0.0.1/24") is optional: it is the
+    router's own static IPv4 address on that interface, applied via
+    `frfw.ifaddr`. It is required for a zone to have a DHCP pool (see
+    `DhcpPool`), since the pool's subnet and gateway are derived from it.
+    Leave it unset for an interface whose address is managed elsewhere
+    (e.g. a WAN interface using DHCP from the ISP).
+    """
 
     name: str
     device: str
     zone: str
+    address: str | None = None
     description: str = ""
 
 
@@ -88,6 +97,34 @@ class NatConfig:
 
 
 @dataclass(frozen=True)
+class DhcpReservation:
+    mac_address: str
+    address: str
+    hostname: str = ""
+
+
+@dataclass(frozen=True)
+class DhcpPool:
+    """A DHCPv4 pool for one zone, served by Kea (see `frfw.kea`).
+
+    The zone's subnet and gateway come from its (single) interface's
+    static `address`, not repeated here.
+    """
+
+    zone: str
+    range_start: str
+    range_end: str
+    dns_servers: list[str]
+    lease_time: int = 3600
+    reservations: list[DhcpReservation] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class DhcpConfig:
+    zones: dict[str, DhcpPool] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class Config:
     version: int
     hostname: str
@@ -95,3 +132,4 @@ class Config:
     zones: dict[str, Zone]
     rules: list[Rule]
     nat: NatConfig
+    dhcp: DhcpConfig = field(default_factory=DhcpConfig)

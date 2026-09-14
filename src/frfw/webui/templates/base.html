@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}FR_OS{% endblock %}</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, -apple-system, sans-serif; margin: 0; background: #f2f4f6; color: #1a1a1a; }
+  header { background: #17324d; color: white; padding: 0.75rem 1.25rem; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem; }
+  header a { color: #dce7f0; text-decoration: none; margin-right: 1.1rem; font-weight: 500; }
+  header a:hover { color: white; }
+  header a.brand { color: white; font-weight: 700; font-size: 1.05rem; }
+  header form { margin: 0; }
+  main { max-width: 980px; margin: 1.5rem auto; padding: 0 1rem 3rem; }
+  h1 { font-size: 1.4rem; }
+  h3 { margin-top: 0; font-size: 1rem; }
+  table { border-collapse: collapse; width: 100%; margin-bottom: 1rem; background: white; }
+  th, td { border: 1px solid #dde3e8; padding: 0.4rem 0.6rem; text-align: left; font-size: 0.88rem; }
+  th { background: #eef2f6; }
+  form.inline { display: inline-block; margin-right: 0.4rem; }
+  .card { background: white; border: 1px solid #dde3e8; border-radius: 6px; padding: 1rem 1.2rem; margin-bottom: 1.2rem; }
+  label { display: block; margin-top: 0.6rem; font-size: 0.82rem; font-weight: 600; color: #333; }
+  input, select { padding: 0.35rem 0.5rem; margin-top: 0.2rem; width: 100%; max-width: 340px; border: 1px solid #c7cfd6; border-radius: 4px; font-size: 0.9rem; }
+  input[type=checkbox] { width: auto; }
+  button, input[type=submit] { background: #17324d; color: white; border: none; padding: 0.45rem 1rem; border-radius: 4px; cursor: pointer; margin-top: 0.9rem; font-size: 0.88rem; }
+  button:hover { background: #204a72; }
+  button.danger { background: #a83232; }
+  button.danger:hover { background: #c23d3d; }
+  button.secondary { background: #5c6b78; }
+  .flash-error { background: #fbe1e1; border: 1px solid #a83232; color: #6b1717; padding: 0.6rem 1rem; border-radius: 4px; margin-bottom: 1rem; }
+  .flash-success { background: #e1f2e1; border: 1px solid #2f7d32; color: #1c4b1e; padding: 0.6rem 1rem; border-radius: 4px; margin-bottom: 1rem; }
+  .muted { color: #667; font-size: 0.85rem; }
+</style>
+</head>
+<body>
+{% if username %}
+<header>
+  <div>
+    <a class="brand" href="/">FR_OS</a>
+    <a href="/">Dashboard</a>
+    <a href="/interfaces">Interfaces</a>
+    <a href="/rules">Rules</a>
+    <a href="/nat">NAT</a>
+    <a href="/dhcp">DHCP</a>
+  </div>
+  <form method="post" action="/logout">
+    <span style="margin-right:0.8rem;">{{ username }}</span>
+    <button type="submit" class="secondary">Logout</button>
+  </form>
+</header>
+{% endif %}
+<main>
+{% if error %}<div class="flash-error">{{ error }}</div>{% endif %}
+{% if success %}<div class="flash-success">{{ success }}</div>{% endif %}
+{% block content %}{% endblock %}
+</main>
+</body>
+</html>

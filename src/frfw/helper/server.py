@@ -25,11 +25,15 @@ import socketserver
 import sys
 from pathlib import Path
 
-from frfw import paths
-from frfw.apply import NftError, apply_ruleset, rollback_last
-from frfw.config import ConfigError, load_config
+import yaml
+
+from frfw import kea, paths
+from frfw.apply import NftError, rollback_last
+from frfw.config import ConfigError, load_config, parse_config
 from frfw.helper.protocol import MAX_LINE_BYTES
-from frfw.nft import build_ruleset
+from frfw.ifaddr import IfaddrError
+from frfw.kea import KeaError
+from frfw.provision import apply_all
 
 _SD_LISTEN_FDS_START = 3
 
@@ -45,27 +49,44 @@ def _systemd_provided_socket() -> socket.socket | None:
     return socket.fromfd(_SD_LISTEN_FDS_START, socket.AF_UNIX, socket.SOCK_STREAM)
 
 
-def _handle_request(request: dict, config_path: Path, backup_dir: Path) -> dict:
+def _handle_request(request: dict, server: "ApplyHelperServer") -> dict:
     cmd = request.get("cmd")
     try:
         if cmd == "ping":
             return {"ok": True, "message": "pong"}
 
         if cmd == "apply":
-            config = load_config(config_path)
-            ruleset = build_ruleset(config)
-            result = apply_ruleset(
-                ruleset, dry_run=bool(request.get("dry_run", False)), backup_dir=backup_dir
+            config = load_config(server.config_path)
+            result = apply_all(
+                config,
+                dry_run=bool(request.get("dry_run", False)),
+                backup_dir=server.backup_dir,
+                kea_config_path=server.kea_config_path,
             )
-            return {"ok": True, "message": result.message}
+            return {"ok": True, "message": "; ".join(result.messages)}
 
         if cmd == "rollback":
-            restored = rollback_last(backup_dir)
+            restored = rollback_last(server.backup_dir)
             return {"ok": True, "message": f"Rolled back to {restored}"}
 
+        if cmd == "save_config":
+            text = request.get("yaml")
+            if not isinstance(text, str):
+                return {"ok": False, "message": "'yaml' must be a string"}
+            parse_config(yaml.safe_load(text))  # validate before writing anything
+            _write_atomic(server.config_path, text)
+            return {"ok": True, "message": f"Config saved to {server.config_path}"}
+
         return {"ok": False, "message": f"unknown command {cmd!r}"}
-    except (ConfigError, NftError, FileNotFoundError) as exc:
+    except (ConfigError, NftError, IfaddrError, KeaError, FileNotFoundError, yaml.YAMLError) as exc:
         return {"ok": False, "message": str(exc)}
+
+
+def _write_atomic(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(text)
+    tmp_path.replace(path)
 
 
 class _Handler(socketserver.StreamRequestHandler):
@@ -79,9 +100,7 @@ class _Handler(socketserver.StreamRequestHandler):
             request = json.loads(line)
             if not isinstance(request, dict):
                 raise ValueError("request must be a JSON object")
-            response = _handle_request(
-                request, self.server.config_path, self.server.backup_dir
-            )
+            response = _handle_request(request, self.server)
         except (ValueError, TypeError) as exc:
             response = {"ok": False, "message": f"invalid request: {exc}"}
         self.wfile.write(json.dumps(response).encode() + b"\n")
@@ -96,10 +115,12 @@ class ApplyHelperServer(socketserver.UnixStreamServer):
         config_path: Path = paths.CONFIG_PATH,
         *,
         backup_dir: Path = paths.BACKUP_DIR,
+        kea_config_path: Path = kea.KEA_CONFIG_PATH,
         systemd_socket: socket.socket | None = None,
     ) -> None:
         self.config_path = config_path
         self.backup_dir = backup_dir
+        self.kea_config_path = kea_config_path
         self._owns_socket_file = systemd_socket is None
 
         if systemd_socket is not None:
@@ -123,12 +144,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--socket", default=str(paths.APPLY_SOCKET_PATH))
     parser.add_argument("--config", default=str(paths.CONFIG_PATH))
     parser.add_argument("--backup-dir", default=str(paths.BACKUP_DIR))
+    parser.add_argument("--kea-config", default=str(kea.KEA_CONFIG_PATH))
     args = parser.parse_args(argv)
 
     server = ApplyHelperServer(
         Path(args.socket),
         Path(args.config),
         backup_dir=Path(args.backup_dir),
+        kea_config_path=Path(args.kea_config),
         systemd_socket=_systemd_provided_socket(),
     )
     try:

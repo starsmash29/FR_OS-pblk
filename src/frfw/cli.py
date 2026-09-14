@@ -15,13 +15,18 @@ router `firewall-cli apply` with no arguments does the expected thing.
 from __future__ import annotations
 
 import argparse
+import getpass
 import sys
 from pathlib import Path
 
 from frfw import netdetect, paths, skeleton
-from frfw.apply import NftError, apply_ruleset, list_backups, rollback_last
+from frfw.admin_account import AdminStore
+from frfw.apply import NftError, list_backups, rollback_last
 from frfw.config import ConfigError, load_config
+from frfw.ifaddr import IfaddrError
+from frfw.kea import KeaError
 from frfw.nft import build_ruleset
+from frfw.provision import apply_all
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -37,6 +42,12 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     except NftError as exc:
         print(f"nft error: {exc}", file=sys.stderr)
+        return 1
+    except IfaddrError as exc:
+        print(f"interface address error: {exc}", file=sys.stderr)
+        return 1
+    except KeaError as exc:
+        print(f"DHCP (Kea) error: {exc}", file=sys.stderr)
         return 1
 
 
@@ -60,7 +71,9 @@ def _build_parser() -> argparse.ArgumentParser:
     add_config_arg(p_render)
     p_render.set_defaults(handler=_cmd_render)
 
-    p_apply = sub.add_parser("apply", help="generate and load the nftables ruleset")
+    p_apply = sub.add_parser(
+        "apply", help="apply interface addresses, the nftables ruleset, and DHCP"
+    )
     add_config_arg(p_apply)
     p_apply.add_argument(
         "--dry-run",
@@ -111,6 +124,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_assign.set_defaults(handler=_cmd_assign_interfaces)
 
+    p_admin = sub.add_parser(
+        "set-admin-password", help="set/reset the webUI's local admin account"
+    )
+    p_admin.add_argument("--username", default="admin")
+    p_admin.set_defaults(handler=_cmd_set_admin_password)
+
     return parser
 
 
@@ -128,9 +147,9 @@ def _cmd_render(args: argparse.Namespace) -> int:
 
 def _cmd_apply(args: argparse.Namespace) -> int:
     config = load_config(args.config)
-    ruleset = build_ruleset(config)
-    result = apply_ruleset(ruleset, dry_run=args.dry_run)
-    print(result.message)
+    result = apply_all(config, dry_run=args.dry_run)
+    for message in result.messages:
+        print(message)
     return 0
 
 
@@ -189,6 +208,21 @@ def _cmd_assign_interfaces(args: argparse.Namespace) -> int:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(config_text)
     print(f"Wrote {out_path}")
+    return 0
+
+
+def _cmd_set_admin_password(args: argparse.Namespace) -> int:
+    password = getpass.getpass("New password: ")
+    confirm = getpass.getpass("Confirm password: ")
+    if password != confirm:
+        print("error: passwords do not match", file=sys.stderr)
+        return 1
+    if len(password) < 8:
+        print("error: password must be at least 8 characters", file=sys.stderr)
+        return 1
+
+    AdminStore().set_password(args.username, password)
+    print(f"Admin account {args.username!r} set")
     return 0
 
 

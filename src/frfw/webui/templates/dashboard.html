@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Dashboard - FR_OS{% endblock %}
+{% block content %}
+<h1>{{ hostname }}</h1>
+{% if not config_valid %}
+<div class="flash-error">The saved config does not currently pass validation -- fix it on the relevant screen before applying.</div>
+{% endif %}
+
+<div class="card">
+  <h3>Overview</h3>
+  <p>
+    Zones: <strong>{{ zone_count }}</strong> &middot;
+    Interfaces: <strong>{{ interface_count }}</strong> &middot;
+    Rules: <strong>{{ rule_count }}</strong> &middot;
+    Port forwards: <strong>{{ port_forward_count }}</strong> &middot;
+    DHCP zones: <strong>{{ dhcp_zone_count }}</strong>
+  </p>
+  <p class="muted">Ruleset backups available for rollback: {{ backup_count }}</p>
+</div>
+
+<div class="card">
+  <h3>Interfaces</h3>
+  <table>
+    <tr><th>Zone</th><th>Device</th><th>Address</th><th>Link</th></tr>
+    {% for row in interface_rows %}
+    <tr><td>{{ row.zone }}</td><td>{{ row.device }}</td><td>{{ row.address or "-" }}</td><td>{{ row.link }}</td></tr>
+    {% endfor %}
+  </table>
+</div>
+
+<div class="card">
+  <h3>Apply changes</h3>
+  <p class="muted">Applies the saved config to the running system: interface addresses, the nftables firewall ruleset, and DHCP (Kea) if configured.</p>
+  <form method="post" action="/apply" class="inline"><button type="submit">Apply now</button></form>
+  <form method="post" action="/apply?dry_run=1" class="inline"><button type="submit" class="secondary">Dry-run only</button></form>
+  <form method="post" action="/rollback" class="inline" onsubmit="return confirm('Roll back to the previous firewall ruleset?')">
+    <button type="submit" class="danger">Rollback firewall ruleset</button>
+  </form>
+</div>
+{% endblock %}

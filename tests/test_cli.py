@@ -150,3 +150,44 @@ def test_rollback_invokes_rollback_last(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert exit_code == 0
     assert "ruleset-y.nft" in out
+
+
+def test_set_admin_password_success(tmp_path, monkeypatch, capsys):
+    from frfw.admin_account import AdminStore
+
+    monkeypatch.setattr("frfw.cli.AdminStore", lambda: AdminStore(tmp_path / "auth.json"))
+    passwords = iter(["hunter22", "hunter22"])
+    monkeypatch.setattr("getpass.getpass", lambda prompt="": next(passwords))
+
+    exit_code = main(["set-admin-password"])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "set" in out
+    assert AdminStore(tmp_path / "auth.json").verify("admin", "hunter22")
+
+
+def test_set_admin_password_mismatch_fails(tmp_path, monkeypatch, capsys):
+    from frfw.admin_account import AdminStore
+
+    monkeypatch.setattr("frfw.cli.AdminStore", lambda: AdminStore(tmp_path / "auth.json"))
+    passwords = iter(["hunter22", "different"])
+    monkeypatch.setattr("getpass.getpass", lambda prompt="": next(passwords))
+
+    exit_code = main(["set-admin-password"])
+    err = capsys.readouterr().err
+    assert exit_code == 1
+    assert "do not match" in err
+    assert not AdminStore(tmp_path / "auth.json").exists()
+
+
+def test_set_admin_password_too_short_fails(tmp_path, monkeypatch, capsys):
+    from frfw.admin_account import AdminStore
+
+    monkeypatch.setattr("frfw.cli.AdminStore", lambda: AdminStore(tmp_path / "auth.json"))
+    passwords = iter(["short", "short"])
+    monkeypatch.setattr("getpass.getpass", lambda prompt="": next(passwords))
+
+    exit_code = main(["set-admin-password"])
+    err = capsys.readouterr().err
+    assert exit_code == 1
+    assert "at least 8 characters" in err

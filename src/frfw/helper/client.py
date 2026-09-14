@@ -66,3 +66,7 @@ def apply_config(dry_run: bool = False, socket_path: Path = paths.APPLY_SOCKET_P
 
 def rollback(socket_path: Path = paths.APPLY_SOCKET_PATH) -> dict:
     return send_command({"cmd": "rollback"}, socket_path)
+
+
+def save_config(yaml_text: str, socket_path: Path = paths.APPLY_SOCKET_PATH) -> dict:
+    return send_command({"cmd": "save_config", "yaml": yaml_text}, socket_path)

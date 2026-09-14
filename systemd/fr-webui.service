@@ -1,12 +1,20 @@
 [Unit]
-Description=FR_OS webUI (placeholder; real service ships in phase 3)
+Description=FR_OS webUI
 Documentation=https://github.com/starsmash29/FR_OS-pblk
 After=fr-apply-helper.socket network.target
 Wants=fr-apply-helper.socket
 
 [Service]
-Type=oneshot
-ExecStart=fr-webui-placeholder
+Type=simple
+User=fr_os-webui
+Group=fr_os-webui
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+ExecStart=fr-webui
+Restart=on-failure
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/etc/fr_os/webui
 
 [Install]
 WantedBy=multi-user.target
