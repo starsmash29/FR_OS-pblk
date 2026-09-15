@@ -4,8 +4,7 @@ A custom, Linux-based firewall/router operating system for homelab use,
 with a pfSense-like user experience — but with broader NIC support and a
 native Linux XDP/eBPF fast path for 10G/40GbE traffic.
 
-Design decisions and the phase-by-phase development plan (currently
-written in Hungarian):
+Design decisions and the phase-by-phase development plan:
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) — technical decisions and rationale
 - [ROADMAP.md](ROADMAP.md) — phase-by-phase plan and acceptance criteria
@@ -70,8 +69,7 @@ counter (5 failed attempts / 5 minutes) and a kernel-native nftables
 `bruteforce_jail` set with a native timeout (1 hour by default) — zero
 userspace overhead under a flood, no Redis/fail2ban required.
 
-Full rationale for every phase: [ARCHITECTURE.md](ARCHITECTURE.md)
-(Hungarian).
+Full rationale for every phase: [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Quick start
 
@@ -126,7 +124,7 @@ sudo firewall-cli rollback
 The apply-helper (`fr-apply-helper.socket`/`.service`) listens on a Unix
 socket for `apply`/`rollback`/`save_config` requests with root
 privileges, so the unprivileged webUI never needs root itself. Details:
-[ARCHITECTURE.md](ARCHITECTURE.md#biztonsági-modell) (Hungarian).
+[ARCHITECTURE.md](ARCHITECTURE.md#security-model).
 
 ## WebUI (phase 3)
 
