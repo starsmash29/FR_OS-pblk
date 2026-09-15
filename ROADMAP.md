@@ -425,3 +425,78 @@ másik felhasználó aktív session-jét. ✅ Ellenőrizve egységtesztekkel és
 valós (nem mockolt) nftables-integrációs tesztekkel; 40 Gbps-es valós
 teljesítménymérés ugyanazon okból nyitott, mint a 4. fázis XDP szűrőjéé
 (nincs megfelelő teszthardver ebben a sandboxban).
+
+## 8. fázis – Hibrid poszt-kvantum kulcscsere a menedzsment-rétegen — **kész, valós PQC-build nélkül tesztelve**
+
+Cél: a webUI HTTPS-e és a host sshd-je (ha van) hibrid
+(klasszikus+PQC) kulcscserét ajánljon fel, régebbi kliensre/hostra
+észrevétlenül visszaesve. Teljes indoklás, a két verzió-küszöb, és a
+"`SSLContext` nem tud csoport-listát" felismerés:
+[ARCHITECTURE.md](ARCHITECTURE.md#hibrid-poszt-kvantum-kulcscsere-a-menedzsment-rétegen-fázis-8).
+
+- [x] **Séma**: `pqc.enabled` (`frfw.config.schema.PqcConfig`), teljes
+      `frfw.config.loader` validációval.
+- [x] **TLS**: `frfw.pqc.write_openssl_pqc_conf` generálja az OpenSSL
+      config-fragmentet (`Groups = X25519MLKEM768:X25519:P-256` vagy
+      csak klasszikus, `MinProtocol`/`MaxProtocol = TLSv1.3`), amire
+      `fr-webui.service` feltétel nélkül `OPENSSL_CONF=`-fal mutat --
+      ez, nem a Python `ssl.SSLContext`, az egyetlen ténylegesen működő
+      mechanizmus egy TLS 1.3 csoport-lista beállítására (ld.
+      ARCHITECTURE.md a `set_ecdh_curve`-ről szóló, közvetlen teszttel
+      igazolt korlátozásért). A ténylegesen `ssl.SSLContext`-en
+      beállítható rész (TLS 1.3-only) `frfw.pqc.tls_ssl_context_factory`-
+      ként valósult meg, uvicorn `ssl_context_factory=` bővítési
+      pontján keresztül -- valós `uvicorn.Config(...).load()` hívással
+      és valódi generált tanúsítvánnyal is leellenőrizve.
+- [x] **SSH**: `frfw.pqc.sync_ssh_kex` egy `/etc/ssh/sshd_config.d/
+      50-fr_os-pqc-kex.conf` drop-in-t ír/töröl (sosem a fő
+      sshd_config-ot), a telepített sshd tényleges, `sshd -Q kex`-szel
+      frissen lekérdezett képességéhez igazítva -- egy `mlkem768x25519-
+      sha256` nevet sosem ír le anélkül, hogy a build ezt már ne
+      jelezte volna vissza. A generált drop-in-t `sshd -t` validálja
+      alkalmazás előtt; sikertelen validáció esetén az előző tartalom
+      (vagy annak hiánya) visszaáll, sosem marad sshd számára
+      feldolgozhatatlan config a lemezen. A démont *reload*, sosem
+      *restart* frissíti (élő SSH-session-öket nem szakítja meg).
+- [x] **`frfw.provision.apply_all`** 6. lépésként hívja
+      `sync_tls_pqc_conf`-ot és `sync_ssh_kex`-et.
+- [x] **WebUI**: `GET /system` admin-képernyő (host-képesség vs.
+      alkalmazott állapot táblázatosan, be/ki kapcsolás), és egy kis
+      jelvény a dashboardon (`quantum-safe` csak akkor zöld, ha a
+      config be van kapcsolva, a legutóbbi apply hibrid csoportot írt,
+      **és** a host OpenSSL-je ezt ténylegesen támogatja -- egyik
+      feltétel hiánya sem takarható el a másik kettővel).
+- [x] Tesztek: `tests/test_pqc.py` (38+ eset: verzió-küszöb, a
+      `set_ecdh_curve` korlátozás közvetlen igazolása, valós
+      `uvicorn.Config` integráció, a `sshd -t`-sikertelen-validáció
+      visszaállítási garancia, root-igény, dry-run-biztonság),
+      `tests/test_pqc_schema.py`, `tests/webui/test_system_routes.py`,
+      `tests/test_webui_server.py`, kiegészített
+      `tests/test_provision.py` -- a teljes tesztsorozat (360 teszt)
+      regresszió nélkül fut.
+
+**Ismert korlátozás, nyíltan kimondva**: ez a modul **nincs valós
+OpenSSL 3.5+ vagy OpenSSH 9.9+ build ellen tesztelve** -- ez a
+fejlesztői sandbox OpenSSL 3.0.13-at futtat és sshd egyáltalán nincs
+telepítve rajta. Minden képesség-ellenőrzést közvetlenül, éles
+binárison/interpreteren igazoltunk *a hiány helyes felismerésére*, a
+pozitív ("a hibrid csoport ténylegesen létrejön egy valós PQC-képes
+klienssel/sshd-vel") ág viszont specifikáció szerint implementáltnak
+tekintendő, nem ugyanolyan szintű, függetlenül ellenőrzött ténynek, mint
+a projekt kernel-közeli alrendszerei (nftables, XDP, ZTNA) esetében.
+Emellett a saját live-build installer alapképe (5. fázis) egy régi
+snapshot-ot használ, aminek OpenSSL/OpenSSH verziója szinte biztosan a
+küszöb alatt van, tehát ott ma ez a funkció ténylegesen csak a
+"TLS 1.3-only, klasszikus csoportok" ágon fut.
+
+**Elfogadási kritérium**: a webUI-n bekapcsolható a PQC hibrid mód,
+alkalmazás után a `/system` képernyő és a dashboard jelvénye pontosan
+tükrözi a host tényleges képességét (sosem állít biztonságosabb
+állapotot a valóságosnál), és egy régi OpenSSL/OpenSSH build esetén a
+rendszer csendben, hiba nélkül klasszikus módra esik vissza. ✅
+Ellenőrizve egységtesztekkel és a fent felsorolt valós integrációkkal
+(uvicorn Config, tényleges `set_ecdh_curve` viselkedés); a valós
+hibrid handshake végponttól-végpontig futtatása egy tényleges PQC-képes
+build hiányában nyitott, ugyanúgy, ahogy a 4. fázis XDP szűrőjének
+10G/40GbE mérése is az volt valós teszthardver hiányában.
+

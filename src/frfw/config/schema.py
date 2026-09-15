@@ -222,6 +222,22 @@ class UpdateConfig:
 
 
 @dataclass(frozen=True)
+class PqcConfig:
+    """Toggles hybrid (classical + post-quantum) key exchange for the
+    management layer -- the webUI's own HTTPS listener and, if this host
+    also runs sshd, its SSH KexAlgorithms -- see frfw.pqc for the full
+    design writeup and the two hard version floors this depends on
+    (OpenSSL 3.5 for TLS's X25519MLKEM768 group, OpenSSH 9.9 for SSH's
+    mlkem768x25519-sha256). Both are capability-gated at apply time: if
+    the installed OpenSSL/OpenSSH build is older than that, enabling
+    this has no effect beyond restricting the webUI to TLS 1.3-only --
+    it never breaks either service by requesting an algorithm the host
+    doesn't actually have."""
+
+    enabled: bool = False
+
+
+@dataclass(frozen=True)
 class Config:
     version: int
     hostname: str
@@ -234,3 +250,4 @@ class Config:
     update: UpdateConfig = field(default_factory=UpdateConfig)
     xdp_sni_filter: XdpSniFilterConfig = field(default_factory=XdpSniFilterConfig)
     ztna: ZtnaConfig = field(default_factory=ZtnaConfig)
+    pqc: PqcConfig = field(default_factory=PqcConfig)

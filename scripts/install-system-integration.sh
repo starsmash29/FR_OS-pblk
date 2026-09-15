@@ -38,6 +38,16 @@ echo "==> Creating /opt/fr_os/releases (update mechanism's extracted release cac
 install -d -m 0755 -o root -g root /opt/fr_os
 install -d -m 0755 -o root -g root /opt/fr_os/releases
 
+echo "==> Writing initial OpenSSL PQC config fragment (classical-only until enabled on the webUI's System screen)"
+# fr-webui.service unconditionally sets OPENSSL_CONF to this path, so it
+# must exist before fr-webui ever starts, not just after the first
+# `apply` -- see frfw.pqc's module docstring.
+python3 -c "
+from pathlib import Path
+from frfw.pqc import write_openssl_pqc_conf
+write_openssl_pqc_conf(Path('$CONFIG_DIR/webui_pqc_openssl.cnf'), hybrid=False)
+"
+
 if [[ ! -f "$CONFIG_PATH" ]]; then
     echo "==> No config found at $CONFIG_PATH, installing the example config as a starting point"
     install -m 0640 -o root -g "$WEBUI_USER" "$REPO_ROOT/examples/config.yaml" "$CONFIG_PATH"

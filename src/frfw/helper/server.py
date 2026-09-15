@@ -34,6 +34,7 @@ from frfw.config import ConfigError, load_config, parse_config
 from frfw.helper.protocol import MAX_LINE_BYTES
 from frfw.ifaddr import IfaddrError
 from frfw.kea import KeaError
+from frfw.pqc import PqcError
 from frfw.provision import apply_all
 from frfw.ztna import ZtnaError
 
@@ -87,7 +88,7 @@ def _handle_request(request: dict, server: "ApplyHelperServer") -> dict:
 
         return {"ok": False, "message": f"unknown command {cmd!r}"}
     except (
-        ConfigError, NftError, IfaddrError, KeaError, ZtnaError,
+        ConfigError, NftError, IfaddrError, KeaError, ZtnaError, PqcError,
         FileNotFoundError, yaml.YAMLError,
     ) as exc:
         return {"ok": False, "message": str(exc)}

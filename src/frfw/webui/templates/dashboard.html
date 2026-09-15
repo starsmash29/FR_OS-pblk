@@ -6,6 +6,20 @@
 <div class="flash-error">The saved config does not currently pass validation -- fix it on the relevant screen before applying.</div>
 {% endif %}
 
+{% if pqc_status %}
+<p class="muted">
+  Management session:
+  {% if pqc_status.quantum_safe %}
+  <span class="badge badge-green">Quantum-safe (hybrid X25519MLKEM768)</span>
+  {% elif pqc_status.enabled_in_config %}
+  <span class="badge badge-yellow">PQC enabled, not yet active</span>
+  {% else %}
+  <span class="badge badge-red">Classical only</span>
+  {% endif %}
+  &middot; <a href="/system">details</a>
+</p>
+{% endif %}
+
 <div class="card">
   <h3>Overview</h3>
   <p>

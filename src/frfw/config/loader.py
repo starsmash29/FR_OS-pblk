@@ -27,6 +27,7 @@ from frfw.config.schema import (
     Masquerade,
     NatConfig,
     PortForward,
+    PqcConfig,
     Protocol,
     Rule,
     UpdateConfig,
@@ -105,6 +106,7 @@ def parse_config(raw: Any) -> Config:
     update = _parse_update(raw.get("update", {}) or {})
     xdp_sni_filter = _parse_xdp_sni_filter(raw.get("xdp_sni_filter", {}) or {}, interfaces)
     ztna = _parse_ztna(raw.get("ztna", {}) or {})
+    pqc = _parse_pqc(raw.get("pqc", {}) or {})
 
     return Config(
         version=version,
@@ -118,6 +120,7 @@ def parse_config(raw: Any) -> Config:
         update=update,
         xdp_sni_filter=xdp_sni_filter,
         ztna=ztna,
+        pqc=pqc,
     )
 
 
@@ -556,6 +559,17 @@ def _parse_update(raw: Any) -> UpdateConfig:
         raise ConfigError("update.repo must be a string")
 
     return UpdateConfig(repo=repo)
+
+
+def _parse_pqc(raw: Any) -> PqcConfig:
+    if not isinstance(raw, dict):
+        raise ConfigError("'pqc' must be a mapping")
+
+    enabled = raw.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ConfigError("pqc.enabled must be a boolean")
+
+    return PqcConfig(enabled=enabled)
 
 
 def _parse_xdp_sni_filter(raw: Any, interfaces: dict[str, Interface]) -> XdpSniFilterConfig:

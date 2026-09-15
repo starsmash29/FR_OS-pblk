@@ -16,6 +16,9 @@ error says which step failed and that later steps were not attempted):
 3. Kea DHCP config, if any zone has a DHCP pool (`frfw.kea`)
 4. XDP TLS SNI filter attach/detach + blocklist sync (`frfw.xdp`)
 5. ZTNA gate: report how many active sessions survived step 2's reload
+6. Hybrid PQC management-layer key exchange: refresh the webUI's
+   OpenSSL config fragment and, if sshd is installed, its KexAlgorithms
+   drop-in (`frfw.pqc`)
 """
 
 from __future__ import annotations
@@ -23,7 +26,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from frfw import ifaddr, kea, paths, xdp, ztna
+from frfw import ifaddr, kea, paths, pqc, xdp, ztna
 from frfw.apply import apply_ruleset
 from frfw.config.schema import Config
 from frfw.nft import build_ruleset
@@ -41,6 +44,8 @@ def apply_all(
     backup_dir: Path = paths.BACKUP_DIR,
     kea_config_path: Path = kea.KEA_CONFIG_PATH,
     xdp_state_path: Path = paths.XDP_STATE_PATH,
+    pqc_conf_path: Path = paths.PQC_OPENSSL_CONF_PATH,
+    ssh_kex_dropin_path: Path = paths.SSHD_PQC_DROPIN_PATH,
 ) -> ProvisionResult:
     messages = []
 
@@ -80,5 +85,13 @@ def apply_all(
         messages.append("ZTNA gate: would preserve active sessions across reload (dry-run)")
     else:
         messages.append(f"ZTNA gate: {ztna_preserved} active session(s) preserved across reload")
+
+    tls_pqc_result = pqc.sync_tls_pqc_conf(config, dry_run=dry_run, conf_path=pqc_conf_path)
+    messages.append(tls_pqc_result.message)
+
+    ssh_pqc_result = pqc.sync_ssh_kex(
+        config, dry_run=dry_run, dropin_path=ssh_kex_dropin_path
+    )
+    messages.append(ssh_pqc_result.message)
 
     return ProvisionResult(messages=messages)

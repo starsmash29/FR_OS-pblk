@@ -747,6 +747,159 @@ TTL-lel hozza vissza a session-öket.
   webUI-t futtató service kapott ehhez felesleges jogosultságot. Ez itt
   nem lett javítva -- külön ellenőrzést/fázist igényelne.
 
+## Hibrid poszt-kvantum kulcscsere a menedzsment-rétegen (fázis 8)
+
+Cél: a webUI saját HTTPS-je és (ha telepítve van) a host sshd-je hibrid
+(klasszikus + poszt-kvantum) kulcscserét ajánljon fel -- `X25519MLKEM768`
+TLS 1.3-ban, `mlkem768x25519-sha256` SSH-ban --, régebbi kliensre/hostra
+észrevétlenül visszaesve klasszikusra, homelab-hardveren futtatható,
+külön kripto-gyorsítót nem igénylő módon. **Ez a szakasz szokatlanul sok
+"nem működik úgy, ahogy elsőre tűnik" felismerést dokumentál** -- pontosan
+azért, mert ez a projekt eddigi legfrissebb, legkevésbé kiforrott
+technológiai rétege, és a hibás feltételezések itt drágák (egy rossz
+`KexAlgorithms` sort sshd egyszerűen nem indul el vele).
+
+### Két kemény verzió-küszöb, mindkettő ténylegesen ellenőrizve
+
+- **TLS**: az `X25519MLKEM768` csoportot az OpenSSL csak **3.5.0**-tól
+  (2025-04) ismeri. A legtöbb jelenleg csomagolt Debian -- ezen belül
+  ennek a projektnek a saját installer-image-e is (ld. "Automatikus
+  installer" fázis) -- ennél régebbi OpenSSL-t linkel, és ez Python-kódból
+  nem kerülhető meg: a `ssl` modul azt az libssl.so-t csomagolja be, amivel
+  az interpretert fordították, egy pip-csomag pedig nem tud megosztott
+  rendszerkönyvtárat frissíteni. `frfw.pqc.openssl_supports_hybrid_tls()`
+  ezt a fejlesztői sandboxban ténylegesen tesztelt, valós verzióellenőrzés
+  (ez a sandbox OpenSSL 3.0.13-at futtat -- a hiány-ág tehát nem
+  feltételezés, hanem közvetlenül megfigyelt eredmény).
+- **SSH**: az `mlkem768x25519-sha256` kulcscsere-módszert az OpenSSH csak
+  **9.9**-től (2024-09) ismeri. Egy régebbi sshd nemcsak hogy nem ismeri
+  fel, hanem -- ez a lényeg -- egy ismeretlen algoritmusnév a
+  `KexAlgorithms`-ban **el sem indítja** a démont, nem csendben kihagyja.
+  `frfw.pqc.sync_ssh_kex` ezért minden hívásnál frissen lekérdezi a
+  telepített sshd tényleges, befordított listáját (`sshd -Q kex`), és a
+  generált drop-in-t `sshd -t`-vel validálja, mielőtt alkalmazottnak
+  tekintené -- sikertelen validáció esetén visszaállítja az előző
+  tartalmat (vagy törli a fájlt, ha korábban nem is létezett), nem hagy
+  sshd számára feldolgozhatatlan configot a lemezen.
+
+### A várt (és felkínált) API nem létezik: `SSLContext` nem tud csoport-listát
+
+A kérés eredetileg a Python `ssl.SSLContext`-en keresztüli, kódból
+történő csoport-preferencia beállítást irányozta elő. Ez -- ellenőrzött,
+nem feltételezett tény -- **nem lehetséges** a CPython stdlib-bel:
+`SSLContext.set_ecdh_curve()` úgy néz ki, mintha ezt tudná, de nem erről
+van szó. Közvetlen teszttel megerősítve (ld. `tests/test_pqc.py`):
+
+```python
+ctx.set_ecdh_curve("X25519")           # egyetlen név: működik
+ctx.set_ecdh_curve("X25519:P-256")     # kettő, kettősponttal: ValueError
+```
+
+Mindkét név önmagában érvényes TLS 1.3 csoportnév, a kettősponttal
+összefűzött lista mégis elutasításra kerül -- ez azt jelzi, hogy ez a
+függvény egyetlen klasszikus EC-görbét (`OBJ_sn2nid`-stílusú keresés)
+tud beállítani, sosem prioritási listát, és egy hibrid PQC-csoportnév
+eleve nincs is ebben a klasszikus görbenév-táblában, függetlenül attól,
+hogy a mögöttes OpenSSL egyébként támogatja-e. A dokumentált, ténylegesen
+működő mechanizmus egy TLS 1.3 csoport-*lista* beállítására az OpenSSL
+saját config-fájljának `[system_default_sect]` `Groups=` direktívája --
+ugyanaz a mechanizmus, amit Debian/Fedora már ma is használ
+rendszerszintű `CipherString`-alapú kripto-politika-alapértékekhez (ld.
+`man 5 config`). Mivel az OpenSSL ezt a fájlt csak egyszer, a folyamat
+indulásakor olvassa be, a beállítás módosítása mindig `fr-webui`
+újraindítását igényli ahhoz, hogy érvénybe lépjen -- ugyanaz a "változás
+alkalmazáshoz/újraindításhoz kötött" valóság, amivel a projekt minden
+más alrendszere is együtt él (ld. pl. a frissítési mechanizmus saját,
+hasonló újraindítás-üzenetét).
+
+Ezt a mechanizmust `frfw.pqc.write_openssl_pqc_conf` generálja
+(`/etc/fr_os/webui_pqc_openssl.cnf`), amire `fr-webui.service`
+feltétel nélkül `OPENSSL_CONF=`-fal mutat (ld. az unit fájlt) -- ez a
+fájl mindig létezik és mindig érvényes (klasszikus csoportokkal, ha a
+hibrid mód ki van kapcsolva), így ez a környezeti változó sosem törik el
+semmit, és kizárólag ezt az egy folyamatot érinti, sosem a rendszerszintű
+`/etc/ssl/openssl.cnf`-et. A kérésben szereplő, ténylegesen támogatott
+`ssl.SSLContext`-beállítás (`minimum_version`/`maximum_version` TLS
+1.3-ra rögzítve) külön, `frfw.pqc.tls_ssl_context_factory`-ként valósult
+meg, uvicorn saját `ssl_context_factory=` bővítési pontján keresztül
+bekötve (`frfw.webui.server`) -- ezt valós `uvicorn.Config(...).load()`
+hívással, valódi generált tanúsítvánnyal is leteszteltük, nem csak
+elszigetelt unit teszttel.
+
+### SSH: `sshd_config.d` drop-in, sosem a fő fájl
+
+`frfw.pqc.sync_ssh_kex` egy `/etc/ssh/sshd_config.d/50-fr_os-pqc-kex.conf`
+drop-in-t ír/töröl (Debian saját, alapból bekapcsolt `Include
+/etc/ssh/sshd_config.d/*.conf` mechanizmusát kihasználva, ld. a
+generált fájl saját fejlécét) -- sosem nyúl közvetlenül
+`/etc/ssh/sshd_config`-hoz. A futó démont *reload*-olja, sosem
+restart-olja: a reload új kapcsolatokhoz olvassa be újra a configot
+anélkül, hogy bármelyik már élő SSH-munkamenetet (akár azt is, amin
+keresztül az admin épp ezt a változtatást alkalmazza) megszakítaná.
+
+### Vezérlősík: config-jelölés, sosem közvetlen beavatkozás
+
+`config.pqc.enabled` (`frfw.config.schema.PqcConfig`) ugyanazt a
+"szerkeszd a nyers YAML dict-et, validálj, mentsd a privilegizált
+helperen keresztül" mintát követi, mint minden más képernyő -- a
+beállítás mentése sosem módosítja közvetlenül a TLS-t vagy sshd-t, az
+csak a következő `apply`-nál történik meg
+(`frfw.provision.apply_all` 6. lépéseként: `frfw.pqc.sync_tls_pqc_conf`
++ `sync_ssh_kex`), pontosan úgy, mint egy nftables-szabály vagy XDP
+blocklist-változtatás.
+
+### Státusz-képernyő (`/system`) és a "quantum-safe" jelzés valódi hatóköre
+
+A `GET /system` (admin) és a dashboard kis jelvénye
+(`frfw.pqc.PqcStatus.quantum_safe`) két, szándékosan külön tartott
+fogalmat kombinál: *host-képesség* (támogatja-e az adott gép telepített
+OpenSSL/OpenSSH build-je ezt egyáltalán -- gépfüggő tény, független a
+configtól) és *alkalmazott állapot* (mit mond a legutóbb generált
+fájl/drop-in ténylegesen -- ez elmaradhat egy még nem alkalmazott
+config-módosítástól, ugyanaz a "config vs. alkalmazott állapot
+elcsúszhat, amíg nem futtatsz apply-t" minta, ami az XDP képernyőn is
+megvan). A "quantum-safe" jelzés **nem** állítja, hogy az épp nyitva
+lévő böngésző-/SSH-kapcsolat ténylegesen a hibrid csoportot használja --
+ennek ellenőrzéséhez az adott TLS/SSH-session tárgyalt csoportjának
+introspekciója kellene, amit sem a Python `ssl` modulja, sem ez a modul
+nem tesz meg. A képesség-ellenőrzés maga (`ssl.OPENSSL_VERSION_INFO`,
+`sshd -Q kex`) nem igényel jogosultságot, ezért -- a ZTNA kapu
+kernel-állapot-olvasásaitól eltérően -- közvetlenül a nem-privilegizált
+webUI-folyamatban fut, nem a helperen keresztül.
+
+### Ellenőrzés hatóköre -- őszintén kimondva
+
+Ez a modul úgy készült és lett tesztelve, hogy **nincs hozzáférés valós
+OpenSSL 3.5+ vagy OpenSSH 9.9+ build-hez** (ez a fejlesztői sandbox
+OpenSSL 3.0.13-at futtat, sshd egyáltalán nincs telepítve). Minden
+képesség-ellenőrzést közvetlenül, éles binárison/interpreteren
+ellenőriztünk *a hiány helyes felismerésére* (a sandbox OpenSSL-je
+helyesen "nem támogatott"-ként azonosítja magát, az sshd hiánya
+helyesen "nincs telepítve"-ként), és a `set_ecdh_curve` korlátozás
+ténylegesen, élesben lett igazolva. A pozitív ág -- "a hibrid csoport
+ténylegesen, végponttól-végpontig letárgyalásra kerül egy valós
+kliens/sshd ellen" -- viszont *specifikáció szerint implementáltnak*,
+nem pedig ugyanúgy függetlenül ellenőrzöttnek tekintendő, mint ahogy azt
+a projekt más, kernel-közeli alrendszereinél (nftables, XDP, ZTNA) ez a
+dokumentum eddig mindenhol állíthatta.
+
+### Nyitott pontok
+
+- **Valós OpenSSL 3.5+/OpenSSH 9.9+ ellen sosem tesztelve** (ld. fent) --
+  amint elérhető ilyen build (pl. Debian trixie/13 vagy újabb), érdemes
+  egy valós hibrid handshake-et Wireshark/`openssl s_client -groups`
+  szintjén is megerősíteni.
+- **A live-build installer alapképe** (ld. "Automatikus installer" fázis)
+  jelenleg egy régi, Ubuntu-patch-elt snapshot-ot használ, aminek
+  OpenSSL/OpenSSH verziója szinte biztosan a küszöb alatt van -- ez a
+  funkció ezen az image-en ma csak a "TLS 1.3-only, klasszikus
+  csoportok" ágon fut, ami önmagában is valódi hardening, csak nem a
+  kért PQC-hibrid.
+- **Nincs automatikus `fr-webui` újraindítás** a TLS-oldali beállítás
+  alkalmazásakor -- ez tudatos döntés (ld. fent, "változás
+  alkalmazáshoz/újraindításhoz kötött"), nem hiányzó funkció, de
+  admin-oldali kézi lépést igényel.
+
 ## Nem lezárt döntések
 
 Az alábbi pontok fázis közben, konkrét hardver/környezet ismeretében dőlnek el
