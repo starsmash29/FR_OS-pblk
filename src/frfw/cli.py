@@ -11,6 +11,7 @@
     firewall-cli update check [config.yaml]
     firewall-cli update apply VERSION [--repo OWNER/REPO]
     firewall-cli update rollback [--repo OWNER/REPO]
+    firewall-cli xdp-status
 
 `config.yaml` defaults to the canonical /etc/fr_os/config.yaml location
 (see frfw.paths) wherever a config path is optional, so that on a real
@@ -33,7 +34,7 @@ import secrets
 import sys
 from pathlib import Path
 
-from frfw import __version__, netdetect, paths, skeleton
+from frfw import __version__, netdetect, paths, skeleton, xdp as xdp_mod
 from frfw import update as update_mod
 from frfw.admin_account import AdminStore
 from frfw.ai_ids import AIIDSEngine
@@ -67,6 +68,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     except update_mod.UpdateError as exc:
         print(f"update error: {exc}", file=sys.stderr)
+        return 1
+    except xdp_mod.XdpError as exc:
+        print(f"XDP SNI filter error: {exc}", file=sys.stderr)
         return 1
 
 
@@ -186,6 +190,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_update_rollback.add_argument("--repo", default=update_mod.DEFAULT_REPO)
     p_update_rollback.set_defaults(handler=_cmd_update_rollback)
+
+    p_xdp_status = sub.add_parser(
+        "xdp-status",
+        help="show the XDP TLS SNI filter's attach state and packet counters",
+    )
+    p_xdp_status.set_defaults(handler=_cmd_xdp_status)
 
     return parser
 
@@ -346,6 +356,22 @@ def _cmd_update_apply(args: argparse.Namespace) -> int:
 def _cmd_update_rollback(args: argparse.Namespace) -> int:
     restored = update_mod.rollback_update(repo=args.repo)
     print(f"Rolled back to {restored}")
+    return 0
+
+
+def _cmd_xdp_status(args: argparse.Namespace) -> int:
+    attached = xdp_mod.get_attached()
+    if not attached:
+        print("XDP TLS SNI filter: not attached to any interface")
+    else:
+        print("XDP TLS SNI filter attached to:")
+        for device, mode in sorted(attached.items()):
+            print(f"  {device}: {mode}")
+
+    stats = xdp_mod.get_stats()
+    print("\nPacket counters:")
+    for name, count in stats.items():
+        print(f"  {name}: {count}")
     return 0
 
 

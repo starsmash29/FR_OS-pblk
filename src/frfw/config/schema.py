@@ -138,6 +138,31 @@ class AiIdsConfig:
 
 
 @dataclass(frozen=True)
+class XdpSniFilterConfig:
+    """Settings for the kernel-space TLS SNI filter (phase 4, see
+    frfw.xdp and bpf/xdp_sni_filter.c).
+
+    `interfaces` names logical interfaces (keys of `Config.interfaces`,
+    not raw device names) to attach the XDP program to -- almost always
+    just the WAN interface, since inspecting LAN-side traffic for
+    outbound-to-the-internet SNIs is rarely useful and doubles the
+    attach/detach and per-packet cost for no benefit.
+
+    `blocklist` is a list of hostnames (e.g. "ads.example.com"); the
+    kernel program also blocks every subdomain of a listed name (see
+    this module's header comment... actually see bpf/xdp_sni_filter.c's
+    "LPM trie key construction" comment for why and how). A hostname
+    must be shorter than MAX_SNI_LEN (32) bytes in the compiled BPF
+    program -- see frfw.xdp.MAX_SNI_LEN, kept in sync with the .c file's
+    #define by a test, not by importing across the Python/C boundary.
+    """
+
+    enabled: bool = False
+    interfaces: list[str] = field(default_factory=list)
+    blocklist: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class UpdateConfig:
     """Which GitHub repo to check for new FR_OS releases against (phase 6,
     see frfw.update). Empty string means "use the built-in default"
@@ -158,3 +183,4 @@ class Config:
     dhcp: DhcpConfig = field(default_factory=DhcpConfig)
     ai_ids: AiIdsConfig = field(default_factory=AiIdsConfig)
     update: UpdateConfig = field(default_factory=UpdateConfig)
+    xdp_sni_filter: XdpSniFilterConfig = field(default_factory=XdpSniFilterConfig)

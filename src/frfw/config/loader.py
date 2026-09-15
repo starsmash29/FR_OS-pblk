@@ -30,6 +30,7 @@ from frfw.config.schema import (
     Protocol,
     Rule,
     UpdateConfig,
+    XdpSniFilterConfig,
     Zone,
 )
 
@@ -37,7 +38,18 @@ _NAME_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
 _PORT_RANGE_RE = re.compile(r"^(\d{1,5})-(\d{1,5})$")
 _MAC_RE = re.compile(r"^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
 _TIME_OF_DAY_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
+_HOSTNAME_RE = re.compile(
+    r"^(?!-)[a-zA-Z0-9-]{1,63}(?<!-)(\.(?!-)[a-zA-Z0-9-]{1,63}(?<!-))*$"
+)
 _SUPPORTED_VERSION = 1
+
+#: Must match bpf/xdp_sni_filter.c's MAX_SNI_LEN #define -- kept in sync
+#: by tests/test_xdp_sni_key.py rather than a shared import, since one
+#: side is C and the other Python. A hostname of exactly this length or
+#: longer can never match (the kernel program fails open on it, per
+#: extract_sni's own comment), so it's rejected here at config-load time
+#: with a clear error instead of silently never matching at runtime.
+_MAX_SNI_LEN = 32
 
 
 def load_config(path: str | Path) -> Config:
@@ -78,6 +90,7 @@ def parse_config(raw: Any) -> Config:
     dhcp = _parse_dhcp(raw.get("dhcp", {}) or {}, zones, interfaces)
     ai_ids = _parse_ai_ids(raw.get("ai_ids", {}) or {})
     update = _parse_update(raw.get("update", {}) or {})
+    xdp_sni_filter = _parse_xdp_sni_filter(raw.get("xdp_sni_filter", {}) or {}, interfaces)
 
     return Config(
         version=version,
@@ -89,6 +102,7 @@ def parse_config(raw: Any) -> Config:
         dhcp=dhcp,
         ai_ids=ai_ids,
         update=update,
+        xdp_sni_filter=xdp_sni_filter,
     )
 
 
@@ -525,3 +539,48 @@ def _parse_update(raw: Any) -> UpdateConfig:
         raise ConfigError("update.repo must be a string")
 
     return UpdateConfig(repo=repo)
+
+
+def _parse_xdp_sni_filter(raw: Any, interfaces: dict[str, Interface]) -> XdpSniFilterConfig:
+    if not isinstance(raw, dict):
+        raise ConfigError("'xdp_sni_filter' must be a mapping")
+
+    enabled = raw.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ConfigError("xdp_sni_filter.enabled must be a boolean")
+
+    ifaces_raw = raw.get("interfaces", [])
+    if not isinstance(ifaces_raw, list):
+        raise ConfigError("xdp_sni_filter.interfaces must be a list")
+    xdp_interfaces = []
+    for i, name in enumerate(ifaces_raw):
+        if not isinstance(name, str) or name not in interfaces:
+            raise ConfigError(
+                f"xdp_sni_filter.interfaces[{i}]: {name!r} is not a defined interface"
+            )
+        xdp_interfaces.append(name)
+    if enabled and not xdp_interfaces:
+        raise ConfigError("xdp_sni_filter.enabled is true but interfaces is empty")
+
+    blocklist_raw = raw.get("blocklist", [])
+    if not isinstance(blocklist_raw, list):
+        raise ConfigError("xdp_sni_filter.blocklist must be a list")
+    blocklist = []
+    for i, hostname in enumerate(blocklist_raw):
+        if not isinstance(hostname, str) or not _HOSTNAME_RE.match(hostname):
+            raise ConfigError(
+                f"xdp_sni_filter.blocklist[{i}]: invalid hostname {hostname!r}"
+            )
+        if len(hostname) >= _MAX_SNI_LEN:
+            raise ConfigError(
+                f"xdp_sni_filter.blocklist[{i}]: hostname {hostname!r} is "
+                f"{len(hostname)} bytes, must be under {_MAX_SNI_LEN} "
+                "(the kernel filter's MAX_SNI_LEN)"
+            )
+        blocklist.append(hostname.lower())
+
+    return XdpSniFilterConfig(
+        enabled=enabled,
+        interfaces=xdp_interfaces,
+        blocklist=blocklist,
+    )

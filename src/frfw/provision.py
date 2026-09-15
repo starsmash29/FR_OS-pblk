@@ -12,6 +12,7 @@ error says which step failed and that later steps were not attempted):
 1. Interface static addresses (`frfw.ifaddr`)
 2. nftables ruleset, backing up the previous one first (`frfw.apply`)
 3. Kea DHCP config, if any zone has a DHCP pool (`frfw.kea`)
+4. XDP TLS SNI filter attach/detach + blocklist sync (`frfw.xdp`)
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from frfw import ifaddr, kea, paths
+from frfw import ifaddr, kea, paths, xdp
 from frfw.apply import apply_ruleset
 from frfw.config.schema import Config
 from frfw.nft import build_ruleset
@@ -36,6 +37,7 @@ def apply_all(
     dry_run: bool = False,
     backup_dir: Path = paths.BACKUP_DIR,
     kea_config_path: Path = kea.KEA_CONFIG_PATH,
+    xdp_state_path: Path = paths.XDP_STATE_PATH,
 ) -> ProvisionResult:
     messages = []
 
@@ -48,5 +50,8 @@ def apply_all(
 
     dhcp_result = kea.apply_dhcp_config(config, dry_run=dry_run, config_path=kea_config_path)
     messages.append(dhcp_result.message)
+
+    xdp_result = xdp.sync_sni_filter(config, dry_run=dry_run, state_path=xdp_state_path)
+    messages.append(xdp_result.message)
 
     return ProvisionResult(messages=messages)

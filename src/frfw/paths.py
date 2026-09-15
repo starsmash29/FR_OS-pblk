@@ -67,3 +67,19 @@ RELEASES_DIR = Path("/opt/fr_os/releases")
 #: CONFIG_PATH/BACKUP_DIR" scope (see frfw.helper.protocol), so it gets
 #: its own small, single-purpose daemon instead of widening that one.
 UPDATE_SOCKET_PATH = RUNTIME_DIR / "update.sock"
+
+#: Compiled XDP TLS SNI filter object (phase 4, see frfw.xdp and
+#: bpf/xdp_sni_filter.c). Shipped precompiled by the live-build image
+#: (installer/live-build) rather than compiled on first boot -- a router
+#: appliance image has no business assuming clang/llvm are installed --
+#: but frfw.xdp.ensure_compiled() will compile it here itself (requires
+#: clang) if it's missing, which is what this sandbox's own manual
+#: testing used, and is a reasonable fallback for a from-source install.
+XDP_BPF_OBJ_PATH = Path("/usr/local/share/fr_os/bpf/xdp_sni_filter.o")
+
+#: Persisted "which interfaces currently have the XDP program attached,
+#: in which mode" state, so frfw.xdp can detach cleanly from exactly the
+#: interfaces/modes it (or the last process that ran it) actually
+#: attached to, and so the webUI can show live attach-mode status without
+#: re-probing every interface via `ip link` on every page load.
+XDP_STATE_PATH = Path("/etc/fr_os/xdp_state.json")

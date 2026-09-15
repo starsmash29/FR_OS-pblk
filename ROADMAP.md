@@ -154,49 +154,76 @@ fut tovább (141 összesen).
 timer-drop-in újraírás kellene — kis hatókörű, de nem triviális
 kiegészítés).
 
-## 4. fázis – XDP/eBPF gyors útvonal — **tervezés kész, kód még nem**
+## 4. fázis – XDP/eBPF gyors útvonal: kernel-szintű TLS SNI szűrő — **kernel-program + Python orchestrator kész, webUI és teljesítménymérés nyitott**
 
-A hardverigényes rész miatt ebben a fázisban most csak a döntés és a
-konkrét megvalósítási terv készült el (a felhasználóval egyeztetve),
-**tényleges eBPF-kód még nem** — az implementáció valós 10G/40GbE
-tesztkörnyezetig vár. A döntés és a technikai előkészítés részletei:
-[ARCHITECTURE.md](ARCHITECTURE.md#xdpebpf-gyors-útvonal-tervezés).
+A hatókör a felhasználóval egyeztetve a korábban itt tervezett generikus
+IP fast-drop blocklistról egy konkrétabb, gyakorlatiasabb funkcióra
+módosult: **TLS ClientHello-ból kiolvasott SNI (domain név) alapján
+kernel-térben eldobott/átengedett forgalom**. A teljes indoklás,
+architektúra és a BPF verifier-rel folytatott (meglepően hosszú) küzdelem
+összefoglalója: [ARCHITECTURE.md](ARCHITECTURE.md#xdpebpf-gyors-útvonal-kernel-szintű-tls-sni-szűrő-fázis-4).
 
-- [x] **Hatókör-döntés**: nem egy teljes, stateful nftables-ekvivalens
-      tűzfal újraírása eBPF-ben (hónapokos, önmagában is akkora projekt,
-      mint az eddigi 1-3. fázis együttvéve) — helyette egy XDP
-      **fast-drop blocklist**, ami a legkorábbi ponton (még nftables
-      előtt) eldobja az ismert rossz forrás-IP-k forgalmát, kiegészítve
-      (nem helyettesítve) a meglévő nftables-motort. Ez a valós
-      DDoS-védelmi gyakorlat (pl. Cloudflare L4Drop, Facebook Katran)
-      bevált mintája.
-- [x] **Technikai megvalósíthatóság ellenőrizve** ebben a sandboxban
-      (nem valós 10G hardver, de a build/load/map-frissítés pipeline
-      valósan tesztelt): `clang -O2 -g -target bpf` fordítja a C forrást
-      BPF objektummá (a `-g` kell a BTF-hez, ami a modern
-      `SEC(".maps")` map-deklarációhoz szükséges); `ip link set dev
-      <iface> {xdpgeneric|xdpdrv} obj prog.o sec xdp` tölti be és
-      csatolja (ugyanaz a "shell ki a rendszer saját eszközéhez" minta,
-      mint `nft`/`kea-dhcp4`/`ip addr`-nál); egy `LIBBPF_PIN_BY_NAME`
-      annotációval ellátott BPF map automatikusan pinnelődik
-      `/sys/fs/bpf/tc/globals/<mapname>` alá betöltéskor, amit
-      `bpftool map update/delete pinned ...` tud élőben módosítani —
-      így a blocklist újratöltés nélkül, gyorsan frissíthető userspace-ből.
-- [ ] A tényleges `bpf/xdp_fastdrop.c` forrás + `frfw.xdp` Python
-      orchestrator + `fast_path` config-szekció + webUI képernyő
-      megírása — **valós hardveren** (vagy legalább egy driver-szintű
-      XDP-t támogató NIC-en, ha csak azt teszteljük) történő fejlesztés
-      és a teljesítményteszt előtt/közben, ld. terv az ARCHITECTURE.md-ben.
-- [ ] Teljesítményteszt (iperf3) 10G/40GbE hardveren
-- [ ] Döntés: elég-e az XDP, vagy szükséges a DPDK
+- [x] **Kernel-oldali program megírva és valósan verifikálva**
+      (`bpf/xdp_sni_filter.c`): TLS record/handshake/ClientHello/
+      extensions parsing, SNI kiolvasás, `BPF_MAP_TYPE_LPM_TRIE`
+      blocklist-keresés (`reverse("." + hostname)` kulcs-séma, ami
+      helyesen blokkolja az al-domaineket, de nem a csak
+      karakter-szinten hasonló, nem-al-domain neveket), `XDP_DROP`
+      találat esetén, async `BPF_MAP_TYPE_RINGBUF` esemény userspace
+      naplózáshoz. Nem csak lefordult -- ténylegesen betöltve és
+      elfogadva a valódi kernel BPF verifier által
+      (`ip link set dev lo xdpgeneric obj xdp_sni_filter.o sec xdp`),
+      és egy kézzel összeállított, valós TLS 1.3 ClientHello-val
+      végponttól-végpontig letesztelve: egy blokklistás SNI-jű
+      kapcsolat kapcsolat teljesen elakad (minden retranszmisszió is
+      eldobásra kerül), egy nem-blokkolt SNI hiánytalanul átmegy, és a
+      ring buffer esemény helyesen dekódolódik userspace oldalon.
+- [x] **`frfw.xdp` Python orchestrator megírva**: fordítás
+      (`ensure_compiled`, csak ha nincs előre lefordított `.o`),
+      betöltés + pinning egyszer minden interfészhez megosztva
+      (`load_and_pin`, `bpftool prog loadall ... pinmaps ...`),
+      natív→generic XDP mód fallback-kel csatolás (`attach`), blocklist
+      szinkronizálás a configgal (`sync_blocklist`), és egy közvetlen
+      `ctypes` `libbpf` binding a ring buffer lock-mentes olvasásához
+      (`RingBufferReader`) -- mindegyik valósan letesztelve ebben a
+      sandboxban, mock nélkül, a valódi kernel/bpftool/libbpf ellen.
+- [x] **Config-séma + betöltő validáció**: `xdp_sni_filter` szekció
+      (`enabled`, `interfaces`, `blocklist`), hosztnév-formátum és a
+      kernel-oldali `MAX_SNI_LEN` korlát ellenőrzésével.
+- [x] **`frfw.provision.apply_all`** negyedik lépésként hívja
+      `frfw.xdp.sync_sni_filter`-t.
+- [x] **`fr-xdp-sni-logger` systemd daemon**: a ring buffert folyamatosan
+      olvassa (blokkoló poll, nem busy-wait) és journald-ba naplózza a
+      találatokat.
+- [x] **`firewall-cli xdp-status`**: csatolt interfészek + csomag-
+      számlálók megjelenítése.
+- [ ] **WebUI képernyő** a blocklist szerkesztéséhez és élő
+      napló/statisztika megjelenítéséhez — a backend (`frfw.xdp.
+      get_stats()`/`get_attached()`) már kész hozzá, csak a képernyő
+      hiányzik.
+- [ ] **Live-build integráció**: a `.o` fájl előre-fordítása és
+      image-be csomagolása a build pipeline részeként.
+- [ ] Teljesítményteszt (iperf3-szerű, valós TLS-forgalommal) 10G/40GbE
+      hardveren, natív (`xdpdrv`) módban — ez a sandbox erre alkalmatlan
+      (nincs megfelelő NIC/forgalom-generátor); a program *helyessége*
+      igazolt, a natív módú, nagy csomagsebességű *teljesítmény-előny*
+      viszont csak megfelelő teszthardveren mérhető.
+- [ ] Döntés: elég-e az XDP, vagy szükséges a DPDK (a fenti
+      teljesítménymérés eredményétől függ)
 - [ ] **AI IDS valós adatgyűjtés**: a mock `frfw.ai_ids` motor lecserélése
       valós per-eszköz flow-jellemzőkre (csomagméret/-időzítés eloszlás,
       protokoll-mix, cél-diverzitás) épülő detekcióra, `scikit-learn`
       `IsolationForest`-tel (`frfw.ai_ids.train_isolation_forest` már
-      előkészített, de jelenleg `NotImplementedError`-t dobó stub)
+      előkészített, de jelenleg `NotImplementedError`-t dobó stub) --
+      ez egy külön, a TLS SNI szűrőtől független adatforrást igényelne,
+      amit a fenti munka nem old meg.
 
-**Elfogadási kritérium**: mért, dokumentált teljesítményjavulás XDP be- és
-kikapcsolt állapot között, ugyanazon a hardveren.
+**Elfogadási kritérium** (eredeti megfogalmazás): mért, dokumentált
+teljesítményjavulás XDP be- és kikapcsolt állapot között, ugyanazon a
+hardveren -- ez a rész továbbra is nyitott, valós 10G/40GbE hardver
+hiányában (ld. fent). A funkcionális helyesség (a szűrő ténylegesen,
+bizonyíthatóan biztonságosan és a specifikáció szerint működik) viszont
+ebben a fázisban igazolást nyert.
 
 ## 5. fázis – Automatikus installer
 

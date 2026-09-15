@@ -25,16 +25,20 @@ def _fake_nft(monkeypatch):
     monkeypatch.setattr(apply_mod, "capture_running_ruleset", lambda: "")
 
 
-def test_apply_all_runs_all_three_steps_in_order(minimal_config_dict, tmp_path):
-    config = parse_config(minimal_config_dict)  # no address, no dhcp
+def test_apply_all_runs_all_four_steps_in_order(minimal_config_dict, tmp_path):
+    config = parse_config(minimal_config_dict)  # no address, no dhcp, no xdp
     result = apply_all(
-        config, backup_dir=tmp_path / "backups", kea_config_path=tmp_path / "kea.json"
+        config,
+        backup_dir=tmp_path / "backups",
+        kea_config_path=tmp_path / "kea.json",
+        xdp_state_path=tmp_path / "xdp_state.json",
     )
 
-    assert len(result.messages) == 3
+    assert len(result.messages) == 4
     assert "No interface addresses" in result.messages[0]
     assert "Ruleset applied" in result.messages[1]
     assert "No DHCP zones" in result.messages[2]
+    assert "XDP SNI filter disabled" in result.messages[3]
 
 
 def test_apply_all_dry_run_touches_nothing(dhcp_config_dict, tmp_path, monkeypatch):
@@ -50,11 +54,17 @@ def test_apply_all_dry_run_touches_nothing(dhcp_config_dict, tmp_path, monkeypat
         dry_run=True,
         backup_dir=tmp_path / "backups",
         kea_config_path=kea_path,
+        xdp_state_path=tmp_path / "xdp_state.json",
     )
 
     assert ip_calls == []
     assert not kea_path.exists()
-    assert all("dry-run" in m.lower() or "would" in m.lower() for m in result.messages)
+    # xdp_sni_filter is disabled (and was never attached) in every test
+    # fixture config, which is a real no-op regardless of dry_run --
+    # there is nothing to "preview" undoing state that was never applied.
+    previewable = result.messages[:-1]
+    assert all("dry-run" in m.lower() or "would" in m.lower() for m in previewable)
+    assert "XDP SNI filter disabled" in result.messages[-1]
 
 
 def test_apply_all_applies_addresses_and_dhcp_together(dhcp_config_dict, tmp_path, monkeypatch):
@@ -69,6 +79,7 @@ def test_apply_all_applies_addresses_and_dhcp_together(dhcp_config_dict, tmp_pat
         config,
         backup_dir=tmp_path / "backups",
         kea_config_path=kea_path,
+        xdp_state_path=tmp_path / "xdp_state.json",
     )
 
     assert ip_calls == [
