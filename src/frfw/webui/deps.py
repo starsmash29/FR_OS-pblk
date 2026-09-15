@@ -11,7 +11,7 @@ from fastapi import Depends, HTTPException, Request, status
 
 from frfw.webui.auth import COOKIE_NAME, AdminStore, SessionManager
 from frfw.webui.config_store import load_raw
-from frfw.webui.helper_client import HelperClient
+from frfw.webui.helper_client import HelperClient, UpdateHelperClient
 
 
 def get_admin_store(request: Request) -> AdminStore:
@@ -26,12 +26,20 @@ def get_helper(request: Request) -> HelperClient:
     return request.app.state.helper
 
 
+def get_update_helper(request: Request) -> UpdateHelperClient:
+    return request.app.state.update_helper
+
+
 def get_config_path(request: Request) -> Path:
     return request.app.state.config_path
 
 
 def get_ai_ids_state_path(request: Request) -> Path:
     return request.app.state.ai_ids_state_path
+
+
+def get_update_state_path(request: Request) -> Path:
+    return request.app.state.update_state_path
 
 
 def get_raw_config(config_path: Path = Depends(get_config_path)) -> dict:

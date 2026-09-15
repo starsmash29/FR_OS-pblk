@@ -34,6 +34,10 @@ install -d -m 0755 -o root -g root "$CONFIG_DIR"
 install -d -m 0750 -o root -g root "$CONFIG_DIR/backups"
 install -d -m 0750 -o "$WEBUI_USER" -g "$WEBUI_USER" "$WEBUI_STATE_DIR"
 
+echo "==> Creating /opt/fr_os/releases (update mechanism's extracted release cache)"
+install -d -m 0755 -o root -g root /opt/fr_os
+install -d -m 0755 -o root -g root /opt/fr_os/releases
+
 if [[ ! -f "$CONFIG_PATH" ]]; then
     echo "==> No config found at $CONFIG_PATH, installing the example config as a starting point"
     install -m 0640 -o root -g "$WEBUI_USER" "$REPO_ROOT/examples/config.yaml" "$CONFIG_PATH"
@@ -51,6 +55,8 @@ install -m 0644 "$REPO_ROOT/systemd/fr-apply-helper.service" "$SYSTEMD_DIR/"
 install -m 0644 "$REPO_ROOT/systemd/fr-webui.service" "$SYSTEMD_DIR/"
 install -m 0644 "$REPO_ROOT/systemd/fr-ai-ids-retrain.service" "$SYSTEMD_DIR/"
 install -m 0644 "$REPO_ROOT/systemd/fr-ai-ids-retrain.timer" "$SYSTEMD_DIR/"
+install -m 0644 "$REPO_ROOT/systemd/fr-update-helper.socket" "$SYSTEMD_DIR/"
+install -m 0644 "$REPO_ROOT/systemd/fr-update-helper.service" "$SYSTEMD_DIR/"
 
 echo "==> Reloading systemd"
 systemctl daemon-reload
@@ -63,6 +69,7 @@ Done. Next steps:
   systemctl enable --now fr-apply-helper.socket
   systemctl enable --now fr-webui        # https://<router-ip>/
   systemctl enable --now fr-ai-ids-retrain.timer   # daily mock AI IDS retrain
+  systemctl enable --now fr-update-helper.socket   # webUI's Update screen
 
 The webUI's self-signed TLS cert is generated on its first start
 (stored under $WEBUI_STATE_DIR); your browser will warn about it until

@@ -44,3 +44,26 @@ WEBUI_SECRET_KEY_PATH = WEBUI_STATE_DIR / "secret.key"
 #: the webUI's other unprivileged state rather than under root-owned
 #: /etc/fr_os directly.
 AI_IDS_STATE_PATH = WEBUI_STATE_DIR / "ai_ids_state.json"
+
+#: Update mechanism's (phase 6, see frfw.update) persisted apply/rollback
+#: history -- installed/previous version, last update's outcome. Written
+#: only by the privileged fr-update-helper (then chowned to the webUI
+#: user so it can read it), analogous to config.yaml's own
+#: root:fr_os-webui, 0640 pattern. Version *checking* itself needs no
+#: persisted state or privilege at all -- see frfw.update.check_latest,
+#: called fresh on every webUI page load, same as the AI IDS screen's
+#: live-computed progress.
+UPDATE_STATE_PATH = Path("/etc/fr_os/update_state.json")
+
+#: Extracted release source trees, one directory per installed version,
+#: kept around after each successful update so a rollback can reinstall
+#: the previous version without needing network access again.
+RELEASES_DIR = Path("/opt/fr_os/releases")
+
+#: Unix socket for the privileged update-helper (frfw.helper.update_server)
+#: -- deliberately separate from APPLY_SOCKET_PATH/the firewall
+#: apply-helper: installing packages and restarting services is a much
+#: broader privilege surface than that daemon's narrow "touch only
+#: CONFIG_PATH/BACKUP_DIR" scope (see frfw.helper.protocol), so it gets
+#: its own small, single-purpose daemon instead of widening that one.
+UPDATE_SOCKET_PATH = RUNTIME_DIR / "update.sock"

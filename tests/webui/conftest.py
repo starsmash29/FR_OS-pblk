@@ -44,6 +44,34 @@ class FakeHelper:
         return {"ok": True, "message": "rolled back"}
 
 
+class FakeUpdateHelper:
+    """An in-memory stand-in for the real Unix-socket update-helper.
+
+    Never touches frfw.update's real apply/rollback logic (that has its
+    own tests in test_update.py / test_update_helper.py) -- this just
+    records what the route asked for, so route tests can assert on the
+    HTTP-level behavior (redirects, flash messages) without a running
+    update-helper daemon.
+    """
+
+    def __init__(self) -> None:
+        self.applied = []
+        self.rolled_back = 0
+        self.apply_result = {"ok": True, "message": "Updated to 0.2.0"}
+        self.rollback_result = {"ok": True, "message": "Rolled back to 0.1.0"}
+
+    def ping(self) -> dict:
+        return {"ok": True, "message": "pong"}
+
+    def apply(self, version: str) -> dict:
+        self.applied.append(version)
+        return self.apply_result
+
+    def rollback(self) -> dict:
+        self.rolled_back += 1
+        return self.rollback_result
+
+
 @pytest.fixture
 def webui_env(tmp_path):
     config_path = tmp_path / "config.yaml"
@@ -52,7 +80,9 @@ def webui_env(tmp_path):
         "admin_store": AdminStore(tmp_path / "auth.json"),
         "session_manager": SessionManager(tmp_path / "secret.key"),
         "helper": FakeHelper(config_path),
+        "update_helper": FakeUpdateHelper(),
         "ai_ids_state_path": tmp_path / "ai_ids_state.json",
+        "update_state_path": tmp_path / "update_state.json",
     }
 
 

@@ -26,6 +26,7 @@ webui = [
 [project.scripts]
 firewall-cli = "frfw.cli:main"
 firewall-helper = "frfw.helper.server:main"
+firewall-update-helper = "frfw.helper.update_server:main"
 fr-webui = "frfw.webui.server:main"
 
 [tool.setuptools.packages.find]

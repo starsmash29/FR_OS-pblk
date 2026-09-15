@@ -1,0 +1,13 @@
+[Unit]
+Description=FR_OS privileged update-helper socket
+
+[Socket]
+ExecStartPre=/bin/mkdir -p /run/fr_os
+ListenStream=/run/fr_os/update.sock
+SocketMode=0660
+SocketUser=root
+SocketGroup=fr_os-webui
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

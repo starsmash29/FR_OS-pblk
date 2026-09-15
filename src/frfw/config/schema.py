@@ -138,6 +138,16 @@ class AiIdsConfig:
 
 
 @dataclass(frozen=True)
+class UpdateConfig:
+    """Which GitHub repo to check for new FR_OS releases against (phase 6,
+    see frfw.update). Empty string means "use the built-in default"
+    (`frfw.update.DEFAULT_REPO`) -- override only for a fork/community
+    edition mirror that publishes its own releases."""
+
+    repo: str = ""
+
+
+@dataclass(frozen=True)
 class Config:
     version: int
     hostname: str
@@ -147,3 +157,4 @@ class Config:
     nat: NatConfig
     dhcp: DhcpConfig = field(default_factory=DhcpConfig)
     ai_ids: AiIdsConfig = field(default_factory=AiIdsConfig)
+    update: UpdateConfig = field(default_factory=UpdateConfig)

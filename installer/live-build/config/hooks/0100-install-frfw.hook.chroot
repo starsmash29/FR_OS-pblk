@@ -22,10 +22,14 @@ for unit in \
     fr-apply-helper.service \
     fr-webui.service \
     fr-ai-ids-retrain.service \
-    fr-ai-ids-retrain.timer
+    fr-ai-ids-retrain.timer \
+    fr-update-helper.socket \
+    fr-update-helper.service
 do
     install -m 0644 "/opt/frfw-src/systemd/$unit" "/etc/systemd/system/$unit"
 done
+
+install -d -m 0755 /opt/fr_os/releases
 
 systemctl enable fr-first-boot.service
 

@@ -360,6 +360,103 @@ valószínűleg magától sem jelentkezne -- minden egyes pont mellett ott a
 konkrét megjegyzés, hogy mit érdemes elsőként visszaállítani/kipróbálni
 ott.
 
+## Frissítési mechanizmus (fázis 6)
+
+`frfw.update` két, élesen elválasztott félre bomlik, ugyanazt a
+jogosultsági mintát követve, mint a projekt többi része:
+
+**Ellenőrzés** (`check_latest`, `list_releases`) egy jogosultság nélküli,
+read-only HTTPS GET a konfigurált (vagy alapértelmezett,
+`frfw.update.DEFAULT_REPO`) GitHub repó Releases API-ja ellen. Nincs
+perzisztált "utoljára ellenőrizve" állapot -- minden webUI oldalbetöltés
+frissen lekérdezi, ugyanaz a minta, mint az AI IDS képernyő élőben
+számolt progress bar-ja. Egy repó, aminek még nincs release-e (mint
+ennek a projektnek jelenleg, 0.1.0-nál) nem hiba, hanem "nincs elérhető
+frissítés" -- a GitHub API-ja ilyenkor egyszerű 404-et ad, amit a modul
+explicit lekezel.
+
+**Alkalmazás** (`apply_update`, `rollback_update`) valódi root
+jogosultságot igényel: letölt és kicsomagol egy release tarball-t
+(`https://github.com/<repo>/archive/refs/tags/<tag>.tar.gz`), `pip
+install`-olja, frissíti a systemd unit fájlokat, majd újraindítja az
+érintett service-eket. Ez a fél kizárólag a privilegizált
+`fr-update-helper` daemonból (lásd lent) vagy közvetlenül egy SSH-n
+keresztül root-ként futtatott `firewall-cli update apply/rollback`
+paranccsal hívható -- a webUI folyamat maga sosem futtatja közvetlenül.
+
+### Külön daemon, nem a meglévő apply-helper bővítve
+
+A tűzfal-config apply-helpere (`frfw.helper.server`, fázis 2) tudatosan
+minimális: "csak `CONFIG_PATH`/`BACKUP_DIR`-hoz nyúl, nincs általános
+parancsvégrehajtás" (lásd `frfw.helper.protocol` docstringjét). A
+csomagtelepítés, systemd unit átírás és service-restart ennél sokkal
+szélesebb jogosultsági felület -- ezt ráépíteni az apply-helperre
+indokolatlanul kiszélesítené AZ Ő attack surface-ét is. Ezért egy külön,
+saját socketes daemon (`fr-update-helper`, `frfw.helper.update_server` +
+`update_protocol` + `update_client`), ami szerkezetében szinte
+teljesen ugyanaz (systemd socket activation, egy-JSON-objektum-soronként
+protokoll, `StreamRequestHandler` connectionönként), de fizikailag
+független unit/socket/kód -- egy változtatás az egyikben sosem érintheti
+véletlenül a másikat.
+
+### A webUI önmagát frissíti -- a race, amit ez okoz, és a megoldása
+
+Az update a webUI *saját* service-ét (`fr-webui.service`) is
+újraindítja, hogy az új kód ténylegesen érvénybe lépjen -- de ez pont az
+a folyamat, ami a frissítést kérő HTTP kérést kiszolgálja. Ha
+szinkronban, azonnal újraindítanánk, a böngésző sosem kapná meg a
+válasz oldalt (a kapcsolat megszakadna, mielőtt bármi visszaérne).
+Megoldás: `fr-apply-helper.service`/`fr-firewall.service` szinkronban,
+azonnal újraindul; `fr-webui.service` újraindítása
+`systemd-run --on-active=3s`-sal néhány másodperccel later-re van
+ütemezve, decouple-olva ettől a kéréstől -- így a "sikeres frissítés"
+oldal még megjelenik, mielőtt a webUI tényleg újraindulna. Hasonló okból
+maga a `fr-update-helper.service` sem indul újra saját magát az update
+része -- az megölné a folyamatot, mielőtt a választ visszaküldhetné a
+hívónak; ez egy dokumentált, tudatos korlátozás (a daemon saját kódja
+csak a következő természetes újraindításkor, pl. reboot-nál, frissül).
+
+### Rollback
+
+Egy szintig megy vissza: `apply_update` az update ELŐTTI verziót
+`previous_version`-ként elmenti a perzisztált állapotba
+(`paths.UPDATE_STATE_PATH`, `root:fr_os-webui`, 0640 -- ugyanaz a minta,
+mint `config.yaml`-nál: csak a privilegizált oldal írja, a webUI csak
+olvassa), MIELŐTT vált; `rollback_update` ezt telepíti vissza és törli
+-- egy rollback-et visszagörgetni már nem lehet. Ha a korábbi verzió
+kicsomagolt forrása még megvan `RELEASES_DIR` (`/opt/fr_os/releases`)
+alatt (egy sikeres update sosem törli a régi verziók könyvtárát), a
+rollback újra letöltés nélkül, hálózat nélkül is működik -- pont akkor
+számít, ha maga a hibás update törte el a hálózatot is.
+
+Hiba esetén (letöltés, kicsomagolás, pip install vagy service-restart
+bármelyike) a próbálkozás és a hibaüzenet bekerül az állapotfájl
+`last_update` mezőjébe, és a hívás `UpdateError`-t dob -- sem a CLI, sem
+a webUI oldal nem marad néma egy sikertelen frissítésnél.
+
+### Ismert korlátozás: nincs kriptográfiai aláírás-ellenőrzés
+
+A letöltött release tarball-on nincs semmilyen kriptográfiai
+aláírás-ellenőrzés a HTTPS-kapcsolat GitHub-hoz felett -- ugyanaz a
+bizalmi modell, mint egy sima `git clone`/`pip install`-é egy nem
+rögzített indexből. Release-aláírás (`cosign` vagy egy GPG-aláírt
+checksum fájl) ésszerű következő lépés, mihelyt vannak valós, taggelt
+release-ek amiket alá lehet írni.
+
+### Ellenőrzés
+
+A teljes mechanizmust (verzió parse/összehasonlítás, check_latest/
+list_releases minden HTTP-ági a GitHub API valós, élő hívásával a
+projekt jelenleg üres repója ellen -- helyesen "nincs kiadás" 404-et ad
+vissza --, teljes apply/rollback folyamat sikeres és hibás ággal,
+path-traversal védelem a tarball-kicsomagoláson, az update-helper socket
+protokollja, webUI útvonalak) egységtesztek fedik (lásd
+`tests/test_update*.py`, `tests/webui/test_update_routes.py`). Ami NEM
+lett kipróbálva: egy valós, régebbi verzióról egy tényleges, publikált
+GitHub release-re történő frissítés végponttól-végpontig egy élő
+VM-en -- ehhez a repónak előbb kell legalább egy valódi tagged
+release-e legyen (lásd ROADMAP.md fázis 6).
+
 ## Rendszerintegráció
 
 Kanonikus elérési utak (`frfw.paths`):

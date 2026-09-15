@@ -257,10 +257,63 @@ bootolás + first-boot élmény valós/virtuális gépen még nincs
 kipróbálva -- ez a fázis lezárása előtti utolsó, hardver/VM-hozzáférést
 igénylő lépés.
 
-## 6. fázis – Frissítési mechanizmus
+## 6. fázis – Frissítési mechanizmus — **kész**
 
-- [ ] WebUI-ból indítható update-folyamat (rendszer + community edition)
-- [ ] Verzióellenőrzés, changelog megjelenítés, rollback lehetőség
+- [x] Verzióellenőrzés + changelog: `frfw.update.check_latest`/`list_releases`,
+      a konfigurált (vagy alapértelmezett) GitHub repo Releases API-ja
+      ellen, jogosultság nélkül, minden webUI oldalbetöltéskor frissen
+      lekérdezve (nincs külön "utoljára ellenőrizve" állapot -- lásd a
+      modul docstringjét, miért nem kell)
+- [x] WebUI-ból indítható update-folyamat: `/update` képernyő + egy
+      külön, privilegizált `fr-update-helper` daemon/socket (szándékosan
+      NEM a meglévő tűzfal-apply-helper bővítve -- az ő egész
+      tervezése "csak CONFIG_PATH/BACKUP_DIR-hoz nyúl, nincs általános
+      parancsvégrehajtás", a csomagtelepítés/service-restart ennél
+      sokkal szélesebb jogosultsági felület, lásd
+      `frfw.helper.update_protocol` docstringjét)
+- [x] Rollback: `apply_update` az update előtti verziót
+      `previous_version`-ként megjegyzi; `rollback_update` azt
+      újratelepíti. Egy szintig megy vissza (rollback-et visszagörgetni
+      nem lehet). Ha a korábbi verzió kicsomagolt forrása még megvan
+      `/opt/fr_os/releases` alatt (egy sikeres update sosem törli),
+      a rollback hálózat nélkül is működik -- pont akkor hasznos, ha a
+      hibás update a hálózatot is elrontotta.
+- [x] `firewall-cli update check/apply/rollback` -- ugyanaz a
+      minta, mint `apply`/`rollback`-nél: a CLI azzal a jogosultsággal
+      fut, amivel az operátor elindította, a webUI viszont soha nem hívja
+      őket közvetlenül, csak a privilegizált socketen keresztül
+- [x] Tesztek: `frfw.update` (verzió-parse/összehasonlítás,
+      check_latest/list_releases minden HTTP-ági monkeypatch-csal, teljes
+      apply/rollback folyamat sikeres és hibás ággal, path-traversal
+      védelem a tarball-kicsomagoláson), az update-helper socket
+      protokoll (mint a tűzfal apply-helperé), webUI útvonalak,
+      config séma/loader -- lásd `tests/test_update*.py`,
+      `tests/webui/test_update_routes.py`
+
+**Ismert korlátozás, nyíltan kimondva**: nincs kriptográfiai aláírás-
+ellenőrzés a letöltött release-en -- a HTTPS-kapcsolat GitHub-hoz az
+egyetlen bizalmi határ jelenleg, ugyanúgy, mint egy sima `git clone`
+vagy egy nem rögzített indexből futtatott `pip install` esetén. Release
+aláírás (pl. `cosign`-nal vagy egy GPG-aláírt checksum fájllal) egy
+ésszerű következő lépés, mihelyt vannak valós, taggelt release-ek amiket
+alá lehet írni.
+
+**Még nem ellenőrzött valós forgatókönyvön**: ennek a repónak jelenleg
+(0.1.0, fejlesztés alatt) nincsenek valódi GitHub release-ei, úgyhogy
+"frissítés egy régebbi verzióról egy valós újabbra" végpontig-végpontig
+sosem futott le éles GitHub release-ek ellen -- csak monkeypatch-elt
+hálózati réteggel (lásd fent) és a `check_latest`/`list_releases`
+tényleges, élő hívásával a projekt saját (jelenleg üres) repója ellen
+(ami helyesen "nincs még kiadás" választ ad, 404-ként kezelve). Amint
+lesz első valódi tag/release, érdemes egy teljes VM-en végigfuttatni a
+webUI Update képernyőjéről egy tényleges frissítést.
+
+**Elfogadási kritérium**: egy régebbi telepítésű VM webUI-ból frissíthető
+terminál használata nélkül, sikeres/hibás frissítés is jól kezelt. A
+mechanizmus (check/apply/rollback, hibaágak, state-perzisztencia)
+egységtesztekkel ellenőrizve; a "régebbi telepítésű VM valós
+frissítése" végpontig-végpontig forgatókönyv valós release hiányában
+egyelőre nincs kipróbálva (lásd fent).
 
 **Elfogadási kritérium**: egy régebbi telepítésű VM webUI-ból frissíthető
 terminál használata nélkül, sikeres/hibás frissítés is jól kezelt.

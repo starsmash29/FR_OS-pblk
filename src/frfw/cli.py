@@ -8,10 +8,21 @@
     firewall-cli assign-interfaces --wan DEV --lan DEV [--opt NAME:DEV ...] [--out PATH]
     firewall-cli set-admin-password [--username admin] [--generate]
     firewall-cli ai-ids-retrain [config.yaml] [--mac AA:BB:CC:DD:EE:FF]
+    firewall-cli update check [config.yaml]
+    firewall-cli update apply VERSION [--repo OWNER/REPO]
+    firewall-cli update rollback [--repo OWNER/REPO]
 
 `config.yaml` defaults to the canonical /etc/fr_os/config.yaml location
 (see frfw.paths) wherever a config path is optional, so that on a real
 router `firewall-cli apply` with no arguments does the expected thing.
+
+`update apply`/`update rollback` do real, privileged work (pip install,
+systemd unit/service changes) and are meant for the update-helper daemon
+or an admin recovering manually over SSH -- like `apply`/`rollback` for
+the firewall config, they assume they are already running with whatever
+privilege the operator invoked them with (see frfw.update's docstring).
+The webUI never calls these directly; it goes through
+frfw.helper.update_client's separate privileged socket instead.
 """
 
 from __future__ import annotations
@@ -22,7 +33,8 @@ import secrets
 import sys
 from pathlib import Path
 
-from frfw import netdetect, paths, skeleton
+from frfw import __version__, netdetect, paths, skeleton
+from frfw import update as update_mod
 from frfw.admin_account import AdminStore
 from frfw.ai_ids import AIIDSEngine
 from frfw.apply import NftError, list_backups, rollback_last
@@ -52,6 +64,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     except KeaError as exc:
         print(f"DHCP (Kea) error: {exc}", file=sys.stderr)
+        return 1
+    except update_mod.UpdateError as exc:
+        print(f"update error: {exc}", file=sys.stderr)
         return 1
 
 
@@ -149,6 +164,28 @@ def _build_parser() -> argparse.ArgumentParser:
         "--mac", default=None, help="retrain only this device (default: all known devices)"
     )
     p_retrain.set_defaults(handler=_cmd_ai_ids_retrain)
+
+    p_update = sub.add_parser("update", help="check for / apply / roll back FR_OS updates")
+    update_sub = p_update.add_subparsers(dest="update_command", required=True)
+
+    p_update_check = update_sub.add_parser(
+        "check", help="check the configured repo for a newer release"
+    )
+    add_config_arg(p_update_check)
+    p_update_check.set_defaults(handler=_cmd_update_check)
+
+    p_update_apply = update_sub.add_parser(
+        "apply", help="download, install and activate a specific version (needs root)"
+    )
+    p_update_apply.add_argument("version", help="target version, e.g. 0.2.0 or v0.2.0")
+    p_update_apply.add_argument("--repo", default=update_mod.DEFAULT_REPO)
+    p_update_apply.set_defaults(handler=_cmd_update_apply)
+
+    p_update_rollback = update_sub.add_parser(
+        "rollback", help="reinstall the previously active version (needs root)"
+    )
+    p_update_rollback.add_argument("--repo", default=update_mod.DEFAULT_REPO)
+    p_update_rollback.set_defaults(handler=_cmd_update_rollback)
 
     return parser
 
@@ -267,6 +304,48 @@ def _cmd_ai_ids_retrain(args: argparse.Namespace) -> int:
 
     target = args.mac or "all known devices"
     print(f"AI IDS: retrain clock reset for {target} (mock engine, see ROADMAP.md)")
+    return 0
+
+
+def _resolve_update_repo(config_path: str) -> str:
+    """config.yaml's `update.repo`, falling back to the built-in default
+    if unset, unreadable, or the file doesn't parse -- checking for
+    updates should not require a perfectly valid firewall config."""
+    try:
+        config = load_config(config_path)
+    except (FileNotFoundError, ConfigError):
+        return update_mod.DEFAULT_REPO
+    return config.update.repo or update_mod.DEFAULT_REPO
+
+
+def _cmd_update_check(args: argparse.Namespace) -> int:
+    repo = _resolve_update_repo(args.config)
+    result = update_mod.check_latest(__version__, repo=repo)
+    print(f"Installed version: {result.current_version}")
+    print(f"Repo checked:      {repo}")
+    if result.latest is None:
+        print("No releases published for this repo yet.")
+        return 0
+    print(f"Latest release:    {result.latest.version} ({result.latest.tag})")
+    if result.update_available:
+        print("Update available.")
+        if result.latest.notes:
+            print("\nRelease notes:")
+            print(result.latest.notes)
+    else:
+        print("Already up to date.")
+    return 0
+
+
+def _cmd_update_apply(args: argparse.Namespace) -> int:
+    new_version = update_mod.apply_update(args.version, repo=args.repo)
+    print(f"Updated to {new_version}")
+    return 0
+
+
+def _cmd_update_rollback(args: argparse.Namespace) -> int:
+    restored = update_mod.rollback_update(repo=args.repo)
+    print(f"Rolled back to {restored}")
     return 0
 
 

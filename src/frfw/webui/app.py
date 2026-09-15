@@ -16,8 +16,13 @@ from fastapi import FastAPI
 
 from frfw import paths
 from frfw.webui.auth import AdminStore, SessionManager
-from frfw.webui.helper_client import HelperClient, SocketHelperClient
-from frfw.webui.routes import ai_ids, auth, dashboard, dhcp, interfaces, nat, rules
+from frfw.webui.helper_client import (
+    HelperClient,
+    SocketHelperClient,
+    SocketUpdateHelperClient,
+    UpdateHelperClient,
+)
+from frfw.webui.routes import ai_ids, auth, dashboard, dhcp, interfaces, nat, rules, update
 
 
 def create_app(
@@ -26,14 +31,18 @@ def create_app(
     admin_store: AdminStore | None = None,
     session_manager: SessionManager | None = None,
     helper: HelperClient | None = None,
+    update_helper: UpdateHelperClient | None = None,
     ai_ids_state_path: Path = paths.AI_IDS_STATE_PATH,
+    update_state_path: Path = paths.UPDATE_STATE_PATH,
 ) -> FastAPI:
     app = FastAPI(title="FR_OS webUI")
     app.state.config_path = config_path
     app.state.admin_store = admin_store or AdminStore()
     app.state.session_manager = session_manager or SessionManager()
     app.state.helper = helper or SocketHelperClient()
+    app.state.update_helper = update_helper or SocketUpdateHelperClient()
     app.state.ai_ids_state_path = ai_ids_state_path
+    app.state.update_state_path = update_state_path
 
     app.include_router(auth.router)
     app.include_router(dashboard.router)
@@ -42,5 +51,6 @@ def create_app(
     app.include_router(nat.router)
     app.include_router(dhcp.router)
     app.include_router(ai_ids.router)
+    app.include_router(update.router)
 
     return app

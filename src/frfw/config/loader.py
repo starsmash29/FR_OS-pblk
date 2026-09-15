@@ -29,6 +29,7 @@ from frfw.config.schema import (
     PortForward,
     Protocol,
     Rule,
+    UpdateConfig,
     Zone,
 )
 
@@ -76,6 +77,7 @@ def parse_config(raw: Any) -> Config:
     nat = _parse_nat(raw.get("nat", {}) or {}, zones)
     dhcp = _parse_dhcp(raw.get("dhcp", {}) or {}, zones, interfaces)
     ai_ids = _parse_ai_ids(raw.get("ai_ids", {}) or {})
+    update = _parse_update(raw.get("update", {}) or {})
 
     return Config(
         version=version,
@@ -86,6 +88,7 @@ def parse_config(raw: Any) -> Config:
         nat=nat,
         dhcp=dhcp,
         ai_ids=ai_ids,
+        update=update,
     )
 
 
@@ -511,3 +514,14 @@ def _parse_ai_ids(raw: Any) -> AiIdsConfig:
         retrain_time=retrain_time,
         excluded_macs=excluded_macs,
     )
+
+
+def _parse_update(raw: Any) -> UpdateConfig:
+    if not isinstance(raw, dict):
+        raise ConfigError("'update' must be a mapping")
+
+    repo = raw.get("repo", "")
+    if not isinstance(repo, str):
+        raise ConfigError("update.repo must be a string")
+
+    return UpdateConfig(repo=repo)

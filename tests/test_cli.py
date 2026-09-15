@@ -224,3 +224,81 @@ def test_set_admin_password_generate_uses_username(tmp_path, monkeypatch, capsys
     assert exit_code == 0
     assert store.verify("root-admin", password)
     assert not store.verify("admin", password)
+
+
+def test_update_check_reports_available_update(tmp_path, monkeypatch, capsys):
+    from frfw import update as update_mod
+
+    result = update_mod.UpdateCheckResult(
+        current_version="0.1.0",
+        latest=update_mod.ReleaseInfo(tag="v0.2.0", version="0.2.0", notes="fixes stuff"),
+        update_available=True,
+        checked_at="2026-01-01T00:00:00Z",
+    )
+    monkeypatch.setattr("frfw.cli.update_mod.check_latest", lambda *a, **kw: result)
+
+    missing_config = tmp_path / "no-such-config.yaml"
+    exit_code = main(["update", "check", str(missing_config)])
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "0.1.0" in out
+    assert "0.2.0" in out
+    assert "Update available" in out
+    assert "fixes stuff" in out
+
+
+def test_update_check_no_releases_yet(monkeypatch, tmp_path, capsys):
+    from frfw import update as update_mod
+
+    result = update_mod.UpdateCheckResult(
+        current_version="0.1.0", latest=None, update_available=False, checked_at="x"
+    )
+    monkeypatch.setattr("frfw.cli.update_mod.check_latest", lambda *a, **kw: result)
+
+    exit_code = main(["update", "check", str(tmp_path / "no-such-config.yaml")])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "No releases published" in out
+
+
+def test_update_apply_invokes_apply_update(monkeypatch, capsys):
+    from frfw import update as update_mod
+
+    calls = []
+    monkeypatch.setattr(
+        "frfw.cli.update_mod.apply_update",
+        lambda version, repo: calls.append((version, repo)) or "0.2.0",
+    )
+
+    exit_code = main(["update", "apply", "0.2.0", "--repo", "x/y"])
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert calls == [("0.2.0", "x/y")]
+    assert "0.2.0" in out
+
+
+def test_update_apply_failure_returns_1(monkeypatch, capsys):
+    from frfw import update as update_mod
+
+    def boom(version, repo):
+        raise update_mod.UpdateError("no network")
+
+    monkeypatch.setattr("frfw.cli.update_mod.apply_update", boom)
+
+    exit_code = main(["update", "apply", "0.2.0"])
+    err = capsys.readouterr().err
+
+    assert exit_code == 1
+    assert "no network" in err
+
+
+def test_update_rollback_invokes_rollback_update(monkeypatch, capsys):
+    monkeypatch.setattr("frfw.cli.update_mod.rollback_update", lambda repo: "0.1.0")
+
+    exit_code = main(["update", "rollback"])
+    out = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "0.1.0" in out
