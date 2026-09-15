@@ -1,108 +1,146 @@
 # FR_OS
 
-Egyedi, Linux-alapú firewall/router operációs rendszer homelab használatra,
-pfSense-szerű felhasználói élménnyel — de szélesebb NIC-támogatással és
-natív Linux XDP/eBPF gyors útvonallal 10G/40GbE forgalomhoz.
+A custom, Linux-based firewall/router operating system for homelab use,
+with a pfSense-like user experience — but with broader NIC support and a
+native Linux XDP/eBPF fast path for 10G/40GbE traffic.
 
-A döntéseket és a fázisonkénti fejlesztési tervet lásd itt:
+Design decisions and the phase-by-phase development plan (currently
+written in Hungarian):
 
-- [ARCHITECTURE.md](ARCHITECTURE.md) — technológiai döntések és indoklásuk
-- [ROADMAP.md](ROADMAP.md) — fázisonkénti terv és elfogadási kritériumok
-- [docs/CONFIG_SCHEMA.md](docs/CONFIG_SCHEMA.md) — a YAML konfig-séma teljes leírása
+- [ARCHITECTURE.md](ARCHITECTURE.md) — technical decisions and rationale
+- [ROADMAP.md](ROADMAP.md) — phase-by-phase plan and acceptance criteria
+- [docs/CONFIG_SCHEMA.md](docs/CONFIG_SCHEMA.md) — full YAML config schema reference
 
-## Állapot
+## Status
 
-**1. fázis (firewall-motor magja)** — kész. A `frfw` Python csomag YAML
-konfigurációból nftables ruleset-et generál és tölt be; ez az egyetlen
-"config → tűzfalszabályok" fordítási logika, amit a CLI, a systemd
-integráció és a webUI (3. fázis) is közösen használ.
+**Phase 1 (firewall engine core)** — done. The `frfw` Python package
+generates and loads an nftables ruleset from YAML config; this is the
+single "config → firewall rules" translation logic shared by the CLI,
+the systemd integration and the webUI.
 
-**2. fázis (rendszerintegráció)** — kész. Kanonikus config-hely
-(`/etc/fr_os/config.yaml`), boot-kori automatikus alkalmazás systemd-vel,
-ruleset backup/rollback, hálózati interfész-felismerés és
-WAN/LAN/OPT-hozzárendelési segédlet, illetve a privilegizált apply-helper
-egy Unix socketen keresztül.
+**Phase 2 (system integration)** — done. Canonical config location
+(`/etc/fr_os/config.yaml`), automatic apply on boot via systemd, ruleset
+backup/rollback, network interface auto-detection and a WAN/LAN/OPT
+assignment helper, plus a privileged apply-helper reached over a Unix
+socket.
 
-**3. fázis (webUI)** — kész. FastAPI + szerver-renderelt felület
-(dashboard, interfészek, szabályok, NAT, DHCP), helyi admin bejelentkezés,
-HTTPS önaláírt tanúsítvánnyal, és — menet közben szükségesnek bizonyult
-kiegészítésként — statikus interfész-címek (`frfw.ifaddr`) és DHCP
-kiszolgálás Kea-val (`frfw.kea`), amit a webUI-n kívül a CLI is használ
-(`firewall-cli apply` mostantól címeket és DHCP-t is alkalmaz, nem csak
-tűzfalszabályokat).
+**Phase 3 (webUI)** — done. FastAPI + server-rendered UI (dashboard,
+interfaces, rules, NAT, DHCP), local admin login, HTTPS with a
+self-signed certificate, static interface addressing (`frfw.ifaddr`) and
+DHCP service via Kea (`frfw.kea`).
 
-**AI IDS/IPS (mock)** — kész, előkészítésként a 4. fázis (XDP/eBPF) valós
-forgalomelemzéséhez. ⚠ Jelenleg **teljes egészében kitalált adatot**
-mutat (nincs valós anomália-detekció) — ld.
+**AI IDS/IPS (mock)** — done, as groundwork for phase 4's real traffic
+analysis. ⚠ Currently shows **entirely fabricated data** (no real
+anomaly detection) — see
 [ARCHITECTURE.md](ARCHITECTURE.md#ai-idsips-mock).
 
-## Gyorsindítás
+**Phase 4 (XDP/eBPF fast path)** — the kernel program, the Python
+orchestrator and the webUI screen are done; 10/40GbE performance
+benchmarking is still open. A kernel-space TLS ClientHello SNI filter
+(`bpf/xdp_sni_filter.c`) with a `frfw.xdp` control-plane counterpart.
 
-Igényel: Debian (vagy más Linux) `nftables` csomaggal, Python 3.11+.
+**Phase 5 (automated installer)** — done, verified with a real
+end-to-end build. A live-build-based hybrid live ISO with the full frfw
+stack preinstalled, and a non-interactive first boot (automatic admin
+password generation).
+
+**Phase 6 (update mechanism)** — done. Version checking, a dedicated
+privileged `fr-update-helper` daemon (apply/rollback), CLI and webUI
+front-ends.
+
+**Phase 7 (Zero Trust network access, ZTNA)** — done. A fully local
+identity-aware login gate (`/ztna/login`) for zones protected by a
+`require_ztna` rule flag; the data plane runs as a kernel-native
+nftables named set with a native timeout, the control plane goes
+through the privileged helper.
+
+**Phase 8 (hybrid post-quantum key exchange)** — done, tested without a
+real PQC build. The webUI's HTTPS and (if installed) the host's sshd
+use a hybrid classical + post-quantum key exchange on the management
+layer.
+
+**Phase 9 (local DNS/XDP ad-blocker)** — done. Downloads and dedupes
+hosts-format blocklists, serves them from a dedicated, 100% local
+dnsmasq instance, with an optional "critical" subset pushed into the
+existing XDP LPM trie.
+
+**Phase 10 (in-memory + kernel-level brute-force protection)** — done.
+`/login` and `/ztna/login` are protected by a thread-safe, in-memory
+counter (5 failed attempts / 5 minutes) and a kernel-native nftables
+`bruteforce_jail` set with a native timeout (1 hour by default) — zero
+userspace overhead under a flood, no Redis/fail2ban required.
+
+Full rationale for every phase: [ARCHITECTURE.md](ARCHITECTURE.md)
+(Hungarian).
+
+## Quick start
+
+Requires: Debian (or another Linux distro) with the `nftables` package,
+Python 3.11+.
 
 ```bash
 pip install -e ".[dev,webui]"
 
-# Konfig ellenőrzése (séma-validáció, nftables-t nem érinti)
+# Validate the config (schema validation only, doesn't touch nftables)
 firewall-cli validate examples/config.yaml
 
-# A generált nftables ruleset kiírása (nem alkalmazza)
+# Print the generated nftables ruleset (doesn't apply it)
 firewall-cli render examples/config.yaml
 
-# Alkalmazás: interfész-címek, nftables ruleset, DHCP (Kea) -- root kell
+# Apply: interface addresses, nftables ruleset, DHCP (Kea) -- needs root
 sudo firewall-cli apply examples/config.yaml
 
-# Csak ellenőrzés, tényleges alkalmazás nélkül
+# Dry run only, no actual changes
 firewall-cli apply examples/config.yaml --dry-run
 ```
 
-Tesztek futtatása (a valós `nft -c` szintaxis-ellenőrzést is lefuttatja, ha
-az `nft` bináris elérhető):
+Run the tests (also runs a real `nft -c` syntax check if the `nft`
+binary is available):
 
 ```bash
 python3 -m pytest
 ```
 
-## Rendszerbe illesztés (2. fázis)
+## System integration (phase 2)
 
-Egy tényleges router-gépen (nem csak fejlesztői gépen) a config alapból a
-kanonikus `/etc/fr_os/config.yaml`-ból töltődik:
+On an actual router box (not just a dev machine), the config loads by
+default from the canonical `/etc/fr_os/config.yaml`:
 
 ```bash
-# Interfészek felismerése (sysfs alapján, root nem kell hozzá)
+# Detect interfaces (sysfs-based, no root needed)
 firewall-cli detect-interfaces
 
-# Minimális, érvényes config generálása a felismert NIC-ekből
+# Generate a minimal, valid config from the detected NICs
 sudo firewall-cli assign-interfaces --wan eth0 --lan eth1 --opt dmz:eth2
 
-# systemd unit-ok + /etc/fr_os telepítése
+# Install systemd units + /etc/fr_os
 sudo scripts/install-system-integration.sh
 sudo systemctl enable --now fr-firewall
 sudo systemctl enable --now fr-apply-helper.socket
 
-# Ha egy alkalmazott config elrontja a hálózatot: visszaállás az előzőre
+# If an applied config breaks the network: roll back to the previous one
 sudo firewall-cli rollback --list
 sudo firewall-cli rollback
 ```
 
-Az apply-helper (`fr-apply-helper.socket`/`.service`) egy Unix socketen
-fogad `apply`/`rollback`/`save_config` kéréseket root jogosultsággal, hogy
-az unprivileged webUI ne igényeljen root-ot. Részletek:
-[ARCHITECTURE.md](ARCHITECTURE.md#biztonsági-modell).
+The apply-helper (`fr-apply-helper.socket`/`.service`) listens on a Unix
+socket for `apply`/`rollback`/`save_config` requests with root
+privileges, so the unprivileged webUI never needs root itself. Details:
+[ARCHITECTURE.md](ARCHITECTURE.md#biztonsági-modell) (Hungarian).
 
-## WebUI (3. fázis)
+## WebUI (phase 3)
 
-Az install script már beállítja a `fr_os-webui` felhasználót és a
-szükséges jogosultságokat; ezután:
+The install script already sets up the `fr_os-webui` user and the
+required permissions; after that:
 
 ```bash
-sudo firewall-cli set-admin-password   # admin jelszó beállítása (interaktív)
+sudo firewall-cli set-admin-password   # set the admin password (interactive)
 sudo systemctl enable --now fr-webui
 ```
 
-Böngészőből: `https://<router-ip>/` — a böngésző figyelmeztetni fog az
-önaláírt tanúsítványra, amíg valódira nem cseréled (`/etc/fr_os/webui/`).
-Fejlesztői/teszt indítás root/systemd nélkül:
+From a browser: `https://<router-ip>/` — the browser will warn about
+the self-signed certificate until you replace it with a real one
+(`/etc/fr_os/webui/`). Dev/test run without root/systemd:
 
 ```bash
 fr-webui --host 127.0.0.1 --port 8443 --config examples/config.yaml
@@ -110,18 +148,18 @@ fr-webui --host 127.0.0.1 --port 8443 --config examples/config.yaml
 
 ## AI IDS/IPS (mock)
 
-A "AI IDS/IPS" menüpont a `dhcp.<zone>.reservations`-ban szereplő
-eszközökhöz generál kitalált tanulási/kockázati adatokat (a képernyőn
-jól látható figyelmeztetéssel). Bekapcsolás a képernyőn magán, vagy
-YAML-ből: `ai_ids: {enabled: true}` (ld.
+The "AI IDS/IPS" menu generates fabricated learning/risk data for
+devices listed under `dhcp.<zone>.reservations` (with a clearly visible
+warning on screen). Turn it on from the screen itself, or in YAML:
+`ai_ids: {enabled: true}` (see
 [docs/CONFIG_SCHEMA.md](docs/CONFIG_SCHEMA.md#ai_ids)).
 
 ```bash
-# Napi újratanítás manuálisan (amit a systemd timer is meghív)
+# Manual daily retrain (also invoked by the systemd timer)
 firewall-cli ai-ids-retrain
 sudo systemctl enable --now fr-ai-ids-retrain.timer
 ```
 
-## Licenc
+## License
 
 [Apache License 2.0](LICENSE).
