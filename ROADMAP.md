@@ -154,7 +154,7 @@ fut tovább (141 összesen).
 timer-drop-in újraírás kellene — kis hatókörű, de nem triviális
 kiegészítés).
 
-## 4. fázis – XDP/eBPF gyors útvonal: kernel-szintű TLS SNI szűrő — **kernel-program + Python orchestrator kész, webUI és teljesítménymérés nyitott**
+## 4. fázis – XDP/eBPF gyors útvonal: kernel-szintű TLS SNI szűrő — **kernel-program + Python orchestrator + webUI kész, teljesítménymérés nyitott**
 
 A hatókör a felhasználóval egyeztetve a korábban itt tervezett generikus
 IP fast-drop blocklistról egy konkrétabb, gyakorlatiasabb funkcióra
@@ -197,10 +197,17 @@ architektúra és a BPF verifier-rel folytatott (meglepően hosszú) küzdelem
       találatokat.
 - [x] **`firewall-cli xdp-status`**: csatolt interfészek + csomag-
       számlálók megjelenítése.
-- [ ] **WebUI képernyő** a blocklist szerkesztéséhez és élő
-      napló/statisztika megjelenítéséhez — a backend (`frfw.xdp.
-      get_stats()`/`get_attached()`) már kész hozzá, csak a képernyő
-      hiányzik.
+- [x] **WebUI képernyő** (`/xdp`): állapot-kártya (interfész + zöld/sárga/
+      piros badge natív/generic/letiltva-vagy-még-nem-alkalmazva
+      állapothoz), beállítások (enabled/interfészek/blocklist,
+      `frfw.webui.actions.try_save`-en keresztül mentve, ugyanaz a
+      "csak a configot módosítja, a tényleges csatolás a következő
+      apply-nál történik" minta, mint minden más képernyőn), egyenkénti
+      domain-eltávolítás, és egy élő napló Server-Sent Events-en
+      keresztül (`GET /xdp/logs/stream`, `journalctl -u
+      fr-xdp-sni-logger.service -f` tail-elve -- nem a kernel ring
+      buffer közvetlen, root-only olvasása), sima vanilla JS
+      `EventSource`-szal a frontend oldalon, SPA-keretrendszer nélkül.
 - [ ] **Live-build integráció**: a `.o` fájl előre-fordítása és
       image-be csomagolása a build pipeline részeként.
 - [ ] Teljesítményteszt (iperf3-szerű, valós TLS-forgalommal) 10G/40GbE

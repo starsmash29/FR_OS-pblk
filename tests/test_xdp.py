@@ -142,6 +142,26 @@ def test_sni_event_rejects_short_record():
         xdp_mod.SniEvent.from_bytes(b"\x00" * 10)
 
 
+def test_format_event_json_round_trips_through_json_parse():
+    # This is the exact line the event-logger daemon prints to stdout
+    # (captured by journald) and what the webUI's live log stream
+    # (frfw.webui.routes.xdp) relays close to verbatim -- it must be
+    # one complete, parseable JSON object per line, with no other text.
+    event = xdp_mod.SniEvent(
+        saddr="127.0.0.1", daddr="93.184.216.34", sport=51234, dport=443,
+        hostname="example.com",
+    )
+    line = xdp_mod.format_event_json(event)
+    parsed = json.loads(line)
+    assert parsed["saddr"] == "127.0.0.1"
+    assert parsed["daddr"] == "93.184.216.34"
+    assert parsed["sport"] == 51234
+    assert parsed["dport"] == 443
+    assert parsed["sni"] == "example.com"
+    assert parsed["action"] == "drop"
+    assert isinstance(parsed["ts"], float)
+
+
 # --- attach: native-then-generic fallback -------------------------------------
 
 

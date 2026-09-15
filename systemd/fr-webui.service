@@ -8,6 +8,14 @@ Wants=fr-apply-helper.socket
 Type=simple
 User=fr_os-webui
 Group=fr_os-webui
+# Read-only journal access for the XDP SNI filter screen's live log
+# stream (frfw.webui.routes.xdp tails `journalctl -u
+# fr-xdp-sni-logger.service -f`) -- the standard, minimal-privilege way
+# for a non-root process to read journald without needing root or a
+# broader capability. It grants nothing beyond "read the journal";
+# fr-xdp-sni-logger.service itself still runs as root, since the pinned
+# BPF map it reads is root-only (see that unit's own comment).
+SupplementaryGroups=systemd-journal
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 NoNewPrivileges=yes
 ExecStart=fr-webui

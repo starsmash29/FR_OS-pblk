@@ -324,14 +324,43 @@ olvasás-oldali (sosem befolyásolhatja a drop-döntést).
   `systemd/fr-xdp-sni-logger.service`): a ring buffert olvassa
   folyamatosan, blokkoló `ring_buffer__poll`-lal (nem busy-waiting --
   tétlen állapotban gyakorlatilag nulla CPU-t használ), és minden
-  találatot naplóz journald-on keresztül.
+  találatot egy-egy JSON sorként naplóz journald-on keresztül
+  (`frfw.xdp.format_event_json`) -- ez teszi lehetővé, hogy a webUI
+  strukturált adatként, nem szöveg-parse-olással dolgozza fel ugyanazt
+  a sort.
+
+### WebUI képernyő (`/xdp`)
+
+Ugyanaz a "szerkeszd a nyers YAML dict-et, validálj, mentsd a
+privilegizált helperen keresztül" minta, mint minden más képernyőn
+(`frfw.webui.actions.try_save`) — az `enabled`/`interfaces`/`blocklist`
+mentése sosem csatolja/oldja le közvetlenül a tényleges XDP programot,
+az csak a következő `apply`-nál történik meg (CLI vagy a dashboard
+"Apply" gombja), pontosan úgy, mint egy nftables ruleset vagy Kea
+config-változtatásnál. A státusz-kártya ezért tudatosan *két* különböző
+állapotot különböztet meg: "Disabled" (a funkció ki van kapcsolva) és
+"Not attached yet -- run Apply" (be van kapcsolva a configban, de a
+kernel-oldali program még nincs betöltve/csatolva) — mindkettő piros
+badge-dzsel, de eltérő szöveggel, hogy egy admin lássa a különbséget
+"kikapcsolva" és "bekapcsolva, de még nem alkalmazva" között.
+
+Az élő napló (`GET /xdp/logs/stream`, Server-Sent Events) NEM a kernel
+ring buffer-t olvassa közvetlenül -- az ahhoz pinnelt map root-only
+(ld. `RingBufferReader` docstringje), a webUI process pedig tudatosan
+nem root-ként fut (`systemd/fr-webui.service`). Ehelyett a már
+`fr-xdp-sni-logger` által journald-ba írt, már dekódolt JSON sorokat
+tail-eli (`journalctl -u fr-xdp-sni-logger.service -f -o cat`) —
+`fr-webui.service` egy `SupplementaryGroups=systemd-journal` sort kapott
+ehhez, ami a szokásos, minimális jogosultságú módja annak, hogy egy nem
+root process olvashassa a journal-t root nélkül. A frontend oldalon egy
+natív `EventSource` (nem WebSocket, nem library) csatlakozik erre a
+végpontra, és minden bejövő JSON sort a "terminál" konténer aljára
+fűz, automatikus görgetéssel és egy max. 300 soros korláttal (hogy a DOM
+ne nőjön korlátlanul egy nyitva hagyott lapon) — sima vanilla JS, SPA
+keretrendszer nélkül, a projekt többi képernyőjével konzisztens módon.
 
 ### Nyitott pontok
 
-- **WebUI képernyő** a blocklist szerkesztéséhez és élő
-  napló/statisztika megjelenítéséhez -- még nincs implementálva (a
-  `frfw.xdp.get_stats()`/`get_attached()` a szükséges backend-adatot
-  már szolgáltatja, csak a képernyő maga hiányzik).
 - **Live-build integráció**: a `.o` fájl előre-fordítása és image-be
   csomagolása a build pipeline részeként, hogy éles image-en ne
   kelljen `clang`-ra támaszkodni induláskor.

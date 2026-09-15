@@ -544,6 +544,27 @@ class RingBufferReader:
         self.close()
 
 
+def format_event_json(event: SniEvent) -> str:
+    """One JSON line per match, the event-logger daemon's actual stdout
+    format (captured by journald, and what the webUI's live log stream
+    -- frfw.webui.routes.xdp -- relays essentially verbatim via
+    `journalctl -o cat`). A single `dict`-then-`json.dumps` here, rather
+    than each consumer inventing its own text format, is what lets the
+    webUI treat this as structured data instead of scraping a
+    human-oriented log line."""
+    return json.dumps(
+        {
+            "ts": time.time(),
+            "action": "drop",
+            "saddr": event.saddr,
+            "sport": event.sport,
+            "daddr": event.daddr,
+            "dport": event.dport,
+            "sni": event.hostname,
+        }
+    )
+
+
 def run_event_logger(*, poll_timeout_ms: int = 500) -> None:
     """Blocking entry point for the event-logger daemon (see
     systemd/fr-xdp-sni-logger.service): waits for the pinned events map
@@ -558,11 +579,7 @@ def run_event_logger(*, poll_timeout_ms: int = 500) -> None:
         time.sleep(2)
 
     def _log(event: SniEvent) -> None:
-        print(
-            f"XDP SNI DROP {event.saddr}:{event.sport} -> "
-            f"{event.daddr}:{event.dport} sni={event.hostname!r}",
-            flush=True,
-        )
+        print(format_event_json(event), flush=True)
 
     with RingBufferReader(_log) as reader:
         while True:

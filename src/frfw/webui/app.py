@@ -22,7 +22,7 @@ from frfw.webui.helper_client import (
     SocketUpdateHelperClient,
     UpdateHelperClient,
 )
-from frfw.webui.routes import ai_ids, auth, dashboard, dhcp, interfaces, nat, rules, update
+from frfw.webui.routes import ai_ids, auth, dashboard, dhcp, interfaces, nat, rules, update, xdp
 
 
 def create_app(
@@ -34,6 +34,7 @@ def create_app(
     update_helper: UpdateHelperClient | None = None,
     ai_ids_state_path: Path = paths.AI_IDS_STATE_PATH,
     update_state_path: Path = paths.UPDATE_STATE_PATH,
+    xdp_state_path: Path = paths.XDP_STATE_PATH,
 ) -> FastAPI:
     app = FastAPI(title="FR_OS webUI")
     app.state.config_path = config_path
@@ -43,6 +44,7 @@ def create_app(
     app.state.update_helper = update_helper or SocketUpdateHelperClient()
     app.state.ai_ids_state_path = ai_ids_state_path
     app.state.update_state_path = update_state_path
+    app.state.xdp_state_path = xdp_state_path
 
     app.include_router(auth.router)
     app.include_router(dashboard.router)
@@ -52,5 +54,6 @@ def create_app(
     app.include_router(dhcp.router)
     app.include_router(ai_ids.router)
     app.include_router(update.router)
+    app.include_router(xdp.router)
 
     return app

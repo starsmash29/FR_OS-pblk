@@ -83,6 +83,7 @@ def webui_env(tmp_path):
         "update_helper": FakeUpdateHelper(),
         "ai_ids_state_path": tmp_path / "ai_ids_state.json",
         "update_state_path": tmp_path / "update_state.json",
+        "xdp_state_path": tmp_path / "xdp_state.json",
     }
 
 

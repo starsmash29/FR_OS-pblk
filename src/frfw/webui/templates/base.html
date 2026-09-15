@@ -37,6 +37,27 @@
   .progress-fill { background: #2f7d32; height: 100%; border-radius: 999px 0 0 999px; transition: width 0.3s ease; }
   .progress-label { font-size: 0.8rem; color: #556; margin-top: 0.3rem; }
   .badge { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 999px; font-size: 0.78rem; background: #eef2f6; border: 1px solid #dde3e8; }
+  .badge-green { background: #e1f2e1; border-color: #2f7d32; color: #1c4b1e; }
+  .badge-yellow { background: #fff4d6; border-color: #b8860b; color: #6b4e00; }
+  .badge-red { background: #fbe1e1; border-color: #a83232; color: #6b1717; }
+  .status-card { display: flex; align-items: center; gap: 1.2rem; flex-wrap: wrap; }
+  .status-card .badge { font-size: 0.95rem; padding: 0.25rem 0.8rem; }
+  .status-card dl { margin: 0; display: flex; gap: 1.6rem; flex-wrap: wrap; }
+  .status-card dt { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.03em; color: #667; margin: 0; }
+  .status-card dd { margin: 0.1rem 0 0; font-size: 1.05rem; font-weight: 600; }
+  .scroll-table { max-height: 320px; overflow-y: auto; border: 1px solid #dde3e8; border-radius: 6px; }
+  .scroll-table table { margin-bottom: 0; }
+  .scroll-table th { position: sticky; top: 0; }
+  textarea { padding: 0.35rem 0.5rem; margin-top: 0.2rem; width: 100%; max-width: 480px; border: 1px solid #c7cfd6; border-radius: 4px; font-size: 0.85rem; font-family: ui-monospace, monospace; }
+  .checkbox-row { display: block; font-weight: 400; margin: 0.15rem 0; }
+  .checkbox-row input { width: auto; display: inline-block; margin-right: 0.4rem; }
+  .terminal { background: #0d1117; color: #9be29b; border-radius: 6px; padding: 0.8rem 1rem; height: 260px; overflow-y: auto; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.8rem; line-height: 1.45; white-space: pre-wrap; word-break: break-word; }
+  .terminal .t-drop { color: #ff8a8a; }
+  .terminal .t-meta { color: #7d8590; }
+  .terminal .t-empty { color: #7d8590; font-style: italic; }
+  .live-dot { display: inline-block; width: 0.5rem; height: 0.5rem; border-radius: 50%; background: #7d8590; margin-right: 0.4rem; }
+  .live-dot.live { background: #2f7d32; box-shadow: 0 0 0 0 rgba(47,125,50,0.6); animation: live-pulse 1.6s infinite; }
+  @keyframes live-pulse { 0% { box-shadow: 0 0 0 0 rgba(47,125,50,0.5); } 70% { box-shadow: 0 0 0 6px rgba(47,125,50,0); } 100% { box-shadow: 0 0 0 0 rgba(47,125,50,0); } }
 </style>
 </head>
 <body>
@@ -50,6 +71,7 @@
     <a href="/nat">NAT</a>
     <a href="/dhcp">DHCP</a>
     <a href="/ai-ids">AI IDS/IPS</a>
+    <a href="/xdp">TLS SNI Filter</a>
     <a href="/update">Update</a>
   </div>
   <form method="post" action="/logout">
