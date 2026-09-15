@@ -10,6 +10,7 @@ from pathlib import Path
 from fastapi import Depends, HTTPException, Request, status
 
 from frfw.webui.auth import COOKIE_NAME, AdminStore, SessionManager
+from frfw.webui.auth_rate_limiter import BruteforceGuard
 from frfw.webui.config_store import load_raw
 from frfw.webui.helper_client import HelperClient, UpdateHelperClient
 
@@ -48,6 +49,10 @@ def get_xdp_state_path(request: Request) -> Path:
 
 def get_adblock_hosts_path(request: Request) -> Path:
     return request.app.state.adblock_hosts_path
+
+
+def get_bruteforce_guard(request: Request) -> BruteforceGuard:
+    return request.app.state.bruteforce_guard
 
 
 def get_raw_config(config_path: Path = Depends(get_config_path)) -> dict:

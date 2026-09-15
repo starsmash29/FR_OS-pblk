@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from fastapi.testclient import TestClient
+
 from frfw.admin_account import hash_password
 from frfw.config import load_config
 
@@ -193,3 +195,54 @@ def test_status_page_shows_not_authorized_before_login(logged_in_client, client)
     _enable_ztna_with_user(logged_in_client)
     response = client.get("/ztna/status")
     assert "Not authorized" in response.text
+
+
+# --- brute-force rate limiting -----------------------------------------------
+
+
+def test_five_failed_ztna_logins_from_same_ip_trigger_a_ban(app, logged_in_client, webui_env):
+    _enable_ztna_with_user(logged_in_client)
+    attacker = TestClient(app, client=("198.51.100.5", 12345), follow_redirects=False)
+
+    for _ in range(4):
+        response = attacker.post("/ztna/login", data={"username": "alice", "password": "wrong"})
+        assert "error" in response.headers["location"]
+        assert "blocked" not in response.headers["location"].lower()
+
+    fifth = attacker.post("/ztna/login", data={"username": "alice", "password": "wrong"})
+    assert "blocked" in fifth.headers["location"].lower()
+
+    assert webui_env["helper"].banned == [("198.51.100.5", 60 * 60)]
+
+
+def test_successful_ztna_login_resets_the_failure_counter(app, logged_in_client, webui_env):
+    _enable_ztna_with_user(logged_in_client)
+    attacker = TestClient(app, client=("198.51.100.9", 12345), follow_redirects=False)
+
+    for _ in range(4):
+        attacker.post("/ztna/login", data={"username": "alice", "password": "wrong"})
+    success = attacker.post("/ztna/login", data={"username": "alice", "password": "hunter22"})
+    assert success.headers["location"].startswith("/ztna/status")
+
+    for _ in range(4):
+        response = attacker.post("/ztna/login", data={"username": "alice", "password": "wrong"})
+        assert "error" in response.headers["location"]
+
+    assert webui_env["helper"].banned == []
+
+
+def test_ztna_and_admin_login_failures_share_the_same_ip_counter(app, logged_in_client, webui_env):
+    """The guard is keyed purely by source IP, not by which login form was
+    used -- an attacker can't dodge the threshold by alternating between
+    /login and /ztna/login from the same address."""
+    _enable_ztna_with_user(logged_in_client)
+    attacker = TestClient(app, client=("198.51.100.20", 12345), follow_redirects=False)
+
+    attacker.post("/login", data={"username": "admin", "password": "wrong"})
+    attacker.post("/login", data={"username": "admin", "password": "wrong"})
+    attacker.post("/ztna/login", data={"username": "alice", "password": "wrong"})
+    attacker.post("/ztna/login", data={"username": "alice", "password": "wrong"})
+    fifth = attacker.post("/login", data={"username": "admin", "password": "wrong"})
+
+    assert "blocked" in fifth.headers["location"].lower()
+    assert webui_env["helper"].banned == [("198.51.100.20", 60 * 60)]

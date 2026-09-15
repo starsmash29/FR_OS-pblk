@@ -42,7 +42,9 @@ from fastapi import APIRouter, Depends, Form, Request
 
 from frfw.admin_account import hash_password, verify_password
 from frfw.webui.actions import try_save
-from frfw.webui.deps import get_helper, get_raw_config, require_login
+from frfw.webui.auth_rate_limiter import BruteforceGuard, reject_failed_login
+from frfw.webui.client_ip import client_ip
+from frfw.webui.deps import get_bruteforce_guard, get_helper, get_raw_config, require_login
 from frfw.webui.helper_client import HelperClient
 from frfw.webui.responses import redirect_with
 from frfw.webui.templating import templates
@@ -50,19 +52,6 @@ from frfw.webui.templating import templates
 router = APIRouter()
 
 _DEFAULT_SESSION_TTL_SECONDS = 8 * 3600
-
-
-def _client_ip(request: Request) -> str:
-    # This appliance's webUI is reached directly by clients on the LAN
-    # (see ARCHITECTURE.md's security model) -- there is no reverse
-    # proxy in front of it in this project's deployment model, so
-    # request.client.host *is* the real source IP nftables will see for
-    # this same connection. A deployment that puts something in front of
-    # this webUI (not how FR_OS ships) would need to trust
-    # X-Forwarded-For instead, which opens its own can of worms (that
-    # header is trivially spoofable unless the proxy strips client-
-    # supplied copies of it first) -- deliberately not handled here.
-    return request.client.host if request.client else "0.0.0.0"
 
 
 def _find_user(raw: dict, username: str) -> dict | None:
@@ -93,7 +82,7 @@ def login_form(request: Request):
         "ztna_login.html",
         {
             "username": None,  # not the admin session -- suppresses base.html's nav bar
-            "client_ip": _client_ip(request),
+            "client_ip": client_ip(request),
             "error": request.query_params.get("error"),
         },
     )
@@ -106,7 +95,9 @@ def login_submit(
     password: str = Form(...),
     raw: dict = Depends(get_raw_config),
     helper: HelperClient = Depends(get_helper),
+    guard: BruteforceGuard = Depends(get_bruteforce_guard),
 ):
+    ip = client_ip(request)
     ztna_raw = raw.get("ztna") or {}
     if not ztna_raw.get("enabled"):
         return redirect_with("/ztna/login", error="The ZTNA gate is currently disabled")
@@ -117,12 +108,12 @@ def login_submit(
         # respond measurably faster than a wrong password for a real
         # one -- same rationale as frfw.admin_account.AdminStore.verify.
         hash_password(password)
-        return redirect_with("/ztna/login", error="Invalid credentials")
+        return reject_failed_login(ip, guard, helper, redirect_path="/ztna/login")
 
     if not verify_password(password, user.get("password_hash", "")):
-        return redirect_with("/ztna/login", error="Invalid credentials")
+        return reject_failed_login(ip, guard, helper, redirect_path="/ztna/login")
 
-    ip = _client_ip(request)
+    guard.record_success(ip)
     result = helper.authorize_ztna(ip, username)
     if not result.get("ok"):
         return redirect_with("/ztna/login", error=result.get("message") or "Authorization failed")
@@ -135,7 +126,7 @@ def status_page(
     request: Request,
     helper: HelperClient = Depends(get_helper),
 ):
-    ip = _client_ip(request)
+    ip = client_ip(request)
     result = helper.ztna_status(ip)
 
     authorized = bool(result.get("ok") and result.get("authorized"))

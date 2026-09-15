@@ -5,10 +5,11 @@ The generated ruleset is meant to be loaded with `nft -f` (see
 replaces whatever nftables state was previously loaded -- this keeps
 "config file is the source of truth" simple, at the cost of not being able
 to coexist with hand-written nftables rules outside of frfw. See
-`ZTNA_SET_NAME`'s own comment below for the one deliberate exception to
-"fully reproducible from YAML alone": the ZTNA gate's authorized-clients
-set is runtime state by design, and surviving a `flush ruleset` for it is
-handled one layer up, in `frfw.provision.apply_all`, not here.
+`BRUTEFORCE_JAIL_SET_NAME`'s and `ZTNA_SET_NAME`'s own comments below for
+the two deliberate exceptions to "fully reproducible from YAML alone":
+both sets hold runtime state by design (banned IPs; authorized ZTNA
+clients), and surviving a `flush ruleset` for each is handled one layer
+up, in `frfw.provision.apply_all`, not here.
 """
 
 from __future__ import annotations
@@ -27,6 +28,30 @@ from frfw.config.schema import (
 #: reference the same per-zone interface sets as the filter rules instead
 #: of duplicating them in a separate `ip` table.
 FILTER_TABLE = "fr_os"
+
+#: Brute-force login jail (phase 10, see frfw.bruteforce): a source IP
+#: added here by the privileged apply-helper (never by this module, and
+#: never config-derived) is dropped by every subsequent packet for
+#: however long its own element timeout has left. Unlike ZTNA_SET_NAME
+#: below, this set is *always* declared, unconditionally -- brute-force
+#: protection for the admin/ZTNA login endpoints isn't an optional
+#: subsystem an admin opts into, it's baseline hygiene, the same way
+#: `ct state invalid drop` isn't behind a config flag either.
+#:
+#: `flags timeout` alone (no `dynamic`) is enough for `nft add element
+#: ... { <ip> timeout <n>s }` to carry its own per-element timeout,
+#: confirmed directly against the real `nft` binary while writing this
+#: (ZTNA_SET_NAME's `dynamic,timeout` combination also works, but
+#: `dynamic` turned out not to be required for this use -- elements are
+#: only ever added by an explicit `nft add element` call from
+#: frfw.bruteforce, never by a rule adding to the set from the data
+#: path, which is what `dynamic` is actually for).
+#:
+#: Same `flush ruleset` survival problem as ZTNA_SET_NAME (see that
+#: constant's comment below for the full explanation) -- handled the
+#: same way, one layer up in frfw.provision.apply_all, via
+#: frfw.bruteforce.snapshot_before_reload/restore_after_reload.
+BRUTEFORCE_JAIL_SET_NAME = "bruteforce_jail"
 
 #: The ZTNA gate's kernel-resident set of currently-authorized source
 #: IPs (see frfw.ztna and Rule.require_ztna). A `dynamic,timeout` set:
@@ -58,6 +83,9 @@ def build_ruleset(config: Config) -> str:
     for zone in sorted(zone_devices):
         lines.extend(_render_iface_set(zone, zone_devices[zone]))
 
+    lines.append("")
+    lines.extend(_render_bruteforce_jail_set())
+
     if config.ztna.enabled:
         lines.append("")
         lines.extend(_render_ztna_set(config))
@@ -69,6 +97,11 @@ def build_ruleset(config: Config) -> str:
     lines.append("\tchain input {")
     lines.append("\t\ttype filter hook input priority filter; policy drop;")
     lines.append("")
+    # Very top of the chain, before even the loopback accept: a source
+    # IP the privileged helper has jailed is dropped outright, before
+    # any other rule (including the config-derived ones below) gets a
+    # chance to match it first.
+    lines.append(f"\t\t{_render_bruteforce_drop_rule()}")
     lines.append('\t\tiifname "lo" accept')
     lines.append("\t\tct state established,related accept")
     lines.append("\t\tct state invalid drop")
@@ -121,6 +154,24 @@ def _render_iface_set(zone: str, devices: list[str]) -> list[str]:
         f"\t\telements = {{ {elements} }}",
         "\t}",
     ]
+
+
+def _render_bruteforce_jail_set() -> list[str]:
+    # No `elements = {...}` and no set-level default `timeout` line:
+    # every element frfw.bruteforce.ban_ip adds carries its own explicit
+    # `timeout <n>s`, since the ban duration is a per-call parameter
+    # (from the socket request), not a single fixed value worth baking
+    # into the set declaration the way ZTNA's session_ttl_seconds is.
+    return [
+        f"\tset {BRUTEFORCE_JAIL_SET_NAME} {{",
+        "\t\ttype ipv4_addr",
+        "\t\tflags timeout",
+        "\t}",
+    ]
+
+
+def _render_bruteforce_drop_rule() -> str:
+    return f"ip saddr @{BRUTEFORCE_JAIL_SET_NAME} drop {_comment('bruteforce-jail')}"
 
 
 def _render_ztna_set(config: Config) -> list[str]:

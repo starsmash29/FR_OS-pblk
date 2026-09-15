@@ -26,6 +26,7 @@ class HelperClient(Protocol):
     def authorize_ztna(self, ip: str, username: str) -> dict: ...
     def ztna_status(self, ip: str) -> dict: ...
     def refresh_adblock(self) -> dict: ...
+    def ban_ip(self, ip: str, duration_seconds: int = 3600) -> dict: ...
 
 
 class SocketHelperClient:
@@ -52,6 +53,9 @@ class SocketHelperClient:
 
     def refresh_adblock(self) -> dict:
         return helper_client.refresh_adblock(self.socket_path)
+
+    def ban_ip(self, ip: str, duration_seconds: int = 3600) -> dict:
+        return helper_client.ban_ip(ip, duration_seconds, self.socket_path)
 
 
 class UpdateHelperClient(Protocol):

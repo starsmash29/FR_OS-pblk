@@ -17,6 +17,7 @@ import pytest
 
 from frfw import adblock as adblock_mod
 from frfw import apply as apply_mod
+from frfw import bruteforce as bruteforce_mod
 from frfw import ztna as ztna_mod
 from frfw.admin_account import hash_password
 from frfw.helper import client
@@ -65,6 +66,20 @@ def running_server(tmp_path, monkeypatch):
         return subprocess.CompletedProcess(args, 1, stdout="", stderr="unsupported in fake")
 
     monkeypatch.setattr(ztna_mod, "_run_nft", fake_ztna_run_nft)
+
+    # Same fakery, for the same reason, as ztna_set above -- this socket
+    # protocol test only cares that "ban_ip" maps to a correctly-formed
+    # nft add-element call, not that the real kernel set exists.
+    jail_set: dict[str, int] = {}
+
+    def fake_bruteforce_run_nft(args):
+        if args[:2] == ["add", "element"]:
+            ip, ttl = args[-2].split(" timeout ")
+            jail_set[ip] = int(ttl.rstrip("s"))
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(args, 1, stdout="", stderr="unsupported in fake")
+
+    monkeypatch.setattr(bruteforce_mod, "_run_nft", fake_bruteforce_run_nft)
 
     socket_path = tmp_path / "apply.sock"
     config_path = tmp_path / "config.yaml"
@@ -225,3 +240,36 @@ def test_refresh_adblock_success(running_server, tmp_path, monkeypatch):
     assert response["domain_count"] == 1
     assert response["failed_urls"] == []
     assert adblock_mod.count_blocked_domains(tmp_path / "adblock.hosts") == 1
+
+
+# --- brute-force jail (ban_ip) command ------------------------------------
+
+
+def test_ban_ip_rejects_invalid_address(running_server):
+    response = client.ban_ip("not-an-ip", 3600, running_server)
+    assert response["ok"] is False
+    assert "invalid ipv4 address" in response["message"].lower()
+
+
+def test_ban_ip_rejects_missing_ip(running_server):
+    response = client.send_command({"cmd": "ban_ip", "duration_seconds": 3600}, running_server)
+    assert response["ok"] is False
+    assert "'ip' is required" in response["message"]
+
+
+def test_ban_ip_rejects_non_integer_duration(running_server):
+    response = client.send_command(
+        {"cmd": "ban_ip", "ip": "10.0.0.5", "duration_seconds": "soon"}, running_server
+    )
+    assert response["ok"] is False
+    assert "duration_seconds" in response["message"]
+
+
+def test_ban_ip_success_calls_nft_add_element(running_server):
+    response = client.ban_ip("10.0.0.5", 3600, running_server)
+    assert response == {"ok": True, "message": "10.0.0.5 jailed for 3600s"}
+
+
+def test_ban_ip_defaults_to_one_hour(running_server):
+    response = client.send_command({"cmd": "ban_ip", "ip": "10.0.0.6"}, running_server)
+    assert response == {"ok": True, "message": "10.0.0.6 jailed for 3600s"}

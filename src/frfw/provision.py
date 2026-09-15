@@ -11,8 +11,9 @@ error says which step failed and that later steps were not attempted):
 
 1. Interface static addresses (`frfw.ifaddr`)
 2. nftables ruleset, backing up the previous one first (`frfw.apply`) --
-   bracketed by a ZTNA session snapshot/restore (see step 5's comment
-   and `frfw.ztna`'s module docstring for why)
+   bracketed by both a brute-force jail snapshot/restore and a ZTNA
+   session snapshot/restore (see step 5's comment and `frfw.bruteforce`/
+   `frfw.ztna`'s module docstrings for why)
 3. Kea DHCP config, if any zone has a DHCP pool (`frfw.kea`)
 4. Ad-block DNS resolver: (re)start/stop the dedicated dnsmasq instance
    to match `config.adblocker.enabled`, serving whatever
@@ -35,7 +36,7 @@ import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
 
-from frfw import ifaddr, kea, paths, pqc, xdp, ztna
+from frfw import bruteforce, ifaddr, kea, paths, pqc, xdp, ztna
 from frfw.adblock import dns_service as adblock_dns
 from frfw.apply import apply_ruleset
 from frfw.config.schema import Config
@@ -66,19 +67,28 @@ def apply_all(
 
     ruleset = build_ruleset(config)
     # Step 2's `nft -f` reload does `flush ruleset` first (see
-    # frfw.nft.builder's docstring), which wipes the ZTNA gate's
-    # authorized-clients set along with everything else -- snapshot it
-    # immediately before the reload and restore it immediately after, so
-    # an unrelated firewall change (a new rule, a DHCP pool edit, ...)
-    # never silently logs every ZTNA session out. Skipped entirely in a
-    # dry run (nothing is actually reloaded) or when the *new* config
-    # disables ZTNA (then dropping every session is the correct,
-    # config-is-the-source-of-truth behavior, not a bug to work around).
+    # frfw.nft.builder's docstring), which wipes both the brute-force
+    # jail and the ZTNA gate's authorized-clients set along with
+    # everything else -- snapshot each immediately before the reload and
+    # restore immediately after, so an unrelated firewall change (a new
+    # rule, a DHCP pool edit, ...) never silently un-bans an active
+    # attacker mid-attempt or logs every ZTNA session out. The jail
+    # snapshot/restore is unconditional (BRUTEFORCE_JAIL_SET_NAME is
+    # always declared, unlike ZTNA's set) except in a dry run, where
+    # nothing is actually reloaded so there is nothing to preserve.
+    preserve_bruteforce = not dry_run
+    bruteforce_snapshot = bruteforce.snapshot_before_reload() if preserve_bruteforce else []
+
     preserve_ztna = not dry_run and config.ztna.enabled
     ztna_snapshot = ztna.snapshot_before_reload() if preserve_ztna else []
 
     nft_result = apply_ruleset(ruleset, dry_run=dry_run, backup_dir=backup_dir)
     messages.append(nft_result.message)
+
+    bruteforce_preserved = 0
+    if preserve_bruteforce and bruteforce_snapshot:
+        bruteforce.restore_after_reload(bruteforce_snapshot)
+        bruteforce_preserved = len(bruteforce_snapshot)
 
     ztna_preserved = 0
     if preserve_ztna and ztna_snapshot:
@@ -116,6 +126,11 @@ def apply_all(
 
     xdp_result = xdp.sync_sni_filter(xdp_config, dry_run=dry_run, state_path=xdp_state_path)
     messages.append(xdp_result.message)
+
+    if dry_run:
+        messages.append("Brute-force jail: would preserve active bans across reload (dry-run)")
+    else:
+        messages.append(f"Brute-force jail: {bruteforce_preserved} active ban(s) preserved across reload")
 
     if not config.ztna.enabled:
         messages.append("ZTNA gate disabled")

@@ -573,3 +573,78 @@ egységtesztekkel, valós `dnsmasq --test` szintaxis-ellenőrzéssel, és
 kézi, élő `dig`-es végpontig-végpontig teszteléssel (ld. fent, miért
 nem automatizált ez utóbbi ebben a sandboxban).
 
+## 10. fázis – Memória- és kernel-szintű brute-force védelem — **kész**
+
+Cél: a `/login` és `/ztna/login` végpontok elleni jelszó-találgatást
+két, szigorúan elválasztott rétegben megállítani: a nem-root webUI
+folyamat számol emlékezetben forrás-IP-nkénti sikertelen próbálkozást,
+majd 5 hibás próbálkozás/5 perc küszöb felett a privilegizált
+`fr-apply-helper`-en keresztül szól a kernelnek, ami az adott IP-t egy
+`bruteforce_jail` nevű nftables named set-be teszi, natív kernel
+timeout-tal (alapból 1 óra) -- áradás közben nulla userspace CPU-terhelés,
+Redis/fail2ban/egyéb külső függőség nélkül. Teljes indoklás:
+[ARCHITECTURE.md](ARCHITECTURE.md#memória--és-kernel-szintű-brute-force-védelem-fázis-10).
+
+- [x] **`frfw.webui.auth_rate_limiter`**: szálbiztos (`threading.Lock` --
+      a projekt route-jai plain `def`, nem `async def`, tehát uvicorn
+      szálkészletben futtatja őket, nem `asyncio.Lock` a helyes primitív),
+      csúszóablakos `BruteforceGuard` (5 hibás próbálkozás / 300 mp),
+      memóriakorlátos, dedikált takarító szál nélkül (minden 100. hívás
+      után egy soron következő seprés dobja a rég lejárt, egyszeri
+      IP-ket). A megosztott `reject_failed_login()` segédfüggvényt mind
+      `/login`, mind `/ztna/login` hívja.
+- [x] **Unix-socket protokoll bővítés**: új `ban_ip` parancs
+      (`frfw.helper.protocol/server/client`) -- a webUI dönt *mikor*
+      kell tiltani, de a tényleges `nft`-hívás mindig a root alatt futó
+      helperen megy át, ugyanaz a privilégium-szeparáció, mint a ZTNA
+      `authorize_ztna` parancsánál.
+- [x] **`frfw.bruteforce`** (a `frfw.ztna` szándékos strukturális
+      tükörképe): `ban_ip()`, `snapshot_before_reload()`/
+      `restore_after_reload()` a `flush ruleset` probléma megoldására
+      (ld. lent).
+- [x] **Nftables séma** (`frfw.nft.builder`): mindig (nem feltételesen,
+      szemben a ZTNA-halmazzal) renderelt `bruteforce_jail` named set
+      (`flags timeout`) és egy `ip saddr @bruteforce_jail drop` szabály
+      a `chain input` legelső soraként -- még a `lo` accept előtt.
+- [x] **`frfw.provision.apply_all`**: a jail-halmaz snapshot/restore-ral
+      zárójelezve az nftables-alkalmazás körül, ugyanúgy, mint a ZTNA
+      session-halmaz -- egy admin-oldali, teljesen független
+      config-mentés (`flush ruleset`) sosem old fel csendben egy aktív
+      tiltást.
+- [x] Tesztek: `tests/test_bruteforce.py` (12 eset, ebből 4 valós,
+      root alatt futó `nft`-integráció -- egy 2 mp-es timeout-tal
+      felvett elemet a kernel saját maga dob ki futó kód nélkül),
+      `tests/test_auth_rate_limiter.py` (13 eset, köztük egy 5 szálas
+      konkurrencia-teszt, ami megerősíti, hogy a küszöb pontosan
+      egyszer lép át), kiegészített `tests/test_builder.py` (2 új eset),
+      `tests/test_provision.py` (3 új eset), `tests/test_helper.py`
+      (5 új eset a `ban_ip` socket-parancsra) és a két webUI
+      route-tesztfájl (`tests/webui/test_auth.py` +4,
+      `tests/webui/test_ztna_routes.py` +3, köztük egy, ami
+      megerősíti, hogy a számláló IP-nkénti, nem végpontonkénti -- egy
+      támadó nem kerülheti ki a küszöböt a két bejelentkezési forma
+      váltogatásával) -- a teljes tesztsorozat (467 teszt) regresszió
+      nélkül fut.
+
+**Pontosítások az eredeti megfogalmazáshoz képest** (ld. részletesen
+ARCHITECTURE.md): a kért `{"action": "ban_ip", ...}` helyett a meglévő
+`"cmd"` mezőt használtuk (konzisztencia a teljes protokollal); az "async
+lock" helyett `threading.Lock`-ot (a route-ok szinkron `def`-ek); a
+"provision/ csomag" helyett a tényleges `frfw/nft/builder.py`-ban
+(halmaz/szabály) és `frfw/provision.py`-ban (snapshot/restore-
+zárójelezés) helyeztük el a logikát; és a `flags dynamic,timeout`
+helyett a szó szerint kért `flags timeout`-ot használtuk, miután valós
+`nft`-parancsokkal közvetlenül megerősítettük, hogy ez önmagában is
+elegendő az elem-szintű timeout-felülíráshoz ezen az nftables-
+verzión.
+
+**Elfogadási kritérium**: 5 egymást követő hibás jelszó ugyanarról a
+forrás-IP-ről akár a `/login`, akár a `/ztna/login` végponton belül 5
+percen belül az adott IP-t a kernel `bruteforce_jail` halmazába
+juttatja (1 órás alapértelmezett tiltással), és minden onnantól érkező
+csomagját a tűzfal a legelső szabályon eldobja -- mindezt anélkül, hogy
+a webUI-folyamat egyetlen root-jogosultságú parancsot is futtatna. ✅
+Ellenőrizve egységtesztekkel, valós `nft`-integrációval (a kernel saját
+maga üríti ki a lejárt tiltást) és a teljes bejelentkezési útvonalon
+végigfutó webUI-szintű integrációs tesztekkel.
+

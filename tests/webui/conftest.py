@@ -10,6 +10,7 @@ import pytest
 from frfw.config import parse_config
 from frfw.webui.app import create_app
 from frfw.webui.auth import AdminStore, SessionManager
+from frfw.webui.auth_rate_limiter import BruteforceGuard
 
 
 class FakeHelper:
@@ -35,6 +36,7 @@ class FakeHelper:
         self._ztna_authorizations: dict[str, tuple[str, float]] = {}  # ip -> (username, expires_at)
         self.refresh_adblock_calls = 0
         self.refresh_adblock_result = {"ok": True, "message": "3 deduped domains written", "domain_count": 3}
+        self.banned: list[tuple[str, int]] = []
 
     def ping(self):
         return {"ok": True, "message": "pong"}
@@ -85,6 +87,10 @@ class FakeHelper:
         self.refresh_adblock_calls += 1
         return self.refresh_adblock_result
 
+    def ban_ip(self, ip: str, duration_seconds: int = 3600) -> dict:
+        self.banned.append((ip, duration_seconds))
+        return {"ok": True, "message": f"{ip} jailed for {duration_seconds}s"}
+
 
 class FakeUpdateHelper:
     """An in-memory stand-in for the real Unix-socket update-helper.
@@ -127,6 +133,7 @@ def webui_env(tmp_path):
         "update_state_path": tmp_path / "update_state.json",
         "xdp_state_path": tmp_path / "xdp_state.json",
         "adblock_hosts_path": tmp_path / "adblock.hosts",
+        "bruteforce_guard": BruteforceGuard(),
     }
 
 

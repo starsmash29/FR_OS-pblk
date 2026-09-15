@@ -110,6 +110,35 @@ def test_rule_without_require_ztna_has_no_saddr_match(minimal_config_dict):
     assert "authenticated_ztna_users" not in rule_line
 
 
+def test_bruteforce_jail_set_always_rendered(minimal_config_dict):
+    # Unlike the ZTNA set (conditional on config), the jail set is a
+    # kernel-level defense that must exist regardless of what the user
+    # configured -- there is no "off" switch for brute-force protection.
+    config = parse_config(minimal_config_dict)
+    ruleset = build_ruleset(config)
+
+    assert "set bruteforce_jail {" in ruleset
+    assert "type ipv4_addr" in ruleset
+    assert "flags timeout" in ruleset
+
+
+def test_bruteforce_jail_drop_rule_is_first_rule_in_input_chain(minimal_config_dict):
+    config = parse_config(minimal_config_dict)
+    ruleset = build_ruleset(config)
+
+    input_chain = ruleset.split("chain input {")[1].split("chain forward {")[0]
+    rule_lines = [
+        line.strip()
+        for line in input_chain.splitlines()
+        if line.strip() and not line.strip().startswith(("policy", "type", "hook", "}"))
+    ]
+
+    assert rule_lines[0] == 'ip saddr @bruteforce_jail drop comment "bruteforce-jail"'
+    # Must come before even the loopback accept, which is otherwise the
+    # first rule in the chain.
+    assert rule_lines[1] == 'iifname "lo" accept'
+
+
 @requires_nft
 def test_ztna_enabled_ruleset_passes_nft_syntax_check(minimal_config_dict):
     minimal_config_dict["ztna"] = {"enabled": True, "users": [{"username": "a", "password_hash": "x"}]}

@@ -25,6 +25,11 @@ from __future__ import annotations
 #: there directly, so the whole operation goes through this socket
 #: rather than splitting "fetch here, write there" across a privilege
 #: boundary mid-operation.
+#: "ban_ip" (see frfw.bruteforce) adds a source IP to the kernel-space
+#: brute-force jail set -- the webUI's in-memory failed-login counter
+#: (frfw.webui.auth_rate_limiter) decides *when* to call this, but
+#: touching nftables itself needs the same CAP_NET_ADMIN as the ZTNA
+#: commands above, so the actual ban always goes through here.
 COMMANDS = (
     "ping",
     "apply",
@@ -33,6 +38,7 @@ COMMANDS = (
     "authorize_ztna",
     "ztna_status",
     "refresh_adblock",
+    "ban_ip",
 )
 
 #: Maximum accepted request/response line length, to bound memory use from

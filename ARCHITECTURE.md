@@ -735,11 +735,11 @@ TTL-lel hozza vissza a session-öket.
 
 ### Nyitott pontok
 
-- **Nincs rate-limiting/lockout** a `/ztna/login`-on -- ez konzisztens
-  a meglévő admin `/login` route-tal (az sem véd brute-force ellen), de
-  egyik sem jobb ennél; ha ez éles környezetben szempont, mindkettőt
-  együtt érdemes megoldani (pl. `fail2ban` a naplók alapján, ami már
-  most is a projekt naplózási modelljéhez illeszkedne).
+- ~~Nincs rate-limiting/lockout a `/ztna/login`-on~~ -- megoldva a
+  10. fázisban (ld. [Memória- és kernel-szintű brute-force
+  védelem](#memória--és-kernel-szintű-brute-force-védelem-fázis-10)):
+  mindkét bejelentkezési végpont (`/login` és `/ztna/login`) ugyanazt a
+  memóriabeli számlálót és kernel-szintű `nft`-tiltást osztja.
 - A `/xdp` webUI képernyő (ld. fázis 4) valószínűleg ugyanazzal a
   problémával küzd, amit itt tudatosan elkerültünk: ha bármelyik route
   közvetlenül `nft`/`bpftool` hívást tesz a nem-root webUI processzből,
@@ -1022,6 +1022,175 @@ kommentjét.
 - **Élő dnsmasq-lekérdezéses automatizált teszt hiánya** (ld. fent) --
   ha egy jövőbeli CI-környezetben ez a sandbox-sajátosság nem áll fenn,
   érdemes újra megpróbálni automatizálni.
+
+## Memória- és kernel-szintű brute-force védelem (fázis 10)
+
+Cél: megvédeni a `/login` (admin webUI) és `/ztna/login` (fázis 7)
+végpontokat a jelszó-találgatástól, a projekt már meglévő
+privilégium-szeparációján belül maradva -- a nem-root webUI folyamat
+sosem futtathat `nft`-parancsot közvetlenül, és a tényleges tiltásnak a
+kernel-térben (nftables), nem egy userspace middleware-ben kell
+lezajlania, hogy áradás közben ne legyen érdemi CPU-terhelés. Ez a
+fázis explicit módon zárja a 7. fázis "Nyitott pontok" szakaszában
+korábban nyíltan hagyott hiányt ("nincs rate-limiting/lockout a
+`/ztna/login`-on") -- immár mindkét bejelentkezési útvonalra
+egyformán vonatkozik.
+
+### Kétrétegű védelem: emlékezet + kernel, szigorú felelősség-szétválasztással
+
+A számlálás (hány hibás próbálkozás jött ettől az IP-től, mennyi idő
+alatt) egy könnyű, tisztán userspace, memóriában tartott állapot --
+ehhez nincs szükség sem perzisztenciára (egy webUI-újraindítás
+törölheti), sem root-jogosultságra. A *büntetés* (a csomagok tényleges
+eldobása) viszont kizárólag a kernelben történhet, mert csak ott van
+hozzáférés a nyers hálózati forgalomhoz, mielőtt az egyáltalán elérné a
+FastAPI-alkalmazást -- egy Python-szintű "if banned: return 403" nem
+védene meg semmilyen erőforrás-kimerítéstől, mert a TCP-kapcsolat és a
+HTTP-kérés feldolgozása már megtörtént volna. Ez a két réteg pontosan a
+ZTNA-kapunál (fázis 7) már bevált vezérlősík/adatsík-szétválasztást
+ismétli meg, csak fordított irányban (ott a sikeres bejelentkezés nyit
+utat, itt a sikertelen zár be egyet).
+
+### `frfw.webui.auth_rate_limiter`: szálbiztos, csúszóablakos számláló
+
+A kérés "async lock or thread-safe dict" megfogalmazása félreérthető
+volt -- közvetlen `grep`-pel megerősítve, hogy a projekt webUI
+route-jai mindegyike sima `def`, egyetlen `async def` sincs
+(`src/frfw/webui/routes/*.py`), ami azt jelenti, hogy uvicorn/Starlette
+szálkészletben futtatja őket. Emiatt a helyes primitív `threading.Lock`,
+nem `asyncio.Lock` -- egy `asyncio.Lock` egy szinkron route-ból hívva
+nem nyújtana tényleges kölcsönös kizárást a szálak között. A
+`BruteforceGuard` osztály IP → hibaidőbélyeg-lista (`time.monotonic()`)
+leképezést tart karban, minden híváskor lenyesi az 5 percnél régebbi
+bejegyzéseket, és ha egy IP így is eléri az 5-ös küszöböt, visszaadja
+`True`-t (és azonnal törli is a bejegyzést -- a `ban_ip` hívás után a
+kernel dobja el a csomagokat, a Python-oldali számlálónak nincs több
+dolga azzal az IP-vel). Konkurrens szálakkal (5 valós `threading.Thread`,
+ugyanazt az IP-t egyszerre bombázva) végzett teszt (`tests/
+test_auth_rate_limiter.py::test_thread_safety_exactly_one_ban_under_concurrent_failures`)
+megerősíti, hogy a küszöb pontosan egyszer lép át, sosem nullaszor
+(egy race, ahol két szál is 4-et olvasna és egyik sem látná az 5-öt)
+és sosem többször.
+
+Dedikált háttérszál/cron job nélküli memóriakorlátozás: a projekt
+konvenciója szerint (ld. pl. a ZTNA-halmaz kernel-natív timeout-ja,
+nincs Python-oldali cleanup loop sehol) egy teljes táblát seprő
+takarítás minden `_SWEEP_INTERVAL` (100) hívás után fut le, a hívó
+szálon, ami eltávolítja azokat az IP-ket, amelyeknek *semelyik*
+bejegyzése sincs már az ablakon belül -- ez korlátozza a memóriát
+anélkül, hogy egy második, saját ütemezésű folyamatot kellene
+karbantartani.
+
+### Unix-socket protokoll: `ban_ip`, a meglévő `"cmd"` konvenciót követve
+
+A kérés szó szerint `{"action": "ban_ip", "ip": ..., "duration_seconds":
+...}` formátumot javasolt, de a projekt teljes meglévő protokollja
+(`authorize_ztna`, `ztna_status`, `refresh_adblock`, ...) egységesen egy
+`"cmd"` mezőt használ -- a konzisztencia kedvéért ezt követtük
+(`{"cmd": "ban_ip", "ip": ..., "duration_seconds": ...}`), nem egy
+párhuzamos, eltérő elnevezésű mezőt vezettünk be. A webUI dönt *mikor*
+kell tiltani (a `BruteforceGuard` küszöbén át), de a tényleges `nft
+add element` hívás mindig a root alatt futó `fr-apply-helper`-en megy
+keresztül (`frfw.helper.server._handle_ban_ip` → `frfw.bruteforce.ban_ip`)
+-- a webUI-folyamat maga sosem lát `CAP_NET_ADMIN`-t.
+
+### `frfw.bruteforce`: a `frfw.ztna` szándékos strukturális tükörképe
+
+A modul tudatosan nem oszt meg kódot `frfw.ztna`-val egy közös
+absztrakción keresztül -- ugyanaz a minta, amit a projekt már a
+`frfw.pqc` TLS/SSH-felénél és a `frfw.kea`/`frfw.xdp` subprocess-
+becsomagolásánál is követ: minden kernel-felé forduló alrendszer önmagában
+tesztelhető marad, korai, feltételezett közös absztrakció nélkül. Publikus
+API: `ban_ip(ip, duration_seconds)` (érvényesíti az IPv4-formátumot és a
+pozitív időtartamot, majd `nft add element ... { <ip> timeout <n>s }`-t
+hív), `snapshot_before_reload()`/`restore_after_reload()` (ld. lent).
+
+**`flags timeout` vs. `flags dynamic,timeout`**: a kérés a
+`flags timeout;` szintaxist javasolta, míg a meglévő ZTNA-halmaz
+`flags dynamic,timeout`-ot használ. Ahelyett, hogy feltételeztük volna,
+melyik a helyes, közvetlenül, valós `nft`-parancsokkal ellenőriztük
+mindkettőt (`nft add set inet fr_os_test jail_plain '{ type ipv4_addr;
+flags timeout; }'`, majd `nft add element ... { 10.0.0.1 timeout 5s }'`)
+-- ezen az nftables-verzión (1.0.9) az önmagában vett `flags timeout` is
+elegendő az elem-szintű timeout-felülíráshoz, mert a halmazba kizárólag
+`frfw.bruteforce.ban_ip` explicit `add element` hívásai kerülnek, sosem
+egy adatsík-szabály dinamikus hozzáadása (ami a `dynamic` flag-et tenné
+szükségessé). A szó szerint kért, egyszerűbb formát használtuk, ezt a
+tesztsorozat egy megjegyzése is dokumentálja.
+
+### Nftables séma: feltétel nélküli halmaz és szabály, a lánc élén
+
+`frfw.nft.builder` a `bruteforce_jail` halmazt -- szemben a ZTNA
+halmazzal, ami csak `ztna.enabled` esetén jelenik meg -- mindig
+renderel, konfigurációtól függetlenül: a brute-force védelemnek nincs
+"kikapcsolva" állapota, mert nincs olyan forgatókönyv, ahol egy admin
+tudatosan szeretné kikapcsolni a saját bejelentkezési végpontjainak
+védelmét. Az `ip saddr @bruteforce_jail drop` szabály a `chain input`
+szó szerint első sora, még a `iifname "lo" accept` előtt is -- ez
+biztosítja, hogy egy már tiltott IP semmilyen más szabály (beleértve
+egy jövőbeli, esetleg túl megengedő loopback-szabályt is) mellett se
+juthasson be. Valós `nft -j list chain`-lekérdezéssel megerősítve
+(`tests/test_bruteforce.py::test_real_generated_ruleset_puts_jail_drop_rule_first_in_input_chain`),
+hogy a szabály ténylegesen elsőként jelenik meg a kernel saját
+JSON-listázásában, nem csak a Python-forrásban.
+
+### A `flush ruleset` probléma -- ugyanaz a megoldás, mint a ZTNA-nál
+
+`frfw.nft.builder.build_ruleset()` minden alkalmazáskor `flush
+ruleset`-tel kezd (ld. fázis 7 saját szakaszát a részletes
+indoklásért), ami a `bruteforce_jail` halmazt is törölné egy teljesen
+független config-módosítás (pl. egy DHCP-pool szerkesztése)
+mellékhatásaként -- csendben feloldva egy aktív, éppen folyamatban lévő
+tiltást. `frfw.provision.apply_all` ugyanazt a snapshot-elreload-előtt/
+restore-reload-után mintát alkalmazza, amit a ZTNA-nál már bevezettünk,
+azzal a különbséggel, hogy itt a snapshot/restore feltétel nélküli (csak
+dry run esetén marad el, ahol nincs is tényleges újratöltés) -- nincs
+"enabled" kapcsoló, amihez kötni lehetne. Valós, kézzel megerősített
+teszt (`test_real_snapshot_and_restore_preserves_remaining_time`):
+egy IP-t letiltottunk, a halmazt (a `flush ruleset` szimulálásaként)
+kiürítettük, majd megerősítettük, hogy a restore a helyes, hátralévő
+TTL-lel hozza vissza -- nem egy friss, teljes időtartammal.
+
+### Fail-safe: a kernel saját maga old fel, Python-oldali takarítás nélkül
+
+A kért "auto-reset" mechanizmust szó szerint az nftables natív `timeout`
+flag-jére bíztuk -- nincs sem cron job, sem szisztemd-időzítő, sem
+Python-oldali háttérszál, ami a lejárt tiltásokat eltávolítaná. Valós
+teszttel megerősítve (`test_real_kernel_evicts_expired_ban_on_its_own`):
+egy 2 másodperces timeout-tal felvett elem 3 másodperc múlva már nincs
+a halmazban, úgy, hogy a teszt és a kernel között futó kód nem érintette
+a halmazt. Sikeres bejelentkezés (`guard.record_success(ip)`) azonnal
+törli a Python-oldali számlálót -- ez elkülönül a kernel-oldali
+tiltástól: ha valakit már letiltottak, egy azt követő helyes jelszó a
+webUI-oldali számlálót nullázza, de a kernel-tiltást (helyesen) nem oldja
+fel idő előtt, mert az IP-t bárki használhatja, aki nem feltétlenül az,
+aki a helyes jelszót most beírta.
+
+### Nyitott pontok
+
+- **Az IP-alapú számlálás megkerülhető NAT/megosztott kimenő IP mögül**
+  (pl. egy egész iroda egyetlen nyilvános IP-n keresztül): egy
+  legitim felhasználó elgépelt jelszava ugyanabba a számlálóba esik,
+  mint egy támadóé ugyanarról a címről. Ez egy ismert, tudatosan
+  vállalt kompromisszum minden tisztán forrás-IP-alapú brute-force
+  védelemnél (fail2ban is ugyanezt teszi) -- felhasználónév-alapú
+  másodlagos küszöb hozzáadása egy jövőbeli finomítás lenne.
+- **A tiltási időtartam (1 óra) és a küszöb (5/5 perc) jelenleg nem
+  konfigurálható a `config.yaml`-ból** -- `MAX_ATTEMPTS`/
+  `WINDOW_SECONDS`/`BAN_DURATION_SECONDS` modul-szintű konstansok
+  `src/frfw/webui/auth_rate_limiter.py`-ban. Ez tudatos egyszerűsítés
+  ebben a fázisban (a kérés sem igényelt konfigurálhatóságot) --
+  konfigurálhatóvá tétele egy külön, nem triviális séma-bővítés lenne
+  (kellene döntés arról is, hogy a webUI és a helper hogyan osztozik
+  ezen az értéken, mivel a küszöb a webUI-oldalon dől el, de az
+  időtartam a helyer felé megy át paraméterként).
+- **Nincs admin-felületi kilistázás/manuális feloldás** az aktuálisan
+  tiltott IP-kre (szemben a ZTNA `/ztna` képernyőjével, ami mutatja az
+  aktív session-öket) -- egy tévesen tiltott legitim felhasználónak
+  jelenleg meg kell várnia az 1 órás timeout-ot, vagy egy adminnak
+  kézzel kell `nft`-et futtatnia a szerveren. Ez egy egyszerű,
+  jövőbeli webUI-kiegészítés lenne (a `frfw.bruteforce.
+  snapshot_before_reload()` már ma is visszaadja a szükséges adatot).
 
 ## Nem lezárt döntések
 

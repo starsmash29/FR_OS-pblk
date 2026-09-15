@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from fastapi.testclient import TestClient
+
 
 def test_unauthenticated_dashboard_redirects_to_login(client):
     response = client.get("/")
@@ -68,3 +70,59 @@ def test_logout_clears_session(logged_in_client):
     dashboard = logged_in_client.get("/")
     assert dashboard.status_code == 303
     assert dashboard.headers["location"] == "/login"
+
+
+# --- brute-force rate limiting -------------------------------------------
+
+
+def test_five_failed_logins_from_same_ip_trigger_a_ban(app, webui_env):
+    webui_env["admin_store"].set_password("admin", "hunter22")
+    attacker = TestClient(app, client=("203.0.113.5", 12345), follow_redirects=False)
+
+    for _ in range(4):
+        response = attacker.post("/login", data={"username": "admin", "password": "wrong"})
+        assert response.headers["location"] == "/login?error=Invalid+credentials"
+
+    fifth = attacker.post("/login", data={"username": "admin", "password": "wrong"})
+    assert "blocked" in fifth.headers["location"].lower()
+
+    assert webui_env["helper"].banned == [("203.0.113.5", 60 * 60)]
+
+
+def test_failed_logins_from_different_ips_do_not_share_a_counter(app, webui_env):
+    webui_env["admin_store"].set_password("admin", "hunter22")
+
+    for i in range(4):
+        attacker = TestClient(app, client=(f"203.0.113.{i}", 12345), follow_redirects=False)
+        attacker.post("/login", data={"username": "admin", "password": "wrong"})
+
+    assert webui_env["helper"].banned == []
+
+
+def test_successful_login_resets_the_failure_counter(app, webui_env):
+    webui_env["admin_store"].set_password("admin", "hunter22")
+    attacker = TestClient(app, client=("203.0.113.9", 12345), follow_redirects=False)
+
+    for _ in range(4):
+        attacker.post("/login", data={"username": "admin", "password": "wrong"})
+    success = attacker.post("/login", data={"username": "admin", "password": "hunter22"})
+    assert success.status_code == 303 and success.headers["location"] == "/"
+
+    # The 4 prior failures must not carry over after the reset.
+    for _ in range(4):
+        response = attacker.post("/login", data={"username": "admin", "password": "wrong"})
+        assert response.headers["location"] == "/login?error=Invalid+credentials"
+
+    assert webui_env["helper"].banned == []
+
+
+def test_first_run_account_creation_is_not_rate_limited(app, webui_env):
+    attacker = TestClient(app, client=("203.0.113.7", 12345), follow_redirects=False)
+
+    for _ in range(10):
+        response = attacker.post(
+            "/login", data={"username": "admin", "password": "short", "password_confirm": "different"}
+        )
+        assert response.status_code == 303
+
+    assert webui_env["helper"].banned == []

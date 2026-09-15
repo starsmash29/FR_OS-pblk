@@ -16,6 +16,7 @@ from fastapi import FastAPI
 
 from frfw import paths
 from frfw.webui.auth import AdminStore, SessionManager
+from frfw.webui.auth_rate_limiter import BruteforceGuard
 from frfw.webui.helper_client import (
     HelperClient,
     SocketHelperClient,
@@ -49,6 +50,7 @@ def create_app(
     update_state_path: Path = paths.UPDATE_STATE_PATH,
     xdp_state_path: Path = paths.XDP_STATE_PATH,
     adblock_hosts_path: Path = paths.ADBLOCK_HOSTS_PATH,
+    bruteforce_guard: BruteforceGuard | None = None,
 ) -> FastAPI:
     app = FastAPI(title="FR_OS webUI")
     app.state.config_path = config_path
@@ -60,6 +62,7 @@ def create_app(
     app.state.update_state_path = update_state_path
     app.state.xdp_state_path = xdp_state_path
     app.state.adblock_hosts_path = adblock_hosts_path
+    app.state.bruteforce_guard = bruteforce_guard or BruteforceGuard()
 
     app.include_router(auth.router)
     app.include_router(dashboard.router)

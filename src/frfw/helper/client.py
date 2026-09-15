@@ -87,3 +87,11 @@ def refresh_adblock(socket_path: Path = paths.APPLY_SOCKET_PATH, timeout: float 
     downloads potentially several megabytes from third-party URLs before
     it can respond, unlike everything else on this socket."""
     return send_command({"cmd": "refresh_adblock"}, socket_path, timeout=timeout)
+
+
+def ban_ip(
+    ip: str, duration_seconds: int = 3600, socket_path: Path = paths.APPLY_SOCKET_PATH
+) -> dict:
+    return send_command(
+        {"cmd": "ban_ip", "ip": ip, "duration_seconds": duration_seconds}, socket_path
+    )
