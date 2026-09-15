@@ -314,6 +314,3 @@ mechanizmus (check/apply/rollback, hibaágak, state-perzisztencia)
 egységtesztekkel ellenőrizve; a "régebbi telepítésű VM valós
 frissítése" végpontig-végpontig forgatókönyv valós release hiányában
 egyelőre nincs kipróbálva (lásd fent).
-
-**Elfogadási kritérium**: egy régebbi telepítésű VM webUI-ból frissíthető
-terminál használata nélkül, sikeres/hibás frissítés is jól kezelt.
