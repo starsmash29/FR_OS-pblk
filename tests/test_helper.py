@@ -18,6 +18,8 @@ import pytest
 from frfw import adblock as adblock_mod
 from frfw import apply as apply_mod
 from frfw import bruteforce as bruteforce_mod
+from frfw import conntrack as conntrack_mod
+from frfw import ids_quarantine as ids_quarantine_mod
 from frfw import ztna as ztna_mod
 from frfw.admin_account import hash_password
 from frfw.helper import client
@@ -80,6 +82,31 @@ def running_server(tmp_path, monkeypatch):
         return subprocess.CompletedProcess(args, 1, stdout="", stderr="unsupported in fake")
 
     monkeypatch.setattr(bruteforce_mod, "_run_nft", fake_bruteforce_run_nft)
+
+    # Same fakery, for the same reason, as jail_set above -- this socket
+    # protocol test only cares that "quarantine_ip" maps to a
+    # correctly-formed nft add-element call.
+    quarantine_set: dict[str, int] = {}
+
+    def fake_ids_quarantine_run_nft(args):
+        if args[:2] == ["add", "element"]:
+            ip, ttl = args[-2].split(" timeout ")
+            quarantine_set[ip] = int(ttl.rstrip("s"))
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        if args[:2] == ["-j", "list"]:
+            import json as _json
+            elems = [{"elem": {"val": ip, "expires": ttl}} for ip, ttl in quarantine_set.items()]
+            return subprocess.CompletedProcess(
+                args, 0, stdout=_json.dumps({"nftables": [{"set": {"elem": elems}}]}), stderr=""
+            )
+        return subprocess.CompletedProcess(args, 1, stdout="", stderr="unsupported in fake")
+
+    monkeypatch.setattr(ids_quarantine_mod, "_run_nft", fake_ids_quarantine_run_nft)
+
+    # frfw.conntrack's own /proc/net/nf_conntrack parsing is exercised
+    # directly in test_conntrack.py; here we only care that the
+    # "conntrack_sample" command relays whatever read_snapshot() returns.
+    monkeypatch.setattr(conntrack_mod, "read_snapshot", lambda: [])
 
     socket_path = tmp_path / "apply.sock"
     config_path = tmp_path / "config.yaml"
@@ -273,3 +300,72 @@ def test_ban_ip_success_calls_nft_add_element(running_server):
 def test_ban_ip_defaults_to_one_hour(running_server):
     response = client.send_command({"cmd": "ban_ip", "ip": "10.0.0.6"}, running_server)
     assert response == {"ok": True, "message": "10.0.0.6 jailed for 3600s"}
+
+
+# --- AI IDS quarantine (quarantine_ip / ids_quarantine_status) commands -----
+
+
+def test_quarantine_ip_rejects_invalid_address(running_server):
+    response = client.quarantine_ip("not-an-ip", 7200, running_server)
+    assert response["ok"] is False
+    assert "invalid ipv4 address" in response["message"].lower()
+
+
+def test_quarantine_ip_rejects_missing_ip(running_server):
+    response = client.send_command({"cmd": "quarantine_ip", "duration_seconds": 7200}, running_server)
+    assert response["ok"] is False
+    assert "'ip' is required" in response["message"]
+
+
+def test_quarantine_ip_rejects_non_integer_duration(running_server):
+    response = client.send_command(
+        {"cmd": "quarantine_ip", "ip": "10.0.0.9", "duration_seconds": "soon"}, running_server
+    )
+    assert response["ok"] is False
+    assert "duration_seconds" in response["message"]
+
+
+def test_quarantine_ip_success_calls_nft_add_element(running_server):
+    response = client.quarantine_ip("10.0.0.9", 7200, running_server)
+    assert response == {"ok": True, "message": "10.0.0.9 quarantined for 7200s"}
+
+
+def test_quarantine_ip_defaults_to_two_hours(running_server):
+    response = client.send_command({"cmd": "quarantine_ip", "ip": "10.0.0.10"}, running_server)
+    assert response == {"ok": True, "message": "10.0.0.10 quarantined for 7200s"}
+
+
+def test_ids_quarantine_status_empty_when_nothing_quarantined(running_server):
+    response = client.ids_quarantine_status(running_server)
+    assert response == {"ok": True, "quarantined": [], "count": 0}
+
+
+def test_ids_quarantine_status_reflects_kernel_state_after_quarantine(running_server):
+    client.quarantine_ip("10.0.0.11", 100, running_server)
+    response = client.ids_quarantine_status(running_server)
+    assert response["ok"] is True
+    assert response["count"] == 1
+    assert response["quarantined"][0]["ip"] == "10.0.0.11"
+
+
+# --- conntrack sample command ------------------------------------------------
+
+
+def test_conntrack_sample_relays_flows(running_server, monkeypatch):
+    from frfw.conntrack import ConntrackFlow
+
+    monkeypatch.setattr(
+        conntrack_mod,
+        "read_snapshot",
+        lambda: [ConntrackFlow(proto="tcp", src="10.0.0.5", sport=1234, dst="1.1.1.1", dport=443)],
+    )
+    response = client.conntrack_sample(running_server)
+    assert response == {
+        "ok": True,
+        "flows": [{"proto": "tcp", "src": "10.0.0.5", "sport": 1234, "dst": "1.1.1.1", "dport": 443}],
+    }
+
+
+def test_conntrack_sample_empty_by_default(running_server):
+    response = client.conntrack_sample(running_server)
+    assert response == {"ok": True, "flows": []}

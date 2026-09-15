@@ -27,6 +27,7 @@ class HelperClient(Protocol):
     def ztna_status(self, ip: str) -> dict: ...
     def refresh_adblock(self) -> dict: ...
     def ban_ip(self, ip: str, duration_seconds: int = 3600) -> dict: ...
+    def ids_quarantine_status(self) -> dict: ...
 
 
 class SocketHelperClient:
@@ -56,6 +57,9 @@ class SocketHelperClient:
 
     def ban_ip(self, ip: str, duration_seconds: int = 3600) -> dict:
         return helper_client.ban_ip(ip, duration_seconds, self.socket_path)
+
+    def ids_quarantine_status(self) -> dict:
+        return helper_client.ids_quarantine_status(self.socket_path)
 
 
 class UpdateHelperClient(Protocol):

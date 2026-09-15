@@ -1,9 +1,0 @@
-[Unit]
-Description=FR_OS AI IDS retrain (mock engine -- see ROADMAP.md / frfw.ai_ids)
-Documentation=https://github.com/starsmash29/FR_OS-pblk
-
-[Service]
-Type=oneshot
-User=fr_os-webui
-Group=fr_os-webui
-ExecStart=firewall-cli ai-ids-retrain

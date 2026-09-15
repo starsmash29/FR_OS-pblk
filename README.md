@@ -28,10 +28,10 @@ interfaces, rules, NAT, DHCP), local admin login, HTTPS with a
 self-signed certificate, static interface addressing (`frfw.ifaddr`) and
 DHCP service via Kea (`frfw.kea`).
 
-**AI IDS/IPS (mock)** — done, as groundwork for phase 4's real traffic
-analysis. ⚠ Currently shows **entirely fabricated data** (no real
-anomaly detection) — see
-[ARCHITECTURE.md](ARCHITECTURE.md#ai-idsips-mock).
+**AI IDS/IPS (mock)** — superseded by phase 11 below. Originally shipped
+as groundwork for phase 4's real traffic analysis, showing entirely
+fabricated data — see [ARCHITECTURE.md](ARCHITECTURE.md#ai-idsips-mock)
+for that earlier design.
 
 **Phase 4 (XDP/eBPF fast path)** — the kernel program, the Python
 orchestrator and the webUI screen are done; 10/40GbE performance
@@ -68,6 +68,14 @@ existing XDP LPM trie.
 counter (5 failed attempts / 5 minutes) and a kernel-native nftables
 `bruteforce_jail` set with a native timeout (1 hour by default) — zero
 userspace overhead under a flood, no Redis/fail2ban required.
+
+**Phase 11 (real-time, kernel-assisted AI IDS/IPS)** — done. Replaces
+the phase 3 mock engine with a real, ultra-lightweight, pure-stdlib
+anomaly detector (no scikit-learn/pandas/numpy): a separate `fr-ai-ids`
+daemon scores each source IP's connection-rate, destination-diversity
+and XDP SNI-blocklist-hit patterns against its own recent baseline, and
+quarantines a flagged IP in the kernel (`ids_quarantine` nftables set)
+via the privileged apply-helper.
 
 Full rationale for every phase: [ARCHITECTURE.md](ARCHITECTURE.md).
 
@@ -144,18 +152,20 @@ the self-signed certificate until you replace it with a real one
 fr-webui --host 127.0.0.1 --port 8443 --config examples/config.yaml
 ```
 
-## AI IDS/IPS (mock)
+## AI IDS/IPS (phase 11)
 
-The "AI IDS/IPS" menu generates fabricated learning/risk data for
-devices listed under `dhcp.<zone>.reservations` (with a clearly visible
-warning on screen). Turn it on from the screen itself, or in YAML:
-`ai_ids: {enabled: true}` (see
+Real-time, kernel-assisted anomaly detection: a separate `fr-ai-ids`
+daemon scores each source IP's connection-rate, destination-diversity
+and XDP SNI-blocklist-hit patterns against its own recent baseline, and
+quarantines a flagged IP in the kernel. Turn it on from the `/ai-ids`
+screen, or in YAML: `ai_ids: {enabled: true}` (see
 [docs/CONFIG_SCHEMA.md](docs/CONFIG_SCHEMA.md#ai_ids)).
 
 ```bash
-# Manual daily retrain (also invoked by the systemd timer)
-firewall-cli ai-ids-retrain
-sudo systemctl enable --now fr-ai-ids-retrain.timer
+sudo systemctl enable --now fr-ai-ids
+
+# Currently quarantined hosts
+firewall-cli ids-status
 ```
 
 ## License

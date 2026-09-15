@@ -4,9 +4,10 @@ Documentation=https://github.com/starsmash29/FR_OS-pblk
 
 [Service]
 Type=oneshot
-# Unlike fr-ai-ids-retrain.service (unprivileged: it only touches its
-# own mock state), this writes to /etc/fr_os/adblock.hosts -- root, the
-# same way fr-firewall.service itself runs.
+# Unlike fr-ai-ids.service (unprivileged: it only touches its own
+# display-only state, and asks the privileged apply-helper for anything
+# else), this writes to /etc/fr_os/adblock.hosts -- root, the same way
+# fr-firewall.service itself runs.
 ProtectSystem=full
 ProtectHome=true
 ReadWritePaths=/etc/fr_os

@@ -5,11 +5,12 @@ The generated ruleset is meant to be loaded with `nft -f` (see
 replaces whatever nftables state was previously loaded -- this keeps
 "config file is the source of truth" simple, at the cost of not being able
 to coexist with hand-written nftables rules outside of frfw. See
-`BRUTEFORCE_JAIL_SET_NAME`'s and `ZTNA_SET_NAME`'s own comments below for
-the two deliberate exceptions to "fully reproducible from YAML alone":
-both sets hold runtime state by design (banned IPs; authorized ZTNA
-clients), and surviving a `flush ruleset` for each is handled one layer
-up, in `frfw.provision.apply_all`, not here.
+`BRUTEFORCE_JAIL_SET_NAME`'s, `IDS_QUARANTINE_SET_NAME`'s and
+`ZTNA_SET_NAME`'s own comments below for the three deliberate exceptions
+to "fully reproducible from YAML alone": each set holds runtime state by
+design (banned IPs; IDS-quarantined IPs; authorized ZTNA clients), and
+surviving a `flush ruleset` for each is handled one layer up, in
+`frfw.provision.apply_all`, not here.
 """
 
 from __future__ import annotations
@@ -53,6 +54,22 @@ FILTER_TABLE = "fr_os"
 #: frfw.bruteforce.snapshot_before_reload/restore_after_reload.
 BRUTEFORCE_JAIL_SET_NAME = "bruteforce_jail"
 
+#: AI IDS/IPS quarantine set (phase 11, see frfw.ids_quarantine and
+#: frfw.ai_ids): a source IP the unprivileged `fr-ai-ids` daemon has
+#: flagged as anomalous (connection-rate spike, destination-scan
+#: pattern, or repeated SNI-blocklist hits -- see frfw.ai_ids.engine)
+#: gets added here by the privileged apply-helper, never by this module.
+#: Same reasoning as BRUTEFORCE_JAIL_SET_NAME immediately above: declared
+#: unconditionally (IDS/IPS enforcement isn't something worth turning
+#: off independently of the detection engine itself, and an unused,
+#: empty set costs nothing), `flags timeout` alone is sufficient for the
+#: same reason (every element is added by an explicit `nft add element`
+#: call from frfw.ids_quarantine.quarantine_ip, never by a data-path rule
+#: needing `dynamic`), and it has the same `flush ruleset` survival
+#: problem, handled the same way in frfw.provision.apply_all via
+#: frfw.ids_quarantine.snapshot_before_reload/restore_after_reload.
+IDS_QUARANTINE_SET_NAME = "ids_quarantine"
+
 #: The ZTNA gate's kernel-resident set of currently-authorized source
 #: IPs (see frfw.ztna and Rule.require_ztna). A `dynamic,timeout` set:
 #: the kernel itself evicts an entry once its own `timeout` elapses, no
@@ -86,6 +103,9 @@ def build_ruleset(config: Config) -> str:
     lines.append("")
     lines.extend(_render_bruteforce_jail_set())
 
+    lines.append("")
+    lines.extend(_render_ids_quarantine_set())
+
     if config.ztna.enabled:
         lines.append("")
         lines.extend(_render_ztna_set(config))
@@ -98,10 +118,11 @@ def build_ruleset(config: Config) -> str:
     lines.append("\t\ttype filter hook input priority filter; policy drop;")
     lines.append("")
     # Very top of the chain, before even the loopback accept: a source
-    # IP the privileged helper has jailed is dropped outright, before
-    # any other rule (including the config-derived ones below) gets a
-    # chance to match it first.
+    # IP the privileged helper has jailed or quarantined is dropped
+    # outright, before any other rule (including the config-derived
+    # ones below) gets a chance to match it first.
     lines.append(f"\t\t{_render_bruteforce_drop_rule()}")
+    lines.append(f"\t\t{_render_ids_quarantine_drop_rule()}")
     lines.append('\t\tiifname "lo" accept')
     lines.append("\t\tct state established,related accept")
     lines.append("\t\tct state invalid drop")
@@ -172,6 +193,22 @@ def _render_bruteforce_jail_set() -> list[str]:
 
 def _render_bruteforce_drop_rule() -> str:
     return f"ip saddr @{BRUTEFORCE_JAIL_SET_NAME} drop {_comment('bruteforce-jail')}"
+
+
+def _render_ids_quarantine_set() -> list[str]:
+    # Same shape as _render_bruteforce_jail_set() and the same reasoning
+    # for no `elements = {...}`/set-level `timeout` line -- see
+    # IDS_QUARANTINE_SET_NAME's own comment above.
+    return [
+        f"\tset {IDS_QUARANTINE_SET_NAME} {{",
+        "\t\ttype ipv4_addr",
+        "\t\tflags timeout",
+        "\t}",
+    ]
+
+
+def _render_ids_quarantine_drop_rule() -> str:
+    return f"ip saddr @{IDS_QUARANTINE_SET_NAME} drop {_comment('ids-quarantine')}"
 
 
 def _render_ztna_set(config: Config) -> list[str]:

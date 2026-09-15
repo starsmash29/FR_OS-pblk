@@ -10,6 +10,7 @@ import pytest
 
 from frfw import apply as apply_mod
 from frfw import bruteforce as bruteforce_mod
+from frfw import ids_quarantine as ids_quarantine_mod
 from frfw import ifaddr as ifaddr_mod
 from frfw import xdp as xdp_mod
 from frfw import ztna as ztna_mod
@@ -30,7 +31,7 @@ def _fake_nft(monkeypatch):
     monkeypatch.setattr(apply_mod, "capture_running_ruleset", lambda: "")
 
 
-def test_apply_all_runs_all_nine_steps_in_order(minimal_config_dict, tmp_path):
+def test_apply_all_runs_all_ten_steps_in_order(minimal_config_dict, tmp_path):
     config = parse_config(minimal_config_dict)  # no address, no dhcp, no xdp, no ztna, no pqc
     result = apply_all(
         config,
@@ -43,7 +44,7 @@ def test_apply_all_runs_all_nine_steps_in_order(minimal_config_dict, tmp_path):
         adblock_dnsmasq_conf_path=tmp_path / "dnsmasq_adblock.conf",
     )
 
-    assert len(result.messages) == 9
+    assert len(result.messages) == 10
     assert "No interface addresses" in result.messages[0]
     assert "Ruleset applied" in result.messages[1]
     assert "No DHCP zones" in result.messages[2]
@@ -51,12 +52,14 @@ def test_apply_all_runs_all_nine_steps_in_order(minimal_config_dict, tmp_path):
     assert "XDP SNI filter disabled" in result.messages[4]
     assert "Brute-force jail" in result.messages[5]
     assert "0 active ban(s) preserved" in result.messages[5]
-    assert "ZTNA gate disabled" in result.messages[6]
-    assert "PQC hybrid TLS disabled" in result.messages[7]
+    assert "AI IDS quarantine" in result.messages[6]
+    assert "0 active quarantine(s) preserved" in result.messages[6]
+    assert "ZTNA gate disabled" in result.messages[7]
+    assert "PQC hybrid TLS disabled" in result.messages[8]
     # This sandbox has no sshd installed at all, which is itself a real,
     # correctly-detected state (see frfw.pqc.sync_ssh_kex) rather than a
     # mock -- there is nothing to fake here.
-    assert "sshd not installed" in result.messages[8] or "PQC hybrid SSH KEX disabled" in result.messages[8]
+    assert "sshd not installed" in result.messages[9] or "PQC hybrid SSH KEX disabled" in result.messages[9]
 
 
 def test_apply_all_dry_run_touches_nothing(dhcp_config_dict, tmp_path, monkeypatch):
@@ -175,6 +178,55 @@ def test_apply_all_does_not_call_restore_when_nothing_was_banned(minimal_config_
     # No point calling nft to restore an empty set of bans.
     assert calls == ["snapshot"]
     assert any("0 active ban(s) preserved" in m for m in result.messages)
+
+
+def test_apply_all_skips_ids_quarantine_snapshot_restore_on_dry_run(minimal_config_dict, tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(ids_quarantine_mod, "snapshot_before_reload", lambda: calls.append("snapshot") or [])
+    monkeypatch.setattr(ids_quarantine_mod, "restore_after_reload", lambda snap: calls.append("restore"))
+
+    config = parse_config(minimal_config_dict)
+    result = apply_all(
+        config, dry_run=True, backup_dir=tmp_path / "backups", kea_config_path=tmp_path / "kea.json"
+    )
+
+    # Like the brute-force jail, the quarantine set is always declared,
+    # but a dry run reloads nothing, so there is still nothing to
+    # snapshot or restore.
+    assert calls == []
+    assert any("would preserve active quarantines" in m.lower() for m in result.messages)
+
+
+def test_apply_all_snapshots_and_restores_ids_quarantines(minimal_config_dict, tmp_path, monkeypatch):
+    calls = []
+    fake_snapshot = [("10.0.0.9", 1200)]
+    monkeypatch.setattr(
+        ids_quarantine_mod, "snapshot_before_reload", lambda: calls.append("snapshot") or fake_snapshot
+    )
+    monkeypatch.setattr(
+        ids_quarantine_mod, "restore_after_reload", lambda snap: calls.append(("restore", snap))
+    )
+
+    config = parse_config(minimal_config_dict)
+    result = apply_all(config, backup_dir=tmp_path / "backups", kea_config_path=tmp_path / "kea.json")
+
+    assert calls == ["snapshot", ("restore", fake_snapshot)]
+    assert any("1 active quarantine(s) preserved" in m for m in result.messages)
+
+
+def test_apply_all_does_not_call_restore_when_nothing_was_quarantined(minimal_config_dict, tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(ids_quarantine_mod, "snapshot_before_reload", lambda: calls.append("snapshot") or [])
+    monkeypatch.setattr(
+        ids_quarantine_mod, "restore_after_reload", lambda snap: calls.append("restore")
+    )
+
+    config = parse_config(minimal_config_dict)
+    result = apply_all(config, backup_dir=tmp_path / "backups", kea_config_path=tmp_path / "kea.json")
+
+    # No point calling nft to restore an empty set of quarantines.
+    assert calls == ["snapshot"]
+    assert any("0 active quarantine(s) preserved" in m for m in result.messages)
 
 
 def test_apply_all_skips_ztna_snapshot_restore_when_disabled(minimal_config_dict, tmp_path, monkeypatch):

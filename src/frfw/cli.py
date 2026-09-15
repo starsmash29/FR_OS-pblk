@@ -7,7 +7,7 @@
     firewall-cli detect-interfaces [--include-virtual]
     firewall-cli assign-interfaces --wan DEV --lan DEV [--opt NAME:DEV ...] [--out PATH]
     firewall-cli set-admin-password [--username admin] [--generate]
-    firewall-cli ai-ids-retrain [config.yaml] [--mac AA:BB:CC:DD:EE:FF]
+    firewall-cli ids-status
     firewall-cli update check [config.yaml]
     firewall-cli update apply VERSION [--repo OWNER/REPO]
     firewall-cli update rollback [--repo OWNER/REPO]
@@ -40,9 +40,9 @@ from frfw import update as update_mod
 from frfw.adblock import AdblockError
 from frfw.adblock import refresh as adblock_refresh
 from frfw.admin_account import AdminStore
-from frfw.ai_ids import AIIDSEngine
 from frfw.apply import NftError, list_backups, rollback_last
 from frfw.config import ConfigError, load_config
+from frfw.ids_quarantine import IdsQuarantineError, list_quarantined
 from frfw.ifaddr import IfaddrError
 from frfw.kea import KeaError
 from frfw.nft import build_ruleset
@@ -74,6 +74,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     except xdp_mod.XdpError as exc:
         print(f"XDP SNI filter error: {exc}", file=sys.stderr)
+        return 1
+    except IdsQuarantineError as exc:
+        print(f"AI IDS quarantine error: {exc}", file=sys.stderr)
         return 1
 
 
@@ -162,15 +165,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_admin.set_defaults(handler=_cmd_set_admin_password)
 
-    p_retrain = sub.add_parser(
-        "ai-ids-retrain",
-        help="reset the (mock) AI IDS learning clock; run daily by fr-ai-ids-retrain.timer",
+    p_ids_status = sub.add_parser(
+        "ids-status",
+        help="show the AI IDS/IPS engine's currently quarantined hosts",
     )
-    add_config_arg(p_retrain)
-    p_retrain.add_argument(
-        "--mac", default=None, help="retrain only this device (default: all known devices)"
-    )
-    p_retrain.set_defaults(handler=_cmd_ai_ids_retrain)
+    p_ids_status.set_defaults(handler=_cmd_ids_status)
 
     p_update = sub.add_parser("update", help="check for / apply / roll back FR_OS updates")
     update_sub = p_update.add_subparsers(dest="update_command", required=True)
@@ -314,17 +313,15 @@ def _cmd_set_admin_password(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_ai_ids_retrain(args: argparse.Namespace) -> int:
-    config = load_config(args.config)
-    engine = AIIDSEngine(config)
-    try:
-        engine.force_retrain(args.mac)
-    except KeyError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
+def _cmd_ids_status(args: argparse.Namespace) -> int:
+    quarantined = list_quarantined()
+    if not quarantined:
+        print("AI IDS/IPS: no hosts currently quarantined")
+        return 0
 
-    target = args.mac or "all known devices"
-    print(f"AI IDS: retrain clock reset for {target} (mock engine, see ROADMAP.md)")
+    print("AI IDS/IPS: currently quarantined hosts:")
+    for ip, remaining in sorted(quarantined):
+        print(f"  {ip}: {remaining}s remaining")
     return 0
 
 

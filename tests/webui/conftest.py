@@ -37,6 +37,7 @@ class FakeHelper:
         self.refresh_adblock_calls = 0
         self.refresh_adblock_result = {"ok": True, "message": "3 deduped domains written", "domain_count": 3}
         self.banned: list[tuple[str, int]] = []
+        self.quarantined: dict[str, int] = {}  # ip -> expires_in, set by tests directly
 
     def ping(self):
         return {"ok": True, "message": "pong"}
@@ -90,6 +91,10 @@ class FakeHelper:
     def ban_ip(self, ip: str, duration_seconds: int = 3600) -> dict:
         self.banned.append((ip, duration_seconds))
         return {"ok": True, "message": f"{ip} jailed for {duration_seconds}s"}
+
+    def ids_quarantine_status(self) -> dict:
+        quarantined = [{"ip": ip, "expires_in": exp} for ip, exp in self.quarantined.items()]
+        return {"ok": True, "quarantined": quarantined, "count": len(quarantined)}
 
 
 class FakeUpdateHelper:

@@ -30,6 +30,18 @@ from __future__ import annotations
 #: (frfw.webui.auth_rate_limiter) decides *when* to call this, but
 #: touching nftables itself needs the same CAP_NET_ADMIN as the ZTNA
 #: commands above, so the actual ban always goes through here.
+#: "quarantine_ip" (see frfw.ids_quarantine) is ban_ip's IDS/IPS
+#: counterpart: the unprivileged `fr-ai-ids` daemon's anomaly engine
+#: (frfw.ai_ids.engine) decides *when*, this socket does the actual
+#: `nft` touch. "ids_quarantine_status" is its read-only counterpart
+#: (like "ztna_status"), for the webUI's AI IDS screen/dashboard to show
+#: who is currently quarantined without the unprivileged webUI process
+#: reading kernel state itself.
+#: "conntrack_sample" is a read-only dump of the kernel's connection
+#: tracking table (see frfw.conntrack) -- `/proc/net/nf_conntrack` is
+#: root-only (confirmed by hand: `-r--r----- root root`), so the
+#: unprivileged `fr-ai-ids` daemon polls it through here rather than
+#: reading it directly, the same reasoning as the ZTNA status read above.
 COMMANDS = (
     "ping",
     "apply",
@@ -39,6 +51,9 @@ COMMANDS = (
     "ztna_status",
     "refresh_adblock",
     "ban_ip",
+    "quarantine_ip",
+    "ids_quarantine_status",
+    "conntrack_sample",
 )
 
 #: Maximum accepted request/response line length, to bound memory use from

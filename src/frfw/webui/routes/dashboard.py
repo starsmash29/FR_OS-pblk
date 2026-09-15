@@ -7,12 +7,11 @@ from fastapi import APIRouter, Depends, Request
 from frfw import netdetect
 from frfw import pqc as pqc_mod
 from frfw.adblock import count_blocked_domains
-from frfw.ai_ids import AIIDSEngine
+from frfw.ai_ids import is_daemon_active
 from frfw.apply import list_backups
 from frfw.config import ConfigError, parse_config
 from frfw.webui.deps import (
     get_adblock_hosts_path,
-    get_ai_ids_state_path,
     get_helper,
     get_raw_config,
     require_login,
@@ -29,7 +28,7 @@ def dashboard(
     request: Request,
     username: str = Depends(require_login),
     raw: dict = Depends(get_raw_config),
-    ai_ids_state_path=Depends(get_ai_ids_state_path),
+    helper: HelperClient = Depends(get_helper),
     adblock_hosts_path: Path = Depends(get_adblock_hosts_path),
 ):
     try:
@@ -38,9 +37,10 @@ def dashboard(
         config = None
 
     ai_ids_enabled = bool(config is not None and config.ai_ids.enabled)
-    ai_ids_progress = None
+    ai_ids_quarantined_count = None
     if ai_ids_enabled:
-        ai_ids_progress = round(AIIDSEngine(config, ai_ids_state_path).global_learning_progress())
+        status = helper.ids_quarantine_status()
+        ai_ids_quarantined_count = status.get("count") if status.get("ok") else None
 
     pqc_status = pqc_mod.get_status(config) if config is not None else None
 
@@ -75,7 +75,8 @@ def dashboard(
             "backup_count": len(list_backups()),
             "interface_rows": interface_rows,
             "ai_ids_enabled": ai_ids_enabled,
-            "ai_ids_progress": ai_ids_progress,
+            "ai_ids_daemon_active": is_daemon_active(),
+            "ai_ids_quarantined_count": ai_ids_quarantined_count,
             "pqc_status": pqc_status,
             "adblocker_enabled": adblocker_enabled,
             "adblock_domain_count": adblock_domain_count,

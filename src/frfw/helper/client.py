@@ -95,3 +95,19 @@ def ban_ip(
     return send_command(
         {"cmd": "ban_ip", "ip": ip, "duration_seconds": duration_seconds}, socket_path
     )
+
+
+def quarantine_ip(
+    ip: str, duration_seconds: int = 7200, socket_path: Path = paths.APPLY_SOCKET_PATH
+) -> dict:
+    return send_command(
+        {"cmd": "quarantine_ip", "ip": ip, "duration_seconds": duration_seconds}, socket_path
+    )
+
+
+def ids_quarantine_status(socket_path: Path = paths.APPLY_SOCKET_PATH) -> dict:
+    return send_command({"cmd": "ids_quarantine_status"}, socket_path)
+
+
+def conntrack_sample(socket_path: Path = paths.APPLY_SOCKET_PATH) -> dict:
+    return send_command({"cmd": "conntrack_sample"}, socket_path)

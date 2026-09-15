@@ -39,10 +39,18 @@ WEBUI_KEY_PATH = WEBUI_STATE_DIR / "key.pem"
 WEBUI_AUTH_PATH = WEBUI_STATE_DIR / "auth.json"
 WEBUI_SECRET_KEY_PATH = WEBUI_STATE_DIR / "secret.key"
 
-#: Mock AI IDS engine's persisted per-device state (locked/retrain
-#: timestamps -- see frfw.ai_ids). Needs no root, so it lives alongside
-#: the webUI's other unprivileged state rather than under root-owned
-#: /etc/fr_os directly.
+#: AI IDS engine's display-only recent-events log (phase 11, see
+#: frfw.ai_ids.daemon.load_recent_events) -- the last several
+#: flagged/quarantined IPs with their anomaly score/reasons, for the
+#: webUI's AI IDS screen. Written directly by the unprivileged
+#: `fr-ai-ids` daemon itself (its own decisions, not privileged data),
+#: needs no root, so it lives alongside the webUI's other unprivileged
+#: state rather than under root-owned /etc/fr_os directly. Never the
+#: source of truth for "is this IP currently quarantined" -- that is
+#: always a live kernel-state query via the privileged helper's
+#: "ids_quarantine_status" command (frfw.ids_quarantine.list_quarantined),
+#: the same "display file vs. live kernel query" split frfw.ztna's own
+#: ZTNA_STATE_PATH documents.
 AI_IDS_STATE_PATH = WEBUI_STATE_DIR / "ai_ids_state.json"
 
 #: Update mechanism's (phase 6, see frfw.update) persisted apply/rollback

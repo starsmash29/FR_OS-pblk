@@ -34,9 +34,21 @@
 
 {% if ai_ids_enabled %}
 <div class="card">
-  <h3>AI IDS/IPS learning progress <span class="muted">(mock, see <a href="/ai-ids">AI IDS/IPS</a>)</span></h3>
-  <div class="progress-track"><div class="progress-fill" style="width: {{ ai_ids_progress }}%;"></div></div>
-  <div class="progress-label">{{ ai_ids_progress }}% learned</div>
+  <h3>AI IDS/IPS <span class="muted">(see <a href="/ai-ids">AI IDS/IPS</a>)</span></h3>
+  <p>
+    Engine:
+    {% if ai_ids_daemon_active %}
+    <span class="badge badge-green">running</span>
+    {% else %}
+    <span class="badge badge-red">not running</span>
+    {% endif %}
+    &middot;
+    {% if ai_ids_quarantined_count is not none %}
+    <strong>{{ ai_ids_quarantined_count }}</strong> host(s) currently quarantined
+    {% else %}
+    <span class="muted">quarantine status unavailable</span>
+    {% endif %}
+  </p>
 </div>
 {% endif %}
 

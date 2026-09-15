@@ -63,8 +63,7 @@ install -m 0644 "$REPO_ROOT/systemd/fr-firewall.service" "$SYSTEMD_DIR/"
 install -m 0644 "$REPO_ROOT/systemd/fr-apply-helper.socket" "$SYSTEMD_DIR/"
 install -m 0644 "$REPO_ROOT/systemd/fr-apply-helper.service" "$SYSTEMD_DIR/"
 install -m 0644 "$REPO_ROOT/systemd/fr-webui.service" "$SYSTEMD_DIR/"
-install -m 0644 "$REPO_ROOT/systemd/fr-ai-ids-retrain.service" "$SYSTEMD_DIR/"
-install -m 0644 "$REPO_ROOT/systemd/fr-ai-ids-retrain.timer" "$SYSTEMD_DIR/"
+install -m 0644 "$REPO_ROOT/systemd/fr-ai-ids.service" "$SYSTEMD_DIR/"
 install -m 0644 "$REPO_ROOT/systemd/fr-update-helper.socket" "$SYSTEMD_DIR/"
 install -m 0644 "$REPO_ROOT/systemd/fr-update-helper.service" "$SYSTEMD_DIR/"
 install -m 0644 "$REPO_ROOT/systemd/fr-adblock-refresh.service" "$SYSTEMD_DIR/"
@@ -81,7 +80,7 @@ Done. Next steps:
   systemctl enable --now fr-firewall
   systemctl enable --now fr-apply-helper.socket
   systemctl enable --now fr-webui        # https://<router-ip>/
-  systemctl enable --now fr-ai-ids-retrain.timer   # daily mock AI IDS retrain
+  systemctl enable --now fr-ai-ids                 # real-time AI IDS/IPS anomaly detection
   systemctl enable --now fr-update-helper.socket   # webUI's Update screen
   systemctl enable --now fr-adblock-refresh.timer  # daily ad-block list refresh (needs 'dnsmasq' installed)
 

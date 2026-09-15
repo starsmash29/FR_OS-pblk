@@ -11,8 +11,9 @@ error says which step failed and that later steps were not attempted):
 
 1. Interface static addresses (`frfw.ifaddr`)
 2. nftables ruleset, backing up the previous one first (`frfw.apply`) --
-   bracketed by both a brute-force jail snapshot/restore and a ZTNA
-   session snapshot/restore (see step 5's comment and `frfw.bruteforce`/
+   bracketed by a brute-force jail snapshot/restore, an AI IDS
+   quarantine snapshot/restore, and a ZTNA session snapshot/restore (see
+   step 5's comment and `frfw.bruteforce`/`frfw.ids_quarantine`/
    `frfw.ztna`'s module docstrings for why)
 3. Kea DHCP config, if any zone has a DHCP pool (`frfw.kea`)
 4. Ad-block DNS resolver: (re)start/stop the dedicated dnsmasq instance
@@ -36,7 +37,7 @@ import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
 
-from frfw import bruteforce, ifaddr, kea, paths, pqc, xdp, ztna
+from frfw import bruteforce, ids_quarantine, ifaddr, kea, paths, pqc, xdp, ztna
 from frfw.adblock import dns_service as adblock_dns
 from frfw.apply import apply_ruleset
 from frfw.config.schema import Config
@@ -79,6 +80,20 @@ def apply_all(
     preserve_bruteforce = not dry_run
     bruteforce_snapshot = bruteforce.snapshot_before_reload() if preserve_bruteforce else []
 
+    # Same reasoning and same unconditional treatment as the brute-force
+    # jail immediately above: IDS_QUARANTINE_SET_NAME is always declared
+    # (see frfw.nft.builder), so it needs the same flush-survival
+    # bracketing regardless of whether config.ai_ids.enabled -- a
+    # quarantine already in effect must survive an unrelated config
+    # change even if AI IDS detection itself is later turned off (the
+    # enforcement set and the detection engine are independent: turning
+    # the daemon off should not silently amnesty already-quarantined
+    # hosts).
+    preserve_ids_quarantine = not dry_run
+    ids_quarantine_snapshot = (
+        ids_quarantine.snapshot_before_reload() if preserve_ids_quarantine else []
+    )
+
     preserve_ztna = not dry_run and config.ztna.enabled
     ztna_snapshot = ztna.snapshot_before_reload() if preserve_ztna else []
 
@@ -89,6 +104,11 @@ def apply_all(
     if preserve_bruteforce and bruteforce_snapshot:
         bruteforce.restore_after_reload(bruteforce_snapshot)
         bruteforce_preserved = len(bruteforce_snapshot)
+
+    ids_quarantine_preserved = 0
+    if preserve_ids_quarantine and ids_quarantine_snapshot:
+        ids_quarantine.restore_after_reload(ids_quarantine_snapshot)
+        ids_quarantine_preserved = len(ids_quarantine_snapshot)
 
     ztna_preserved = 0
     if preserve_ztna and ztna_snapshot:
@@ -131,6 +151,13 @@ def apply_all(
         messages.append("Brute-force jail: would preserve active bans across reload (dry-run)")
     else:
         messages.append(f"Brute-force jail: {bruteforce_preserved} active ban(s) preserved across reload")
+
+    if dry_run:
+        messages.append("AI IDS quarantine: would preserve active quarantines across reload (dry-run)")
+    else:
+        messages.append(
+            f"AI IDS quarantine: {ids_quarantine_preserved} active quarantine(s) preserved across reload"
+        )
 
     if not config.ztna.enabled:
         messages.append("ZTNA gate disabled")

@@ -137,15 +137,40 @@ class DhcpConfig:
 
 @dataclass(frozen=True)
 class AiIdsConfig:
-    """Settings for the (currently mock -- see frfw.ai_ids) anomaly
-    detection engine. `excluded_macs` are devices never profiled (e.g. the
-    router's own interfaces, or noisy IoT devices the admin doesn't want
-    flagged)."""
+    """Settings for the real-time, kernel-assisted anomaly detection
+    engine (phase 11, see frfw.ai_ids). `enabled` controls the config
+    flag the webUI/CLI show and validate; the actual `fr-ai-ids` daemon
+    is a separate systemd service that reads this flag itself (it is not
+    started/stopped by `firewall-cli apply` the way nftables/Kea/XDP
+    are -- see frfw.ai_ids's module docstring for why detection stays
+    fully out-of-band from the config-apply pipeline).
+
+    `excluded_macs` are devices never flagged or quarantined (e.g. the
+    router's own interfaces, a backup server or NAS that legitimately
+    opens many connections, or a noisy IoT device). Since the engine
+    scores *source IP addresses* (drawn from live connection-tracking
+    and XDP SNI-filter data, which have no concept of a MAC address once
+    traffic has been routed), a configured MAC is resolved against the
+    current DHCP static reservations (`dhcp.<zone>.reservations`) at
+    daemon startup to build the actual excluded-IP set -- the same
+    "known device" source the earlier mock engine used, kept for
+    continuity, now feeding real exclusion logic instead of a mock
+    profile lookup. A MAC with no matching reservation currently excludes
+    nothing (there is no IP to resolve it to yet); this is a known
+    limitation, not silently ignored -- see ARCHITECTURE.md.
+
+    `quarantine_duration_seconds` is how long a flagged IP is dropped by
+    the kernel (`frfw.ids_quarantine`) once quarantined, mirroring
+    `frfw.bruteforce`'s BAN_DURATION_SECONDS -- 2 hours by default, long
+    enough to actually interrupt an ongoing scan/beacon, short enough
+    that a false positive self-heals without needing a manual unquarantine
+    (which this phase does not yet implement -- see ARCHITECTURE.md's
+    open issues).
+    """
 
     enabled: bool = False
-    learning_days: int = 7
-    retrain_time: str = "03:30"
     excluded_macs: list[str] = field(default_factory=list)
+    quarantine_duration_seconds: int = 2 * 3600
 
 
 @dataclass(frozen=True)

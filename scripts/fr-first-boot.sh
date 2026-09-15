@@ -63,7 +63,7 @@ mv /etc/issue.new /etc/issue
 systemctl enable --now fr-firewall
 systemctl enable --now fr-apply-helper.socket
 systemctl enable --now fr-webui
-systemctl enable --now fr-ai-ids-retrain.timer
+systemctl enable --now fr-ai-ids
 systemctl enable --now fr-update-helper.socket
 
 mkdir -p "$CONFIG_DIR"

@@ -28,13 +28,15 @@ from pathlib import Path
 
 import yaml
 
-from frfw import bruteforce, kea, paths, ztna
+from frfw import bruteforce, conntrack, ids_quarantine, kea, paths, ztna
 from frfw.adblock import AdblockError
 from frfw.adblock import refresh as adblock_refresh
 from frfw.apply import NftError, rollback_last
 from frfw.bruteforce import BruteforceError
 from frfw.config import ConfigError, load_config, parse_config
+from frfw.conntrack import ConntrackError
 from frfw.helper.protocol import MAX_LINE_BYTES
+from frfw.ids_quarantine import IdsQuarantineError
 from frfw.ifaddr import IfaddrError
 from frfw.kea import KeaError
 from frfw.pqc import PqcError
@@ -95,10 +97,19 @@ def _handle_request(request: dict, server: "ApplyHelperServer") -> dict:
         if cmd == "ban_ip":
             return _handle_ban_ip(request)
 
+        if cmd == "quarantine_ip":
+            return _handle_quarantine_ip(request)
+
+        if cmd == "ids_quarantine_status":
+            return _handle_ids_quarantine_status()
+
+        if cmd == "conntrack_sample":
+            return _handle_conntrack_sample()
+
         return {"ok": False, "message": f"unknown command {cmd!r}"}
     except (
         ConfigError, NftError, IfaddrError, KeaError, ZtnaError, PqcError, AdblockError,
-        BruteforceError, FileNotFoundError, yaml.YAMLError,
+        BruteforceError, IdsQuarantineError, ConntrackError, FileNotFoundError, yaml.YAMLError,
     ) as exc:
         return {"ok": False, "message": str(exc)}
 
@@ -172,6 +183,37 @@ def _handle_ban_ip(request: dict) -> dict:
 
     bruteforce.ban_ip(ip, duration_seconds)
     return {"ok": True, "message": f"{ip} jailed for {duration_seconds}s"}
+
+
+def _handle_quarantine_ip(request: dict) -> dict:
+    ip = request.get("ip")
+    duration_seconds = request.get("duration_seconds", 7200)
+    if not isinstance(ip, str) or not ip:
+        return {"ok": False, "message": "'ip' is required"}
+    if not isinstance(duration_seconds, int) or isinstance(duration_seconds, bool):
+        return {"ok": False, "message": "'duration_seconds' must be an integer"}
+
+    ids_quarantine.quarantine_ip(ip, duration_seconds)
+    return {"ok": True, "message": f"{ip} quarantined for {duration_seconds}s"}
+
+
+def _handle_ids_quarantine_status() -> dict:
+    quarantined = [
+        {"ip": ip, "expires_in": remaining}
+        for ip, remaining in ids_quarantine.list_quarantined()
+    ]
+    return {"ok": True, "quarantined": quarantined, "count": len(quarantined)}
+
+
+def _handle_conntrack_sample() -> dict:
+    flows = conntrack.read_snapshot()
+    return {
+        "ok": True,
+        "flows": [
+            {"proto": f.proto, "src": f.src, "sport": f.sport, "dst": f.dst, "dport": f.dport}
+            for f in flows
+        ],
+    }
 
 
 def _write_atomic(path: Path, text: str) -> None:

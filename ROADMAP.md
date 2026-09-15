@@ -648,3 +648,115 @@ on the very first rule -- all without the webUI process ever running a
 single root-privileged command. ✅ Verified with unit tests, real `nft`
 integration (the kernel evicts the expired ban on its own), and webUI-
 level integration tests running through the full login path.
+
+## Phase 11 – Real-time, kernel-assisted AI IDS/IPS — **done**
+
+Replaces the earlier explicit-mock engine (see the "AI IDS/IPS (mock)"
+addendum above) with an actual anomaly detector: a lightweight,
+pure-stdlib sliding-window scorer profiling each source IP's connection-
+rate, destination-diversity, and XDP SNI-blocklist-hit behavior against
+its own recent baseline, running as its own out-of-band systemd daemon
+that quarantines a flagged IP in the kernel through the same
+privilege-separated pattern as every other enforcement action in this
+project. **Important correction, up front**: the request assumed
+`fr-xdp-sni-logger` alone could supply signal for all three requested
+features -- checked against what that daemon actually logs (only a
+*blocklist-matched, dropped* packet, never a plain pass), it structurally
+cannot supply connection-rate or destination-diversity signal at all.
+Those two come from a second, independent, already-active source
+instead: the kernel's own connection tracker. Full rationale:
+[ARCHITECTURE.md](ARCHITECTURE.md#real-time-kernel-assisted-ai-idsips-phase-11).
+
+- [x] **`frfw.ai_ids.engine.AnomalyEngine`**: pure stdlib (`collections.deque`,
+      `statistics.mean`/`pstdev` -- no scikit-learn, pandas, or numpy),
+      per-source-IP sliding-window counters for connection-attempt rate,
+      unique-destination ratio, and SNI-blocklist-hit count, each scored
+      against that same IP's own historical baseline via a z-score once
+      it has one (`MIN_BASELINE_SAMPLES`), or a generous absolute floor
+      until it does. Two guardrails (a zero-variance-baseline minimum-
+      value requirement, and a minimum-connection-count floor before the
+      destination-ratio feature is scored at all) were added after a
+      synthetic test caught both producing false positives on
+      unrealistic-but-technically-valid inputs.
+- [x] **`frfw.conntrack`**: parses `/proc/net/nf_conntrack` directly
+      (no new system package) for connection-rate/destination-diversity
+      signal -- confirmed by hand that this file is root-only
+      (`-r--r----- root root`; an unprivileged read attempt fails with
+      "Permission denied"), so this is only ever read from the
+      privileged apply-helper, never the daemon itself.
+- [x] **`frfw.ai_ids.daemon.IDSDaemon`**: a background thread tails
+      `fr-xdp-sni-logger.service`'s journald output for SNI-blocklist
+      hits (the same permission model the webUI's own live XDP log
+      already uses); the main loop polls a new `conntrack_sample`
+      helper command every 5s and diffs against the previous sample so
+      a still-open, long-lived connection is never re-counted as a new
+      attempt on every poll. On a window tick, flagged, non-excluded IPs
+      are quarantined via a new `quarantine_ip` helper command and
+      logged to a small, capped, display-only events file.
+      `ai_ids.excluded_macs` is resolved against the current DHCP static
+      reservations at daemon startup into the actual IPs to exclude,
+      since profiling is now IP-based rather than device-record-based.
+- [x] **`frfw.ids_quarantine`** (a deliberate structural mirror of
+      `frfw.bruteforce`/`frfw.ztna`): `quarantine_ip()`,
+      `list_quarantined()`, `snapshot_before_reload()`/
+      `restore_after_reload()` for the same `flush ruleset` survival
+      problem the brute-force jail and ZTNA already solve.
+- [x] **Nftables schema**: an always-rendered `ids_quarantine` named set
+      (`flags timeout`) and its drop rule placed second in `chain
+      input`, right after the brute-force jail's own drop rule and
+      before even the loopback accept -- confirmed against a real,
+      loaded ruleset's `nft -j list chain` output.
+- [x] **Unix-socket protocol**: three new commands --
+      `quarantine_ip` (`ban_ip`'s IDS/IPS counterpart),
+      `ids_quarantine_status` (read-only, live kernel-state query, like
+      `ztna_status`), and `conntrack_sample` (read-only conntrack dump).
+- [x] **`frfw.provision.apply_all`**: the quarantine set snapshot/restore-
+      bracketed around the nftables apply, unconditionally, the same as
+      the brute-force jail.
+- [x] **WebUI**: `/ai-ids` now shows real engine health
+      (`systemctl is-active fr-ai-ids.service`), the live list of
+      currently quarantined hosts (via `ids_quarantine_status`), and a
+      capped recent-flagged-events log (the daemon's own unprivileged,
+      display-only state file) -- no more "Force Retrain"/"Lock
+      Profile", which had no meaning for a continuously-running
+      detector. The dashboard card shows engine status + quarantined
+      count instead of a fake learning-progress bar.
+- [x] Tests: `tests/test_ai_ids_engine.py` (10 cases, scoring logic
+      against synthetic traffic), `tests/test_ai_ids_daemon.py` (21
+      cases, every building block except the real blocking I/O loop),
+      `tests/test_conntrack.py` (8 cases, including a real root-only
+      permission check), `tests/test_ids_quarantine.py` (12 cases, 4 of
+      them real `nft` integration, mirroring `test_bruteforce.py`
+      exactly), rewritten `tests/test_ai_ids_schema.py`, updated
+      `tests/test_builder.py`/`tests/test_provision.py`/
+      `tests/test_helper.py`, and a rewritten
+      `tests/webui/test_ai_ids_routes.py` -- the full test suite (519
+      tests) runs with no regressions.
+
+**Corrections to the original request** (see ARCHITECTURE.md for full
+detail): `fr-xdp-sni-logger` alone cannot supply connection-rate/
+destination-diversity signal (only SNI-blocklist-hit frequency) -- a
+second telemetry source (kernel conntrack sampling, via a new privileged
+helper command) was added rather than fabricating the missing two
+features; `ai_ids.learning_days`/`retrain_time` (mock-specific, a
+simulated daily-retrain clock) were removed since a continuously-running
+online detector has no equivalent concept, replaced with
+`quarantine_duration_seconds` (2 hours by default, matching the
+request's own example); `excluded_macs` is now resolved to IP addresses
+via DHCP reservations at daemon startup, since detection is IP-based.
+
+**Acceptance criterion**: a source IP making an unusually high rate of
+new connections, scanning an unusual number of distinct destinations, or
+repeatedly hitting the XDP SNI blocklist -- each relative to that IP's
+own recent, established baseline -- gets added to the kernel's
+`ids_quarantine` set (2-hour default quarantine), and every packet it
+sends from then on is dropped by the firewall near the top of the input
+chain -- all without the `fr-ai-ids` daemon ever running a single
+root-privileged command itself. ✅ Verified with unit tests against
+synthetic traffic shaped to match real conntrack/XDP-logger data, real
+`nft`/procfs integration for the enforcement and telemetry-permission
+halves, and confirmed end-to-end through the CLI (`firewall-cli
+ids-status`) and the webUI's AI IDS screen. Real attack-traffic
+end-to-end validation (e.g. an actual `nmap` scan through a live
+conntrack table) is open, for lack of an attacker/target host pair in
+this sandbox -- see ARCHITECTURE.md's scope-of-verification note.

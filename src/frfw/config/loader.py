@@ -41,7 +41,6 @@ from frfw.config.schema import (
 _NAME_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
 _PORT_RANGE_RE = re.compile(r"^(\d{1,5})-(\d{1,5})$")
 _MAC_RE = re.compile(r"^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
-_TIME_OF_DAY_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 _HOSTNAME_RE = re.compile(
     r"^(?!-)[a-zA-Z0-9-]{1,63}(?<!-)(\.(?!-)[a-zA-Z0-9-]{1,63}(?<!-))*$"
 )
@@ -526,16 +525,6 @@ def _parse_ai_ids(raw: Any) -> AiIdsConfig:
     if not isinstance(enabled, bool):
         raise ConfigError("ai_ids.enabled must be a boolean")
 
-    learning_days = raw.get("learning_days", 7)
-    if not isinstance(learning_days, int) or isinstance(learning_days, bool) or learning_days <= 0:
-        raise ConfigError("ai_ids.learning_days must be a positive integer")
-
-    retrain_time = raw.get("retrain_time", "03:30")
-    if not isinstance(retrain_time, str) or not _TIME_OF_DAY_RE.match(retrain_time):
-        raise ConfigError(
-            f"ai_ids.retrain_time must be a 24h 'HH:MM' string, got {retrain_time!r}"
-        )
-
     excluded_raw = raw.get("excluded_macs", [])
     if not isinstance(excluded_raw, list):
         raise ConfigError("ai_ids.excluded_macs must be a list")
@@ -545,11 +534,18 @@ def _parse_ai_ids(raw: Any) -> AiIdsConfig:
             raise ConfigError(f"ai_ids.excluded_macs[{i}]: invalid MAC address {mac!r}")
         excluded_macs.append(mac.lower())
 
+    quarantine_duration_seconds = raw.get("quarantine_duration_seconds", 2 * 3600)
+    if (
+        not isinstance(quarantine_duration_seconds, int)
+        or isinstance(quarantine_duration_seconds, bool)
+        or quarantine_duration_seconds <= 0
+    ):
+        raise ConfigError("ai_ids.quarantine_duration_seconds must be a positive integer")
+
     return AiIdsConfig(
         enabled=enabled,
-        learning_days=learning_days,
-        retrain_time=retrain_time,
         excluded_macs=excluded_macs,
+        quarantine_duration_seconds=quarantine_duration_seconds,
     )
 
 

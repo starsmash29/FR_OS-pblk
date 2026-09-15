@@ -21,8 +21,7 @@ for unit in \
     fr-apply-helper.socket \
     fr-apply-helper.service \
     fr-webui.service \
-    fr-ai-ids-retrain.service \
-    fr-ai-ids-retrain.timer \
+    fr-ai-ids.service \
     fr-update-helper.socket \
     fr-update-helper.service
 do

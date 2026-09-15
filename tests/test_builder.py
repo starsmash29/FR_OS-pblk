@@ -134,9 +134,24 @@ def test_bruteforce_jail_drop_rule_is_first_rule_in_input_chain(minimal_config_d
     ]
 
     assert rule_lines[0] == 'ip saddr @bruteforce_jail drop comment "bruteforce-jail"'
+    assert rule_lines[1] == 'ip saddr @ids_quarantine drop comment "ids-quarantine"'
     # Must come before even the loopback accept, which is otherwise the
     # first rule in the chain.
-    assert rule_lines[1] == 'iifname "lo" accept'
+    assert rule_lines[2] == 'iifname "lo" accept'
+
+
+def test_ids_quarantine_set_always_rendered(minimal_config_dict):
+    # Like the brute-force jail (and unlike the ZTNA set), the IDS
+    # quarantine set is a kernel-level defense with no "off" switch --
+    # it must exist regardless of whether ai_ids.enabled, since a
+    # detection engine turned off later should not silently amnesty
+    # already-quarantined hosts (see frfw.provision's own comment).
+    config = parse_config(minimal_config_dict)
+    ruleset = build_ruleset(config)
+
+    assert "set ids_quarantine {" in ruleset
+    assert "type ipv4_addr" in ruleset
+    assert "flags timeout" in ruleset
 
 
 @requires_nft
