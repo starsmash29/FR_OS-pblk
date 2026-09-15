@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from frfw import adblock as adblock_mod
 from frfw import apply as apply_mod
 from frfw import ztna as ztna_mod
 from frfw.admin_account import hash_password
@@ -70,9 +71,14 @@ def running_server(tmp_path, monkeypatch):
     config_path.write_text(EXAMPLE_CONFIG.read_text())
     backup_dir = tmp_path / "backups"
     ztna_state_path = tmp_path / "ztna_state.json"
+    adblock_hosts_path = tmp_path / "adblock.hosts"
 
     server = ApplyHelperServer(
-        socket_path, config_path, backup_dir=backup_dir, ztna_state_path=ztna_state_path
+        socket_path,
+        config_path,
+        backup_dir=backup_dir,
+        ztna_state_path=ztna_state_path,
+        adblock_hosts_path=adblock_hosts_path,
     )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -190,3 +196,32 @@ def test_ztna_status_reports_unauthorized_for_unknown_ip(running_server, tmp_pat
     _enable_ztna(tmp_path / "config.yaml")
     status = client.ztna_status("10.0.0.99", running_server)
     assert status == {"ok": True, "authorized": False}
+
+
+# --- ad-block refresh command --------------------------------------------------
+
+
+def test_refresh_adblock_fails_with_no_source_urls(running_server):
+    # examples/config.yaml has no `adblocker` section at all --
+    # source_urls defaults to empty.
+    response = client.refresh_adblock(running_server)
+    assert response["ok"] is False
+    assert "source_urls is empty" in response["message"]
+
+
+def test_refresh_adblock_success(running_server, tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        adblock_mod, "_fetch_url", lambda url, timeout: "0.0.0.0 ads.example.com\n"
+    )
+    text = tmp_path / "config.yaml"
+    text.write_text(
+        text.read_text()
+        + "\nadblocker:\n  enabled: true\n  source_urls: [\"https://a.example/hosts\"]\n"
+    )
+
+    response = client.refresh_adblock(running_server)
+
+    assert response["ok"] is True
+    assert response["domain_count"] == 1
+    assert response["failed_urls"] == []
+    assert adblock_mod.count_blocked_domains(tmp_path / "adblock.hosts") == 1

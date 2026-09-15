@@ -80,3 +80,10 @@ def authorize_ztna(
 
 def ztna_status(ip: str, socket_path: Path = paths.APPLY_SOCKET_PATH) -> dict:
     return send_command({"cmd": "ztna_status", "ip": ip}, socket_path)
+
+
+def refresh_adblock(socket_path: Path = paths.APPLY_SOCKET_PATH, timeout: float = 60.0) -> dict:
+    """Longer default timeout than every other command here -- this one
+    downloads potentially several megabytes from third-party URLs before
+    it can respond, unlike everything else on this socket."""
+    return send_command({"cmd": "refresh_adblock"}, socket_path, timeout=timeout)

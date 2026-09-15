@@ -14,19 +14,29 @@ error says which step failed and that later steps were not attempted):
    bracketed by a ZTNA session snapshot/restore (see step 5's comment
    and `frfw.ztna`'s module docstring for why)
 3. Kea DHCP config, if any zone has a DHCP pool (`frfw.kea`)
-4. XDP TLS SNI filter attach/detach + blocklist sync (`frfw.xdp`)
-5. ZTNA gate: report how many active sessions survived step 2's reload
-6. Hybrid PQC management-layer key exchange: refresh the webUI's
+4. Ad-block DNS resolver: (re)start/stop the dedicated dnsmasq instance
+   to match `config.adblocker.enabled`, serving whatever
+   `firewall-cli adblock-refresh` most recently downloaded -- never
+   fetches anything from the network itself (`frfw.adblock.dns_service`)
+5. XDP TLS SNI filter attach/detach + blocklist sync (`frfw.xdp`) --
+   the effective blocklist is `xdp_sni_filter.blocklist` plus, if
+   `adblocker.xdp_critical_limit` is set, up to that many domains from
+   the already-refreshed ad-block list, merged in-memory only (never
+   written back to config.yaml -- see step 5's own comment below)
+6. ZTNA gate: report how many active sessions survived step 2's reload
+7. Hybrid PQC management-layer key exchange: refresh the webUI's
    OpenSSL config fragment and, if sshd is installed, its KexAlgorithms
    drop-in (`frfw.pqc`)
 """
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
 
 from frfw import ifaddr, kea, paths, pqc, xdp, ztna
+from frfw.adblock import dns_service as adblock_dns
 from frfw.apply import apply_ruleset
 from frfw.config.schema import Config
 from frfw.nft import build_ruleset
@@ -46,6 +56,8 @@ def apply_all(
     xdp_state_path: Path = paths.XDP_STATE_PATH,
     pqc_conf_path: Path = paths.PQC_OPENSSL_CONF_PATH,
     ssh_kex_dropin_path: Path = paths.SSHD_PQC_DROPIN_PATH,
+    adblock_hosts_path: Path = paths.ADBLOCK_HOSTS_PATH,
+    adblock_dnsmasq_conf_path: Path = paths.ADBLOCK_DNSMASQ_CONF_PATH,
 ) -> ProvisionResult:
     messages = []
 
@@ -76,7 +88,33 @@ def apply_all(
     dhcp_result = kea.apply_dhcp_config(config, dry_run=dry_run, config_path=kea_config_path)
     messages.append(dhcp_result.message)
 
-    xdp_result = xdp.sync_sni_filter(config, dry_run=dry_run, state_path=xdp_state_path)
+    adblock_dns_result = adblock_dns.sync_dns_resolver(
+        config,
+        dry_run=dry_run,
+        hosts_path=adblock_hosts_path,
+        conf_path=adblock_dnsmasq_conf_path,
+    )
+    messages.append(adblock_dns_result.message)
+
+    # The kernel-level "critical" adblock subset (if configured) is
+    # merged into the XDP blocklist here, in memory only -- never
+    # persisted back into config.yaml -- so the file on disk always
+    # reflects exactly what the admin actually configured, the same way
+    # a ZTNA-authorized IP never gets written into the firewall rules
+    # themselves. If xdp_sni_filter.enabled is False, this has no
+    # effect: enabling adblocker never silently turns XDP on.
+    xdp_config = config
+    if config.adblocker.enabled and config.adblocker.xdp_critical_limit > 0:
+        critical = adblock_dns.critical_domains(
+            adblock_hosts_path, config.adblocker.xdp_critical_limit
+        )
+        merged_blocklist = sorted(set(config.xdp_sni_filter.blocklist) | set(critical))
+        xdp_config = dataclasses.replace(
+            config,
+            xdp_sni_filter=dataclasses.replace(config.xdp_sni_filter, blocklist=merged_blocklist),
+        )
+
+    xdp_result = xdp.sync_sni_filter(xdp_config, dry_run=dry_run, state_path=xdp_state_path)
     messages.append(xdp_result.message)
 
     if not config.ztna.enabled:

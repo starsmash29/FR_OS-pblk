@@ -33,6 +33,8 @@ class FakeHelper:
         self.applied = []
         self.rolled_back = False
         self._ztna_authorizations: dict[str, tuple[str, float]] = {}  # ip -> (username, expires_at)
+        self.refresh_adblock_calls = 0
+        self.refresh_adblock_result = {"ok": True, "message": "3 deduped domains written", "domain_count": 3}
 
     def ping(self):
         return {"ok": True, "message": "pong"}
@@ -79,6 +81,10 @@ class FakeHelper:
             return {"ok": True, "authorized": False}
         return {"ok": True, "authorized": True, "username": username, "expires_in": remaining}
 
+    def refresh_adblock(self) -> dict:
+        self.refresh_adblock_calls += 1
+        return self.refresh_adblock_result
+
 
 class FakeUpdateHelper:
     """An in-memory stand-in for the real Unix-socket update-helper.
@@ -120,6 +126,7 @@ def webui_env(tmp_path):
         "ai_ids_state_path": tmp_path / "ai_ids_state.json",
         "update_state_path": tmp_path / "update_state.json",
         "xdp_state_path": tmp_path / "xdp_state.json",
+        "adblock_hosts_path": tmp_path / "adblock.hosts",
     }
 
 

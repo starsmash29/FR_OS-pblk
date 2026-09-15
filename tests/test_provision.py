@@ -10,7 +10,10 @@ import pytest
 
 from frfw import apply as apply_mod
 from frfw import ifaddr as ifaddr_mod
+from frfw import xdp as xdp_mod
 from frfw import ztna as ztna_mod
+from frfw.adblock import dns_service as adblock_dns_mod
+from frfw.adblock import write_hosts_file
 from frfw.config import parse_config
 from frfw.provision import apply_all
 
@@ -26,7 +29,7 @@ def _fake_nft(monkeypatch):
     monkeypatch.setattr(apply_mod, "capture_running_ruleset", lambda: "")
 
 
-def test_apply_all_runs_all_seven_steps_in_order(minimal_config_dict, tmp_path):
+def test_apply_all_runs_all_eight_steps_in_order(minimal_config_dict, tmp_path):
     config = parse_config(minimal_config_dict)  # no address, no dhcp, no xdp, no ztna, no pqc
     result = apply_all(
         config,
@@ -35,19 +38,22 @@ def test_apply_all_runs_all_seven_steps_in_order(minimal_config_dict, tmp_path):
         xdp_state_path=tmp_path / "xdp_state.json",
         pqc_conf_path=tmp_path / "pqc_openssl.cnf",
         ssh_kex_dropin_path=tmp_path / "50-fr_os-pqc-kex.conf",
+        adblock_hosts_path=tmp_path / "adblock.hosts",
+        adblock_dnsmasq_conf_path=tmp_path / "dnsmasq_adblock.conf",
     )
 
-    assert len(result.messages) == 7
+    assert len(result.messages) == 8
     assert "No interface addresses" in result.messages[0]
     assert "Ruleset applied" in result.messages[1]
     assert "No DHCP zones" in result.messages[2]
-    assert "XDP SNI filter disabled" in result.messages[3]
-    assert "ZTNA gate disabled" in result.messages[4]
-    assert "PQC hybrid TLS disabled" in result.messages[5]
+    assert "Ad-block DNS resolver disabled" in result.messages[3]
+    assert "XDP SNI filter disabled" in result.messages[4]
+    assert "ZTNA gate disabled" in result.messages[5]
+    assert "PQC hybrid TLS disabled" in result.messages[6]
     # This sandbox has no sshd installed at all, which is itself a real,
     # correctly-detected state (see frfw.pqc.sync_ssh_kex) rather than a
     # mock -- there is nothing to fake here.
-    assert "sshd not installed" in result.messages[6] or "PQC hybrid SSH KEX disabled" in result.messages[6]
+    assert "sshd not installed" in result.messages[7] or "PQC hybrid SSH KEX disabled" in result.messages[7]
 
 
 def test_apply_all_dry_run_touches_nothing(dhcp_config_dict, tmp_path, monkeypatch):
@@ -60,6 +66,8 @@ def test_apply_all_dry_run_touches_nothing(dhcp_config_dict, tmp_path, monkeypat
 
     pqc_conf_path = tmp_path / "pqc_openssl.cnf"
     ssh_dropin_path = tmp_path / "50-fr_os-pqc-kex.conf"
+    adblock_hosts_path = tmp_path / "adblock.hosts"
+    adblock_conf_path = tmp_path / "dnsmasq_adblock.conf"
     result = apply_all(
         config,
         dry_run=True,
@@ -68,23 +76,27 @@ def test_apply_all_dry_run_touches_nothing(dhcp_config_dict, tmp_path, monkeypat
         xdp_state_path=tmp_path / "xdp_state.json",
         pqc_conf_path=pqc_conf_path,
         ssh_kex_dropin_path=ssh_dropin_path,
+        adblock_hosts_path=adblock_hosts_path,
+        adblock_dnsmasq_conf_path=adblock_conf_path,
     )
 
     assert ip_calls == []
     assert not kea_path.exists()
     assert not pqc_conf_path.exists()
     assert not ssh_dropin_path.exists()
-    # xdp_sni_filter, ztna and pqc are all disabled (and were never
-    # attached/enabled/applied) in every test fixture config, which is a
-    # real no-op regardless of dry_run -- there is nothing to "preview"
-    # undoing state that was never applied. Everything else (addresses,
-    # nftables, DHCP) genuinely would change something, hence the
-    # dry-run/"would" wording.
+    assert not adblock_conf_path.exists()
+    # xdp_sni_filter, ztna, pqc and adblocker are all disabled (and were
+    # never attached/enabled/applied) in every test fixture config, which
+    # is a real no-op regardless of dry_run -- there is nothing to
+    # "preview" undoing state that was never applied. Everything else
+    # (addresses, nftables, DHCP) genuinely would change something,
+    # hence the dry-run/"would" wording.
     always_off_substrings = (
         "XDP SNI filter disabled",
         "ZTNA gate disabled",
         "PQC hybrid TLS disabled",
         "sshd not installed",
+        "Ad-block DNS resolver disabled",
     )
     for message in result.messages:
         is_always_off = any(s in message for s in always_off_substrings)
@@ -166,3 +178,94 @@ def test_apply_all_snapshots_and_restores_ztna_sessions_when_enabled(
     # exactly what the snapshot returned.
     assert calls == ["snapshot", ("restore", fake_snapshot)]
     assert any("2 active session(s) preserved" in m for m in result.messages)
+
+
+def test_apply_all_merges_adblock_critical_domains_into_xdp_blocklist_without_persisting(
+    minimal_config_dict, tmp_path, monkeypatch
+):
+    """The adblock-XDP tie-in: config.adblocker.xdp_critical_limit
+    domains get unioned into what frfw.xdp.sync_sni_filter actually
+    receives, but the original `Config` object passed into apply_all
+    (i.e. what would be persisted to config.yaml) must come back
+    completely unchanged -- see provision.py's own comment on why."""
+    monkeypatch.setattr(
+        adblock_dns_mod, "sync_dns_resolver", lambda *a, **kw: adblock_dns_mod.DnsSyncResult(False, "fake")
+    )
+
+    captured = {}
+
+    def fake_sync_sni_filter(config, *, dry_run=False, state_path):
+        captured["config"] = config
+        return xdp_mod.SyncResult(applied=False, message="fake xdp sync")
+
+    monkeypatch.setattr(xdp_mod, "sync_sni_filter", fake_sync_sni_filter)
+
+    minimal_config_dict["xdp_sni_filter"] = {
+        "enabled": True,
+        "interfaces": ["wan"],
+        "blocklist": ["manual.example.com"],
+    }
+    minimal_config_dict["adblocker"] = {
+        "enabled": True,
+        "source_urls": ["https://a.example/hosts"],
+        "xdp_critical_limit": 2,
+    }
+    config = parse_config(minimal_config_dict)
+
+    hosts_path = tmp_path / "adblock.hosts"
+    write_hosts_file({"zzz.example.com", "aaa.example.com", "mmm.example.com"}, hosts_path)
+
+    apply_all(
+        config,
+        backup_dir=tmp_path / "backups",
+        kea_config_path=tmp_path / "kea.json",
+        adblock_hosts_path=hosts_path,
+        adblock_dnsmasq_conf_path=tmp_path / "dnsmasq_adblock.conf",
+    )
+
+    merged = captured["config"]
+    assert merged.xdp_sni_filter.blocklist == ["aaa.example.com", "manual.example.com", "mmm.example.com"]
+    # The Config object apply_all was actually given (what a caller
+    # would go on to persist) must be untouched by the merge.
+    assert config.xdp_sni_filter.blocklist == ["manual.example.com"]
+
+
+def test_apply_all_does_not_touch_xdp_blocklist_when_critical_limit_is_zero(
+    minimal_config_dict, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        adblock_dns_mod, "sync_dns_resolver", lambda *a, **kw: adblock_dns_mod.DnsSyncResult(False, "fake")
+    )
+
+    captured = {}
+
+    def fake_sync_sni_filter(config, *, dry_run=False, state_path):
+        captured["config"] = config
+        return xdp_mod.SyncResult(applied=False, message="fake xdp sync")
+
+    monkeypatch.setattr(xdp_mod, "sync_sni_filter", fake_sync_sni_filter)
+
+    minimal_config_dict["xdp_sni_filter"] = {
+        "enabled": True,
+        "interfaces": ["wan"],
+        "blocklist": ["manual.example.com"],
+    }
+    minimal_config_dict["adblocker"] = {
+        "enabled": True,
+        "source_urls": ["https://a.example/hosts"],
+        "xdp_critical_limit": 0,  # off -- the default
+    }
+    config = parse_config(minimal_config_dict)
+
+    hosts_path = tmp_path / "adblock.hosts"
+    write_hosts_file({"zzz.example.com"}, hosts_path)
+
+    apply_all(
+        config,
+        backup_dir=tmp_path / "backups",
+        kea_config_path=tmp_path / "kea.json",
+        adblock_hosts_path=hosts_path,
+        adblock_dnsmasq_conf_path=tmp_path / "dnsmasq_adblock.conf",
+    )
+
+    assert captured["config"].xdp_sni_filter.blocklist == ["manual.example.com"]

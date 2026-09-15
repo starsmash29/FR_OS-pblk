@@ -25,6 +25,7 @@ class HelperClient(Protocol):
     def rollback(self) -> dict: ...
     def authorize_ztna(self, ip: str, username: str) -> dict: ...
     def ztna_status(self, ip: str) -> dict: ...
+    def refresh_adblock(self) -> dict: ...
 
 
 class SocketHelperClient:
@@ -48,6 +49,9 @@ class SocketHelperClient:
 
     def ztna_status(self, ip: str) -> dict:
         return helper_client.ztna_status(ip, self.socket_path)
+
+    def refresh_adblock(self) -> dict:
+        return helper_client.refresh_adblock(self.socket_path)
 
 
 class UpdateHelperClient(Protocol):

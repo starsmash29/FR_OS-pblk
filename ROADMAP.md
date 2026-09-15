@@ -500,3 +500,76 @@ hibrid handshake végponttól-végpontig futtatása egy tényleges PQC-képes
 build hiányában nyitott, ugyanúgy, ahogy a 4. fázis XDP szűrőjének
 10G/40GbE mérése is az volt valós teszthardver hiányában.
 
+## 9. fázis – Helyi DNS/XDP hirdetésblokkoló — **kész**
+
+Cél: hosts-formátumú blokklisták (StevenBlack "unified" hosts, alapból)
+letöltése, deduplikálása, és kiszolgálása egy 100% lokális, memória-
+hatékony DNS-rezolverből, opcionális kis "kritikus" részhalmazzal a
+meglévő 4. fázis XDP LPM trie-jában. **Pontosítás**: a projektnek eddig
+sosem volt saját DNS-rezolvere (a Kea csak DHCP-t végzett) -- ez a
+fázis vezeti be az elsőt, nem egy meglévőt bővít. Teljes indoklás:
+[ARCHITECTURE.md](ARCHITECTURE.md#helyi-dnsxdp-hirdetésblokkoló-fázis-9).
+
+- [x] **Séma**: `adblocker` konfig-szekció (`enabled`, `source_urls`,
+      `xdp_critical_limit`), teljes `frfw.config.loader` validációval
+      (URL-formátum, "enabled igaz esetén legalább egy forrás
+      kötelező", nem-negatív egész limit).
+- [x] **Letöltés/parse/dedup** (`src/frfw/adblock/__init__.py`): stdlib
+      `urllib.request`-alapú letöltés (a projekt egyetlen meglévő
+      hálózati precedensét, `frfw.update`-et követve -- nincs új
+      futásidejű függőség), `concurrent.futures.ThreadPoolExecutor`-ral
+      párhuzamosítva több forrás esetén, kommentek/IP-k eltávolítása,
+      egyedi domainek kinyerése és `/etc/fr_os/adblock.hosts`-ba
+      deduplikálva, hosts-formátumban visszaírva.
+- [x] **Dedikált DNS-rezolver** (`src/frfw/adblock/dns_service.py`):
+      egy saját, teljes dnsmasq-konfiguráció (`fr-adblock-dns.service`)
+      -- sosem a rendszer alapértelmezett `dnsmasq.service`/
+      `dnsmasq.conf`-ja, ugyanaz a "egy teljes generált config, egy
+      dedikált service" minta, mint a Kea DHCP-motoré.
+- [x] **Letöltés sosem `apply`-on belül**: `firewall-cli adblock-refresh`
+      (napi `fr-adblock-refresh.timer`) vagy a webUI "Refresh now"
+      gombja (új `refresh_adblock` apply-helper socket-parancs) végzi a
+      tényleges letöltést; `frfw.provision.apply_all` csak a resolver
+      fut/áll állapotát egyezteti a configgal, a hálózathoz sosem nyúl.
+- [x] **XDP újrahasznosítás, nem második kernel-térkép**: a "kritikus"
+      domainek a meglévő `xdp_sni_filter.blocklist`/
+      `frfw.xdp.sync_blocklist` mechanizmusába kerülnek, memórián belül
+      egyesítve (`config.yaml`-ba sosem visszaírva) -- `xdp_critical_
+      limit == 0` (alapérték) esetén ez a lépés az XDP-t egyáltalán
+      nem érinti.
+- [x] **WebUI**: `GET /adblock` (élő domain-számláló és resolver-
+      státusz, jogosultság nélkül számolva -- egy hosts-fájl sorainak
+      megszámolása és `systemctl is-active` egyaránt nem igényel
+      root-ot), be/ki kapcsolás + forráslisták + XDP-limit beállítás,
+      "Refresh now" gomb; dashboard-összegzés.
+- [x] Tesztek: `tests/test_adblock.py` (parse/dedup/fetch/refresh, 21
+      eset), `tests/test_adblock_schema.py` (séma/loader, 13 eset),
+      `tests/test_adblock_dns_service.py` (config-renderelés,
+      resolver-egyeztetés, valós `dnsmasq --test` szintaxis-ellenőrzés,
+      18 eset), `tests/webui/test_adblock_routes.py` (9 eset),
+      kiegészített `tests/test_provision.py` (adblock+XDP egyesítés) és
+      `tests/test_helper.py` (`refresh_adblock` socket-parancs) -- a
+      teljes tesztsorozat (425 teszt) regresszió nélkül fut.
+
+**Ismert korlátozás, nyíltan kimondva**: a DHCP-kliensek DNS-szervere
+nincs automatikusan erre a rezolverre átállítva (`DhcpPool.dns_servers`
+változatlanul azt szolgáltatja, amit az admin explicit beállított) --
+ez egy külön, nem triviális integrációs lépés lenne, amit ez a fázis
+tudatosan nem végzett el csendes mellékhatásként. A tényleges blokkolási
+mechanizmust kézzel, élesben megerősítettük (`dig` egy valós dnsmasq-
+példány ellen, `0.0.0.0`-ra oldódó listás domain, felfelé továbbított
+nem-listás domain) -- ez a konkrét élő-lekérdezéses forgatókönyv
+azonban nem került be automatizált tesztként, mert ebben a
+CI-sandboxban egy pytest-en belülről indított dnsmasq-gyermekfolyamat
+nem válaszol lekérdezésekre annak ellenére, hogy a helyes portra
+bind-el -- egy környezeti sajátosság, nem frfw-kód hiba (ld.
+ARCHITECTURE.md a részletes diagnózisért).
+
+**Elfogadási kritérium**: a webUI-n bekapcsolható a hirdetésblokkoló,
+"Refresh now"-ra letöltődnek és deduplikálódnak a konfigurált listák,
+`apply`-ra elindul a dedikált DNS-rezolver a friss listával, és a
+`/adblock` képernyő pontos, élő domain-számot mutat. ✅ Ellenőrizve
+egységtesztekkel, valós `dnsmasq --test` szintaxis-ellenőrzéssel, és
+kézi, élő `dig`-es végpontig-végpontig teszteléssel (ld. fent, miért
+nem automatizált ez utóbbi ebben a sandboxban).
+

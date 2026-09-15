@@ -113,3 +113,30 @@ PQC_OPENSSL_CONF_PATH = Path("/etc/fr_os/webui_pqc_openssl.cnf")
 #: file directly. Lives under OpenSSH's own config tree, not
 #: /etc/fr_os -- it is sshd's file, not frfw's own state.
 SSHD_PQC_DROPIN_PATH = Path("/etc/ssh/sshd_config.d/50-fr_os-pqc-kex.conf")
+
+#: Deduped, hosts-format ad/tracker blocklist (phase 9, see
+#: frfw.adblock) -- `0.0.0.0 <domain>` per line, one entry per unique
+#: domain across every configured `adblocker.source_urls` list. This is
+#: frfw's own generated artifact (like XDP_STATE_PATH/ZTNA_STATE_PATH),
+#: not the resolver's config -- it lives under /etc/fr_os for that
+#: reason, even though only the dnsmasq instance below actually reads
+#: it. Not secret (it's public blocklist data), so -- like the other
+#: state files under this directory -- written with plain default
+#: permissions, not the root:fr_os-webui 0640 pattern reserved for
+#: config.yaml.
+ADBLOCK_HOSTS_PATH = Path("/etc/fr_os/adblock.hosts")
+
+#: Complete, self-contained dnsmasq config frfw generates and owns --
+#: intentionally NOT a drop-in under Debian's /etc/dnsmasq.d/, since
+#: that directory is only auto-included if a `conf-dir=` line is
+#: uncommented in /etc/dnsmasq.conf, which is not guaranteed on a stock
+#: install. frfw instead runs its own dedicated dnsmasq instance
+#: (fr-adblock-dns.service) entirely from this file, the same
+#: "one complete generated config, one dedicated service" pattern Kea
+#: already uses (frfw.kea.KEA_CONFIG_PATH / KEA_SERVICE_NAME) -- it
+#: never touches the system's own dnsmasq.service/dnsmasq.conf, if
+#: either happens to also be installed for something unrelated.
+ADBLOCK_DNSMASQ_CONF_PATH = Path("/etc/fr_os/dnsmasq_adblock.conf")
+
+#: systemd unit name for frfw's dedicated dnsmasq instance (see above).
+ADBLOCK_DNS_SERVICE_NAME = "fr-adblock-dns"

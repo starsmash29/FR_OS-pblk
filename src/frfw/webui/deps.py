@@ -46,6 +46,10 @@ def get_xdp_state_path(request: Request) -> Path:
     return request.app.state.xdp_state_path
 
 
+def get_adblock_hosts_path(request: Request) -> Path:
+    return request.app.state.adblock_hosts_path
+
+
 def get_raw_config(config_path: Path = Depends(get_config_path)) -> dict:
     return load_raw(config_path)
 

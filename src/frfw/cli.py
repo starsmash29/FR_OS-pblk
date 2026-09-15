@@ -12,6 +12,7 @@
     firewall-cli update apply VERSION [--repo OWNER/REPO]
     firewall-cli update rollback [--repo OWNER/REPO]
     firewall-cli xdp-status
+    firewall-cli adblock-refresh [config.yaml]
 
 `config.yaml` defaults to the canonical /etc/fr_os/config.yaml location
 (see frfw.paths) wherever a config path is optional, so that on a real
@@ -36,6 +37,8 @@ from pathlib import Path
 
 from frfw import __version__, netdetect, paths, skeleton, xdp as xdp_mod
 from frfw import update as update_mod
+from frfw.adblock import AdblockError
+from frfw.adblock import refresh as adblock_refresh
 from frfw.admin_account import AdminStore
 from frfw.ai_ids import AIIDSEngine
 from frfw.apply import NftError, list_backups, rollback_last
@@ -196,6 +199,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="show the XDP TLS SNI filter's attach state and packet counters",
     )
     p_xdp_status.set_defaults(handler=_cmd_xdp_status)
+
+    p_adblock_refresh = sub.add_parser(
+        "adblock-refresh",
+        help="download+dedupe the configured ad-block lists (needs root); "
+        "run daily by fr-adblock-refresh.timer, or on demand from the webUI",
+    )
+    add_config_arg(p_adblock_refresh)
+    p_adblock_refresh.set_defaults(handler=_cmd_adblock_refresh)
 
     return parser
 
@@ -372,6 +383,21 @@ def _cmd_xdp_status(args: argparse.Namespace) -> int:
     print("\nPacket counters:")
     for name, count in stats.items():
         print(f"  {name}: {count}")
+    return 0
+
+
+def _cmd_adblock_refresh(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    try:
+        result = adblock_refresh(config.adblocker.source_urls)
+    except AdblockError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    print(result.message)
+    if result.failed_urls:
+        print(f"warning: {len(result.failed_urls)} source(s) failed: {result.failed_urls}",
+              file=sys.stderr)
     return 0
 
 

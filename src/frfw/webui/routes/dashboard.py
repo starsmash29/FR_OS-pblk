@@ -1,13 +1,22 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, Request
 
 from frfw import netdetect
 from frfw import pqc as pqc_mod
+from frfw.adblock import count_blocked_domains
 from frfw.ai_ids import AIIDSEngine
 from frfw.apply import list_backups
 from frfw.config import ConfigError, parse_config
-from frfw.webui.deps import get_ai_ids_state_path, get_helper, get_raw_config, require_login
+from frfw.webui.deps import (
+    get_adblock_hosts_path,
+    get_ai_ids_state_path,
+    get_helper,
+    get_raw_config,
+    require_login,
+)
 from frfw.webui.helper_client import HelperClient
 from frfw.webui.responses import redirect_with
 from frfw.webui.templating import templates
@@ -21,6 +30,7 @@ def dashboard(
     username: str = Depends(require_login),
     raw: dict = Depends(get_raw_config),
     ai_ids_state_path=Depends(get_ai_ids_state_path),
+    adblock_hosts_path: Path = Depends(get_adblock_hosts_path),
 ):
     try:
         config = parse_config(raw)
@@ -33,6 +43,9 @@ def dashboard(
         ai_ids_progress = round(AIIDSEngine(config, ai_ids_state_path).global_learning_progress())
 
     pqc_status = pqc_mod.get_status(config) if config is not None else None
+
+    adblocker_enabled = bool(config is not None and config.adblocker.enabled)
+    adblock_domain_count = count_blocked_domains(adblock_hosts_path) if adblocker_enabled else None
 
     interface_rows = []
     if config is not None:
@@ -64,6 +77,8 @@ def dashboard(
             "ai_ids_enabled": ai_ids_enabled,
             "ai_ids_progress": ai_ids_progress,
             "pqc_status": pqc_status,
+            "adblocker_enabled": adblocker_enabled,
+            "adblock_domain_count": adblock_domain_count,
             "error": request.query_params.get("error"),
             "success": request.query_params.get("success"),
         },

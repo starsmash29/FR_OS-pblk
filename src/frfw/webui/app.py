@@ -23,6 +23,7 @@ from frfw.webui.helper_client import (
     UpdateHelperClient,
 )
 from frfw.webui.routes import (
+    adblock,
     ai_ids,
     auth,
     dashboard,
@@ -47,6 +48,7 @@ def create_app(
     ai_ids_state_path: Path = paths.AI_IDS_STATE_PATH,
     update_state_path: Path = paths.UPDATE_STATE_PATH,
     xdp_state_path: Path = paths.XDP_STATE_PATH,
+    adblock_hosts_path: Path = paths.ADBLOCK_HOSTS_PATH,
 ) -> FastAPI:
     app = FastAPI(title="FR_OS webUI")
     app.state.config_path = config_path
@@ -57,6 +59,7 @@ def create_app(
     app.state.ai_ids_state_path = ai_ids_state_path
     app.state.update_state_path = update_state_path
     app.state.xdp_state_path = xdp_state_path
+    app.state.adblock_hosts_path = adblock_hosts_path
 
     app.include_router(auth.router)
     app.include_router(dashboard.router)
@@ -69,5 +72,6 @@ def create_app(
     app.include_router(xdp.router)
     app.include_router(ztna.router)
     app.include_router(system.router)
+    app.include_router(adblock.router)
 
     return app

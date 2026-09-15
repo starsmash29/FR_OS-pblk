@@ -18,6 +18,7 @@ from frfw.config.errors import ConfigError
 from frfw.config.schema import (
     SELF_ZONE,
     Action,
+    AdblockerConfig,
     AiIdsConfig,
     Config,
     DhcpConfig,
@@ -107,6 +108,7 @@ def parse_config(raw: Any) -> Config:
     xdp_sni_filter = _parse_xdp_sni_filter(raw.get("xdp_sni_filter", {}) or {}, interfaces)
     ztna = _parse_ztna(raw.get("ztna", {}) or {})
     pqc = _parse_pqc(raw.get("pqc", {}) or {})
+    adblocker = _parse_adblocker(raw.get("adblocker", {}) or {})
 
     return Config(
         version=version,
@@ -121,6 +123,7 @@ def parse_config(raw: Any) -> Config:
         xdp_sni_filter=xdp_sni_filter,
         ztna=ztna,
         pqc=pqc,
+        adblocker=adblocker,
     )
 
 
@@ -614,6 +617,46 @@ def _parse_xdp_sni_filter(raw: Any, interfaces: dict[str, Interface]) -> XdpSniF
         enabled=enabled,
         interfaces=xdp_interfaces,
         blocklist=blocklist,
+    )
+
+
+#: Deliberately loose (scheme + non-empty rest) -- this only guards
+#: against an obviously-wrong value (a bare hostname, a typo missing
+#: "http"), not a full RFC 3986 validator; a genuinely malformed URL
+#: still just fails cleanly at fetch time (frfw.adblock.AdblockError),
+#: the same way a bad update.repo or ztna username only fails at use.
+_HTTP_URL_RE = re.compile(r"^https?://\S+$")
+
+
+def _parse_adblocker(raw: Any) -> AdblockerConfig:
+    if not isinstance(raw, dict):
+        raise ConfigError("'adblocker' must be a mapping")
+
+    enabled = raw.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ConfigError("adblocker.enabled must be a boolean")
+
+    urls_raw = raw.get("source_urls", [])
+    if not isinstance(urls_raw, list):
+        raise ConfigError("adblocker.source_urls must be a list")
+    source_urls = []
+    for i, url in enumerate(urls_raw):
+        if not isinstance(url, str) or not _HTTP_URL_RE.match(url):
+            raise ConfigError(f"adblocker.source_urls[{i}]: invalid URL {url!r}")
+        source_urls.append(url)
+    if enabled and not source_urls:
+        raise ConfigError("adblocker.enabled is true but source_urls is empty")
+
+    xdp_critical_limit = raw.get("xdp_critical_limit", 0)
+    if isinstance(xdp_critical_limit, bool) or not isinstance(xdp_critical_limit, int):
+        raise ConfigError("adblocker.xdp_critical_limit must be an integer")
+    if xdp_critical_limit < 0:
+        raise ConfigError("adblocker.xdp_critical_limit must be >= 0")
+
+    return AdblockerConfig(
+        enabled=enabled,
+        source_urls=source_urls,
+        xdp_critical_limit=xdp_critical_limit,
     )
 
 

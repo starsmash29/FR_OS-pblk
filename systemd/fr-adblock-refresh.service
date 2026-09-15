@@ -1,0 +1,13 @@
+[Unit]
+Description=FR_OS ad-block list refresh (frfw.adblock)
+Documentation=https://github.com/starsmash29/FR_OS-pblk
+
+[Service]
+Type=oneshot
+# Unlike fr-ai-ids-retrain.service (unprivileged: it only touches its
+# own mock state), this writes to /etc/fr_os/adblock.hosts -- root, the
+# same way fr-firewall.service itself runs.
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/etc/fr_os
+ExecStart=firewall-cli adblock-refresh /etc/fr_os/config.yaml

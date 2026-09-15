@@ -900,6 +900,129 @@ dokumentum eddig mindenhol állíthatta.
   alkalmazáshoz/újraindításhoz kötött"), nem hiányzó funkció, de
   admin-oldali kézi lépést igényel.
 
+## Helyi DNS/XDP hirdetésblokkoló (fázis 9)
+
+Cél: hosts-formátumú blokklisták (alapból a StevenBlack "unified" lista)
+letöltése, deduplikálása, és a kapott domain-halmaz kiszolgálása egy
+100% lokális DNS-rezolverből -- nagy volumenű (tízezres nagyságrendű)
+listáknál userspace hash-tábla/szöveges fájl, nem kernel-memória --, egy
+opcionális, kis "kritikus" részhalmazzal a már meglévő 4. fázis XDP LPM
+trie-jában. **Fontos, előre tisztázandó pontosítás**: ezt a fázist a
+kérés úgy fogalmazta meg, mintha a projektnek már lenne saját DNS-
+rezolvere ("reload the DNS resolver") -- ellenőrizve: **nem volt**
+(a DHCP-t végző Kea sosem végzett DNS-feloldást, ld. `frfw.kea` saját
+docstringjét, ami kifejezetten "nem dnsmasq"-ot mond). Ez a fázis
+vezeti be az első DNS-rezolvert a projektbe, nem egy meglévőt bővít.
+
+### Miért dnsmasq, és miért egy saját, dedikált példány
+
+A "lightweight, legacy x86 hardveren is fusson" megkötés dnsmasq-ra
+mutat unbound helyett (lényegesen kisebb erőforrás-igény, natív
+hosts-fájl-alapú blokkolás `addn-hosts=`-szal -- pontosan a kért
+"host-file" mechanizmus). A `frfw.adblock.dns_service` modul viszont
+tudatosan **nem** a Debian-csomag alapértelmezett `dnsmasq.service`/
+`dnsmasq.conf`-ját bővíti drop-in-nel: a `/etc/dnsmasq.d/` könyvtár
+csak akkor töltődik be automatikusan, ha a `conf-dir=` sor ki van
+kommentezve az `/etc/dnsmasq.conf`-ban, ami friss telepítésen nem
+garantált, és a gép egyébként is futtathat rendszer-dnsmasq-ot valami
+mástól függetlenül. Ehelyett egy teljes, önálló konfigurációt generál
+(`frfw.paths.ADBLOCK_DNSMASQ_CONF_PATH`) és egy saját, dedikált
+systemd unitot vezérel (`fr-adblock-dns.service`) -- pontosan ugyanaz a
+"egy teljes generált config, egy dedikált service" minta, amit a Kea
+DHCP-motor is használ (`frfw.kea.KEA_CONFIG_PATH`/`KEA_SERVICE_NAME`).
+
+### Letöltés sosem `apply`-on belül
+
+A blokklisták több megabájtosak és több tízezer sorosak lehetnek; ezeket
+minden `firewall-cli apply`-nál (ami egy admin-munkamenet közben akár
+sokszor lefuthat) újra letölteni pazarló és lassú lenne. A letöltés+
+parse+dedup ezért egy külön, explicit művelet: `firewall-cli
+adblock-refresh` (napi `fr-adblock-refresh.timer`-rel meghívva, ld.
+lent) vagy a webUI "Refresh now" gombja (ami az apply-helper egy új,
+`refresh_adblock` socket-parancsán megy át -- a letöltés maga nem
+igényel jogosultságot, de a végleges írás `/etc/fr_os` alá és ez a
+teljes művelet a webUI processzből sosem futhat közvetlenül, ld. lent).
+`frfw.provision.apply_all` ezzel szemben csak azt egyezteti, hogy a
+dnsmasq-példány fut-e (vagy áll-e) a confignak megfelelően, és a már
+korábban letöltött listát szolgálja ki -- sosem nyúl a hálózathoz.
+
+### Letöltés: `urllib.request`, nem új függőség
+
+A projekt egyetlen meglévő "tölts le valamit az internetről" precedense
+(`frfw.update._fetch_json`) a stdlib `urllib.request`-et használja,
+explicit `timeout` paraméterrel, retry nélkül, egyetlen "seam"
+függvényen keresztül -- sem `requests`, sem `httpx` nem szerepel futásidejű
+függőségként ebben a projektben (a `pyproject.toml` `dev` extra-jában
+lévő `httpx` kizárólag a FastAPI `TestClient` belső szállítója, nem
+alkalmazáskód). `frfw.adblock` ugyanezt a mintát követi
+(`_fetch_url`), és a kért "aszinkron/non-blocking" viselkedést egy
+stdlib `concurrent.futures.ThreadPoolExecutor`-ral éri el (I/O-kötött
+feladat, nem CPU-kötött, a GIL nem számít) -- valódi `asyncio`/`aiohttp`
+helyett, ami új függőség lenne ezen a projekten sosem indokolt módon.
+
+### A meglévő XDP LPM trie újrahasznosítása, nem egy második térkép
+
+A kérés "kritikus részhalmaz" ötletét szó szerint, a meglévő
+`frfw.xdp.sync_blocklist`/`XdpSniFilterConfig.blocklist` mechanizmus
+újrahasznosításával valósítottuk meg -- **nem** egy második BPF map
+bevezetésével. `frfw.provision.apply_all` az XDP-lépés előtt, memórián
+belül (a `config.yaml`-ba sosem visszaírva)
+`dataclasses.replace`-szel egyesíti a `xdp_sni_filter.blocklist`-et a
+már letöltött ad-block lista első `adblocker.xdp_critical_limit`
+(alapból 0, azaz kikapcsolva) domainjével -- pontosan úgy, ahogy egy
+ZTNA-engedélyezett IP sem kerül be a tűzfalszabályok fájljába.
+`xdp_critical_limit == 0` esetén ez a lépés nem nyúl az XDP-hez
+egyáltalán -- a hirdetésblokkoló bekapcsolása sosem kapcsolja be
+csendben az XDP-t is.
+
+### Vezérlősík: config-jelölés, sosem közvetlen beavatkozás
+
+`config.adblocker` ugyanazt a "szerkeszd a nyers YAML dict-et, validálj,
+mentsd a privilegizált helperen keresztül" mintát követi, mint minden
+más képernyő. Az élő domain-számláló (`GET /adblock`) és a resolver
+fut/nem-fut jelvény közvetlenül, jogosultság nélkül a webUI processzben
+számolódik: egy hosts-formátumú fájl sorainak megszámolása és egy
+`systemctl is-active` lekérdezés egyaránt nem igényel root-ot vagy
+`CAP_NET_ADMIN`-t (ellentétben a ZTNA kapu kernel-állapot-olvasásával),
+így itt nincs szükség a helperen történő round trip-re.
+
+### Valós, kézzel megerősített ellenőrzés
+
+A tényleges blokkolási mechanizmust (nem csak a `dnsmasq --test`
+szintaxis-ellenőrzést, ami magában a tesztsorozatban is fut) kézzel,
+élesben megerősítettük: egy valós dnsmasq-példányt indítottunk a
+generált configgal egy próba-porton, és `dig`-gel lekérdezve a
+blokklistán szereplő domain `0.0.0.0`-ra oldódott fel, míg egy nem
+listázott domain esetén dnsmasq továbbította a lekérdezést felfelé (nem
+az addn-hosts-ból szolgálta ki) -- pontosan a várt viselkedés. Ez a
+konkrét élő-lekérdezéses forgatókönyv **nem** automatizált tesztként
+került be: ismételten reprodukálható sima shell-ből és sima `python3
+-c`-ből (ugyanazzal a `subprocess.Popen`-hívással), de nem a projekt
+saját pytest-folyamatán belülről ebben a sandboxban -- a dnsmasq
+gyermekfolyamat a helyes portra bind-el (`ss -ulnp`-vel megerősítve),
+mégsem válaszol egy teljesen külön shellből érkező lekérdezésre, ami
+kizárja, hogy ez az frfw-kód hibája lenne. Ez egy folyamat-/hálózati
+névtér-jellegű sajátossága ennek a CI-sandboxnak a pytest alatti
+gyermekfolyamat-indításnak, nem egy állandóan skippelt vagy flaky tesztet
+érdemlő hiba -- ld. `tests/test_adblock_dns_service.py` saját, részletes
+kommentjét.
+
+### Nyitott pontok
+
+- **A DHCP kliensek DNS-szervere nincs automatikusan erre a
+  rezolverre állítva.** `DhcpPool.dns_servers` változatlanul azt
+  szolgáltatja, amit az admin explicit módon beállított -- a Kea
+  DHCP-konfiguráció automatikus átírása a router saját LAN-címére mint
+  DNS-szerverre külön, nem triviális integrációs lépés lenne (érintené
+  minden meglévő DHCP-pool viselkedését), amit ez a fázis tudatosan nem
+  végzett el csendes mellékhatásként.
+- **Nincs valós hibrid handshake-szintű Wireshark-elemzés** a letöltési
+  folyamatról (a HTTPS-kapcsolat GitHub/StevenBlack felé az egyetlen
+  bizalmi határ, ugyanaz a korlátozás, mint a frissítési mechanizmusnál).
+- **Élő dnsmasq-lekérdezéses automatizált teszt hiánya** (ld. fent) --
+  ha egy jövőbeli CI-környezetben ez a sandbox-sajátosság nem áll fenn,
+  érdemes újra megpróbálni automatizálni.
+
 ## Nem lezárt döntések
 
 Az alábbi pontok fázis közben, konkrét hardver/környezet ismeretében dőlnek el

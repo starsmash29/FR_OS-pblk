@@ -238,6 +238,34 @@ class PqcConfig:
 
 
 @dataclass(frozen=True)
+class AdblockerConfig:
+    """Settings for the local DNS-level ad/tracker blocker (phase 9, see
+    frfw.adblock).
+
+    `source_urls` are hosts-format blocklists (e.g. StevenBlack's unified
+    hosts list) `firewall-cli adblock-refresh` downloads, parses and
+    dedupes into a local hosts-format file (`frfw.paths.ADBLOCK_HOSTS_PATH`)
+    that a dedicated, frfw-managed dnsmasq instance serves from -- this is
+    the "bulk" tier: tens of thousands of domains is cheap in a text file
+    and a userspace hash table, and would not be cheap as kernel memory.
+
+    `xdp_critical_limit`, if > 0, additionally feeds up to that many of
+    the same domains into the existing Phase 4 XDP LPM trie
+    (`frfw.xdp.sync_blocklist`) as a small, kernel-enforced "critical"
+    subset -- reusing that one shared trie rather than adding a second
+    kernel-side map, per the explicit "don't bloat the kernel stack"
+    design constraint. Defaults to 0 (off): XDP requires its own compiled
+    program and interface attachment, which is a bigger commitment than
+    "block ads" alone should silently trigger -- an admin who already has
+    xdp_sni_filter enabled opts in explicitly by raising this above 0.
+    """
+
+    enabled: bool = False
+    source_urls: list[str] = field(default_factory=list)
+    xdp_critical_limit: int = 0
+
+
+@dataclass(frozen=True)
 class Config:
     version: int
     hostname: str
@@ -251,3 +279,4 @@ class Config:
     xdp_sni_filter: XdpSniFilterConfig = field(default_factory=XdpSniFilterConfig)
     ztna: ZtnaConfig = field(default_factory=ZtnaConfig)
     pqc: PqcConfig = field(default_factory=PqcConfig)
+    adblocker: AdblockerConfig = field(default_factory=AdblockerConfig)

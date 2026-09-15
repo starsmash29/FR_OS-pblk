@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Ad-Block - FR_OS{% endblock %}
+{% block content %}
+<h1>Ad-Block</h1>
+<p class="muted">
+  Downloads hosts-format blocklists (StevenBlack's unified list by
+  default), dedupes them, and serves the result from a dedicated,
+  frfw-managed DNS resolver (dnsmasq). Optionally also pushes a small
+  "critical" subset into the existing Phase 4 XDP kernel filter --
+  everything else stays in the resolver's hosts file, not the kernel,
+  to keep kernel memory use bounded.
+</p>
+
+<div class="card status-card">
+  <span class="badge {{ badge_class }}">{{ status_label }}</span>
+  <dl>
+    <dt>Domains loaded</dt>
+    <dd>{{ domain_count }}</dd>
+  </dl>
+</div>
+
+<div class="card">
+  <h3>Settings</h3>
+  <form method="post" action="/adblock/settings">
+    <label class="checkbox-row"><input type="checkbox" name="enabled" value="true" {{ "checked" if enabled }}> Enabled</label>
+
+    <label for="source_urls">Source lists (one URL per line)</label>
+    <textarea id="source_urls" name="source_urls" rows="4" placeholder="{{ default_source_url }}">{{ source_urls_text }}</textarea>
+    <p class="muted">Leave empty to use the default: {{ default_source_url }}</p>
+
+    <label for="xdp_critical_limit">XDP critical-subset size (0 = off)</label>
+    <input type="number" id="xdp_critical_limit" name="xdp_critical_limit" min="0" value="{{ xdp_critical_limit }}">
+    <p class="muted">
+      Feeds up to this many domains into the existing <a href="/xdp">TLS SNI
+      filter</a>'s kernel blocklist -- only takes effect if that filter is
+      also enabled; leave at 0 to keep everything DNS-side.
+    </p>
+
+    <button type="submit">Save</button>
+  </form>
+</div>
+
+<div class="card">
+  <h3>Refresh</h3>
+  <p class="muted">
+    Downloads and dedupes the configured source lists right now, instead
+    of waiting for the daily <code>fr-adblock-refresh.timer</code>. Can
+    take a while depending on list size and network speed.
+  </p>
+  <form method="post" action="/adblock/refresh">
+    <button type="submit">Refresh now</button>
+  </form>
+</div>
+{% endblock %}

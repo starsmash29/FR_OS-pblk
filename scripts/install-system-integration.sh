@@ -67,6 +67,9 @@ install -m 0644 "$REPO_ROOT/systemd/fr-ai-ids-retrain.service" "$SYSTEMD_DIR/"
 install -m 0644 "$REPO_ROOT/systemd/fr-ai-ids-retrain.timer" "$SYSTEMD_DIR/"
 install -m 0644 "$REPO_ROOT/systemd/fr-update-helper.socket" "$SYSTEMD_DIR/"
 install -m 0644 "$REPO_ROOT/systemd/fr-update-helper.service" "$SYSTEMD_DIR/"
+install -m 0644 "$REPO_ROOT/systemd/fr-adblock-refresh.service" "$SYSTEMD_DIR/"
+install -m 0644 "$REPO_ROOT/systemd/fr-adblock-refresh.timer" "$SYSTEMD_DIR/"
+install -m 0644 "$REPO_ROOT/systemd/fr-adblock-dns.service" "$SYSTEMD_DIR/"
 
 echo "==> Reloading systemd"
 systemctl daemon-reload
@@ -80,6 +83,7 @@ Done. Next steps:
   systemctl enable --now fr-webui        # https://<router-ip>/
   systemctl enable --now fr-ai-ids-retrain.timer   # daily mock AI IDS retrain
   systemctl enable --now fr-update-helper.socket   # webUI's Update screen
+  systemctl enable --now fr-adblock-refresh.timer  # daily ad-block list refresh (needs 'dnsmasq' installed)
 
 The webUI's self-signed TLS cert is generated on its first start
 (stored under $WEBUI_STATE_DIR); your browser will warn about it until
@@ -87,4 +91,12 @@ you replace it with a real certificate.
 
 Note: the AI IDS/IPS screen is a mock pending phase 4's real traffic
 capture -- see ROADMAP.md and the frfw.ai_ids module docstring.
+
+Note: the ad-block screen (phase 9) needs the 'dnsmasq' package
+installed (frfw runs its own dedicated instance, fr-adblock-dns.service
+-- it never touches the system's default dnsmasq.service/dnsmasq.conf,
+if either is also installed for something unrelated). Nothing is
+fetched until either 'firewall-cli adblock-refresh' is run once (or
+the webUI's "Refresh now" button is clicked) -- the daily timer above
+only keeps an already-populated list current.
 EOF

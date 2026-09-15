@@ -29,6 +29,8 @@ from pathlib import Path
 import yaml
 
 from frfw import kea, paths, ztna
+from frfw.adblock import AdblockError
+from frfw.adblock import refresh as adblock_refresh
 from frfw.apply import NftError, rollback_last
 from frfw.config import ConfigError, load_config, parse_config
 from frfw.helper.protocol import MAX_LINE_BYTES
@@ -86,9 +88,12 @@ def _handle_request(request: dict, server: "ApplyHelperServer") -> dict:
         if cmd == "ztna_status":
             return _handle_ztna_status(request, server)
 
+        if cmd == "refresh_adblock":
+            return _handle_refresh_adblock(server)
+
         return {"ok": False, "message": f"unknown command {cmd!r}"}
     except (
-        ConfigError, NftError, IfaddrError, KeaError, ZtnaError, PqcError,
+        ConfigError, NftError, IfaddrError, KeaError, ZtnaError, PqcError, AdblockError,
         FileNotFoundError, yaml.YAMLError,
     ) as exc:
         return {"ok": False, "message": str(exc)}
@@ -141,6 +146,18 @@ def _handle_ztna_status(request: dict, server: "ApplyHelperServer") -> dict:
     }
 
 
+def _handle_refresh_adblock(server: "ApplyHelperServer") -> dict:
+    config = load_config(server.config_path)
+    source_urls = config.adblocker.source_urls
+    result = adblock_refresh(source_urls, hosts_path=server.adblock_hosts_path)
+    return {
+        "ok": True,
+        "message": result.message,
+        "domain_count": result.domain_count,
+        "failed_urls": result.failed_urls,
+    }
+
+
 def _write_atomic(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_suffix(path.suffix + ".tmp")
@@ -176,12 +193,14 @@ class ApplyHelperServer(socketserver.UnixStreamServer):
         backup_dir: Path = paths.BACKUP_DIR,
         kea_config_path: Path = kea.KEA_CONFIG_PATH,
         ztna_state_path: Path = paths.ZTNA_STATE_PATH,
+        adblock_hosts_path: Path = paths.ADBLOCK_HOSTS_PATH,
         systemd_socket: socket.socket | None = None,
     ) -> None:
         self.config_path = config_path
         self.backup_dir = backup_dir
         self.kea_config_path = kea_config_path
         self.ztna_state_path = ztna_state_path
+        self.adblock_hosts_path = adblock_hosts_path
         self._owns_socket_file = systemd_socket is None
 
         if systemd_socket is not None:
@@ -207,6 +226,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--backup-dir", default=str(paths.BACKUP_DIR))
     parser.add_argument("--kea-config", default=str(kea.KEA_CONFIG_PATH))
     parser.add_argument("--ztna-state", default=str(paths.ZTNA_STATE_PATH))
+    parser.add_argument("--adblock-hosts", default=str(paths.ADBLOCK_HOSTS_PATH))
     args = parser.parse_args(argv)
 
     server = ApplyHelperServer(
@@ -215,6 +235,7 @@ def main(argv: list[str] | None = None) -> int:
         backup_dir=Path(args.backup_dir),
         kea_config_path=Path(args.kea_config),
         ztna_state_path=Path(args.ztna_state),
+        adblock_hosts_path=Path(args.adblock_hosts),
         systemd_socket=_systemd_provided_socket(),
     )
     try:

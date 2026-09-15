@@ -40,6 +40,13 @@
 </div>
 {% endif %}
 
+{% if adblocker_enabled %}
+<div class="card">
+  <h3>Ad-Block <span class="muted">(see <a href="/adblock">Ad-Block</a>)</span></h3>
+  <p><strong>{{ adblock_domain_count }}</strong> domains currently blocked</p>
+</div>
+{% endif %}
+
 <div class="card">
   <h3>Interfaces</h3>
   <table>
