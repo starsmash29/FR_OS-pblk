@@ -20,6 +20,10 @@ htmlcov/
 .idea/
 *.swp
 
+# BPF build artifacts (compiled locally from bpf/*.c, never source)
+bpf/*.o
+bpf/*.su
+
 # Local runtime artifacts (generated configs, not source)
 *.nft.generated
 /state/
