@@ -19,6 +19,7 @@ from frfw import adblock as adblock_mod
 from frfw import apply as apply_mod
 from frfw import bruteforce as bruteforce_mod
 from frfw import conntrack as conntrack_mod
+from frfw import hwinfo as hwinfo_mod
 from frfw import ids_quarantine as ids_quarantine_mod
 from frfw import ztna as ztna_mod
 from frfw.admin_account import hash_password
@@ -79,6 +80,12 @@ def running_server(tmp_path, monkeypatch):
             ip, ttl = args[-2].split(" timeout ")
             jail_set[ip] = int(ttl.rstrip("s"))
             return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        if args[:2] == ["-j", "list"]:
+            import json as _json
+            elems = [{"elem": {"val": ip, "expires": ttl}} for ip, ttl in jail_set.items()]
+            return subprocess.CompletedProcess(
+                args, 0, stdout=_json.dumps({"nftables": [{"set": {"elem": elems}}]}), stderr=""
+            )
         return subprocess.CompletedProcess(args, 1, stdout="", stderr="unsupported in fake")
 
     monkeypatch.setattr(bruteforce_mod, "_run_nft", fake_bruteforce_run_nft)
@@ -107,6 +114,12 @@ def running_server(tmp_path, monkeypatch):
     # directly in test_conntrack.py; here we only care that the
     # "conntrack_sample" command relays whatever read_snapshot() returns.
     monkeypatch.setattr(conntrack_mod, "read_snapshot", lambda: [])
+
+    # frfw.hwinfo's own dmidecode-output parsing is exercised directly
+    # in test_hwinfo.py; here we only care that "hw_ram_info" relays
+    # whatever read_ram_modules() returns. Empty by default (as if
+    # dmidecode weren't installed, the common case).
+    monkeypatch.setattr(hwinfo_mod, "read_ram_modules", lambda: [])
 
     socket_path = tmp_path / "apply.sock"
     config_path = tmp_path / "config.yaml"
@@ -369,3 +382,52 @@ def test_conntrack_sample_relays_flows(running_server, monkeypatch):
 def test_conntrack_sample_empty_by_default(running_server):
     response = client.conntrack_sample(running_server)
     assert response == {"ok": True, "flows": []}
+
+
+# --- metrics-support status commands (bruteforce_status / ztna_sessions_status / hw_ram_info) ---
+
+
+def test_bruteforce_status_empty_by_default(running_server):
+    response = client.bruteforce_status(running_server)
+    assert response == {"ok": True, "banned": [], "count": 0}
+
+
+def test_bruteforce_status_reflects_kernel_state_after_ban(running_server):
+    client.ban_ip("10.0.0.5", 100, running_server)
+    response = client.bruteforce_status(running_server)
+    assert response["ok"] is True
+    assert response["count"] == 1
+    assert response["banned"][0]["ip"] == "10.0.0.5"
+
+
+def test_ztna_sessions_status_empty_when_gate_disabled(running_server):
+    response = client.ztna_sessions_status(running_server)
+    assert response == {"ok": True, "sessions": [], "count": 0}
+
+
+def test_ztna_sessions_status_reflects_kernel_state_after_authorization(running_server, tmp_path):
+    _enable_ztna(tmp_path / "config.yaml")
+    client.authorize_ztna("10.0.0.6", "alice", running_server)
+
+    response = client.ztna_sessions_status(running_server)
+    assert response["ok"] is True
+    assert response["count"] == 1
+    assert response["sessions"][0]["ip"] == "10.0.0.6"
+
+
+def test_hw_ram_info_empty_when_dmidecode_unavailable(running_server):
+    response = client.hw_ram_info(running_server)
+    assert response == {"ok": True, "modules": []}
+
+
+def test_hw_ram_info_relays_parsed_modules(running_server, monkeypatch):
+    from frfw.hwinfo import RamModule
+
+    monkeypatch.setattr(
+        hwinfo_mod, "read_ram_modules", lambda: [RamModule(part_number="M471A1K43CB1-CTD", speed_mhz=2667)]
+    )
+    response = client.hw_ram_info(running_server)
+    assert response == {
+        "ok": True,
+        "modules": [{"part_number": "M471A1K43CB1-CTD", "speed_mhz": 2667}],
+    }

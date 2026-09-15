@@ -42,6 +42,15 @@ from __future__ import annotations
 #: root-only (confirmed by hand: `-r--r----- root root`), so the
 #: unprivileged `fr-ai-ids` daemon polls it through here rather than
 #: reading it directly, the same reasoning as the ZTNA status read above.
+#: "bruteforce_status"/"ztna_sessions_status" (see frfw.metrics, phase
+#: 12) are read-only *count* queries the metrics exporter uses for its
+#: fros_bruteforce_banned_ips/fros_ztna_active_sessions gauges -- same
+#: kernel-state-needs-CAP_NET_ADMIN reasoning as every other nft read on
+#: this socket.
+#: "hw_ram_info" (see frfw.hwinfo) shells out to `dmidecode`, which
+#: needs root to read the SMBIOS/DMI tables -- the metrics exporter's
+#: only genuinely privileged hardware fact (everything else it reads
+#: comes from world-readable /proc, /sys, or `os.statvfs`).
 COMMANDS = (
     "ping",
     "apply",
@@ -54,6 +63,9 @@ COMMANDS = (
     "quarantine_ip",
     "ids_quarantine_status",
     "conntrack_sample",
+    "bruteforce_status",
+    "ztna_sessions_status",
+    "hw_ram_info",
 )
 
 #: Maximum accepted request/response line length, to bound memory use from

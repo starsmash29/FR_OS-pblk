@@ -1475,6 +1475,206 @@ against a real OpenSSL 3.5+/OpenSSH 9.9+" gap.
   IPv4-only today); ICMP and any IPv6 conntrack lines are silently
   skipped, not counted as connection attempts either way.
 
+## Lightweight native Prometheus metrics exporter (phase 12)
+
+Goal: a `GET /metrics` endpoint exposing both software (per-subsystem
+counts already computed elsewhere in this project) and hardware
+(CPU/RAM/storage) telemetry in Prometheus text exposition format, with
+zero external dependencies -- no `prometheus_client`, no `psutil` -- to
+keep the RAM/CPU footprint appropriate for the same legacy x86 hardware
+every other phase targets.
+
+**A numbering correction, stated up front**: the request that started
+this phase called it "Phase 11". That number was already used, in this
+same project history, for the real-time AI IDS/IPS work completed
+immediately before this one (see the section above). This work is
+therefore documented as **phase 12** instead, to keep ARCHITECTURE.md's
+and ROADMAP.md's phase numbering sequential and unambiguous -- a purely
+cosmetic correction, not a design change.
+
+### Where every metric actually comes from
+
+Every *software* metric is a thin read of state this project already
+computes for its own webUI screens -- nothing new was invented to
+produce them:
+
+| Metric | Source |
+|---|---|
+| `fros_interface_bytes_total` | `/sys/class/net/<device>/statistics/{rx,tx}_bytes` (world-readable, confirmed `-r--r--r--` by hand) |
+| `fros_xdp_status`, `fros_xdp_blocked_connections_total` | `frfw.xdp.get_attached()`/`get_stats()` -- already called unprivileged from `frfw.webui.routes.xdp` today |
+| `fros_adblock_total_domains` | `frfw.adblock.count_blocked_domains()` -- already used on the dashboard |
+| `fros_ztna_active_sessions` | a new `ztna_sessions_status` helper command wrapping a new `frfw.ztna.list_authorized()` |
+| `fros_bruteforce_banned_ips` | a new `bruteforce_status` helper command wrapping a new `frfw.bruteforce.list_banned()` |
+| `fros_ai_ids_quarantined_hosts` | the existing `ids_quarantine_status` helper command (phase 11) |
+
+`list_authorized()`/`list_banned()` are the only genuinely new pieces of
+kernel-facing code here, and both are one-line wrappers around each
+module's existing, already-tested `_list_set_elements()` -- the exact
+same function `frfw.ids_quarantine.list_quarantined()` already exposed
+publicly for its own status command. No new kernel logic, just a second
+public name for logic that already existed.
+
+Every *hardware* metric is read directly from `/proc`, `/sys`, or
+`os.statvfs` -- as the request specified, no library:
+
+| Metric | Source |
+|---|---|
+| `fros_hw_cpu_info`, `fros_hw_cpu_mhz` | `/proc/cpuinfo` ("model name"/"cpu MHz"), with `/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq` preferred for MHz when present |
+| `fros_hw_cpu_usage_ratio` | two samples of `/proc/stat`'s aggregate `cpu` line, 100ms apart (see below) |
+| `fros_hw_ram_usage_bytes`, `fros_hw_ram_total_bytes` | `/proc/meminfo` (`MemTotal` - `MemAvailable`) |
+| `fros_hw_storage_info`, `_usage_bytes`, `_total_bytes` | `/proc/mounts` (filtered to real block devices) + `os.statvfs()` per mount |
+| `fros_hw_ram_info` (model/speed) | the one exception -- see below |
+
+### The one genuinely privileged hardware fact: RAM module identity
+
+Every hardware metric above needs no privilege at all -- confirmed by
+hand, the same way this project always confirms a permission claim
+rather than assuming one (`ls -la /sys/class/net/lo/statistics/rx_bytes`
+→ `-r--r--r--`). The one exception the request itself named as an
+example is real: a RAM module's part number and rated speed live in the
+SMBIOS/DMI tables, readable only via `dmidecode`, which needs root (it
+reads `/dev/mem` or `/sys/firmware/dmi/tables/DMI` depending on
+kernel/distro) -- the same shape of finding this project has already
+made for `nft` and `/proc/net/nf_conntrack`. `frfw.hwinfo.read_ram_modules()`
+therefore only runs from a new `hw_ram_info` command on the privileged
+apply-helper socket, following the identical privilege-separation
+pattern the request itself asked for and every prior phase already
+established -- the unprivileged webUI process never shells out to
+`dmidecode` itself.
+
+Each populated memory slot becomes one `fros_hw_ram_info{model=...,
+speed_mhz=...}` sample (value always 1) rather than trying to collapse
+multiple, possibly different, installed sticks into a single label pair
+-- a machine with two identical modules produces one time series (both
+map to the same label combination), two different modules produce two.
+
+`dmidecode` is not installed in this project's own dev sandbox, so its
+real-output code path could not be exercised end-to-end here -- see
+"Scope of verification" below for the same honest disclosure this
+project has made for every phase whose full positive path needed
+hardware this sandbox doesn't have (phase 4's 10G NICs, phase 8's
+OpenSSL 3.5+, phase 9's live dnsmasq queries).
+
+### CPU usage: a deliberate 100ms blocking sample, not a background sampler
+
+Computing a *rate* (CPU busy time / elapsed time) needs two points in
+time, not one. Two designs were possible: keep a previous `/proc/stat`
+sample in shared, cross-request state (the way `node_exporter` and
+similar long-lived daemons do it), or take both samples inside the
+request handler itself. The webUI is not a dedicated, single-purpose
+metrics daemon -- it is the same process serving every other page -- so
+the first option would mean either a module-level mutable dict (a
+thread-safety hazard under uvicorn's thread pool, the same class of
+issue `frfw.webui.auth_rate_limiter.BruteforceGuard` already had to
+solve with an explicit lock) or a background thread whose sole job is
+to keep a cache warm for a rarely-hit endpoint. A Prometheus scrape is,
+by convention, a low-frequency (typically 15-30s interval),
+latency-tolerant operation -- so `frfw.metrics._read_cpu_usage_ratio()`
+simply reads `/proc/stat` twice, 100ms apart, inside the request itself.
+This adds a fixed, small, predictable 100ms to that one endpoint's
+response time and needs no shared state, no lock, and no background
+thread -- the simpler and more robust choice for what this endpoint
+actually is.
+
+### Error isolation: one bad metric family must never break the whole scrape
+
+`frfw.metrics.generate_metrics_text()` gathers each metric family
+independently and discards (never fails) any one that raises --
+documented in the module's own docstring as a deliberate, narrow
+exception to this project's usual preference for catching specific
+exception types (the same already-established exception this project
+makes for `frfw.webui.config_store`'s/the test suite's own
+`FakeHelper.save_config`'s catch-all). The reasoning is specific to this
+one boundary: a dozen unrelated subsystems (`OSError` from a missing
+`/proc` file on an unusual kernel, `HelperError` from a apply-helper
+hiccup, `HwInfoError` from `dmidecode`, and whatever a *future* metric
+source raises) all feed into one response, and enumerating every
+possible exception type across all of them here would make adding a
+future metric family a silent way to reintroduce exactly the fragility
+this design avoids -- a new subsystem raising a type nobody added to an
+explicit list would break the entire `/metrics` response instead of
+just omitting its own family. Confirmed directly with a test that
+injects a broken helper method and checks every *other* family still
+renders (`test_generate_metrics_text_survives_a_broken_helper`).
+
+An invalid on-disk `config.yaml` (fails `parse_config`) is handled the
+same way the dashboard route already handles it: the two config-
+dependent families (interface bytes, XDP status) are skipped, everything
+else (hardware metrics, the helper-backed counts, none of which need
+the *current* config to be valid) still renders -- a broken config must
+never turn a monitoring endpoint into a 500, which is exactly the moment
+an operator most needs it to still work.
+
+### Public, unauthenticated -- a deliberate security tradeoff, stated honestly
+
+`GET /metrics` carries no `require_login` dependency, per the request's
+explicit "unprivileged public/telemetry endpoint" wording -- this
+matches how Prometheus itself, and essentially every metrics exporter in
+existence, works: a scrape target is expected to sit behind network-
+level access control, not a login form, because Prometheus's own scrape
+configuration has no support for an interactive login flow (only static
+bearer tokens/basic auth, which would need yet another credential to
+manage). The tradeoff this creates: anyone who can reach the webUI's
+HTTPS port at all -- not just an authenticated admin -- can read the
+count of currently banned/quarantined hosts, interface byte counters,
+and this machine's hardware inventory. On a homelab router whose webUI
+is only reachable from a trusted LAN, this is the same exposure model as
+the webUI's own self-signed TLS certificate warning: acceptable for the
+target deployment, but worth stating rather than leaving implicit. A
+production-minded deployment that wants network-level restriction can
+gate the scrape source at the firewall layer (e.g. a rule permitting
+port 443 from the monitoring host's zone only) -- this project's own
+rule engine already supports exactly that kind of restriction.
+
+### Scope of verification
+
+- Real, hands-on confirmation (not assumed) that `/sys/class/net/*/
+  statistics/*` is world-readable while `/proc/net/nf_conntrack` is not,
+  the exact permission boundary this design depends on.
+- `frfw.metrics.generate_metrics_text()` exercised end-to-end against
+  this sandbox's real `/proc`, `/sys`, and `os.statvfs` -- not just a
+  fake tree shaped like one -- confirming real CPU model/MHz/usage,
+  real RAM totals, and real (correctly filtered) storage mounts render
+  as valid Prometheus samples.
+- The full rendered output verified structurally against the Prometheus
+  text exposition format's actual grammar (a `# HELP`/`# TYPE` pair
+  before any sample line for a given metric name, `name{labels} value`
+  or `name value` for every sample line, escaped label values) via a
+  dedicated regex-based structural check, not just "does it look right"
+  -- this project doesn't have `promtool` or `prometheus_client`
+  available to validate against (the latter is explicitly excluded by
+  the request itself), so this hand-written structural check is the
+  verification.
+- `frfw.hwinfo`'s dmidecode-output parser tested against a hand-written
+  sample matching real `dmidecode -t memory` output (the format is
+  well-documented and stable; the sample includes both a populated slot
+  and an empty "No Module Installed" slot) -- **not** run against a real
+  `dmidecode` binary, since this sandbox doesn't have one installed (the
+  same disclosed gap as phase 8's "no real OpenSSL 3.5+" and phase 9's
+  "no live dnsmasq query in this sandbox"). A `shutil.which`-gated real
+  test is included for a host that does have it.
+- A real bug the parser's own unit tests caught before it shipped:
+  `dmidecode` reports `"Configured Memory Speed: Unknown"` for an
+  installed module whose speed wasn't auto-negotiated -- a naive `a or
+  b` fallback chain never falls through to the `"Speed"` field in that
+  case, because `"Unknown"` is a non-empty, truthy string. Fixed by
+  checking whether the preferred field actually parses to a non-zero
+  value before falling back, not just whether it's present.
+
+### Open issues
+
+- **`fros_hw_cpu_usage_ratio`/`fros_hw_cpu_mhz` are system-wide
+  aggregates, not per-core** -- a deliberate simplification matching the
+  single, unlabeled gauge the request specified; per-core breakdown
+  would need a `core` label and a design decision this phase didn't need
+  to make.
+- **The `/metrics` endpoint is unauthenticated** -- see above; mitigated
+  at the network layer, not in-process, by design.
+- **No caching/rate-limiting on the endpoint itself** -- a very frequent
+  scrape interval (well under Prometheus's typical 15s default) would
+  repeat the 100ms CPU-usage sample every time; not a concern at any
+  normal scrape interval, but not guarded against either.
+
 ## Open decisions
 
 The points below get settled during their respective phase, once the

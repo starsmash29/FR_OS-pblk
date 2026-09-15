@@ -760,3 +760,99 @@ ids-status`) and the webUI's AI IDS screen. Real attack-traffic
 end-to-end validation (e.g. an actual `nmap` scan through a live
 conntrack table) is open, for lack of an attacker/target host pair in
 this sandbox -- see ARCHITECTURE.md's scope-of-verification note.
+
+## Phase 12 – Lightweight native Prometheus metrics exporter — **done**
+
+A `GET /metrics` endpoint exposing both software (per-subsystem counts
+already computed elsewhere in this project) and hardware (CPU/RAM/
+storage) telemetry in Prometheus text exposition format, with zero
+external dependencies -- no `prometheus_client`, no `psutil` -- parsing
+`/proc`, `/sys`, and `os.statvfs` directly. **A numbering correction,
+stated up front**: the request that started this phase called it "Phase
+11", a number already used for the AI IDS/IPS work completed immediately
+before it (Phase 11 above); this work is documented as **phase 12**
+instead to keep the numbering sequential, a purely cosmetic correction.
+Full rationale: [ARCHITECTURE.md](ARCHITECTURE.md#lightweight-native-prometheus-metrics-exporter-phase-12).
+
+- [x] **`frfw.metrics`**: a small native Prometheus text-exposition
+      renderer (`MetricFamily`/`render()` -- `# HELP`/`# TYPE` plus
+      `name{labels} value` sample lines, with label-value escaping and
+      float formatting handled by hand) and one reader function per
+      metric family, each isolated so a broken family never breaks the
+      whole scrape (see below).
+- [x] **Software metrics**: `fros_interface_bytes_total{device,
+      direction}` (`/sys/class/net/*/statistics/{rx,tx}_bytes`),
+      `fros_xdp_status`/`fros_xdp_blocked_connections_total` (existing
+      `frfw.xdp.get_attached()`/`get_stats()`), `fros_adblock_total_domains`
+      (existing `frfw.adblock.count_blocked_domains()`),
+      `fros_ztna_active_sessions`, `fros_bruteforce_banned_ips`,
+      `fros_ai_ids_quarantined_hosts` -- the last three via new/existing
+      read-only helper-socket status commands
+      (`ztna_sessions_status`/`bruteforce_status`/`ids_quarantine_status`)
+      wrapping each module's own `_list_set_elements()`, no new kernel
+      logic.
+- [x] **Hardware metrics**: `fros_hw_cpu_info`/`_mhz` (`/proc/cpuinfo`,
+      preferring `/sys/.../cpufreq/scaling_cur_freq` for MHz),
+      `fros_hw_cpu_usage_ratio` (two `/proc/stat` samples, 100ms apart,
+      taken inside the request itself -- no shared cross-request state,
+      no new lock), `fros_hw_ram_usage_bytes`/`_total_bytes`
+      (`/proc/meminfo`), `fros_hw_storage_info`/`_usage_bytes`/
+      `_total_bytes` (`/proc/mounts` filtered to real block devices +
+      `os.statvfs()` per mount) -- confirmed against this sandbox's real
+      `/proc`/`/sys`, not just a fake tree shaped like one.
+- [x] **`frfw.hwinfo`**: the one genuinely privileged hardware fact --
+      RAM module part number/speed lives in the SMBIOS/DMI tables,
+      readable only via `dmidecode`, which needs root -- confirmed by
+      hand the same way every other permission claim in this project is
+      confirmed. Parses `dmidecode -t memory`'s "Memory Device" records
+      into `fros_hw_ram_info{model, speed_mhz}` samples, called only from
+      a new `hw_ram_info` command on the privileged apply-helper socket,
+      never directly from the unprivileged webUI. A real bug the parser's
+      own tests caught: `dmidecode` reports `"Configured Memory Speed:
+      Unknown"` (a non-empty, truthy string) for a module whose speed
+      wasn't auto-negotiated, so a naive `a or b` fallback chain never
+      fell through to the `"Speed"` field -- fixed by checking the
+      preferred field actually parses to a non-zero value first.
+- [x] **`GET /metrics`**: no `require_login` dependency, per the
+      request's own "unprivileged public/telemetry endpoint" wording --
+      matching how Prometheus scrape targets universally work, and stated
+      honestly as a security tradeoff (mitigated at the network layer,
+      not in-process) rather than left implicit. Returns
+      `text/plain; version=0.0.4`; survives an invalid on-disk config the
+      same way the dashboard already does (config-dependent families
+      skipped, everything else still renders).
+- [x] Tests: `tests/test_hwinfo.py` (9 cases, a hand-written realistic
+      `dmidecode` sample plus a `shutil.which`-gated real test),
+      `tests/test_metrics.py` (36 cases -- rendering, every metric
+      family, real-system CPU/RAM/storage reads, and top-level
+      error-isolation), `tests/webui/test_metrics_routes.py` (7 cases via
+      a real FastAPI `TestClient`, including a full structural regex
+      check of the Prometheus grammar), plus additions to
+      `tests/test_helper.py`/`tests/webui/conftest.py` for the three new
+      helper commands -- the full suite (576 tests, 1 skipped for the
+      missing `dmidecode` binary) runs with no regressions.
+
+**Corrections to the original request** (see ARCHITECTURE.md for full
+detail): the "Phase 11" label collision described above; confirmed that
+zero external dependencies (no `numpy` either) was sufficient for the
+whole exporter, native string formatting only; `dmidecode` is not
+installed in this project's own dev sandbox, so its real-output code path
+was verified against a hand-written, format-accurate sample rather than
+a live binary -- the same class of disclosed gap this project has made
+for hardware/software it doesn't have on every prior phase that needed
+it (phase 4's 10G NICs, phase 8's OpenSSL 3.5+, phase 9's live dnsmasq
+queries).
+
+**Acceptance criterion**: `GET /metrics`, reachable with no
+authentication, returns a well-formed Prometheus text-exposition
+document containing every requested software and hardware metric name,
+each with correct `# HELP`/`# TYPE` annotations, reflecting this
+machine's real interface/XDP/adblock/ZTNA/brute-force/AI-IDS state and
+real CPU/RAM/storage readings -- all without the webUI process running a
+single root-privileged command itself. ✅ Verified with unit tests, a
+dedicated structural regex check of the full rendered output against the
+Prometheus exposition grammar, and real end-to-end reads against this
+sandbox's actual `/proc`/`/sys`/`os.statvfs`. The one path not
+exercised against a real binary is `dmidecode` itself, for lack of one
+installed in this sandbox -- see ARCHITECTURE.md's scope-of-verification
+note.

@@ -38,6 +38,9 @@ class FakeHelper:
         self.refresh_adblock_result = {"ok": True, "message": "3 deduped domains written", "domain_count": 3}
         self.banned: list[tuple[str, int]] = []
         self.quarantined: dict[str, int] = {}  # ip -> expires_in, set by tests directly
+        self.banned_ips: dict[str, int] = {}  # ip -> expires_in, set by tests directly
+        self.ztna_sessions: dict[str, int] = {}  # ip -> expires_in, set by tests directly
+        self.ram_modules: list[dict] = []  # [{"part_number": ..., "speed_mhz": ...}, ...]
 
     def ping(self):
         return {"ok": True, "message": "pong"}
@@ -95,6 +98,17 @@ class FakeHelper:
     def ids_quarantine_status(self) -> dict:
         quarantined = [{"ip": ip, "expires_in": exp} for ip, exp in self.quarantined.items()]
         return {"ok": True, "quarantined": quarantined, "count": len(quarantined)}
+
+    def bruteforce_status(self) -> dict:
+        banned = [{"ip": ip, "expires_in": exp} for ip, exp in self.banned_ips.items()]
+        return {"ok": True, "banned": banned, "count": len(banned)}
+
+    def ztna_sessions_status(self) -> dict:
+        sessions = [{"ip": ip, "expires_in": exp} for ip, exp in self.ztna_sessions.items()]
+        return {"ok": True, "sessions": sessions, "count": len(sessions)}
+
+    def hw_ram_info(self) -> dict:
+        return {"ok": True, "modules": self.ram_modules}
 
 
 class FakeUpdateHelper:

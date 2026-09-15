@@ -111,3 +111,15 @@ def ids_quarantine_status(socket_path: Path = paths.APPLY_SOCKET_PATH) -> dict:
 
 def conntrack_sample(socket_path: Path = paths.APPLY_SOCKET_PATH) -> dict:
     return send_command({"cmd": "conntrack_sample"}, socket_path)
+
+
+def bruteforce_status(socket_path: Path = paths.APPLY_SOCKET_PATH) -> dict:
+    return send_command({"cmd": "bruteforce_status"}, socket_path)
+
+
+def ztna_sessions_status(socket_path: Path = paths.APPLY_SOCKET_PATH) -> dict:
+    return send_command({"cmd": "ztna_sessions_status"}, socket_path)
+
+
+def hw_ram_info(socket_path: Path = paths.APPLY_SOCKET_PATH) -> dict:
+    return send_command({"cmd": "hw_ram_info"}, socket_path)

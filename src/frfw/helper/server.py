@@ -28,7 +28,7 @@ from pathlib import Path
 
 import yaml
 
-from frfw import bruteforce, conntrack, ids_quarantine, kea, paths, ztna
+from frfw import bruteforce, conntrack, hwinfo, ids_quarantine, kea, paths, ztna
 from frfw.adblock import AdblockError
 from frfw.adblock import refresh as adblock_refresh
 from frfw.apply import NftError, rollback_last
@@ -36,6 +36,7 @@ from frfw.bruteforce import BruteforceError
 from frfw.config import ConfigError, load_config, parse_config
 from frfw.conntrack import ConntrackError
 from frfw.helper.protocol import MAX_LINE_BYTES
+from frfw.hwinfo import HwInfoError
 from frfw.ids_quarantine import IdsQuarantineError
 from frfw.ifaddr import IfaddrError
 from frfw.kea import KeaError
@@ -106,10 +107,20 @@ def _handle_request(request: dict, server: "ApplyHelperServer") -> dict:
         if cmd == "conntrack_sample":
             return _handle_conntrack_sample()
 
+        if cmd == "bruteforce_status":
+            return _handle_bruteforce_status()
+
+        if cmd == "ztna_sessions_status":
+            return _handle_ztna_sessions_status()
+
+        if cmd == "hw_ram_info":
+            return _handle_hw_ram_info()
+
         return {"ok": False, "message": f"unknown command {cmd!r}"}
     except (
         ConfigError, NftError, IfaddrError, KeaError, ZtnaError, PqcError, AdblockError,
-        BruteforceError, IdsQuarantineError, ConntrackError, FileNotFoundError, yaml.YAMLError,
+        BruteforceError, IdsQuarantineError, ConntrackError, HwInfoError, FileNotFoundError,
+        yaml.YAMLError,
     ) as exc:
         return {"ok": False, "message": str(exc)}
 
@@ -214,6 +225,24 @@ def _handle_conntrack_sample() -> dict:
             for f in flows
         ],
     }
+
+
+def _handle_bruteforce_status() -> dict:
+    banned = [{"ip": ip, "expires_in": remaining} for ip, remaining in bruteforce.list_banned()]
+    return {"ok": True, "banned": banned, "count": len(banned)}
+
+
+def _handle_ztna_sessions_status() -> dict:
+    sessions = [{"ip": ip, "expires_in": remaining} for ip, remaining in ztna.list_authorized()]
+    return {"ok": True, "sessions": sessions, "count": len(sessions)}
+
+
+def _handle_hw_ram_info() -> dict:
+    modules = [
+        {"part_number": m.part_number, "speed_mhz": m.speed_mhz}
+        for m in hwinfo.read_ram_modules()
+    ]
+    return {"ok": True, "modules": modules}
 
 
 def _write_atomic(path: Path, text: str) -> None:

@@ -30,6 +30,7 @@ from frfw.webui.routes import (
     dashboard,
     dhcp,
     interfaces,
+    metrics,
     nat,
     rules,
     system,
@@ -76,5 +77,6 @@ def create_app(
     app.include_router(ztna.router)
     app.include_router(system.router)
     app.include_router(adblock.router)
+    app.include_router(metrics.router)
 
     return app

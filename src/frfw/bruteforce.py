@@ -74,6 +74,17 @@ def ban_ip(ip: str, duration_seconds: int) -> None:
     )
 
 
+def list_banned() -> list[tuple[str, int]]:
+    """Live (ip, remaining_seconds) pairs for every currently jailed IP
+    -- a status query, e.g. for the metrics exporter's
+    `fros_bruteforce_banned_ips` gauge (see frfw.metrics). Unlike
+    `snapshot_before_reload()` below, this does NOT swallow nft errors:
+    a status query should surface a genuine problem (e.g. `nft` itself
+    missing) rather than silently reporting zero banned IPs -- the same
+    distinction `frfw.ids_quarantine.list_quarantined()` makes."""
+    return _list_set_elements()
+
+
 def snapshot_before_reload() -> list[tuple[str, int]]:
     """Best-effort (ip, remaining_seconds) pairs for every currently
     jailed IP, to hand to `restore_after_reload()` after a full ruleset

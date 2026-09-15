@@ -77,6 +77,15 @@ and XDP SNI-blocklist-hit patterns against its own recent baseline, and
 quarantines a flagged IP in the kernel (`ids_quarantine` nftables set)
 via the privileged apply-helper.
 
+**Phase 12 (lightweight native Prometheus metrics exporter)** — done. A
+public, unauthenticated `GET /metrics` endpoint in Prometheus text
+exposition format, zero external dependencies (no `prometheus_client`,
+no `psutil`) — software metrics (interfaces, XDP, ad-block, ZTNA,
+brute-force, AI IDS/IPS) read from state this project already computes,
+hardware metrics (CPU/RAM/storage) parsed directly from `/proc`, `/sys`
+and `os.statvfs`, with RAM module identity (the one fact that needs
+root, via `dmidecode`) routed through the privileged apply-helper.
+
 Full rationale for every phase: [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Quick start

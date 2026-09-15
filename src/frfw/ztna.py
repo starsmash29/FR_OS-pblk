@@ -114,6 +114,16 @@ def get_authorization(ip: str, *, state_path: Path = paths.ZTNA_STATE_PATH) -> Z
     return None
 
 
+def list_authorized() -> list[tuple[str, int]]:
+    """Live (ip, remaining_seconds) pairs for every currently authorized
+    ZTNA client -- a status query, e.g. for the metrics exporter's
+    `fros_ztna_active_sessions` gauge (see frfw.metrics). Unlike
+    `snapshot_before_reload()` below, this does NOT swallow nft errors --
+    the same distinction `frfw.ids_quarantine.list_quarantined()` makes
+    for its own status-query counterpart."""
+    return _list_set_elements()
+
+
 def snapshot_before_reload() -> list[tuple[str, int]]:
     """Best-effort (ip, remaining_seconds) pairs for every currently
     authorized client, to hand to `restore_after_reload()` after a full

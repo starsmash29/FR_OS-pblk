@@ -28,6 +28,9 @@ class HelperClient(Protocol):
     def refresh_adblock(self) -> dict: ...
     def ban_ip(self, ip: str, duration_seconds: int = 3600) -> dict: ...
     def ids_quarantine_status(self) -> dict: ...
+    def bruteforce_status(self) -> dict: ...
+    def ztna_sessions_status(self) -> dict: ...
+    def hw_ram_info(self) -> dict: ...
 
 
 class SocketHelperClient:
@@ -60,6 +63,15 @@ class SocketHelperClient:
 
     def ids_quarantine_status(self) -> dict:
         return helper_client.ids_quarantine_status(self.socket_path)
+
+    def bruteforce_status(self) -> dict:
+        return helper_client.bruteforce_status(self.socket_path)
+
+    def ztna_sessions_status(self) -> dict:
+        return helper_client.ztna_sessions_status(self.socket_path)
+
+    def hw_ram_info(self) -> dict:
+        return helper_client.hw_ram_info(self.socket_path)
 
 
 class UpdateHelperClient(Protocol):
