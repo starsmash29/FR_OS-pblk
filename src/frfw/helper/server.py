@@ -18,6 +18,7 @@ itself for local development/testing.
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import os
 import socket
@@ -27,13 +28,14 @@ from pathlib import Path
 
 import yaml
 
-from frfw import kea, paths
+from frfw import kea, paths, ztna
 from frfw.apply import NftError, rollback_last
 from frfw.config import ConfigError, load_config, parse_config
 from frfw.helper.protocol import MAX_LINE_BYTES
 from frfw.ifaddr import IfaddrError
 from frfw.kea import KeaError
 from frfw.provision import apply_all
+from frfw.ztna import ZtnaError
 
 _SD_LISTEN_FDS_START = 3
 
@@ -77,9 +79,65 @@ def _handle_request(request: dict, server: "ApplyHelperServer") -> dict:
             _write_atomic(server.config_path, text)
             return {"ok": True, "message": f"Config saved to {server.config_path}"}
 
+        if cmd == "authorize_ztna":
+            return _handle_authorize_ztna(request, server)
+
+        if cmd == "ztna_status":
+            return _handle_ztna_status(request, server)
+
         return {"ok": False, "message": f"unknown command {cmd!r}"}
-    except (ConfigError, NftError, IfaddrError, KeaError, FileNotFoundError, yaml.YAMLError) as exc:
+    except (
+        ConfigError, NftError, IfaddrError, KeaError, ZtnaError,
+        FileNotFoundError, yaml.YAMLError,
+    ) as exc:
         return {"ok": False, "message": str(exc)}
+
+
+def _handle_authorize_ztna(request: dict, server: "ApplyHelperServer") -> dict:
+    ip = request.get("ip")
+    username = request.get("username")
+    if not isinstance(ip, str) or not ip:
+        return {"ok": False, "message": "'ip' is required"}
+    if not isinstance(username, str) or not username:
+        return {"ok": False, "message": "'username' is required"}
+    try:
+        ipaddress.IPv4Address(ip)
+    except ValueError as exc:
+        return {"ok": False, "message": f"invalid IPv4 address {ip!r}: {exc}"}
+
+    config = load_config(server.config_path)
+    if not config.ztna.enabled:
+        return {"ok": False, "message": "ZTNA gate is disabled in the current config"}
+    if not any(u.username == username for u in config.ztna.users):
+        # Authentication itself already happened in the (unprivileged)
+        # webUI process before it ever sent this command (see
+        # frfw.webui.routes.ztna) -- this is a defense-in-depth check
+        # against a stale/forged request naming a user that no longer
+        # exists, not a second authentication step.
+        return {"ok": False, "message": f"no such ZTNA user {username!r}"}
+
+    ztna.authorize_ip(ip, config.ztna.session_ttl_seconds, username, state_path=server.ztna_state_path)
+    return {
+        "ok": True,
+        "message": f"{ip} authorized as {username!r} for {config.ztna.session_ttl_seconds}s",
+        "expires_in": config.ztna.session_ttl_seconds,
+    }
+
+
+def _handle_ztna_status(request: dict, server: "ApplyHelperServer") -> dict:
+    ip = request.get("ip")
+    if not isinstance(ip, str) or not ip:
+        return {"ok": False, "message": "'ip' is required"}
+
+    auth = ztna.get_authorization(ip, state_path=server.ztna_state_path)
+    if auth is None:
+        return {"ok": True, "authorized": False}
+    return {
+        "ok": True,
+        "authorized": True,
+        "username": auth.username,
+        "expires_in": auth.expires_in_seconds,
+    }
 
 
 def _write_atomic(path: Path, text: str) -> None:
@@ -116,11 +174,13 @@ class ApplyHelperServer(socketserver.UnixStreamServer):
         *,
         backup_dir: Path = paths.BACKUP_DIR,
         kea_config_path: Path = kea.KEA_CONFIG_PATH,
+        ztna_state_path: Path = paths.ZTNA_STATE_PATH,
         systemd_socket: socket.socket | None = None,
     ) -> None:
         self.config_path = config_path
         self.backup_dir = backup_dir
         self.kea_config_path = kea_config_path
+        self.ztna_state_path = ztna_state_path
         self._owns_socket_file = systemd_socket is None
 
         if systemd_socket is not None:
@@ -145,6 +205,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", default=str(paths.CONFIG_PATH))
     parser.add_argument("--backup-dir", default=str(paths.BACKUP_DIR))
     parser.add_argument("--kea-config", default=str(kea.KEA_CONFIG_PATH))
+    parser.add_argument("--ztna-state", default=str(paths.ZTNA_STATE_PATH))
     args = parser.parse_args(argv)
 
     server = ApplyHelperServer(
@@ -152,6 +213,7 @@ def main(argv: list[str] | None = None) -> int:
         Path(args.config),
         backup_dir=Path(args.backup_dir),
         kea_config_path=Path(args.kea_config),
+        ztna_state_path=Path(args.ztna_state),
         systemd_socket=_systemd_provided_socket(),
     )
     try:

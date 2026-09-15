@@ -575,6 +575,7 @@ Kanonikus elérési utak (`frfw.paths`):
 | Ruleset-backupok | `/etc/fr_os/backups/ruleset-<timestamp>.nft` (alapból 10 megőrizve, root-only) |
 | WebUI saját állapota | `/etc/fr_os/webui/` (TLS kulcspár, admin fiók, session-secret, AI IDS mock-állapot — fr_os-webui tulajdonában, ld. lent) |
 | Apply-helper socket | `/run/fr_os/apply.sock` |
+| ZTNA session-állapot (csak megjelenítési célra, ld. lent) | `/etc/fr_os/ztna_state.json` |
 
 systemd unit-ok (`systemd/`):
 
@@ -643,6 +644,108 @@ kivétel a "minden root-műveletet a helper végez" szabály alól, mert olvasá
 Lásd még: [`frfw/helper/`](src/frfw/helper/) (szerver + kliens),
 [`systemd/fr-apply-helper.socket`](systemd/fr-apply-helper.socket),
 [`systemd/fr-webui.service`](systemd/fr-webui.service).
+
+## Identitás-alapú Zero Trust hálózati hozzáférés (ZTNA, fázis 7)
+
+Cél: egy homelab-barát, 100% lokális (nincs Okta/Azure AD/felhő-függőség)
+identitás-alapú belépési kapu, ami a LAN-t vagy egy kijelölt "Production
+Server Zone"-t csak sikeres bejelentkezés után enged elérni -- úgy, hogy
+az adatsík (a tényleges forgalom szűrése) továbbra is 100%-ban
+kernel-térben (nftables) fut, 40 Gbps-es sebességig sem lassítva le
+semmit egy userspace proxy-n (Envoy/Squid) átvezetéssel. A vezérlősík (a
+bejelentkezés) és az adatsík (a csomagszűrés) szigorúan külön van
+választva -- ez a szakasz mindkettőt tárgyalja.
+
+### Séma és a `require_ztna` jelölés újrahasznosítása
+
+`frfw.config.schema.ZtnaConfig` (`enabled`, `session_ttl_seconds`,
+`users: list[ZtnaUser]`) egy önálló, felhasználónevet és jelszó-hash-t
+tároló felhasználó-listát ad a confighoz -- külön a webUI admin fiókjától
+(`frfw.admin_account`), mert ez egy más célközönség (végfelhasználók, nem
+a rendszergazda). Ahelyett, hogy egy új "védett zóna" fogalmat vezettünk
+volna be, a meglévő `Rule` dataclass kapott egy `require_ztna: bool`
+mezőt -- egy szabály így a from_zone/to_zone/proto/port/cím-illesztés
+mellett *opcionálisan* megköveteli, hogy a forrás-IP a ZTNA-halmazban
+legyen, ami ugyanazt a motort használja fel, nem egy párhuzamos
+absztrakciót. A jelszavak tárolása PBKDF2-HMAC-SHA256 hash (a
+`frfw.admin_account`-tal megegyező, 200k iterációs sémával) -- ez
+*hashelés*, nem visszafejthető titkosítás, ami tárolt jelszavakhoz a
+helyes megközelítés.
+
+### Adatsík: nftables named set kernel-natív timeout-tal
+
+`frfw.nft.builder` egy `authenticated_ztna_users` nevű, `flags
+dynamic,timeout` halmazt renderel (csak ha `ztna.enabled`), és minden
+`require_ztna: true` szabályhoz hozzáfűzi az `ip saddr
+@authenticated_ztna_users` illesztést. A halmazba kerülő elemek saját,
+egyedi timeout-tal kapnak felvételt (`add element ... { <ip> timeout
+<n>s }`) -- ez azt jelenti, hogy a lejárt IP-ket a **kernel** dobja ki
+saját maga, nulla cron jobbal vagy userspace háttérfolyamattal. Ezt
+valós teszttel is megerősítettük: egy 5 másodperces timeout-tal felvett
+elem 6 másodpercen belül eltűnt a halmazból, futó kód nélkül (ld.
+`tests/test_ztna.py`).
+
+### Vezérlősík: bejelentkezés a privilegizált helperen keresztül
+
+A webUI nem futhat rootként, tehát nem módosíthatja közvetlenül a kernel
+nftables-állapotát -- ez a projekt már meglévő privilégium-szeparációját
+követi (ld. Biztonsági modell fent). `GET/POST /ztna/login`
+(`frfw.webui.routes.ztna`) a `ZtnaConfig.users`-ben tárolt hash ellen
+ellenőriz (időzítés-biztos módon -- ismeretlen felhasználónévre is
+lefut a hash-számítás, hogy a válaszidőből ne legyen felhasználónév
+kitalálható), majd sikeres belépéskor a klienskérés forrás-IP-jét egy új
+`authorize_ztna` unix-socket paranccsal (`frfw.helper.protocol/server/
+client`) küldi el a root alatt futó `fr-apply-helper`-nek, ami felveszi
+az IP-t a kernel halmazba a configban beállított TTL-lel.
+
+Fontos, közvetlen teszttel megerősített felismerés: még a *csak-olvasó*
+`nft list` is root-ot/`CAP_NET_ADMIN`-t igényel (`runuser -u nobody --
+nft list ruleset` → "Operation not permitted"). Emiatt a `GET
+/ztna/status` (a felhasználó hátralévő session-idejét mutató publikus
+oldal) sem olvashatja közvetlenül a kernel-állapotot -- ez is egy új
+`ztna_status` helper-parancson keresztül megy, ugyanúgy, mint az
+`authorize_ztna`. Nincs külön böngésző-oldali session-cookie: az
+egyetlen tekintélyforrás az, hogy a forrás-IP *éppen most* benne
+van-e a kernel halmazban, amit minden `/ztna/status` hívás élőben
+lekérdez a helperen keresztül -- szándékosan nincs egy második,
+elcsúszni képes állapot-forrás a böngészőben.
+
+A megjelenítés-célú `/etc/fr_os/ztna_state.json` (ip → {username,
+authorized_at}) *nem* tekintélyforrás, csak arra kell, hogy a `/ztna`
+admin-képernyő emberi nevet tudjon mutatni egy IP mellett -- a tényleges
+engedélyezést mindig a kernel halmaz dönti el.
+
+### A `flush ruleset` probléma és a snapshot/restore megoldás
+
+`frfw.nft.builder.build_ruleset()` minden alkalmazáskor egy hatókör
+nélküli `flush ruleset`-tel kezd, ami minden apply-nál törli a *teljes*
+kernel nftables-állapotot (az összes táblát/családot) -- ez egy
+bejelentkezett ZTNA session-t egy teljesen független config-módosítás
+(pl. egy DHCP-beállítás mentése) mellékhatásaként is kijelentkeztetne.
+Ezt `frfw.provision.apply_all` oldja meg: az nftables-alkalmazási lépést
+`frfw.ztna.snapshot_before_reload()` / `restore_after_reload()`
+zárójelezi (csak ha `ztna.enabled` és nem dry-run) -- a snapshot a
+`flush` előtt lekéri az aktuálisan élő elemeket a *hátralévő*
+TTL-ükkel együtt, a restore pedig az új ruleset betöltése után
+visszaírja őket, így egy admin-oldali config-mentés nem null-ázza le
+véletlenül egy másik felhasználó aktív munkamenetét. Ezt egy valós,
+nem mockolt integrációs teszt is lefedi (`test_ztna.py`): egy valós nft
+halmazt flush-el, majd megerősíti, hogy a restore helyes hátralévő
+TTL-lel hozza vissza a session-öket.
+
+### Nyitott pontok
+
+- **Nincs rate-limiting/lockout** a `/ztna/login`-on -- ez konzisztens
+  a meglévő admin `/login` route-tal (az sem véd brute-force ellen), de
+  egyik sem jobb ennél; ha ez éles környezetben szempont, mindkettőt
+  együtt érdemes megoldani (pl. `fail2ban` a naplók alapján, ami már
+  most is a projekt naplózási modelljéhez illeszkedne).
+- A `/xdp` webUI képernyő (ld. fázis 4) valószínűleg ugyanazzal a
+  problémával küzd, amit itt tudatosan elkerültünk: ha bármelyik route
+  közvetlenül `nft`/`bpftool` hívást tesz a nem-root webUI processzből,
+  az vagy hibázik jogosultság hiányában, vagy (rosszabb esetben) a
+  webUI-t futtató service kapott ehhez felesleges jogosultságot. Ez itt
+  nem lett javítva -- külön ellenőrzést/fázist igényelne.
 
 ## Nem lezárt döntések
 

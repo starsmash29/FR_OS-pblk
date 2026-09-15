@@ -70,3 +70,13 @@ def rollback(socket_path: Path = paths.APPLY_SOCKET_PATH) -> dict:
 
 def save_config(yaml_text: str, socket_path: Path = paths.APPLY_SOCKET_PATH) -> dict:
     return send_command({"cmd": "save_config", "yaml": yaml_text}, socket_path)
+
+
+def authorize_ztna(
+    ip: str, username: str, socket_path: Path = paths.APPLY_SOCKET_PATH
+) -> dict:
+    return send_command({"cmd": "authorize_ztna", "ip": ip, "username": username}, socket_path)
+
+
+def ztna_status(ip: str, socket_path: Path = paths.APPLY_SOCKET_PATH) -> dict:
+    return send_command({"cmd": "ztna_status", "ip": ip}, socket_path)

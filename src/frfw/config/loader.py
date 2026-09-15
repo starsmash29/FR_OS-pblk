@@ -32,6 +32,8 @@ from frfw.config.schema import (
     UpdateConfig,
     XdpSniFilterConfig,
     Zone,
+    ZtnaConfig,
+    ZtnaUser,
 )
 
 _NAME_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
@@ -41,7 +43,18 @@ _TIME_OF_DAY_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 _HOSTNAME_RE = re.compile(
     r"^(?!-)[a-zA-Z0-9-]{1,63}(?<!-)(\.(?!-)[a-zA-Z0-9-]{1,63}(?<!-))*$"
 )
+#: ZTNA gate usernames: deliberately looser than zone/interface/rule
+#: names (_NAME_RE) since these are end-user account names, not
+#: infrastructure identifiers -- but still tight enough to be a safe nft
+#: comment string, so no whitespace/quotes/etc.
+_ZTNA_USERNAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 _SUPPORTED_VERSION = 1
+#: Bounds for ztna.session_ttl_seconds: 1 minute minimum (long enough to
+#: be meaningful, short enough to be useful for testing) to 30 days
+#: maximum (nftables/the kernel timer wheel handles far longer, but a
+#: month is already well past "temporary session" for this feature).
+_ZTNA_MIN_TTL_SECONDS = 60
+_ZTNA_MAX_TTL_SECONDS = 30 * 24 * 3600
 
 #: Must match bpf/xdp_sni_filter.c's MAX_SNI_LEN #define -- kept in sync
 #: by tests/test_xdp_sni_key.py rather than a shared import, since one
@@ -91,6 +104,7 @@ def parse_config(raw: Any) -> Config:
     ai_ids = _parse_ai_ids(raw.get("ai_ids", {}) or {})
     update = _parse_update(raw.get("update", {}) or {})
     xdp_sni_filter = _parse_xdp_sni_filter(raw.get("xdp_sni_filter", {}) or {}, interfaces)
+    ztna = _parse_ztna(raw.get("ztna", {}) or {})
 
     return Config(
         version=version,
@@ -103,6 +117,7 @@ def parse_config(raw: Any) -> Config:
         ai_ids=ai_ids,
         update=update,
         xdp_sni_filter=xdp_sni_filter,
+        ztna=ztna,
     )
 
 
@@ -237,6 +252,7 @@ def _parse_rules(raw: Any, zones: dict[str, Zone]) -> list[Rule]:
             _validate_network(dst_address, f"Rule {name!r} dst_address")
 
         log = bool(body.get("log", False))
+        require_ztna = bool(body.get("require_ztna", False))
 
         rules.append(
             Rule(
@@ -249,6 +265,7 @@ def _parse_rules(raw: Any, zones: dict[str, Zone]) -> list[Rule]:
                 src_address=src_address,
                 dst_address=dst_address,
                 log=log,
+                require_ztna=require_ztna,
             )
         )
     return rules
@@ -584,3 +601,58 @@ def _parse_xdp_sni_filter(raw: Any, interfaces: dict[str, Interface]) -> XdpSniF
         interfaces=xdp_interfaces,
         blocklist=blocklist,
     )
+
+
+def _parse_ztna(raw: Any) -> ZtnaConfig:
+    if not isinstance(raw, dict):
+        raise ConfigError("'ztna' must be a mapping")
+
+    enabled = raw.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ConfigError("ztna.enabled must be a boolean")
+
+    ttl = raw.get("session_ttl_seconds", 8 * 3600)
+    if (
+        not isinstance(ttl, int)
+        or isinstance(ttl, bool)
+        or not (_ZTNA_MIN_TTL_SECONDS <= ttl <= _ZTNA_MAX_TTL_SECONDS)
+    ):
+        raise ConfigError(
+            "ztna.session_ttl_seconds must be an integer between "
+            f"{_ZTNA_MIN_TTL_SECONDS} and {_ZTNA_MAX_TTL_SECONDS} (seconds)"
+        )
+
+    users_raw = raw.get("users", [])
+    if not isinstance(users_raw, list):
+        raise ConfigError("ztna.users must be a list")
+    users: list[ZtnaUser] = []
+    seen_usernames: set[str] = set()
+    for i, body in enumerate(users_raw):
+        if not isinstance(body, dict):
+            raise ConfigError(f"ztna.users[{i}] must be a mapping")
+
+        username = body.get("username")
+        if not isinstance(username, str) or not _ZTNA_USERNAME_RE.match(username):
+            raise ConfigError(f"ztna.users[{i}]: invalid username {username!r}")
+        if username in seen_usernames:
+            raise ConfigError(f"ztna.users[{i}]: duplicate username {username!r}")
+        seen_usernames.add(username)
+
+        # Always an already-hashed password by the time it reaches config
+        # loading -- frfw.webui.routes.ztna hashes a submitted plaintext
+        # password (via frfw.admin_account.hash_password, the same PBKDF2
+        # implementation the single admin account uses) before it's ever
+        # written to config.yaml. This loader doesn't re-validate the
+        # hash's own format beyond "non-empty string": that's
+        # frfw.admin_account.verify_password's job at login time, and it
+        # already fails closed (returns False) on anything malformed.
+        password_hash = body.get("password_hash")
+        if not isinstance(password_hash, str) or not password_hash:
+            raise ConfigError(f"ztna.users[{i}]: missing or invalid password_hash")
+
+        users.append(ZtnaUser(username=username, password_hash=password_hash))
+
+    if enabled and not users:
+        raise ConfigError("ztna.enabled is true but no users are configured")
+
+    return ZtnaConfig(enabled=enabled, session_ttl_seconds=ttl, users=users)

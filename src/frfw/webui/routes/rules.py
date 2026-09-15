@@ -41,6 +41,7 @@ def add_rule(
     src_address: str = Form(""),
     dst_address: str = Form(""),
     log: bool = Form(False),
+    require_ztna: bool = Form(False),
     username: str = Depends(require_login),
     raw: dict = Depends(get_raw_config),
     helper: HelperClient = Depends(get_helper),
@@ -60,6 +61,8 @@ def add_rule(
         rule["dst_address"] = dst_address.strip()
     if log:
         rule["log"] = True
+    if require_ztna:
+        rule["require_ztna"] = True
 
     rules = raw.setdefault("rules", [])
     rules[:] = [r for r in rules if r.get("name") != name]  # replace if it already existed

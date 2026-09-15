@@ -23,6 +23,8 @@ class HelperClient(Protocol):
     def save_config(self, yaml_text: str) -> dict: ...
     def apply(self, dry_run: bool = False) -> dict: ...
     def rollback(self) -> dict: ...
+    def authorize_ztna(self, ip: str, username: str) -> dict: ...
+    def ztna_status(self, ip: str) -> dict: ...
 
 
 class SocketHelperClient:
@@ -40,6 +42,12 @@ class SocketHelperClient:
 
     def rollback(self) -> dict:
         return helper_client.rollback(self.socket_path)
+
+    def authorize_ztna(self, ip: str, username: str) -> dict:
+        return helper_client.authorize_ztna(ip, username, self.socket_path)
+
+    def ztna_status(self, ip: str) -> dict:
+        return helper_client.ztna_status(ip, self.socket_path)
 
 
 class UpdateHelperClient(Protocol):

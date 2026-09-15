@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}ZTNA Session Status - FR_OS{% endblock %}
+{% block content %}
+<div class="card" style="max-width:420px;margin:2rem auto;">
+  <h1 style="font-size:1.2rem;">Zero Trust Network Access</h1>
+
+  {% if authorized %}
+  <p>
+    <span class="badge badge-green">Authorized</span>
+  </p>
+  <dl>
+    <dt class="muted">Device</dt>
+    <dd style="margin:0 0 0.6rem;"><code>{{ client_ip }}</code></dd>
+    {% if ztna_username %}
+    <dt class="muted">Signed in as</dt>
+    <dd style="margin:0 0 0.6rem;">{{ ztna_username }}</dd>
+    {% endif %}
+    <dt class="muted">Time remaining</dt>
+    <dd style="margin:0;font-weight:600;">{{ expires_in_display }}</dd>
+  </dl>
+  <p class="muted" style="margin-top:0.8rem;">
+    This is enforced entirely by the kernel's own nftables timer -- this
+    page just asks what the firewall currently thinks, it does not
+    itself keep you signed in. Reload this page any time to check your
+    remaining time.
+  </p>
+  {% else %}
+  <p>
+    <span class="badge badge-red">Not authorized</span>
+  </p>
+  <p class="muted">
+    <code>{{ client_ip }}</code> is not currently authorized for
+    protected-zone access -- either you haven't signed in yet, or your
+    session has expired.
+  </p>
+  <p><a href="/ztna/login">Sign in</a></p>
+  {% endif %}
+</div>
+{% endblock %}

@@ -61,3 +61,71 @@ def test_minimal_ruleset_passes_nft_syntax_check(minimal_config_dict):
         ["nft", "-c", "-f", "-"], input=ruleset, capture_output=True, text=True
     )
     assert proc.returncode == 0, proc.stderr
+
+
+def test_ztna_set_only_rendered_when_enabled(minimal_config_dict):
+    config = parse_config(minimal_config_dict)
+    assert "authenticated_ztna_users" not in build_ruleset(config)
+
+    minimal_config_dict["ztna"] = {"enabled": True, "users": [{"username": "a", "password_hash": "x"}]}
+    config = parse_config(minimal_config_dict)
+    ruleset = build_ruleset(config)
+    assert "set authenticated_ztna_users" in ruleset
+    assert "flags dynamic,timeout" in ruleset
+    assert "timeout 28800s" in ruleset  # default 8h
+
+
+def test_ztna_set_uses_configured_ttl(minimal_config_dict):
+    minimal_config_dict["ztna"] = {
+        "enabled": True,
+        "session_ttl_seconds": 900,
+        "users": [{"username": "a", "password_hash": "x"}],
+    }
+    config = parse_config(minimal_config_dict)
+    assert "timeout 900s" in build_ruleset(config)
+
+
+def test_require_ztna_rule_adds_saddr_match(minimal_config_dict):
+    minimal_config_dict["ztna"] = {"enabled": True, "users": [{"username": "a", "password_hash": "x"}]}
+    minimal_config_dict["rules"].append(
+        {
+            "name": "gated",
+            "action": "accept",
+            "from_zone": "lan",
+            "to_zone": "wan",
+            "require_ztna": True,
+        }
+    )
+    config = parse_config(minimal_config_dict)
+    ruleset = build_ruleset(config)
+
+    gated_line = next(line for line in ruleset.splitlines() if "rule:gated" in line)
+    assert "ip saddr @authenticated_ztna_users" in gated_line
+
+
+def test_rule_without_require_ztna_has_no_saddr_match(minimal_config_dict):
+    config = parse_config(minimal_config_dict)
+    ruleset = build_ruleset(config)
+    rule_line = next(line for line in ruleset.splitlines() if "rule:lan-to-wan" in line)
+    assert "authenticated_ztna_users" not in rule_line
+
+
+@requires_nft
+def test_ztna_enabled_ruleset_passes_nft_syntax_check(minimal_config_dict):
+    minimal_config_dict["ztna"] = {"enabled": True, "users": [{"username": "a", "password_hash": "x"}]}
+    minimal_config_dict["rules"].append(
+        {
+            "name": "gated",
+            "action": "accept",
+            "from_zone": "lan",
+            "to_zone": "wan",
+            "require_ztna": True,
+        }
+    )
+    config = parse_config(minimal_config_dict)
+    ruleset = build_ruleset(config)
+
+    proc = subprocess.run(
+        ["nft", "-c", "-f", "-"], input=ruleset, capture_output=True, text=True
+    )
+    assert proc.returncode == 0, proc.stderr

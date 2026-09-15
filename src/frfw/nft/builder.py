@@ -4,7 +4,11 @@ The generated ruleset is meant to be loaded with `nft -f` (see
 `frfw.apply`). It always starts with `flush ruleset`, so applying it fully
 replaces whatever nftables state was previously loaded -- this keeps
 "config file is the source of truth" simple, at the cost of not being able
-to coexist with hand-written nftables rules outside of frfw.
+to coexist with hand-written nftables rules outside of frfw. See
+`ZTNA_SET_NAME`'s own comment below for the one deliberate exception to
+"fully reproducible from YAML alone": the ZTNA gate's authorized-clients
+set is runtime state by design, and surviving a `flush ruleset` for it is
+handled one layer up, in `frfw.provision.apply_all`, not here.
 """
 
 from __future__ import annotations
@@ -24,6 +28,28 @@ from frfw.config.schema import (
 #: of duplicating them in a separate `ip` table.
 FILTER_TABLE = "fr_os"
 
+#: The ZTNA gate's kernel-resident set of currently-authorized source
+#: IPs (see frfw.ztna and Rule.require_ztna). A `dynamic,timeout` set:
+#: the kernel itself evicts an entry once its own `timeout` elapses, no
+#: userspace polling/cron involved. Only ever rendered into the ruleset
+#: when `config.ztna.enabled` -- an unused, always-empty set costs
+#: nothing, but there's no reason to declare it when the feature is off.
+#:
+#: IMPORTANT: this set's *contents* do not survive a normal `apply`.
+#: `flush ruleset` (this module's very first line) drops literally every
+#: table, chain and set in the entire kernel nftables state, this one
+#: included, and the reload below recreates it empty. That's normally
+#: fine (a config's rules/sets are supposed to be fully reproducible from
+#: the YAML alone) but would silently and abruptly log out every active
+#: ZTNA session on the next unrelated firewall change -- so
+#: frfw.provision.apply_all specifically snapshots this set's contents
+#: (frfw.ztna.snapshot_before_reload) before calling apply_ruleset and
+#: restores them (frfw.ztna.restore_after_reload) immediately after, each
+#: with a fresh timeout equal to its previously-remaining time. See that
+#: module's docstring for the full reasoning; this comment exists so
+#: nobody "cleans up" that snapshot/restore call thinking it's dead code.
+ZTNA_SET_NAME = "authenticated_ztna_users"
+
 
 def build_ruleset(config: Config) -> str:
     zone_devices = _zone_devices(config)
@@ -31,6 +57,10 @@ def build_ruleset(config: Config) -> str:
 
     for zone in sorted(zone_devices):
         lines.extend(_render_iface_set(zone, zone_devices[zone]))
+
+    if config.ztna.enabled:
+        lines.append("")
+        lines.extend(_render_ztna_set(config))
 
     input_rules = [r for r in config.rules if r.to_zone == SELF_ZONE]
     forward_rules = [r for r in config.rules if r.to_zone != SELF_ZONE]
@@ -93,6 +123,23 @@ def _render_iface_set(zone: str, devices: list[str]) -> list[str]:
     ]
 
 
+def _render_ztna_set(config: Config) -> list[str]:
+    # No `elements = {...}` line, unlike _render_iface_set: this set's
+    # membership is 100% runtime state (added by frfw.ztna.authorize_ip
+    # via the privileged helper after a successful ZTNA login), never
+    # config-derived -- an empty set here is the correct starting state
+    # every time the ruleset is (re)loaded, restored from a pre-reload
+    # snapshot immediately afterward when there's anything to restore
+    # (see this module's ZTNA_SET_NAME comment).
+    return [
+        f"\tset {ZTNA_SET_NAME} {{",
+        "\t\ttype ipv4_addr",
+        "\t\tflags dynamic,timeout",
+        f"\t\ttimeout {config.ztna.session_ttl_seconds}s",
+        "\t}",
+    ]
+
+
 def _comment(text: str) -> str:
     return f'comment "{text.replace(chr(34), chr(39))}"'
 
@@ -104,6 +151,9 @@ def _render_rule(rule: Rule) -> str:
         exprs.append(f"iifname @{_iface_set_name(rule.from_zone)}")
     if rule.to_zone is not None and rule.to_zone != SELF_ZONE:
         exprs.append(f"oifname @{_iface_set_name(rule.to_zone)}")
+
+    if rule.require_ztna:
+        exprs.append(f"ip saddr @{ZTNA_SET_NAME}")
 
     if rule.dst_port is not None:
         exprs.append(f"{rule.proto.value} dport {rule.dst_port}")

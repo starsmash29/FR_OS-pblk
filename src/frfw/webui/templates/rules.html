@@ -5,7 +5,7 @@
 <p class="muted">Evaluated in order, first match wins. "self" as a zone means the router itself.</p>
 
 <table>
-  <tr><th>Name</th><th>Action</th><th>From</th><th>To</th><th>Proto</th><th>Port</th><th>Log</th><th></th></tr>
+  <tr><th>Name</th><th>Action</th><th>From</th><th>To</th><th>Proto</th><th>Port</th><th>Log</th><th>ZTNA</th><th></th></tr>
   {% for rule in rules %}
   <tr>
     <td>{{ rule.name }}</td>
@@ -15,6 +15,7 @@
     <td>{{ rule.proto or "any" }}</td>
     <td>{{ rule.dst_port or "-" }}</td>
     <td>{{ "yes" if rule.log else "-" }}</td>
+    <td>{{ "yes" if rule.require_ztna else "-" }}</td>
     <td>
       <form class="inline" method="post" action="/rules/delete/{{ rule.name }}" onsubmit="return confirm('Delete rule {{ rule.name }}?')">
         <button type="submit" class="danger">Delete</button>
@@ -60,6 +61,10 @@
     <label>Destination address (optional, CIDR)</label>
     <input type="text" name="dst_address">
     <label><input type="checkbox" name="log" value="true" style="display:inline;width:auto;"> Log matches</label>
+    <label>
+      <input type="checkbox" name="require_ztna" value="true" style="display:inline;width:auto;">
+      Require ZTNA (source must be signed in via the <a href="/ztna">ZTNA gate</a>)
+    </label>
     <button type="submit">Add rule</button>
   </form>
 </div>

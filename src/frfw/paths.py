@@ -83,3 +83,16 @@ XDP_BPF_OBJ_PATH = Path("/usr/local/share/fr_os/bpf/xdp_sni_filter.o")
 #: attached to, and so the webUI can show live attach-mode status without
 #: re-probing every interface via `ip link` on every page load.
 XDP_STATE_PATH = Path("/etc/fr_os/xdp_state.json")
+
+#: Small display-only record of which username most recently authorized
+#: each currently-authenticated ZTNA client IP (see frfw.ztna). Never the
+#: source of truth for "is this IP still authorized" or "how much time is
+#: left" -- that's always a live query against the kernel's own nftables
+#: set (frfw.ztna.get_authorization), which is the only thing actually
+#: enforcing anything. This file can only ever go stale in the cosmetic
+#: direction (a name shown for an IP the kernel has already evicted, in
+#: which case frfw.ztna simply doesn't return it), never in the
+#: security-relevant one. Root-only, like XDP_STATE_PATH -- written by
+#: fr-apply-helper, read back only by it (over the same socket that
+#: wrote it), never by the unprivileged webUI process directly.
+ZTNA_STATE_PATH = Path("/etc/fr_os/ztna_state.json")

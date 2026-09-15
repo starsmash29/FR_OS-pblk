@@ -62,6 +62,16 @@ class Rule:
 
     `to_zone == SELF_ZONE` targets traffic addressed to the router itself
     (nftables `input` chain) rather than forwarded traffic.
+
+    `require_ztna`, if set, additionally requires the source address to
+    currently be a member of the kernel-resident ZTNA authorized-clients
+    set (see `ZtnaConfig`/`frfw.ztna`/`frfw.nft.builder.ZTNA_SET_NAME`)
+    for this rule to match at all -- deliberately reusing the existing
+    rule engine (from_zone/to_zone/proto/port/address all still apply
+    normally) rather than inventing a separate "protected zones" concept
+    alongside it: "accept this specific zone/port combination, but only
+    from ZTNA-authorized sources" is just one more match condition on an
+    ordinary rule, not a different kind of rule.
     """
 
     name: str
@@ -73,6 +83,7 @@ class Rule:
     src_address: str | None = None
     dst_address: str | None = None
     log: bool = False
+    require_ztna: bool = False
 
 
 @dataclass(frozen=True)
@@ -163,6 +174,44 @@ class XdpSniFilterConfig:
 
 
 @dataclass(frozen=True)
+class ZtnaUser:
+    """One local ZTNA gate account. `password_hash` is always already a
+    PBKDF2 hash (frfw.admin_account.hash_password's format) by the time
+    it reaches this dataclass -- never a plaintext password; the webUI's
+    ZTNA settings screen hashes a submitted password before it's ever
+    written to config.yaml, exactly like the single admin account."""
+
+    username: str
+    password_hash: str
+
+
+@dataclass(frozen=True)
+class ZtnaConfig:
+    """Settings for the local Zero Trust Network Access gate (see
+    frfw.ztna, frfw.webui.routes.ztna, and this rule's `require_ztna`
+    flag above).
+
+    This is deliberately *not* a general-purpose identity provider: it
+    authorizes a *source IP address* for `session_ttl_seconds`, via a
+    kernel-resident nftables set with its own native timeout -- there is
+    no per-request/per-connection identity check, no cloud IdP, and no
+    userspace session tracking. A device's IP is either currently a
+    member of the set or it isn't; the kernel evicts it on expiry with
+    zero help from userspace (frfw.ztna's module docstring has the full
+    design rationale, including the one real wrinkle: a full firewall
+    `apply` reloads the entire nftables ruleset -- see
+    frfw.nft.builder's own docstring on `flush ruleset` -- which would
+    otherwise silently log every active session out; frfw.provision
+    special-cases exactly this by snapshotting and restoring the set's
+    contents around that reload).
+    """
+
+    enabled: bool = False
+    session_ttl_seconds: int = 8 * 3600
+    users: list[ZtnaUser] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class UpdateConfig:
     """Which GitHub repo to check for new FR_OS releases against (phase 6,
     see frfw.update). Empty string means "use the built-in default"
@@ -184,3 +233,4 @@ class Config:
     ai_ids: AiIdsConfig = field(default_factory=AiIdsConfig)
     update: UpdateConfig = field(default_factory=UpdateConfig)
     xdp_sni_filter: XdpSniFilterConfig = field(default_factory=XdpSniFilterConfig)
+    ztna: ZtnaConfig = field(default_factory=ZtnaConfig)

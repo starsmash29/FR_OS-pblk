@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 import yaml
 from fastapi.testclient import TestClient
 
@@ -17,12 +19,20 @@ class FakeHelper:
     daemon or socket -- exactly what the real helper does, just in-process,
     so route tests exercise the same validation path production traffic
     would hit.
+
+    authorize_ztna/ztna_status simulate the kernel's own timeout-based
+    eviction with a plain dict + wall-clock deadline rather than talking
+    to a real nftables set (this sandbox's test environment doesn't
+    assume CAP_NET_ADMIN) -- frfw.ztna's own tests exercise the real
+    `nft` behavior directly; this fake only needs to be faithful enough
+    for route-level (redirect/flash-message/template) assertions.
     """
 
     def __init__(self, config_path):
         self.config_path = config_path
         self.applied = []
         self.rolled_back = False
+        self._ztna_authorizations: dict[str, tuple[str, float]] = {}  # ip -> (username, expires_at)
 
     def ping(self):
         return {"ok": True, "message": "pong"}
@@ -42,6 +52,32 @@ class FakeHelper:
     def rollback(self) -> dict:
         self.rolled_back = True
         return {"ok": True, "message": "rolled back"}
+
+    def authorize_ztna(self, ip: str, username: str) -> dict:
+        if not self.config_path.is_file():
+            return {"ok": False, "message": f"Config file not found: {self.config_path}"}
+        try:
+            config = parse_config(yaml.safe_load(self.config_path.read_text()))
+        except Exception as exc:  # noqa: BLE001 -- mirrors the real helper's catch-all
+            return {"ok": False, "message": str(exc)}
+        if not config.ztna.enabled:
+            return {"ok": False, "message": "ZTNA gate is disabled in the current config"}
+        if not any(u.username == username for u in config.ztna.users):
+            return {"ok": False, "message": f"no such ZTNA user {username!r}"}
+        ttl = config.ztna.session_ttl_seconds
+        self._ztna_authorizations[ip] = (username, time.time() + ttl)
+        return {"ok": True, "message": f"{ip} authorized", "expires_in": ttl}
+
+    def ztna_status(self, ip: str) -> dict:
+        entry = self._ztna_authorizations.get(ip)
+        if entry is None:
+            return {"ok": True, "authorized": False}
+        username, expires_at = entry
+        remaining = int(expires_at - time.time())
+        if remaining <= 0:
+            del self._ztna_authorizations[ip]
+            return {"ok": True, "authorized": False}
+        return {"ok": True, "authorized": True, "username": username, "expires_in": remaining}
 
 
 class FakeUpdateHelper:

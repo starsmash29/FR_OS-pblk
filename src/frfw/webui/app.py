@@ -22,7 +22,18 @@ from frfw.webui.helper_client import (
     SocketUpdateHelperClient,
     UpdateHelperClient,
 )
-from frfw.webui.routes import ai_ids, auth, dashboard, dhcp, interfaces, nat, rules, update, xdp
+from frfw.webui.routes import (
+    ai_ids,
+    auth,
+    dashboard,
+    dhcp,
+    interfaces,
+    nat,
+    rules,
+    update,
+    xdp,
+    ztna,
+)
 
 
 def create_app(
@@ -55,5 +66,6 @@ def create_app(
     app.include_router(ai_ids.router)
     app.include_router(update.router)
     app.include_router(xdp.router)
+    app.include_router(ztna.router)
 
     return app

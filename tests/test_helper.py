@@ -9,12 +9,15 @@ kernel nftables state.
 
 from __future__ import annotations
 
+import subprocess
 import threading
 from pathlib import Path
 
 import pytest
 
 from frfw import apply as apply_mod
+from frfw import ztna as ztna_mod
+from frfw.admin_account import hash_password
 from frfw.helper import client
 from frfw.helper.server import ApplyHelperServer
 
@@ -40,12 +43,37 @@ def running_server(tmp_path, monkeypatch):
     monkeypatch.setattr(apply_mod, "_run_nft", fake_run_nft)
     monkeypatch.setattr(apply_mod, "capture_running_ruleset", fake_capture)
 
+    # frfw.ztna's own real-nft behavior is exercised directly in
+    # test_ztna.py; here we only care about this socket protocol's
+    # request/response mapping (bad IP, unknown user, disabled gate,
+    # ...), so a tiny in-memory fake stands in for the kernel set --
+    # same reasoning as apply_mod._run_nft being faked above.
+    ztna_set: dict[str, tuple[str, int]] = {}
+
+    def fake_ztna_run_nft(args):
+        if args[:2] == ["add", "element"]:
+            ip, ttl = args[-2].split(" timeout ")
+            ztna_set[ip] = (None, int(ttl.rstrip("s")))
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        if args[:2] == ["-j", "list"]:
+            import json as _json
+            elems = [{"elem": {"val": ip, "expires": ttl}} for ip, (_u, ttl) in ztna_set.items()]
+            return subprocess.CompletedProcess(
+                args, 0, stdout=_json.dumps({"nftables": [{"set": {"elem": elems}}]}), stderr=""
+            )
+        return subprocess.CompletedProcess(args, 1, stdout="", stderr="unsupported in fake")
+
+    monkeypatch.setattr(ztna_mod, "_run_nft", fake_ztna_run_nft)
+
     socket_path = tmp_path / "apply.sock"
     config_path = tmp_path / "config.yaml"
     config_path.write_text(EXAMPLE_CONFIG.read_text())
     backup_dir = tmp_path / "backups"
+    ztna_state_path = tmp_path / "ztna_state.json"
 
-    server = ApplyHelperServer(socket_path, config_path, backup_dir=backup_dir)
+    server = ApplyHelperServer(
+        socket_path, config_path, backup_dir=backup_dir, ztna_state_path=ztna_state_path
+    )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -54,6 +82,19 @@ def running_server(tmp_path, monkeypatch):
         server.shutdown()
         thread.join(timeout=5)
         server.server_close()
+
+
+def _enable_ztna(config_path: Path, username: str = "alice", password: str = "hunter22") -> None:
+    text = config_path.read_text()
+    text += (
+        "\nztna:\n"
+        "  enabled: true\n"
+        "  session_ttl_seconds: 3600\n"
+        "  users:\n"
+        f"    - username: {username}\n"
+        f"      password_hash: \"{hash_password(password)}\"\n"
+    )
+    config_path.write_text(text)
 
 
 def test_ping(running_server):
@@ -106,3 +147,46 @@ def test_malformed_request_returns_error(running_server):
 def test_client_reports_error_when_socket_missing(tmp_path):
     with pytest.raises(client.HelperError):
         client.ping(tmp_path / "no-such.sock")
+
+
+# --- ZTNA commands -----------------------------------------------------------
+
+
+def test_authorize_ztna_fails_when_gate_disabled(running_server):
+    response = client.authorize_ztna("10.0.0.5", "alice", running_server)
+    assert response["ok"] is False
+    assert "disabled" in response["message"].lower()
+
+
+def test_authorize_ztna_fails_for_unknown_user(running_server, tmp_path):
+    _enable_ztna(tmp_path / "config.yaml")
+    response = client.authorize_ztna("10.0.0.5", "mallory", running_server)
+    assert response["ok"] is False
+    assert "no such ztna user" in response["message"].lower()
+
+
+def test_authorize_ztna_fails_for_invalid_ip(running_server, tmp_path):
+    _enable_ztna(tmp_path / "config.yaml")
+    response = client.authorize_ztna("not-an-ip", "alice", running_server)
+    assert response["ok"] is False
+    assert "invalid" in response["message"].lower()
+
+
+def test_authorize_ztna_success_then_status_round_trip(running_server, tmp_path):
+    _enable_ztna(tmp_path / "config.yaml")
+
+    authorize = client.authorize_ztna("10.0.0.5", "alice", running_server)
+    assert authorize["ok"] is True
+    assert authorize["expires_in"] == 3600
+
+    status = client.ztna_status("10.0.0.5", running_server)
+    assert status["ok"] is True
+    assert status["authorized"] is True
+    assert status["username"] == "alice"
+    assert status["expires_in"] == 3600
+
+
+def test_ztna_status_reports_unauthorized_for_unknown_ip(running_server, tmp_path):
+    _enable_ztna(tmp_path / "config.yaml")
+    status = client.ztna_status("10.0.0.99", running_server)
+    assert status == {"ok": True, "authorized": False}

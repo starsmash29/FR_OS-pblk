@@ -348,3 +348,80 @@ mechanizmus (check/apply/rollback, hibaágak, state-perzisztencia)
 egységtesztekkel ellenőrizve; a "régebbi telepítésű VM valós
 frissítése" végpontig-végpontig forgatókönyv valós release hiányában
 egyelőre nincs kipróbálva (lásd fent).
+
+## 7. fázis – Identitás-alapú Zero Trust hálózati hozzáférés (ZTNA) — **kész**
+
+Cél: 100% lokális (nincs Okta/Azure AD/felhő-függőség), homelab-barát
+identitás-alapú belépési kapu a LAN/"Production Server Zone" elé, ahol
+az adatsík (a tényleges csomagszűrés) továbbra is 100%-ban kernel-térben
+(nftables) fut -- nincs userspace reverse proxy (Envoy/Squid) a
+forgalomban, tehát a 40 Gbps-es célsebesség nem sérül. Teljes indoklás,
+architektúra és a `flush ruleset`-tel folytatott küzdelem: [ARCHITECTURE.md](ARCHITECTURE.md#identitás-alapú-zero-trust-hálózati-hozzáférés-ztna-fázis-7).
+
+- [x] **Séma**: `ztna` konfig-szekció (`enabled`, `session_ttl_seconds`,
+      `users` -- felhasználónév + PBKDF2-HMAC-SHA256 jelszó-hash, a
+      meglévő `frfw.admin_account` sémáját újrahasznosítva), teljes
+      `frfw.config.loader` validációval (érvényes felhasználónév-formátum,
+      egyedi felhasználónevek, TTL-tartomány, "enabled igaz esetén
+      legalább egy felhasználó kötelező"). A meglévő `Rule` dataclass egy
+      `require_ztna: bool` mezőt kapott -- nincs külön "védett zóna"
+      fogalom, a meglévő szabály-motor illesztő logikáját hasznosítja
+      újra.
+- [x] **Adatsík**: `frfw.nft.builder` egy `authenticated_ztna_users`
+      nevű, `flags dynamic,timeout` nftables named set-et renderel (csak
+      ha `ztna.enabled`); minden `require_ztna: true` szabály egy `ip
+      saddr @authenticated_ztna_users` illesztést kap. A halmaz elemei
+      saját, egyedi TTL-lel kerülnek be -- a lejárt IP-ket a **kernel**
+      dobja ki magától, nulla cron job/userspace háttérfolyamat nélkül.
+      Valósan tesztelve: egy 5 másodperces TTL-lel felvett elem 6
+      másodpercen belül eltűnt a halmazból.
+- [x] **Vezérlősík**: `GET/POST /ztna/login` (`frfw.webui.routes.ztna`,
+      publikus route) időzítés-biztos módon ellenőriz a tárolt hash-ek
+      ellen, majd sikeres belépéskor egy új `authorize_ztna`
+      unix-socket paranccsal (`frfw.helper.protocol/server/client`)
+      kéri meg a root alatt futó `fr-apply-helper`-t, hogy vegye fel a
+      kliens forrás-IP-jét a kernel halmazba a configban beállított
+      TTL-lel. `GET /ztna/status` (szintén publikus) egy új
+      `ztna_status` helper-paranccsal kérdezi le élőben a hátralévő
+      session-időt -- **nincs külön böngésző-session-cookie**, az
+      egyetlen tekintélyforrás a kernel halmaz aktuális tartalma.
+      Felismerés: még a csak-olvasó `nft list` is root-ot/
+      `CAP_NET_ADMIN`-t igényel, ezért a `ztna_status` lekérdezés is a
+      privilegizált helperen megy át, nem a webUI processzből
+      közvetlenül.
+- [x] **`flush ruleset` probléma megoldva**: `frfw.provision.apply_all`
+      az nftables-alkalmazási lépést `frfw.ztna.snapshot_before_reload`/
+      `restore_after_reload`-dal zárójelezi, hogy egy tetszőleges
+      config-mentés (pl. egy DHCP-beállítás) ne jelentkeztessen ki
+      véletlenül egy aktív ZTNA-session-t a `flush ruleset` miatt.
+      Valós, nem mockolt integrációs teszttel megerősítve (valódi nft
+      halmaz flush + restore, helyes hátralévő TTL-lel).
+- [x] **Admin képernyő** (`/ztna`): be/ki kapcsolás + TTL beállítás,
+      felhasználó-kezelés (hozzáadás jelszó-hosszkorláttal, eltávolítás),
+      és a `require_ztna: true` szabályok listája -- ugyanaz a
+      "csak a configot módosítja, a tényleges kapuzás a következő
+      apply-nál lép életbe" minta, mint minden más képernyőn.
+- [x] Tesztek: `tests/test_ztna.py` (a `frfw.ztna` modul, valós kernel-
+      kiürüléses teszttel), `tests/test_ztna_schema.py` (séma/loader),
+      `tests/test_builder.py` (halmaz-renderelés, `require_ztna`
+      illesztés, valós `nft -c` szintaxis-ellenőrzés), `tests/test_helper.py`
+      (a socket-protokoll új parancsai), `tests/test_provision.py`
+      (snapshot/restore huzalozás), `tests/webui/test_ztna_routes.py`
+      (admin + publikus route-ok) -- a teljes tesztsorozat (310 teszt)
+      regresszió nélkül fut.
+
+**Ismert korlátozás, nyíltan kimondva**: nincs rate-limiting/lockout a
+`/ztna/login`-on -- ez konzisztens a meglévő admin `/login`-nal, de
+egyik sem véd brute-force ellen éles környezetben. A "titkosított YAML"
+eredeti felvetés helyett PBKDF2 jelszó-hashelés készült el (nem
+visszafejthető titkosítás) -- ez a helyes, biztonságosabb megközelítés
+tárolt hitelesítő adatokhoz.
+
+**Elfogadási kritérium**: egy `require_ztna: true` szabály által védett
+zóna csak sikeres `/ztna/login` után érhető el, a session a konfigurált
+TTL lejártával a kernel által automatikusan megszűnik (userspace kód
+futása nélkül), és egy egyidejű config-mentés/apply nem szakítja meg egy
+másik felhasználó aktív session-jét. ✅ Ellenőrizve egységtesztekkel és
+valós (nem mockolt) nftables-integrációs tesztekkel; 40 Gbps-es valós
+teljesítménymérés ugyanazon okból nyitott, mint a 4. fázis XDP szűrőjéé
+(nincs megfelelő teszthardver ebben a sandboxban).
