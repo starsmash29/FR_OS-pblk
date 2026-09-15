@@ -1,0 +1,14 @@
+[Unit]
+Description=Daily FR_OS ad-block list refresh
+Documentation=https://github.com/starsmash29/FR_OS-pblk
+
+[Timer]
+# Fixed daily schedule -- there is no adblocker.refresh_time config
+# field to follow yet; a privileged timer drop-in rewrite would be
+# needed for that, tracked as a follow-up, not solved here.
+OnCalendar=*-*-* 04:15:00
+Persistent=true
+RandomizedDelaySec=1800
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,13 @@
+nftables
+kea-dhcp4-server
+iproute2
+openssl
+python3
+python3-pip
+python3-yaml
+ca-certificates
+openssh-server
+sudo
+isolinux
+syslinux-common
+syslinux-utils

@@ -1,0 +1,24 @@
+[Unit]
+Description=FR_OS privileged update-helper (root-run; webUI talks to it over fr-update-helper.socket)
+Documentation=https://github.com/starsmash29/FR_OS-pblk
+Requires=fr-update-helper.socket
+After=fr-update-helper.socket network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=firewall-update-helper
+Restart=on-failure
+NoNewPrivileges=yes
+ProtectHome=true
+ProtectSystem=full
+# Deliberately broader than fr-apply-helper's ReadWritePaths=/etc/fr_os:
+# this daemon's whole job is pip-installing a new release, rewriting
+# systemd units, and staging scripts -- see frfw.update and
+# frfw.helper.update_protocol's module docstrings for why that scope
+# difference is a separate daemon rather than widening the firewall
+# apply-helper.
+ReadWritePaths=/etc/fr_os /etc/systemd/system /opt/fr_os /usr/local
+
+[Install]
+Also=fr-update-helper.socket

@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block title %}AI IDS/IPS - FR_OS{% endblock %}
+{% block content %}
+<h1>AI IDS/IPS</h1>
+
+<p class="muted">
+  Real-time, out-of-band anomaly detection: connection-rate spikes,
+  destination-scan patterns, and repeated XDP SNI-blocklist hits are
+  scored against each host's own recent baseline by a separate
+  <code>fr-ai-ids</code> daemon, which quarantines a flagged IP in the
+  kernel via the privileged apply-helper.
+</p>
+
+{% if config_error %}
+<div class="flash-error">Config does not currently pass validation: {{ config_error }}</div>
+{% endif %}
+
+<div class="card">
+  <h3>Engine status</h3>
+  <p>
+    fr-ai-ids.service:
+    {% if daemon_active %}
+    <span class="badge badge-green">running</span>
+    {% else %}
+    <span class="badge badge-red">not running</span>
+    {% endif %}
+    &middot;
+    Detection:
+    {% if enabled %}
+    <span class="badge badge-green">enabled</span>
+    {% else %}
+    <span class="badge badge-red">disabled</span>
+    {% endif %}
+  </p>
+</div>
+
+<div class="card">
+  <h3>Settings</h3>
+  <form method="post" action="/ai-ids/settings">
+    <label><input type="checkbox" name="enabled" value="true" {{ "checked" if enabled else "" }} style="display:inline;width:auto;"> Enabled</label>
+    <label>Quarantine duration (seconds)</label>
+    <input type="number" name="quarantine_duration_seconds" value="{{ quarantine_duration_seconds }}" min="1" required>
+    <label>Excluded MAC addresses (comma-separated)</label>
+    <input type="text" name="excluded_macs" value="{{ excluded_macs }}" placeholder="aa:bb:cc:dd:ee:ff, 11:22:33:44:55:66">
+    <p class="muted">Resolved against DHCP static reservations to exclude their current IP from scoring/quarantine (e.g. a backup server or NAS that legitimately opens many connections).</p>
+    <button type="submit">Save settings</button>
+  </form>
+</div>
+
+<div class="card">
+  <h3>Currently quarantined hosts</h3>
+  {% if quarantine_error %}
+  <p class="flash-error">Could not read kernel quarantine state: {{ quarantine_error }}</p>
+  {% elif not quarantined %}
+  <p class="muted">No hosts currently quarantined.</p>
+  {% else %}
+  <table>
+    <tr><th>IP</th><th>Remaining</th></tr>
+    {% for q in quarantined %}
+    <tr><td>{{ q.ip }}</td><td>{{ q.expires_in }}s</td></tr>
+    {% endfor %}
+  </table>
+  <p class="muted">No manual early-release action yet -- a quarantine expires on its own via the kernel's native timeout (see ARCHITECTURE.md's open issues).</p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h3>Recent flagged events</h3>
+  {% if not recent_events %}
+  <p class="muted">No anomalies flagged yet.</p>
+  {% else %}
+  <table>
+    <tr><th>IP</th><th>Score</th><th>Reasons</th><th>Conn. rate</th><th>Unique dst. ratio</th><th>SNI blocks</th></tr>
+    {% for e in recent_events %}
+    <tr>
+      <td>{{ e.ip }}</td>
+      <td>{{ e.score }}</td>
+      <td>{{ e.reasons|join(", ") }}</td>
+      <td>{{ e.conn_rate }}</td>
+      <td>{{ e.unique_dst_ratio }}</td>
+      <td>{{ e.sni_block_count }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+</div>
+{% endblock %}

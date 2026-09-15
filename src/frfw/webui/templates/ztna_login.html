@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}ZTNA Gate Login - FR_OS{% endblock %}
+{% block content %}
+<div class="card" style="max-width:380px;margin:2rem auto;">
+  <h1 style="font-size:1.2rem;">Zero Trust Network Access</h1>
+  <p class="muted">
+    Sign in to authorize this device (<code>{{ client_ip }}</code>) for
+    access to protected network zones. Access is granted per source IP,
+    not per browser -- it lasts until the session expires or this
+    device's address changes.
+  </p>
+  <form method="post" action="/ztna/login">
+    <label>Username</label>
+    <input type="text" name="username" autocomplete="username" required autofocus>
+    <label>Password</label>
+    <input type="password" name="password" autocomplete="current-password" required>
+    <button type="submit">Sign in</button>
+  </form>
+  <p class="muted" style="margin-top:0.8rem;">
+    Already signed in? <a href="/ztna/status">Check your session status</a>.
+  </p>
+</div>
+{% endblock %}

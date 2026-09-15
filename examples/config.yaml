@@ -1,0 +1,75 @@
+# Példa homelab konfiguráció a frfw motorhoz.
+# Alkalmazás: firewall-cli apply examples/config.yaml [--dry-run]
+version: 1
+hostname: fr-router
+
+interfaces:
+  wan:
+    device: eth0
+    zone: wan
+    description: "ISP uplink"
+  lan:
+    device: eth1
+    zone: lan
+    description: "Belso LAN"
+  dmz:
+    device: eth2
+    zone: dmz
+    description: "Elkulonitett szolgaltatasok"
+
+zones:
+  wan:
+    description: "Nem megbizhato, internet fele"
+  lan:
+    description: "Megbizhato belso halozat"
+  dmz:
+    description: "Publikusan elerheto szolgaltatasok, korlatozott bizalom"
+
+rules:
+  # A router maga is elerheto SSH-n a LAN-rol, de sehonnan mashonnan.
+  - name: allow-ssh-from-lan-to-router
+    action: accept
+    from_zone: lan
+    to_zone: self
+    proto: tcp
+    dst_port: 22
+
+  # LAN-rol minden kimeno forgalom engedett (WAN vagy DMZ fele).
+  - name: lan-to-wan
+    action: accept
+    from_zone: lan
+    to_zone: wan
+
+  - name: lan-to-dmz
+    action: accept
+    from_zone: lan
+    to_zone: dmz
+
+  # DMZ csak a sajat kiszolgalt portjain fogadjon WAN-rol forgalmat
+  # (a tenyleges DNAT a nat.port_forwards szekcioban tortenik; ez a szabaly
+  # engedi tovabb a mar DNAT-olt forgalmat a forward lancban).
+  - name: wan-to-dmz-https
+    action: accept
+    from_zone: wan
+    to_zone: dmz
+    proto: tcp
+    dst_port: 443
+
+  # Minden mas WAN -> LAN/DMZ forgalom explicit tiltva (a policy amugy is
+  # drop, de igy naplozzuk es dokumentaljuk a szandekot).
+  - name: block-wan-to-lan
+    action: drop
+    from_zone: wan
+    to_zone: lan
+    log: true
+
+nat:
+  masquerade:
+    - out_zone: wan
+  port_forwards:
+    - name: forward-https-to-dmz-web
+      in_zone: wan
+      proto: tcp
+      dst_port: 443
+      to_address: 10.0.2.10
+      to_port: 443

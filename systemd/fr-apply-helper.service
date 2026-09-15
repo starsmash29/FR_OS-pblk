@@ -1,0 +1,17 @@
+[Unit]
+Description=FR_OS privileged apply-helper (root-run; webUI talks to it over fr-apply-helper.socket)
+Documentation=https://github.com/starsmash29/FR_OS-pblk
+Requires=fr-apply-helper.socket
+After=fr-apply-helper.socket
+
+[Service]
+Type=simple
+ExecStart=firewall-helper
+Restart=on-failure
+NoNewPrivileges=yes
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=/etc/fr_os
+
+[Install]
+Also=fr-apply-helper.socket

@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Sign in - FR_OS{% endblock %}
+{% block content %}
+<div class="card" style="max-width:360px;margin:3rem auto;">
+  <h2>{{ "Set up admin account" if first_run else "Sign in" }}</h2>
+  {% if first_run %}
+  <p class="muted">No admin account exists yet. Create one now.</p>
+  {% endif %}
+  <form method="post" action="/login">
+    <label>Username</label>
+    <input type="text" name="username" value="{{ 'admin' if first_run else '' }}" required>
+    <label>Password</label>
+    <input type="password" name="password" required>
+    {% if first_run %}
+    <label>Confirm password</label>
+    <input type="password" name="password_confirm" required>
+    {% endif %}
+    <button type="submit">{{ "Create admin account" if first_run else "Sign in" }}</button>
+  </form>
+</div>
+{% endblock %}
