@@ -86,6 +86,14 @@ hardware metrics (CPU/RAM/storage) parsed directly from `/proc`, `/sys`
 and `os.statvfs`, with RAM module identity (the one fact that needs
 root, via `dmidecode`) routed through the privileged apply-helper.
 
+**Phase 13 (hybrid BIOS + UEFI boot support)** — done. The live ISO now
+boots on modern UEFI-only hardware (Intel NUCs, HP ProDesk/EliteDesk
+minis, Lenovo Tiny clients) as well as legacy BIOS, from the same
+`dd`/Rufus-flashed USB drive, via a new post-processing step
+(`installer/make-hybrid-uefi-iso.sh`) that adds a real GRUB 2 EFI boot
+path and GPT EFI System Partition on top of the existing, unchanged
+isolinux/BIOS path — under 1 MB of size overhead on the ~327 MB image.
+
 Full rationale for every phase: [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Quick start

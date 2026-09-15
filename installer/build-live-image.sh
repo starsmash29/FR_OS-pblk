@@ -4,14 +4,19 @@
 # Stages this repo's source into the live-build tree's includes.chroot
 # (so the in-chroot hook can `pip install` it -- see
 # config/hooks/0100-install-frfw.hook.chroot), then runs `lb config`
-# + `lb build`. Must run as root: live-build chroots, mounts, and device
-# nodes all need it. Needs `live-build`, `debootstrap`, `xorriso`,
-# `squashfs-tools`, `librsvg2-bin`, `syslinux-utils` and friends installed
+# + `lb build`, then installer/make-hybrid-uefi-iso.sh to add real UEFI
+# boot support on top of `lb build`'s own BIOS-only image (phase 13,
+# see ARCHITECTURE.md -- this ancient live-build snapshot can't do
+# hybrid BIOS+UEFI itself, see that script's own header for why). Must
+# run as root: live-build chroots, mounts, and device nodes all need
+# it. Needs `live-build`, `debootstrap`, `xorriso`, `squashfs-tools`,
+# `librsvg2-bin`, `syslinux-utils` and friends installed
 # (`apt-get install live-build debootstrap xorriso squashfs-tools isolinux
 # syslinux-efi syslinux-utils librsvg2-bin grub-pc-bin grub-efi-amd64-bin
-# mtools dosfstools`), and network access to Debian's mirrors -- expect
-# this to take a while (debootstrap downloads a base system, then every
-# package in frfw.list.chroot, then assembles and compresses a squashfs).
+# grub-common mtools dosfstools`), and network access to Debian's
+# mirrors -- expect this to take a while (debootstrap downloads a base
+# system, then every package in frfw.list.chroot, then assembles and
+# compresses a squashfs).
 #
 # `syslinux-utils` (for `isohybrid`, used by --binary-images iso-hybrid)
 # and `librsvg2-bin` are easy to miss: nothing in the chroot package list
@@ -19,6 +24,11 @@
 # lb_binary_syslinux/lb_binary_iso outside the chroot -- a host missing
 # either fails late, well into `lb build`, with an unrelated-looking
 # error ("isohybrid: not found" / "rsvg: No such file or directory").
+# `grub-efi-amd64-bin`, `grub-common`, `mtools` and `dosfstools` are the
+# same kind of build-host-only tool, needed by
+# installer/make-hybrid-uefi-iso.sh (grub-mkstandalone, mkfs.vfat,
+# mmd/mcopy) rather than by anything inside the chroot -- see that
+# script's own header for exactly what each one is for.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -68,6 +78,9 @@ lb config
 
 echo "==> lb build (this is the slow part)"
 lb build
+
+echo "==> Adding UEFI boot support (installer/make-hybrid-uefi-iso.sh)"
+"$REPO_ROOT/installer/make-hybrid-uefi-iso.sh"
 
 echo
 echo "==> Build finished. Output:"

@@ -1675,6 +1675,175 @@ rule engine already supports exactly that kind of restriction.
   repeat the 100ms CPU-usage sample every time; not a concern at any
   normal scrape interval, but not guarded against either.
 
+## Hybrid BIOS + UEFI boot support (phase 13)
+
+Goal: the FR_OS live ISO (phase 5) boots on modern UEFI-only hardware
+(Intel NUCs, HP ProDesk/EliteDesk minis, Lenovo Tiny clients -- the
+class of small-form-factor boxes this project targets) as well as it
+already boots on legacy BIOS, from the same `dd`/Rufus-flashed USB
+drive, without growing the image meaningfully or touching the working
+BIOS path.
+
+### Corrections to the original request, up front
+
+Two parts of the request as literally written don't match this
+project's actual build tooling or its actual boot configuration; both
+are implemented correctly below rather than silently faked or left
+broken:
+
+- **`--bootloaders syslinux,grub-efi` does not exist on this project's
+  live-build.** Checked directly against the source, not assumed: this
+  project's live-build is the same very old, Ubuntu-patched `3.0~a57`
+  snapshot documented throughout phase 5's own section above and in
+  `installer/live-build/auto/config`'s header. Its `lb_config` getopt
+  string defines only a *singular* `--bootloader grub|syslinux|yaboot`
+  -- there is no plural `--bootloaders` option, and passing it aborts
+  `lb config` with an argument-parsing error. Even the singular `grub`
+  choice wouldn't have helped: `lb_binary_grub`'s "grub" case builds
+  **GRUB Legacy** (`menu.lst`, `stage2_eltorito`), not GRUB 2 EFI, and
+  `lb_binary_iso` packages the image with `genisoimage`
+  (not even installed as a host binary in this sandbox -- this
+  snapshot fetches it *inside the chroot* instead) with no EFI System
+  Partition/GPT logic anywhere in it. UEFI support is therefore
+  implemented entirely outside `lb_config`/`lb build`, as a new
+  post-processing step (`installer/make-hybrid-uefi-iso.sh`, below)
+  that repackages `lb build`'s already-assembled `binary/` tree with a
+  current tool (`xorriso`, which *is* installed) that can actually do
+  this. A real, current Debian live-build package's own
+  `--bootloaders syslinux,grub-efi` may make this extra step
+  unnecessary on a non-sandbox build host -- worth trying there first,
+  noted directly in `auto/config`.
+- **`boot=live components quiet splash enforcement=strict` does not
+  match this project's real boot parameters.** This project's actual,
+  working isolinux configuration
+  (`config/bootloaders/isolinux/live.cfg.in`) boots with
+  `boot=live config` -- `config` is a real live-boot(7) option (read
+  `live.conf` from the medium); `LB_BOOTAPPEND_LIVE` is empty in
+  `auto/config`. `components` and `enforcement=strict` are not
+  live-boot(7) parameters this project (or live-boot itself, as far as
+  its documented option list goes) recognizes, and `quiet`/`splash`
+  are not currently part of this project's boot line either. The
+  request's own stated goal was parameters "identical" to the legacy
+  syslinux setup -- so the new GRUB menu boots with the *actual*
+  current line (`boot=live config`, plus the real
+  `LB_BOOTAPPEND_FAILSAFE` value for the fail-safe entry), not the
+  requested-but-nonexistent one, to genuinely satisfy "identical"
+  rather than silently diverging from it.
+- **The four packages named for `config/package-lists/` are build-host
+  tools, not chroot/live-system packages.** `grub-efi-amd64-bin` and
+  `grub-common` provide `grub-mkstandalone` (confirmed:
+  `dpkg -S /usr/bin/grub-mkstandalone` → `grub-common`) and its
+  x86_64-efi module tree; `xorriso` does the actual repackaging. None
+  of the three ever need to be installed *inside* the live system's
+  own squashfs -- the running firewall OS has no use for ISO-building
+  tools, and adding them to `frfw.list.chroot` would only bloat the
+  shipped image. `isolinux` is the fourth named package, and it's
+  already in `frfw.list.chroot` (added back in phase 5, for
+  `isolinux.bin`/`isohdpfx.bin`) -- no change needed there. The three
+  genuine build-host tools are documented as prerequisites in
+  `installer/build-live-image.sh`'s own header instead, alongside the
+  syslinux-utils/librsvg2-bin host tools phase 5 already documented
+  there the same way.
+
+### How it actually works
+
+`installer/make-hybrid-uefi-iso.sh` runs after `lb build` (wired into
+`installer/build-live-image.sh`) and:
+
+1. Builds a small standalone GRUB EFI binary
+   (`grub-mkstandalone -O x86_64-efi`) whose only embedded job is to
+   search for the ISO by its volume label and `configfile` the real
+   menu -- `config/includes.binary/boot/grub/grub.cfg`, a plain,
+   human-editable file this project commits directly (copied
+   byte-for-byte into `binary/boot/grub/grub.cfg` by live-build's own
+   `config/includes.binary` mechanism, confirmed by reading
+   `lb_binary_includes`: a plain tar/untar, no templating of its own --
+   unlike isolinux's `live.cfg.in`, this file has no build-time
+   variable substitution, so if `--bootappend-live`/
+   `--bootappend-failsafe` in `auto/config` ever stop being empty, this
+   file needs the same edit made by hand, a disclosed tradeoff rather
+   than an invented templating layer this task didn't ask for).
+2. Packs that EFI binary into a small (10 MiB) FAT-formatted EFI System
+   Partition image (`mkfs.vfat`/`mtools`), placed at
+   `binary/boot/grub/efi.img`, plus a plain copy at
+   `binary/EFI/BOOT/BOOTX64.EFI` (xorriso itself warns this second copy
+   is needed for some Windows/Rufus USB-imaging workflows that expect
+   an ESP tree visible directly in the ISO filesystem, not just inside
+   the appended partition image).
+3. Re-invokes the ISO-packaging step itself via
+   `xorriso -as mkisofs`, with the *same* BIOS El Torito flags
+   `lb_binary_iso` already used (`-eltorito-boot isolinux/isolinux.bin
+   ... -boot-info-table`, `-isohybrid-mbr` from the chroot's own
+   `isolinux` package, so the legacy boot path is byte-for-byte what it
+   already was) plus a second, UEFI El Torito entry
+   (`-eltorito-alt-boot -e boot/grub/efi.img -isohybrid-gpt-basdat`)
+   that also makes the ESP a real GPT partition on the disk image
+   itself, not just an ISO9660 file.
+4. Sources `installer/live-build/config/binary` (the file `lb config`
+   itself generates) for the volume label/application/publisher
+   strings and a `LB_BOOTLOADER` sanity check, so this script can't
+   silently drift from `auto/config`'s actual `--iso-*` flags.
+
+### Verification
+
+Real, hands-on, not simulated -- run twice in this sandbox against two
+different `binary/` trees:
+
+- A synthetic minimal tree (fake kernel/initrd, the repo's real
+  `isolinux.bin`) confirmed the underlying xorriso mechanism itself:
+  `-report_el_torito` showed both a BIOS and a UEFI boot image, and
+  `-report_system_area` showed a hybrid MBR *and* a GPT table with a
+  `0xef`/ESP-GUID partition pointing at `boot/grub/efi.img`.
+- The **real** `installer/live-build/binary/` tree left over from
+  phase 5's own real end-to-end build (a genuine 312 MB staging tree:
+  real kernel, real initrd, real 275 MB squashfs, real
+  `isolinux.bin`) was repackaged by the actual, final
+  `installer/make-hybrid-uefi-iso.sh` script, including a real
+  `lb binary_includes --force` run to confirm the committed
+  `config/includes.binary/boot/grub/grub.cfg` genuinely gets copied
+  into place by live-build itself (not just by hand during testing).
+  Result: a real 328 MB ISO (about 1 MB larger than phase 5's original
+  327 MB -- the 10 MiB ESP image is mostly empty/compressible padding,
+  not 10 MiB of real added data), `file` reports it as a bootable
+  ISO 9660 image, `-report_el_torito` shows both boot platforms, and
+  the appended `efi.img` mounts as a valid FAT filesystem containing a
+  real, `file`-confirmed "PE32+ executable (EFI application) x86-64"
+  binary at `EFI/BOOT/BOOTX64.EFI`.
+- **Not verified**: actually booting the resulting ISO on a real or
+  virtual UEFI machine (no such hardware/hypervisor access in this
+  sandbox) -- the same class of disclosed gap as phase 5's own "not
+  yet verified: actually booting the ISO" note. The boot *records*
+  (El Torito catalog, GPT partition table, a valid signed... unsigned,
+  see below... PE32+ binary) are all independently, structurally
+  confirmed; a live UEFI boot exercising firmware's own El
+  Torito/GPT parsing is the one remaining step.
+- **Secure Boot is explicitly out of scope and will not work as-is**:
+  the `BOOTX64.EFI` built by `grub-mkstandalone` here is unsigned. A
+  UEFI firmware with Secure Boot enabled will refuse to execute it.
+  Getting a Secure-Boot-chainloadable image working would need either
+  a Microsoft-signed shim (`shim-signed`, `grub-efi-amd64-signed`) or
+  the operator's own enrolled MOK key -- neither was part of this
+  request, and both are real, separate follow-up work, not a
+  five-minute flag. Operators on Secure-Boot-enabled hardware need to
+  disable it (or set up shim/MOK themselves) to boot this image via
+  UEFI, exactly the same situation as most small, from-scratch Linux
+  live images.
+
+### Open issues
+
+- Real UEFI boot (physical or virtual) not yet exercised, as above.
+- Secure Boot unsupported (unsigned GRUB EFI binary), as above.
+- `config/includes.binary/boot/grub/grub.cfg` is a static file, not
+  templated from `LB_BOOTAPPEND_LIVE`/`LB_BOOTAPPEND_FAILSAFE` the way
+  isolinux's own menu is -- fine while both are their current fixed
+  values, a manual-edit trap if they ever change.
+- The ESP is sized at a fixed 10 MiB; if `grub-mkstandalone`'s output
+  ever grows past that (a much larger module list, a future GRUB
+  version) the build would fail loudly at the `mcopy` step, not
+  silently truncate -- no dynamic sizing was added since the current,
+  measured output (~6 MB) leaves comfortable headroom for this
+  project's fixed, small module list.
+
 ## Open decisions
 
 The points below get settled during their respective phase, once the

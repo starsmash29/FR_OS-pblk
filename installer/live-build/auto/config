@@ -10,8 +10,10 @@
 # a "copy this to your disk" installer wizard; see the `--debian-installer
 # false` note below for exactly what's blocking that and how to unblock it.
 #
-# Known limitations, both tracked in ROADMAP.md phase 5:
-# - BIOS/syslinux only, not UEFI.
+# Known limitations, tracked in ROADMAP.md phase 5:
+# - `--bootloader syslinux`, singular, is this snapshot's only real option
+#   -- see the phase 13 note further down for why UEFI is handled outside
+#   this file entirely rather than by adding a bootloader flag here.
 # - `--debian-installer false`: `--debian-installer live` (which is what
 #   makes the ISO a hybrid live+install image, per the original plan) is
 #   disabled because this specific live-build build (3.0~a57, an old
@@ -48,6 +50,25 @@
 #   there and never hits the buggy auto-install path. Same story on the
 #   build *host* for isohybrid and rsvg-convert (librsvg2-bin) -- see
 #   installer/build-live-image.sh's header comment.
+#
+# - Phase 13, hybrid BIOS+UEFI boot: the request that started that phase
+#   asked for `--bootloaders syslinux,grub-efi` here. Checked against
+#   this snapshot's actual `lb_config` (its getopt string only ever
+#   defines a *singular* `--bootloader grub|syslinux|yaboot`, confirmed
+#   by reading it directly) and its `lb_binary_grub`/`lb_binary_iso`
+#   (the "grub" bootloader case is GRUB *Legacy*, menu.lst/
+#   stage2_eltorito, not GRUB 2 EFI; iso packaging shells out to
+#   `genisoimage`, with no EFI System Partition/GPT support anywhere in
+#   it): that flag does not exist on this live-build and would abort
+#   `lb config` with an argument-parsing error. UEFI support is
+#   therefore added entirely outside this file, by
+#   installer/make-hybrid-uefi-iso.sh, which repackages `lb build`'s
+#   already-assembled binary/ tree into a real hybrid ISO via xorriso
+#   after `lb build` finishes -- see that script's own header for the
+#   full rationale and verification. A real, current Debian live-build
+#   package's `--bootloaders syslinux,grub-efi` may make that script
+#   unnecessary there -- worth trying first on a real (non-sandbox)
+#   build host.
 #
 # - config/hooks/*.chroot, not config/hooks/live/*.chroot: this
 #   snapshot's lb_chroot_hooks only globs `config/hooks/*.chroot`
