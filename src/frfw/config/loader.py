@@ -31,6 +31,7 @@ from frfw.config.schema import (
     IotConfig,
     IotIsolationMode,
     Masquerade,
+    MetricsConfig,
     NatConfig,
     PortForward,
     PqcConfig,
@@ -126,6 +127,7 @@ def parse_config(raw: Any) -> Config:
         raw.get("app_control", {}) or {}, adblocker, xdp_sni_filter
     )
     tls_fingerprint = _parse_tls_fingerprint(raw.get("tls_fingerprint", {}) or {}, xdp_sni_filter)
+    metrics = _parse_metrics(raw.get("metrics", {}) or {})
 
     return Config(
         version=version,
@@ -144,6 +146,7 @@ def parse_config(raw: Any) -> Config:
         iot=iot,
         app_control=app_control,
         tls_fingerprint=tls_fingerprint,
+        metrics=metrics,
         timezone=tz_name,
     )
 
@@ -1025,3 +1028,21 @@ def _parse_tls_fingerprint(raw: Any, xdp_sni_filter: XdpSniFilterConfig) -> TlsF
     return TlsFingerprintConfig(
         enabled=flags["enabled"], blocklist=entries, quarantine_on_match=flags["quarantine_on_match"]
     )
+
+
+_SITE_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,62}$")
+TOKEN_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _parse_metrics(raw: Any) -> MetricsConfig:
+    if not isinstance(raw, dict):
+        raise ConfigError("'metrics' must be a mapping")
+    site = raw.get("site")
+    if site is not None and (not isinstance(site, str) or not _SITE_RE.match(site)):
+        raise ConfigError(
+            "metrics.site must be lowercase letters, digits, '.', '_', '-' (max 63), e.g. budapest-office"
+        )
+    token_hash = raw.get("token_sha256")
+    if token_hash is not None and (not isinstance(token_hash, str) or not TOKEN_SHA256_RE.match(token_hash)):
+        raise ConfigError("metrics.token_sha256 must be a 64-character lowercase SHA-256 hex digest")
+    return MetricsConfig(site=site, token_sha256=token_hash)

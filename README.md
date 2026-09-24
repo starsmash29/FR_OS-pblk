@@ -96,6 +96,8 @@ firewall-cli assign-interfaces --wan eth0 --lan eth1
 
 A real, importable dashboard (stat tiles, throughput graphs, hardware gauges) is checked into [`telemetry/grafana-dashboard.json`](telemetry/grafana-dashboard.json) — every panel queries a metric name this project actually emits, nothing aspirational.
 
+**Several sites?** One Prometheus can watch all your FR_OS routers: protect each router's `/metrics` with a token (`firewall-cli metrics-token --generate --site budapest`), scrape it over verified TLS as in [`telemetry/prometheus-multisite.yml`](telemetry/prometheus-multisite.yml), and import [`telemetry/grafana-fleet-dashboard.json`](telemetry/grafana-fleet-dashboard.json) for a read-only fleet overview that links into the per-router dashboard. Every query in both dashboards is evaluated against a real Prometheus scraping two routers in the test suite.
+
 ---
 
 ## 🧪 Testing
@@ -105,7 +107,7 @@ A real, importable dashboard (stat tiles, throughput graphs, hardware gauges) is
 python3 -m pytest
 ```
 
-911 tests pass as of the latest phase (1 skipped, gated on a `dmidecode` binary this dev sandbox doesn't have installed — see ARCHITECTURE.md). Wherever the target environment allows it, tests exercise the real thing instead of a mock: real `nft` ruleset loading and rollback, real kernel-set timeouts (ZTNA sessions, the brute-force jail, AI IDS quarantine), real filesystem-permission checks (e.g. confirming `/proc/net/nf_conntrack` really is root-only before relying on that boundary). IoT isolation is tested on the wire: two network namespaces routed through the actual generated ruleset, with TCP connections and a real mDNS exchange. DNS filtering is tested against a real dnsmasq, whose real query log drives the AI IDS in the same test. The XDP program is loaded into the running kernel and fed real TLS handshakes across three network namespaces (client, router, server), which is how the phase 4 attach-direction mistake was caught. The eBPF/XDP C code is written and commented specifically to satisfy the kernel's static verifier — bounded loops, explicit range checks — and is checked against a real packet-capture integration test, not just compiled.
+924 tests pass as of the latest phase (1 skipped, gated on a `dmidecode` binary this dev sandbox doesn't have installed — see ARCHITECTURE.md). Wherever the target environment allows it, tests exercise the real thing instead of a mock: real `nft` ruleset loading and rollback, real kernel-set timeouts (ZTNA sessions, the brute-force jail, AI IDS quarantine), real filesystem-permission checks (e.g. confirming `/proc/net/nf_conntrack` really is root-only before relying on that boundary). IoT isolation is tested on the wire: two network namespaces routed through the actual generated ruleset, with TCP connections and a real mDNS exchange. DNS filtering is tested against a real dnsmasq, whose real query log drives the AI IDS in the same test. The XDP program is loaded into the running kernel and fed real TLS handshakes across three network namespaces (client, router, server), which is how the phase 4 attach-direction mistake was caught. The eBPF/XDP C code is written and commented specifically to satisfy the kernel's static verifier — bounded loops, explicit range checks — and is checked against a real packet-capture integration test, not just compiled.
 
 Config changes are never a one-way door: every real (non-dry-run) apply snapshots the previous ruleset first, keeping the last 10 versions under `/etc/fr_os/backups/` for `firewall-cli rollback`.
 
@@ -274,6 +276,7 @@ pfSense and OPNsense are mature, FreeBSD-based projects with a much larger drive
 | Time-based rules | Built in (per-rule schedules, per-device MAC matching, DST-safe) | Built in (schedules) |
 | Multiple admins / read-only role / audit log | Built in (admin + viewer roles, per-request enforcement, audit log) | Built in (users, groups, privileges) |
 | TLS client fingerprinting (JA4/JA3) | Built in (per-device inventory, new-fingerprint alerts, blocklist + quarantine) | Suricata / Zeek add-ons |
+| Multi-site overview | Prometheus/Grafana fleet dashboard, token-protected `/metrics` over verified TLS | Central management products or third-party tools |
 | Prometheus metrics | Native `/metrics`, zero extra packages | Needs a community package (`node_exporter` et al.) |
 | Live image size | ~328 MB hybrid BIOS+UEFI | Multi-hundred-MB to several GB installer images |
 | Config model | One YAML file, plain-text diffable, versioned rollback | XML config, less diff-friendly |
@@ -404,6 +407,12 @@ device from ClientHellos the XDP program copies (split post-quantum
 hellos reassembled), computed by a daemon that drops root before parsing
 anything; new-fingerprint events and a blocklist with optional
 quarantine. JA4 matches the reference outputs for 151 of 152 real streams.
+
+**Phase 20 (multi-site read-only monitoring)** — done. Token-protected
+`/metrics`, a generated certificate that Prometheus can actually verify
+(the old CN-only one couldn't), `fros_info`, a multi-site Prometheus
+example and a fleet Grafana dashboard -- all checked with a real
+Prometheus scraping two routers.
 
 Full rationale for every phase: [ARCHITECTURE.md](ARCHITECTURE.md).
 

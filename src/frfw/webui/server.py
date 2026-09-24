@@ -9,6 +9,7 @@ is handled at the systemd level (AmbientCapabilities=CAP_NET_BIND_SERVICE
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import sys
 from pathlib import Path
 
@@ -33,6 +34,18 @@ def _pqc_enabled(config_path: Path) -> bool:
         return False
 
 
+def _certificate_names(config_path: Path) -> tuple[list[str], list[str]]:
+    """The router's hostname and static interface addresses, for the
+    self-signed certificate's subjectAltName (best effort: an unreadable
+    config just yields the default name)."""
+    try:
+        config = load_config(config_path)
+    except (OSError, ConfigError):
+        return [], []
+    ips = [str(ipaddress.IPv4Interface(i.address).ip) for i in config.interfaces.values() if i.address]
+    return [config.hostname], ips
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="fr-webui")
     parser.add_argument("--host", default="0.0.0.0")
@@ -43,10 +56,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     cert_path, key_path = Path(args.cert), Path(args.key)
-    ensure_self_signed_cert(cert_path, key_path)
-
     config_path = Path(args.config)
-    app = create_app(config_path=config_path)
+    dns_names, ip_addresses = _certificate_names(config_path)
+    ensure_self_signed_cert(cert_path, key_path, dns_names=dns_names, ip_addresses=ip_addresses)
+
+    app = create_app(config_path=config_path, webui_cert_path=cert_path)
 
     # The actual hybrid-group *preference* (X25519MLKEM768) comes from
     # the OPENSSL_CONF fragment fr-apply-helper maintains (see

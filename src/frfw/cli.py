@@ -12,6 +12,7 @@
     firewall-cli iot-status
     firewall-cli apps-status [--limit N]
     firewall-cli tls-fingerprints
+    firewall-cli metrics-token (--generate | --disable) [--site NAME] [config.yaml]
     firewall-cli schedule-check [config.yaml]
     firewall-cli update check [config.yaml]
     firewall-cli update apply VERSION [--repo OWNER/REPO]
@@ -36,9 +37,12 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import os
 import secrets
 import sys
 from pathlib import Path
+
+import yaml
 
 from frfw import __version__, netdetect, paths, schedule_refresh, skeleton, xdp as xdp_mod
 from frfw import update as update_mod
@@ -49,7 +53,8 @@ from frfw.appid import load_catalog
 from frfw.appid.daemon import load_usage
 from frfw.apply import NftError, list_backups, rollback_last
 from frfw.tlsfp.daemon import load_state as load_tlsfp_state
-from frfw.config import ConfigError, load_config
+from frfw.config import ConfigError, load_config, parse_config
+from frfw.metrics import generate_metrics_token
 from frfw.ids_quarantine import IdsQuarantineError, list_quarantined
 from frfw.iot_isolation import IotIsolationError, list_isolated
 from frfw.ifaddr import IfaddrError
@@ -192,6 +197,17 @@ def _build_parser() -> argparse.ArgumentParser:
         help="show the MAC addresses currently isolated by IoT isolation (needs root)",
     )
     p_iot_status.set_defaults(handler=_cmd_iot_status)
+
+    p_mtoken = sub.add_parser(
+        "metrics-token",
+        help="protect GET /metrics with a bearer token for a remote Prometheus (phase 20)",
+    )
+    add_config_arg(p_mtoken)
+    mode = p_mtoken.add_mutually_exclusive_group()
+    mode.add_argument("--generate", action="store_true", help="create a new token (printed once) and require it")
+    mode.add_argument("--disable", action="store_true", help="remove the token: /metrics is public again")
+    p_mtoken.add_argument("--site", help="set metrics.site, this router's name in the fleet")
+    p_mtoken.set_defaults(handler=_cmd_metrics_token)
 
     p_tlsfp = sub.add_parser(
         "tls-fingerprints", help="show the TLS client fingerprints (JA4/JA3) seen per device (from fr-tls-fp)"
@@ -384,6 +400,43 @@ def _cmd_iot_status(args: argparse.Namespace) -> int:
     print("IoT isolation: currently isolated devices:")
     for mac in sorted(isolated):
         print(f"  {mac}")
+    return 0
+
+
+def _cmd_metrics_token(args: argparse.Namespace) -> int:
+    if not (args.generate or args.disable or args.site):
+        print("error: give --generate, --disable and/or --site", file=sys.stderr)
+        return 1
+    path = Path(args.config)
+    raw = yaml.safe_load(path.read_text()) or {}
+    section = dict(raw.get("metrics") or {})
+    token = None
+    if args.generate:
+        token, section["token_sha256"] = generate_metrics_token()
+    if args.disable:
+        section.pop("token_sha256", None)
+    if args.site:
+        section["site"] = args.site
+    raw["metrics"] = section
+    parse_config(raw)  # never write a config firewall-cli itself would reject
+    text = yaml.safe_dump(raw, sort_keys=False, default_flow_style=False)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text)
+    stat = path.stat()
+    os.chmod(tmp, stat.st_mode & 0o7777)
+    if os.geteuid() == 0:
+        os.chown(tmp, stat.st_uid, stat.st_gid)
+    tmp.replace(path)
+    if token is not None:
+        # The only time the token exists anywhere but in this output.
+        print(token)
+        print(
+            "Put this token in the scraping Prometheus's credentials_file; only its SHA-256 "
+            "is stored on the router. Takes effect immediately (no apply needed).",
+            file=sys.stderr,
+        )
+    else:
+        print("metrics settings saved")
     return 0
 
 

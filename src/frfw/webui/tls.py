@@ -17,14 +17,51 @@ class TlsError(Exception):
     pass
 
 
+AUTO_CERT_CN = "fr-router"
+
+
+def _is_legacy_auto_cert(cert_path: Path) -> bool:
+    """True for a certificate this module generated before phase 20: self-
+    signed with CN=fr-router and no subjectAltName. Such a cert can't be
+    verified by modern TLS clients (Go -- Prometheus, Grafana -- ignores the
+    CN since Go 1.15), so it is replaced once. Anything else (an admin's own
+    certificate) is never touched."""
+    try:
+        proc = subprocess.run(
+            ["openssl", "x509", "-in", str(cert_path), "-noout", "-subject", "-issuer", "-ext", "subjectAltName"],
+            capture_output=True, text=True,
+        )
+    except FileNotFoundError:
+        return False
+    if proc.returncode != 0:
+        return False
+    out = proc.stdout.replace(" ", "")
+    return (
+        f"subject=CN={AUTO_CERT_CN}" in out
+        and f"issuer=CN={AUTO_CERT_CN}" in out
+        and "SubjectAlternativeName" not in out
+    )
+
+
 def ensure_self_signed_cert(
-    cert_path: Path, key_path: Path, *, common_name: str = "fr-router"
+    cert_path: Path,
+    key_path: Path,
+    *,
+    common_name: str = AUTO_CERT_CN,
+    dns_names: list[str] | None = None,
+    ip_addresses: list[str] | None = None,
 ) -> bool:
-    """Generate a self-signed cert/key pair if they don't already exist.
+    """Generate a self-signed cert/key pair if they don't already exist (or
+    replace this module's own pre-phase-20 cert, see _is_legacy_auto_cert).
+
+    The certificate carries subjectAltName entries -- `common_name`, any
+    `dns_names` and `ip_addresses` -- because clients verify names against
+    the SAN, not the CN: a Prometheus server scraping another site's
+    /metrics with TLS verification (phase 20) checks it.
 
     Returns True if a new pair was generated, False if both already existed.
     """
-    if cert_path.is_file() and key_path.is_file():
+    if cert_path.is_file() and key_path.is_file() and not _is_legacy_auto_cert(cert_path):
         return False
 
     cert_path.parent.mkdir(parents=True, exist_ok=True)
@@ -36,6 +73,10 @@ def ensure_self_signed_cert(
                 "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
                 "-keyout", str(key_path), "-out", str(cert_path),
                 "-days", "3650", "-subj", f"/CN={common_name}",
+                "-addext", "subjectAltName=" + ",".join(
+                    [f"DNS:{n}" for n in dict.fromkeys([common_name, *(dns_names or [])])]
+                    + [f"IP:{ip}" for ip in dict.fromkeys(ip_addresses or [])]
+                ),
             ],
             capture_output=True,
             text=True,

@@ -1,0 +1,60 @@
+# Prometheus configuration for monitoring several FR_OS routers (phase 20).
+#
+# One Prometheus (at the main site, or a small VM anywhere) scrapes every
+# router's GET /metrics over HTTPS. Per router you need three things, all
+# from that router's webUI (System -> Multi-site monitoring) or CLI:
+#
+#   1. its metrics token (`firewall-cli metrics-token --generate`) in a
+#      file readable only by Prometheus, e.g. /etc/prometheus/fr_os/budapest.token
+#   2. its certificate (System -> download, or /etc/fr_os/webui/cert.pem)
+#      as the ca_file -- the self-signed certificate is trusted exactly,
+#      nothing else is; compare its SHA-256 with the one the webUI shows
+#   3. the name in its certificate for server_name: "fr-router" works for
+#      the generated certificate (it also lists the hostname and the
+#      router's static interface addresses)
+#
+# Each router is its own job because tokens and certificates differ per
+# router. The `site` label is what the Grafana dashboards filter and group
+# by -- keep it equal to the router's metrics.site.
+#
+# Reach the routers over a site-to-site VPN (WireGuard, IPsec) or allow the
+# Prometheus host's address only, with a rule like
+#   {name: allow-prometheus, action: accept, from_zone: wan, to_zone: self,
+#    proto: tcp, dst_port: 443, src_address: 203.0.113.10}
+# The token keeps others out of /metrics, but not out of the webUI's port.
+#
+# Verified end to end against real Prometheus 3.14 scraping two FR_OS
+# webUI instances: tests/test_multisite_prometheus.py.
+
+global:
+  scrape_interval: 30s
+  scrape_timeout: 10s
+
+scrape_configs:
+  - job_name: fr_os-budapest
+    scheme: https
+    metrics_path: /metrics
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/fr_os/budapest.token
+    tls_config:
+      ca_file: /etc/prometheus/fr_os/budapest.pem
+      server_name: fr-router
+    static_configs:
+      - targets: ["10.10.0.1:443"]
+        labels:
+          site: budapest
+
+  - job_name: fr_os-szeged
+    scheme: https
+    metrics_path: /metrics
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/fr_os/szeged.token
+    tls_config:
+      ca_file: /etc/prometheus/fr_os/szeged.pem
+      server_name: fr-router
+    static_configs:
+      - targets: ["10.20.0.1:443"]
+        labels:
+          site: szeged

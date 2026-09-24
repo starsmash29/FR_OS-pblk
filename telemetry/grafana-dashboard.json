@@ -10,7 +10,7 @@
     }
   ],
   "title": "FR_OS Router",
-  "description": "Software and hardware telemetry scraped from a single FR_OS router's GET /metrics endpoint (frfw.metrics, phase 12). Every query below references a metric name that endpoint actually emits -- see docs/CONFIG_SCHEMA.md and ARCHITECTURE.md for what each one measures.",
+  "description": "Software and hardware telemetry scraped from an FR_OS router's GET /metrics endpoint (frfw.metrics, phase 12); with several routers, pick one with the Site selector (phase 20). Every query below references a metric name that endpoint actually emits -- see docs/CONFIG_SCHEMA.md and ARCHITECTURE.md for what each one measures.",
   "schemaVersion": 39,
   "version": 1,
   "editable": true,
@@ -20,6 +20,10 @@
   "time": { "from": "now-6h", "to": "now" },
   "refresh": "30s",
   "tags": ["fr_os", "firewall", "router"],
+  "uid": "fr-os-router",
+  "templating": { "list": [
+    {"name": "site", "label": "Site", "type": "query", "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"}, "query": {"query": "label_values(fros_info, site)", "refId": "site"}, "definition": "label_values(fros_info, site)", "refresh": 2, "multi": true, "includeAll": true, "allValue": ".*", "current": {"text": "All", "value": "$__all"}, "sort": 1}
+  ] },
   "panels": [
     {
       "id": 1,
@@ -37,7 +41,7 @@
       "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "targets": [
-        { "expr": "fros_xdp_status", "refId": "A" }
+        { "expr": "fros_xdp_status{site=~\"$site\"}", "refId": "A" }
       ],
       "fieldConfig": {
         "defaults": {
@@ -59,7 +63,7 @@
       "gridPos": { "h": 4, "w": 4, "x": 4, "y": 1 },
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "targets": [
-        { "expr": "fros_adblock_total_domains", "refId": "A" }
+        { "expr": "fros_adblock_total_domains{site=~\"$site\"}", "refId": "A" }
       ]
     },
     {
@@ -69,7 +73,7 @@
       "gridPos": { "h": 4, "w": 4, "x": 8, "y": 1 },
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "targets": [
-        { "expr": "fros_ztna_active_sessions", "refId": "A" }
+        { "expr": "fros_ztna_active_sessions{site=~\"$site\"}", "refId": "A" }
       ]
     },
     {
@@ -87,7 +91,7 @@
         "overrides": []
       },
       "targets": [
-        { "expr": "fros_bruteforce_banned_ips", "refId": "A" }
+        { "expr": "fros_bruteforce_banned_ips{site=~\"$site\"}", "refId": "A" }
       ]
     },
     {
@@ -106,7 +110,7 @@
         "overrides": []
       },
       "targets": [
-        { "expr": "fros_ai_ids_quarantined_hosts", "refId": "A" }
+        { "expr": "fros_ai_ids_quarantined_hosts{site=~\"$site\"}", "refId": "A" }
       ]
     },
     {
@@ -116,7 +120,7 @@
       "gridPos": { "h": 4, "w": 4, "x": 20, "y": 1 },
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "targets": [
-        { "expr": "fros_xdp_blocked_connections_total", "refId": "A" }
+        { "expr": "fros_xdp_blocked_connections_total{site=~\"$site\"}", "refId": "A" }
       ]
     },
     {
@@ -137,7 +141,7 @@
       "fieldConfig": { "defaults": { "unit": "Bps" }, "overrides": [] },
       "targets": [
         {
-          "expr": "irate(fros_interface_bytes_total[5m])",
+          "expr": "irate(fros_interface_bytes_total{site=~\"$site\"}[5m])",
           "legendFormat": "{{device}} {{direction}}",
           "refId": "A"
         }
@@ -153,7 +157,7 @@
       "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
       "targets": [
         {
-          "expr": "irate(fros_xdp_blocked_connections_total[5m])",
+          "expr": "irate(fros_xdp_blocked_connections_total{site=~\"$site\"}[5m])",
           "refId": "A"
         }
       ]
@@ -181,7 +185,7 @@
         ] }
       }, "overrides": [] },
       "targets": [
-        { "expr": "fros_hw_cpu_usage_ratio", "refId": "A" }
+        { "expr": "fros_hw_cpu_usage_ratio{site=~\"$site\"}", "refId": "A" }
       ]
     },
     {
@@ -192,7 +196,7 @@
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "fieldConfig": { "defaults": { "unit": "rotmhz" }, "overrides": [] },
       "targets": [
-        { "expr": "fros_hw_cpu_mhz", "refId": "A" }
+        { "expr": "fros_hw_cpu_mhz{site=~\"$site\"}", "refId": "A" }
       ]
     },
     {
@@ -211,7 +215,7 @@
       }, "overrides": [] },
       "targets": [
         {
-          "expr": "fros_hw_ram_usage_bytes / fros_hw_ram_total_bytes",
+          "expr": "fros_hw_ram_usage_bytes{site=~\"$site\"} / fros_hw_ram_total_bytes{site=~\"$site\"}",
           "refId": "A"
         }
       ]
@@ -225,7 +229,7 @@
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "fieldConfig": { "defaults": { "unit": "decbytes" }, "overrides": [] },
       "targets": [
-        { "expr": "fros_hw_ram_total_bytes", "refId": "A" }
+        { "expr": "fros_hw_ram_total_bytes{site=~\"$site\"}", "refId": "A" }
       ]
     },
     {
@@ -240,7 +244,7 @@
       }, "overrides": [] },
       "targets": [
         {
-          "expr": "fros_hw_storage_usage_bytes / fros_hw_storage_total_bytes",
+          "expr": "fros_hw_storage_usage_bytes{site=~\"$site\"} / fros_hw_storage_total_bytes{site=~\"$site\"}",
           "legendFormat": "{{mount}} ({{device_name}})",
           "refId": "A"
         }
@@ -262,7 +266,7 @@
       "gridPos": { "h": 6, "w": 16, "x": 0, "y": 28 },
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "targets": [
-        { "expr": "fros_iot_devices", "legendFormat": "{{category}}", "refId": "A" }
+        { "expr": "fros_iot_devices{site=~\"$site\"}", "legendFormat": "{{category}}", "refId": "A" }
       ]
     },
     {
@@ -273,7 +277,7 @@
       "gridPos": { "h": 6, "w": 8, "x": 16, "y": 28 },
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "targets": [
-        { "expr": "fros_iot_isolated_devices", "refId": "A" }
+        { "expr": "fros_iot_isolated_devices{site=~\"$site\"}", "refId": "A" }
       ]
     },
     {
@@ -292,7 +296,7 @@
       "gridPos": { "h": 7, "w": 24, "x": 0, "y": 35 },
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "targets": [
-        { "expr": "fros_dns_blocked_domains", "legendFormat": "{{category}}", "refId": "A" }
+        { "expr": "fros_dns_blocked_domains{site=~\"$site\"}", "legendFormat": "{{category}}", "refId": "A" }
       ]
     },
     {
@@ -311,7 +315,7 @@
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 43 },
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "targets": [
-        { "expr": "topk(10, fros_app_active_clients)", "legendFormat": "{{app}}", "refId": "A" }
+        { "expr": "topk(10, fros_app_active_clients{site=~\"$site\"})", "legendFormat": "{{app}}", "refId": "A" }
       ]
     },
     {
@@ -322,7 +326,7 @@
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 43 },
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "targets": [
-        { "expr": "topk(10, fros_app_hits_24h)", "legendFormat": "{{app}}", "refId": "A" }
+        { "expr": "topk(10, fros_app_hits_24h{site=~\"$site\"})", "legendFormat": "{{app}}", "refId": "A" }
       ]
     },
     {
@@ -339,7 +343,7 @@
       "title": "Distinct JA4 fingerprints",
       "gridPos": { "h": 5, "w": 8, "x": 0, "y": 52 },
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "targets": [ { "expr": "fros_tls_distinct_fingerprints", "refId": "A" } ]
+      "targets": [ { "expr": "fros_tls_distinct_fingerprints{site=~\"$site\"}", "refId": "A" } ]
     },
     {
       "id": 62,
@@ -347,7 +351,7 @@
       "title": "Fingerprinted devices",
       "gridPos": { "h": 5, "w": 8, "x": 8, "y": 52 },
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "targets": [ { "expr": "fros_tls_fingerprinted_clients", "refId": "A" } ]
+      "targets": [ { "expr": "fros_tls_fingerprinted_clients{site=~\"$site\"}", "refId": "A" } ]
     },
     {
       "id": 63,
@@ -356,7 +360,7 @@
       "description": "fros_tls_fingerprint_events_24h{type}: new fingerprints and blocklist matches (phase 19).",
       "gridPos": { "h": 5, "w": 8, "x": 16, "y": 52 },
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "targets": [ { "expr": "fros_tls_fingerprint_events_24h", "legendFormat": "{{type}}", "refId": "A" } ]
+      "targets": [ { "expr": "fros_tls_fingerprint_events_24h{site=~\"$site\"}", "legendFormat": "{{type}}", "refId": "A" } ]
     }
   ]
 }

@@ -29,6 +29,7 @@ adblocker: {...}     # optional, default: empty (disabled)
 iot: {...}           # optional, default: empty (disabled)
 app_control: {...}   # optional, default: empty (disabled)
 tls_fingerprint: {...}  # optional, default: empty (disabled)
+metrics: {...}       # optional, default: public /metrics, site name = hostname
 ```
 
 ## `interfaces`
@@ -344,6 +345,28 @@ tls_fingerprint:
 - Blocklist edits reach the running daemon within 30 seconds; `enabled`
   takes effect on the next `apply`.
 - IPv4 TCP only: QUIC (HTTP/3) and IPv6 connections are not fingerprinted.
+
+## `metrics`
+
+Multi-site monitoring (phase 20, see
+[ARCHITECTURE.md](../ARCHITECTURE.md#multi-site-read-only-monitoring-phase-20)).
+
+```yaml
+metrics:
+  site: budapest-office     # optional; this router's name in fleet dashboards (fros_info's site_name); default: hostname
+  token_sha256: 3f1a...     # optional; SHA-256 hex of the bearer token /metrics then requires
+```
+
+- Never write a token here by hand: `firewall-cli metrics-token
+  --generate` (or System -> Multi-site monitoring in the webUI) creates
+  one, prints it once and stores only its digest. `--disable` removes it.
+- With `token_sha256` set, `GET /metrics` answers 401 unless the request
+  carries `Authorization: Bearer <token>` -- also while the rest of
+  config.yaml fails validation.
+- Takes effect immediately, no `apply` needed.
+- Example scraper setup: `telemetry/prometheus-multisite.yml`; dashboards:
+  `telemetry/grafana-fleet-dashboard.json` and the `Site` selector of
+  `telemetry/grafana-dashboard.json`.
 
 ## Known limitations
 

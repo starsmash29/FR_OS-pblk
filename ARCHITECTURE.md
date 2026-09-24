@@ -1623,6 +1623,10 @@ an operator most needs it to still work.
 
 ### Public, unauthenticated -- a deliberate security tradeoff, stated honestly
 
+> **Update (phase 20):** `/metrics` can now require a bearer token
+> (`metrics.token_sha256`) for scraping across sites; without one it
+> behaves as described here.
+
 `GET /metrics` carries no `require_login` dependency, per the request's
 explicit "unprivileged public/telemetry endpoint" wording -- this
 matches how Prometheus itself, and essentially every metrics exporter in
@@ -2605,6 +2609,98 @@ device through the helper's existing `quarantine_ip` command.
   abuse.ch's SSLBL JA3 list, is stale (checked: last updated August 2021,
   97 entries) and keys on JA3; FoxIO's JA4 database is a separate service
   with its own terms. Blocklist entries are the admin's own.
+
+## Multi-site read-only monitoring (phase 20)
+
+Goal: someone looking after a few sites -- home, the office, a parent's
+flat, two branch offices -- sees all FR_OS routers on one read-only
+screen: which are up, which config fails validation, load, throughput,
+security enforcement, and can drill into one site. Deliberately built on
+the phase 12 Prometheus exporter rather than a new FR_OS-to-FR_OS
+protocol: Prometheus and Grafana already do fleet monitoring well, and a
+second, home-grown management channel between routers would be one more
+thing to secure.
+
+### What was missing for that, found by trying it
+
+- **/metrics was public by design** (phase 12: "put it behind network
+  access control"). Scraping across sites means crossing networks the
+  admin may not fully control, so /metrics can now require a bearer
+  token (`metrics.token_sha256`). Only the token's SHA-256 is stored --
+  the token itself is shown once (CLI or webUI, rendered in the response,
+  never put in a redirect URL where it would land in browser history and
+  access logs). It is 32 random bytes, so no rate limiting is needed;
+  comparison is constant-time. The check reads the *raw* config, so an
+  otherwise-invalid config.yaml can't turn a protected endpoint public,
+  and a malformed digest fails closed.
+- **The generated webUI certificate couldn't be verified by Prometheus.**
+  It had only `CN=fr-router` and no subjectAltName; Go-based clients
+  (Prometheus, Grafana) have ignored the CN since Go 1.15. Reproduced with
+  the real Prometheus: with the old certificate every target is down with
+  an x509 error. New certificates carry SAN entries (`fr-router`, the
+  hostname, the static interface addresses); a certificate recognised as
+  this project's own pre-phase-20 one is regenerated once, and any other
+  certificate (an admin's) is never touched. A scraper trusts exactly one
+  router certificate (`ca_file`), whose SHA-256 the System screen shows
+  and offers for download.
+- **Nothing said which router a series came from** beyond Prometheus's
+  target labels. `fros_info{site_name, hostname, version}` and
+  `fros_config_valid` are always exported.
+
+### What ships
+
+- `telemetry/prometheus-multisite.yml`: one job per router (tokens and
+  certificates differ per router), a `site` target label, TLS verified
+  against that router's certificate, and a note to reach routers over a
+  VPN or an address-restricted rule -- the token protects /metrics, not
+  the webUI port.
+- `telemetry/grafana-fleet-dashboard.json`: sites reporting/down,
+  configs failing validation, fleet-wide quarantined hosts, banned login
+  sources and blocklisted TLS fingerprints; a per-site table (up, version,
+  config valid, CPU, RAM, throughput, XDP mode, quarantined) whose site
+  names link to the per-router dashboard; throughput, CPU and enforcement
+  trends per site; the most-used apps across sites.
+- `telemetry/grafana-dashboard.json` gained a `Site` selector; every query
+  is filtered by it (a single-router setup without a `site` label still
+  works: the filter matches an absent label).
+- Read-only by construction: Prometheus only reads /metrics, and nothing
+  on the dashboards can change a router. For per-site webUI access, the
+  phase 18 `viewer` role is the matching read-only login.
+
+### Verification
+
+`tests/test_multisite_prometheus.py` runs a **real Prometheus 3.14**
+(downloaded into the sandbox; the test skips when no binary is available)
+against two live webUI instances, each with its own certificate, token
+and site name, using the job layout of the example config:
+
+- both targets come up over verified TLS with their bearer tokens; a third
+  job with a wrong token is down with a 401;
+- `fros_info` carries both sites;
+- **every query in both dashboards** is evaluated by Prometheus against
+  the scraped data and must succeed, and the core fleet panels must
+  return data for both sites (2 sites up, info and config-valid for both,
+  4 throughput series, CPU for both);
+- promtool accepts the example config.
+
+Removing the subjectAltName from the generated certificate makes the test
+fail with Prometheus's x509 error (tried). Unit/route tests cover the
+token check (including the invalid-config and malformed-digest cases),
+one-time token display, the audit log not containing the token, the
+certificate fingerprint and download, legacy-certificate replacement and
+the CLI.
+
+Not verified: Grafana itself (not available here -- the dashboards'
+PromQL is verified, their JSON structure is checked, rendering is
+Grafana's), and scraping over a real WAN/VPN.
+
+### Open issues
+
+- Alerting (Alertmanager rules for "site down", "config invalid") is left
+  to the operator; the fleet dashboard shows the state, it doesn't page.
+- Helper-backed families (bans, quarantines, ZTNA, RAM modules) need the
+  privileged helper running on each router, as before.
+- Metrics stay IPv4-centric like the rest of the project.
 
 ## Open decisions
 

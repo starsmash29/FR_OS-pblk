@@ -2,6 +2,11 @@
 (phase 12 -- see ARCHITECTURE.md for why this isn't "phase 11": that
 number was already used by the AI IDS/IPS work completed earlier).
 
+Phase 20: optionally protected by a bearer token (`metrics.token_sha256`,
+see frfw.metrics.metrics_token_ok) so another site's Prometheus can scrape
+it across a network the admin doesn't fully control. Without a token it
+stays as described below.
+
 Deliberately public/unauthenticated (no `require_login`), matching how
 Prometheus itself and essentially every metrics exporter in existence
 works -- a scrape target is expected to sit behind network-level access
@@ -23,11 +28,11 @@ touches `nft`, `dmidecode`, or any other privileged interface directly.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Header
 from fastapi.responses import Response
 
 from frfw.config import ConfigError, parse_config
-from frfw.metrics import generate_metrics_text
+from frfw.metrics import generate_metrics_text, metrics_token_ok
 from frfw.webui.deps import (
     get_adblock_category_dir,
     get_adblock_hosts_path,
@@ -51,7 +56,13 @@ def metrics(
     adblock_category_dir=Depends(get_adblock_category_dir),
     appid_usage_path=Depends(get_appid_usage_path),
     tlsfp_state_path=Depends(get_tlsfp_state_path),
+    authorization: str | None = Header(default=None),
 ) -> Response:
+    if not metrics_token_ok(raw, authorization):
+        return Response(
+            content="bearer token required\n", status_code=401,
+            headers={"WWW-Authenticate": 'Bearer realm="fr_os metrics"'}, media_type="text/plain",
+        )
     try:
         config = parse_config(raw)
     except ConfigError:

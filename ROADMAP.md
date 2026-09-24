@@ -1182,3 +1182,30 @@ about new ones, and can block (and optionally quarantine) a fingerprint.
 ✅ Verified on real packets and against the reference implementation's
 outputs. QUIC and IPv6 are not covered.
 
+## Phase 20 – Multi-site read-only monitoring — **done**
+
+Last of the seven "next-gen homelab / small office" additions. Full
+rationale:
+[ARCHITECTURE.md](ARCHITECTURE.md#multi-site-read-only-monitoring-phase-20).
+
+- [x] **/metrics bearer token** (only its SHA-256 stored, shown once, fails
+      closed on invalid config or malformed digest).
+- [x] **Verifiable certificates**: subjectAltName on the generated webUI
+      certificate (the old CN-only one failed real Prometheus TLS
+      verification), one-time replacement of the legacy auto-certificate,
+      fingerprint and download on the System screen.
+- [x] **`fros_info` / `fros_config_valid`**, `metrics.site`.
+- [x] **Prometheus multi-site example**, **fleet Grafana dashboard**, `Site`
+      selector on the router dashboard.
+- [x] **`firewall-cli metrics-token`**, System screen card.
+- [x] Tests: 13 new, including real Prometheus 3.14 scraping two routers
+      and evaluating every dashboard query. Full suite: 924 passed, 1
+      skipped (with a Prometheus binary present; the 2 Prometheus tests
+      skip without one).
+
+**Acceptance criterion**: one Prometheus + Grafana shows several FR_OS
+routers read-only -- up/down, config health, load, throughput and
+security enforcement per site, with drill-down -- scraped over verified
+TLS with per-router tokens. ✅ Verified with a real Prometheus and two live
+routers; Grafana rendering itself not verified here.
+

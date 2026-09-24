@@ -446,6 +446,22 @@ class TlsFingerprintConfig:
 
 
 @dataclass(frozen=True)
+class MetricsConfig:
+    """GET /metrics for multi-site monitoring (phase 20, see frfw.metrics).
+
+    `site` names this router in a fleet (exported as fros_info's
+    `site_name` label; the hostname when unset). `token_sha256` is the
+    SHA-256 hex digest of a bearer token: when set, /metrics answers only
+    requests with `Authorization: Bearer <token>`. Only the digest is ever
+    stored -- the token is shown once when generated (webUI System screen
+    or `firewall-cli metrics-token`).
+    """
+
+    site: str | None = None
+    token_sha256: str | None = None
+
+
+@dataclass(frozen=True)
 class Config:
     version: int
     hostname: str
@@ -463,6 +479,7 @@ class Config:
     iot: IotConfig = field(default_factory=IotConfig)
     app_control: AppControlConfig = field(default_factory=AppControlConfig)
     tls_fingerprint: TlsFingerprintConfig = field(default_factory=TlsFingerprintConfig)
+    metrics: MetricsConfig = field(default_factory=MetricsConfig)
     #: IANA time zone rule schedules are written in (phase 17); None =
     #: the router's own local zone.
     timezone: str | None = None

@@ -43,13 +43,16 @@ losing one metric family.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import os
+import secrets
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from frfw import paths
+from frfw import __version__, paths
 from frfw import xdp as xdp_mod
 from frfw.adblock import category_counts, count_blocked_domains
 from frfw.appid import load_catalog
@@ -345,6 +348,53 @@ def _read_tlsfp_families(config: Config, state_path: Path, now: float | None = N
     return [fam_clients, fam_distinct, fam_events]
 
 
+def _read_info_families(config: Config | None) -> list[MetricFamily]:
+    """Phase 20: which router this is, for multi-site dashboards. Always
+    emitted -- with an invalid config the site falls back to "unknown" and
+    fros_config_valid says why the other families are missing."""
+    info = MetricFamily(
+        "fros_info", "Constant 1; labels identify this router (site name, hostname, version).", "gauge"
+    )
+    if config is None:
+        info.add(1, site_name="unknown", hostname="unknown", version=__version__)
+    else:
+        info.add(1, site_name=config.metrics.site or config.hostname, hostname=config.hostname,
+                 version=__version__)
+    valid = MetricFamily(
+        "fros_config_valid", "1 if the on-disk config.yaml passes validation, else 0.", "gauge"
+    )
+    valid.add(1 if config is not None else 0)
+    return [info, valid]
+
+
+def hash_metrics_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def generate_metrics_token() -> tuple[str, str]:
+    """(token, its SHA-256 digest). 32 random bytes: long enough that
+    guessing is hopeless, so no rate limiting is needed on /metrics."""
+    token = secrets.token_urlsafe(32)
+    return token, hash_metrics_token(token)
+
+
+def metrics_token_ok(raw_config: dict, authorization: str | None) -> bool:
+    """Whether a /metrics request may be answered. Reads the digest from
+    the *raw* config on purpose: an otherwise-invalid config.yaml must not
+    silently turn a protected endpoint public. A present but malformed
+    digest fails closed."""
+    section = raw_config.get("metrics") if isinstance(raw_config, dict) else None
+    expected = section.get("token_sha256") if isinstance(section, dict) else None
+    if expected is None:
+        return True
+    if not isinstance(expected, str) or len(expected) != 64:
+        return False
+    scheme, _, token = (authorization or "").partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        return False
+    return hmac.compare_digest(hash_metrics_token(token.strip()), expected.lower())
+
+
 # --- hardware metrics: CPU, RAM, storage -----------------------------------
 
 
@@ -566,6 +616,7 @@ def generate_metrics_text(
             return
         families.extend(result if isinstance(result, list) else [result])
 
+    collect(lambda: _read_info_families(config))
     if config is not None:
         collect(lambda: _read_interface_bytes_family(config))
         collect(lambda: _read_xdp_status_family(config))

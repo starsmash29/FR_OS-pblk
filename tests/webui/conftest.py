@@ -178,6 +178,7 @@ def webui_env(tmp_path):
         "appid_usage_path": tmp_path / "appid_usage.json",
         "audit_log_path": tmp_path / "audit.log",
         "tlsfp_state_path": tmp_path / "tls_fingerprints.json",
+        "webui_cert_path": tmp_path / "cert.pem",
         # No real multicast/ARP/IEEE registry in route tests: an empty
         # ARP table, an empty OUI file and a canned mDNS answer.
         "iot_scan_options": _iot_scan_options(tmp_path),

@@ -78,4 +78,39 @@
     list (still TLS 1.3-only on the webUI side) instead of failing.
   </p>
 </div>
+<div class="card">
+  <h3>Multi-site monitoring</h3>
+  {% if new_token %}
+  <div class="flash-success">
+    <strong>New metrics token -- copy it now, it is not stored and won't be shown again:</strong><br>
+    <code style="user-select:all;">{{ new_token }}</code>
+  </div>
+  {% endif %}
+  <p class="muted">
+    A Prometheus server at another site can scrape this router's <code>/metrics</code> over HTTPS.
+    With a token set, /metrics answers only requests carrying <code>Authorization: Bearer &lt;token&gt;</code>
+    (only its SHA-256 is kept in config.yaml). Examples: <code>telemetry/prometheus-multisite.yml</code>
+    and the fleet dashboard in <code>telemetry/</code>.
+  </p>
+  <form method="post" action="/system/metrics/site">
+    <label>Site name (shown in fleet dashboards; empty = hostname "{{ metrics_hostname }}")</label>
+    <input type="text" name="site" value="{{ metrics_site }}" placeholder="budapest-office" pattern="[a-z0-9][a-z0-9_.\-]{0,62}">
+    <button type="submit">Save site name</button>
+  </form>
+  <p>Token: {% if metrics_token_set %}<span class="badge badge-green">required</span>{% else %}<span class="badge badge-yellow">none -- /metrics is public</span>{% endif %}</p>
+  <form class="inline" method="post" action="/system/metrics/token">
+    <input type="hidden" name="action" value="generate">
+    <button type="submit">{{ "Replace token" if metrics_token_set else "Generate token" }}</button>
+  </form>
+  {% if metrics_token_set %}
+  <form class="inline" method="post" action="/system/metrics/token">
+    <input type="hidden" name="action" value="disable">
+    <button type="submit" class="secondary">Remove token</button>
+  </form>
+  {% endif %}
+  <p class="muted">
+    Certificate for the scraper's <code>ca_file</code>: <a href="/system/cert.pem">download</a>
+    {% if cert_sha256 %}<br>SHA-256: <code style="word-break:break-all;">{{ cert_sha256 }}</code>{% endif %}
+  </p>
+</div>
 {% endblock %}
