@@ -29,6 +29,7 @@ from fastapi.responses import Response
 from frfw.config import ConfigError, parse_config
 from frfw.metrics import generate_metrics_text
 from frfw.webui.deps import (
+    get_adblock_category_dir,
     get_adblock_hosts_path,
     get_helper,
     get_iot_inventory_path,
@@ -45,6 +46,7 @@ def metrics(
     helper: HelperClient = Depends(get_helper),
     adblock_hosts_path=Depends(get_adblock_hosts_path),
     iot_inventory_path=Depends(get_iot_inventory_path),
+    adblock_category_dir=Depends(get_adblock_category_dir),
 ) -> Response:
     try:
         config = parse_config(raw)
@@ -58,6 +60,10 @@ def metrics(
         config = None
 
     text = generate_metrics_text(
-        config, helper, adblock_hosts_path=adblock_hosts_path, iot_inventory_path=iot_inventory_path
+        config,
+        helper,
+        adblock_hosts_path=adblock_hosts_path,
+        iot_inventory_path=iot_inventory_path,
+        adblock_category_dir=adblock_category_dir,
     )
     return Response(content=text, media_type="text/plain; version=0.0.4")

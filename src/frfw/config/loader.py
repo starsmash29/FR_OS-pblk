@@ -109,7 +109,7 @@ def parse_config(raw: Any) -> Config:
     xdp_sni_filter = _parse_xdp_sni_filter(raw.get("xdp_sni_filter", {}) or {}, interfaces)
     ztna = _parse_ztna(raw.get("ztna", {}) or {})
     pqc = _parse_pqc(raw.get("pqc", {}) or {})
-    adblocker = _parse_adblocker(raw.get("adblocker", {}) or {})
+    adblocker = _parse_adblocker(raw.get("adblocker", {}) or {}, dhcp)
     iot = _parse_iot(raw.get("iot", {}) or {}, zones, nat)
 
     return Config(
@@ -628,24 +628,48 @@ def _parse_xdp_sni_filter(raw: Any, interfaces: dict[str, Interface]) -> XdpSniF
 _HTTP_URL_RE = re.compile(r"^https?://\S+$")
 
 
-def _parse_adblocker(raw: Any) -> AdblockerConfig:
+def _parse_url_list(raw: Any, what: str) -> list[str]:
+    if not isinstance(raw, list):
+        raise ConfigError(f"{what} must be a list")
+    urls = []
+    for i, url in enumerate(raw):
+        if not isinstance(url, str) or not _HTTP_URL_RE.match(url):
+            raise ConfigError(f"{what}[{i}]: invalid URL {url!r}")
+        urls.append(url)
+    return urls
+
+
+def _parse_bool(raw: dict, key: str, what: str) -> bool:
+    value = raw.get(key, False)
+    if not isinstance(value, bool):
+        raise ConfigError(f"{what}.{key} must be a boolean")
+    return value
+
+
+def _parse_adblocker(raw: Any, dhcp: DhcpConfig) -> AdblockerConfig:
     if not isinstance(raw, dict):
         raise ConfigError("'adblocker' must be a mapping")
 
-    enabled = raw.get("enabled", False)
-    if not isinstance(enabled, bool):
-        raise ConfigError("adblocker.enabled must be a boolean")
+    enabled = _parse_bool(raw, "enabled", "adblocker")
+    source_urls = _parse_url_list(raw.get("source_urls", []), "adblocker.source_urls")
 
-    urls_raw = raw.get("source_urls", [])
-    if not isinstance(urls_raw, list):
-        raise ConfigError("adblocker.source_urls must be a list")
-    source_urls = []
-    for i, url in enumerate(urls_raw):
-        if not isinstance(url, str) or not _HTTP_URL_RE.match(url):
-            raise ConfigError(f"adblocker.source_urls[{i}]: invalid URL {url!r}")
-        source_urls.append(url)
-    if enabled and not source_urls:
-        raise ConfigError("adblocker.enabled is true but source_urls is empty")
+    categories_raw = raw.get("categories", {}) or {}
+    if not isinstance(categories_raw, dict):
+        raise ConfigError("adblocker.categories must be a mapping of category name -> list of URLs")
+    categories: dict[str, list[str]] = {}
+    for name, urls in categories_raw.items():
+        _require_name(name, "adblocker category")
+        if name == "ads":
+            raise ConfigError(
+                "adblocker.categories: 'ads' is reserved for the base list (adblocker.source_urls)"
+            )
+        parsed = _parse_url_list(urls, f"adblocker.categories.{name}")
+        if not parsed:
+            raise ConfigError(f"adblocker.categories.{name} has no URLs")
+        categories[name] = parsed
+
+    if enabled and not source_urls and not categories:
+        raise ConfigError("adblocker.enabled is true but source_urls and categories are both empty")
 
     xdp_critical_limit = raw.get("xdp_critical_limit", 0)
     if isinstance(xdp_critical_limit, bool) or not isinstance(xdp_critical_limit, int):
@@ -653,10 +677,37 @@ def _parse_adblocker(raw: Any) -> AdblockerConfig:
     if xdp_critical_limit < 0:
         raise ConfigError("adblocker.xdp_critical_limit must be >= 0")
 
+    allowlist_raw = raw.get("allowlist", []) or []
+    if not isinstance(allowlist_raw, list):
+        raise ConfigError("adblocker.allowlist must be a list of domain names")
+    allowlist: list[str] = []
+    for i, domain in enumerate(allowlist_raw):
+        if not isinstance(domain, str) or "." not in domain or not _HOSTNAME_RE.match(domain.rstrip(".")):
+            raise ConfigError(f"adblocker.allowlist[{i}]: invalid domain name {domain!r}")
+        domain = domain.lower().rstrip(".")
+        if domain not in allowlist:
+            allowlist.append(domain)
+
+    serve_lan = _parse_bool(raw, "serve_lan", "adblocker")
+    force_dns = _parse_bool(raw, "force_dns", "adblocker")
+    query_logging = _parse_bool(raw, "query_logging", "adblocker")
+    if force_dns and not serve_lan:
+        raise ConfigError("adblocker.force_dns requires adblocker.serve_lan")
+    if serve_lan and not dhcp.zones:
+        raise ConfigError(
+            "adblocker.serve_lan needs at least one DHCP pool -- the resolver is announced "
+            "to, and listens on, the DHCP zones"
+        )
+
     return AdblockerConfig(
         enabled=enabled,
         source_urls=source_urls,
         xdp_critical_limit=xdp_critical_limit,
+        categories=categories,
+        allowlist=allowlist,
+        serve_lan=serve_lan,
+        force_dns=force_dns,
+        query_logging=query_logging,
     )
 
 

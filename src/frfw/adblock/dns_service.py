@@ -14,25 +14,32 @@ same "one complete generated config, one dedicated systemd service"
 shape `frfw.kea` already uses for Kea, never touching whatever else may
 or may not already be configured on the host.
 
-**Known scope limitation, stated plainly**: this module makes the
-resolver exist and serve the blocklist -- it does not yet also point
-LAN DHCP clients at it. `frfw.kea`'s `DhcpPool.dns_servers` is left
-exactly as the admin configured it; wiring Kea to hand out the router's
-own IP as the DNS server (so clients actually query this resolver) is a
-separate, not-yet-automated integration step -- see ARCHITECTURE.md's
-phase 9 "Nyitott pontok" for the full reasoning on why that wasn't done
-silently as a side effect here.
+Pointing LAN clients at this resolver is opt-in (phase 15,
+`adblocker.serve_lan`): frfw.kea then announces the router's own address
+as the DNS server and the pools' configured `dns_servers` become this
+instance's upstreams, and the firewall accepts DNS from those zones.
+Without it, phase 9's behavior stands: `DhcpPool.dns_servers` is handed
+out exactly as configured -- see ARCHITECTURE.md's phase 9 open issues
+for why that was never done silently as a side effect.
 """
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
 from frfw import paths
-from frfw.adblock import count_blocked_domains
+from frfw.adblock import (
+    FIREFOX_DOH_CANARY,
+    apply_allowlist,
+    category_path,
+    count_blocked_domains,
+    read_hosts_file,
+    write_hosts_file,
+)
 from frfw.config.schema import Config
 
 #: Used when no DHCP pool configures its own dns_servers (nothing else
@@ -56,10 +63,16 @@ class DnsServiceError(Exception):
 
 
 def _upstream_servers(config: Config) -> list[str]:
+    # Never forward to one of the router's own addresses: with serve_lan an
+    # admin may well have listed the router as a pool's DNS server already,
+    # and dnsmasq forwarding to itself would loop every query.
+    own = {
+        str(ipaddress.IPv4Interface(i.address).ip) for i in config.interfaces.values() if i.address
+    }
     servers: list[str] = []
     for pool in config.dhcp.zones.values():
         for server in pool.dns_servers:
-            if server not in servers:
+            if server not in servers and server not in own:
                 servers.append(server)
     return servers or list(_DEFAULT_UPSTREAM_SERVERS)
 
@@ -84,21 +97,65 @@ _DNSMASQ_CONF_TEMPLATE = """\
 port=53
 no-resolv
 no-hosts
-addn-hosts={hosts_path}
+{hosts_lines}
 {listen_lines}
 bind-interfaces
 {server_lines}
-user=nobody
+{extra_lines}user=nobody
 group=nogroup
 """
 
+# FIREFOX_DOH_CANARY (see frfw.adblock): `address=/<name>/` with no address
+# makes dnsmasq answer NXDOMAIN for it -- checked against real dnsmasq 2.91
+# (A and AAAA both rcode 3) -- as long as no hosts file also lists it,
+# which frfw.adblock.apply_allowlist guarantees.
 
-def render_dnsmasq_config(config: Config, *, hosts_path: Path = paths.ADBLOCK_HOSTS_PATH) -> str:
+
+def render_dnsmasq_config(
+    config: Config,
+    *,
+    hosts_path: Path = paths.ADBLOCK_HOSTS_PATH,
+    category_dir: Path = paths.ADBLOCK_CATEGORY_DIR,
+) -> str:
+    adblocker = config.adblocker
+    hosts_files = [hosts_path] + [category_path(n, category_dir) for n in sorted(adblocker.categories)]
+    hosts_lines = "\n".join(f"addn-hosts={p}" for p in hosts_files)
     listen_lines = "\n".join(f"interface={d}" for d in _listen_devices(config))
     server_lines = "\n".join(f"server={s}" for s in _upstream_servers(config))
+    extra = []
+    if adblocker.query_logging:
+        # "extra" puts the client address and a per-query serial on every
+        # line, and names the hosts file for a blocked answer -- which is
+        # what lets frfw.ai_ids attribute NXDOMAINs and threat-category
+        # blocks to a host (format checked against real dnsmasq output).
+        extra.append("log-queries=extra")
+    if adblocker.force_dns:
+        extra.append(f"address=/{FIREFOX_DOH_CANARY}/")
+    extra_lines = "".join(f"{line}\n" for line in extra)
     return _DNSMASQ_CONF_TEMPLATE.format(
-        hosts_path=hosts_path, listen_lines=listen_lines, server_lines=server_lines
+        hosts_lines=hosts_lines,
+        listen_lines=listen_lines,
+        server_lines=server_lines,
+        extra_lines=extra_lines,
     )
+
+
+def enforce_allowlist(config: Config, *, hosts_path: Path, category_dir: Path) -> int:
+    """Remove allowlisted names from the already-downloaded lists, so an
+    allowlist edit takes effect on the next `apply` without a refresh.
+    Removal only: an entry taken *off* the allowlist comes back at the
+    next refresh, since the local files no longer contain it. Returns
+    how many entries were removed."""
+    allowlist = config.adblocker.allowlist
+    removed = 0
+    files = [hosts_path] + [category_path(n, category_dir) for n in config.adblocker.categories]
+    for path in files:
+        domains = read_hosts_file(path)
+        kept = apply_allowlist(domains, allowlist)
+        if len(kept) != len(domains):
+            removed += len(domains) - len(kept)
+            write_hosts_file(kept, path)
+    return removed
 
 
 def _ensure_hosts_placeholder(hosts_path: Path) -> None:
@@ -171,6 +228,7 @@ def sync_dns_resolver(
     dry_run: bool = False,
     hosts_path: Path = paths.ADBLOCK_HOSTS_PATH,
     conf_path: Path = paths.ADBLOCK_DNSMASQ_CONF_PATH,
+    category_dir: Path = paths.ADBLOCK_CATEGORY_DIR,
     dnsmasq_binary: str = "dnsmasq",
 ) -> DnsSyncResult:
     """Reconcile the dedicated dnsmasq instance with `config.adblocker`.
@@ -208,16 +266,24 @@ def sync_dns_resolver(
 
     _require_root()
     _ensure_hosts_placeholder(hosts_path)
-    conf_text = render_dnsmasq_config(config, hosts_path=hosts_path)
+    for name in config.adblocker.categories:
+        _ensure_hosts_placeholder(category_path(name, category_dir))
+    removed = enforce_allowlist(config, hosts_path=hosts_path, category_dir=category_dir)
+    conf_text = render_dnsmasq_config(config, hosts_path=hosts_path, category_dir=category_dir)
     conf_path.parent.mkdir(parents=True, exist_ok=True)
     conf_path.write_text(conf_text)
     _test_dnsmasq_config(conf_path, dnsmasq_binary=dnsmasq_binary)
     _restart_dns_service()
 
-    return DnsSyncResult(
-        True,
-        f"Ad-block DNS resolver active, {count_blocked_domains(hosts_path)} domains loaded",
+    total = count_blocked_domains(hosts_path) + sum(
+        count_blocked_domains(category_path(n, category_dir)) for n in config.adblocker.categories
     )
+    message = f"Ad-block DNS resolver active, {total} domains loaded"
+    if config.adblocker.categories:
+        message += f" ({len(config.adblocker.categories)} categories)"
+    if removed:
+        message += f", {removed} allowlisted entries removed"
+    return DnsSyncResult(True, message)
 
 
 def is_resolver_active() -> bool:

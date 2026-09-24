@@ -55,6 +55,7 @@ def create_app(
     bruteforce_guard: BruteforceGuard | None = None,
     iot_inventory_path: Path = paths.IOT_INVENTORY_PATH,
     iot_scan_options: dict | None = None,
+    adblock_category_dir: Path = paths.ADBLOCK_CATEGORY_DIR,
 ) -> FastAPI:
     app = FastAPI(title="FR_OS webUI")
     app.state.config_path = config_path
@@ -66,6 +67,7 @@ def create_app(
     app.state.update_state_path = update_state_path
     app.state.xdp_state_path = xdp_state_path
     app.state.adblock_hosts_path = adblock_hosts_path
+    app.state.adblock_category_dir = adblock_category_dir
     app.state.bruteforce_guard = bruteforce_guard or BruteforceGuard()
     app.state.iot_inventory_path = iot_inventory_path
     # Extra keyword arguments for frfw.iot.scanner.run_scan (mdns_fn,

@@ -160,6 +160,12 @@ def build_ruleset(config: Config) -> str:
     lines.append('\t\tiifname "lo" accept')
     lines.append("\t\tct state established,related accept")
     lines.append("\t\tct state invalid drop")
+    dns_zones = _dns_resolver_zones(config)
+    for zone in dns_zones:
+        for proto in ("udp", "tcp"):
+            lines.append(
+                f"\t\tiifname @{_iface_set_name(zone)} {proto} dport 53 accept {_comment('dns-resolver')}"
+            )
     if input_rules:
         lines.append("")
         lines.extend(f"\t\t{_render_rule(r)}" for r in input_rules)
@@ -177,6 +183,17 @@ def build_ruleset(config: Config) -> str:
         lines.extend(f"\t\t{r}" for r in _render_iot_forward_rules(config))
     lines.append("\t\tct state established,related accept")
     lines.append("\t\tct state invalid drop")
+    if config.adblocker.enabled and config.adblocker.force_dns:
+        # DNS-over-TLS (853/tcp) and DNS-over-QUIC (853/udp) would bypass
+        # the resolver entirely; `reject` rather than `drop` so clients
+        # that try it opportunistically (Android's "automatic" Private
+        # DNS) fall back to plain DNS right away instead of timing out.
+        for zone in dns_zones:
+            for proto in ("tcp", "udp"):
+                lines.append(
+                    f"\t\tiifname @{_iface_set_name(zone)} {proto} dport 853 reject "
+                    f"{_comment('force-dns-block-dot')}"
+                )
     if forward_rules:
         lines.append("")
         lines.extend(f"\t\t{_render_rule(r)}" for r in forward_rules)
@@ -187,9 +204,10 @@ def build_ruleset(config: Config) -> str:
     lines.append("\t\ttype filter hook output priority filter; policy accept;")
     lines.append("\t}")
 
-    if config.nat.masquerade or config.nat.port_forwards:
+    force_dns = config.adblocker.enabled and config.adblocker.force_dns
+    if config.nat.masquerade or config.nat.port_forwards or force_dns:
         lines.append("")
-        lines.extend(_render_nat_chains(config))
+        lines.extend(_render_nat_chains(config, dns_zones if force_dns else []))
 
     lines.append("}")
     lines.append("")
@@ -335,9 +353,28 @@ def _render_rule(rule: Rule) -> str:
     return " ".join(exprs)
 
 
-def _render_nat_chains(config: Config) -> list[str]:
+def _dns_resolver_zones(config: Config) -> list[str]:
+    """Zones the ad-block resolver serves (phase 15, adblocker.serve_lan):
+    the DHCP zones -- the same set frfw.adblock.dns_service listens on
+    and frfw.kea announces the router as DNS server to."""
+    if not (config.adblocker.enabled and config.adblocker.serve_lan):
+        return []
+    return sorted(config.dhcp.zones)
+
+
+def _render_nat_chains(config: Config, force_dns_zones: list[str] | None = None) -> list[str]:
     lines = ["\tchain prerouting {"]
     lines.append("\t\ttype nat hook prerouting priority dstnat; policy accept;")
+    if force_dns_zones:
+        # Any plain-DNS query from these zones, whatever server it was
+        # addressed to, is answered by the router's own resolver.
+        lines.append("")
+        for zone in force_dns_zones:
+            for proto in ("udp", "tcp"):
+                lines.append(
+                    f"\t\tiifname @{_iface_set_name(zone)} {proto} dport 53 redirect to :53 "
+                    f"{_comment('force-dns')}"
+                )
     if config.nat.port_forwards:
         lines.append("")
         lines.extend(f"\t\t{_render_port_forward(pf)}" for pf in config.nat.port_forwards)

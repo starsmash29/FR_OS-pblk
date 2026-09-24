@@ -24,6 +24,7 @@ rules: [...]         # optional, default: []
 nat: {...}           # optional, default: empty
 dhcp: {...}          # optional, default: empty
 ai_ids: {...}        # optional, default: empty (disabled)
+adblocker: {...}     # optional, default: empty (disabled)
 iot: {...}           # optional, default: empty (disabled)
 ```
 
@@ -159,6 +160,55 @@ Note: `enabled`/`excluded_macs`/`quarantine_duration_seconds` are only
 picked up when the `fr-ai-ids` daemon (re)starts -- like several other
 subsystems in this project (e.g. the PQC hybrid TLS setting), saving
 this section does not hot-reload the running daemon.
+
+## `adblocker`
+
+Local DNS-level blocking (phase 9, extended in phase 15; see
+`frfw.adblock` and
+[ARCHITECTURE.md](../ARCHITECTURE.md#categorized-dns-filtering-and-dns-threat-signals-phase-15)).
+A dedicated dnsmasq instance (`fr-adblock-dns.service`) answers blocked
+names with `0.0.0.0`. Lists are downloaded only by `firewall-cli
+adblock-refresh` (daily timer) or the webUI's "Refresh now", never by
+`apply`.
+
+```yaml
+adblocker:
+  enabled: true                          # optional, default: false
+  source_urls:                           # the base ad/tracker list, reported as category "ads"
+    - https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts
+  categories:                            # optional, default: {}; name -> list of URLs
+    malware: [https://urlhaus.abuse.ch/downloads/hostfile/]
+    phishing: [https://phishing.army/download/phishing_army_blocklist.txt]
+  allowlist: [example.com]               # optional; these names and their subdomains are never blocked
+  xdp_critical_limit: 0                  # optional, default: 0; see phase 9
+  serve_lan: false                       # optional; announce the router as DNS server via DHCP
+  force_dns: false                       # optional; requires serve_lan
+  query_logging: false                   # optional; needed for the AI IDS's DNS signals
+```
+
+- `enabled: true` needs at least one of `source_urls` / `categories`.
+- Lists may be hosts files (`0.0.0.0 name`, `127.0.0.1<TAB>name`) or plain
+  one-domain-per-line lists. Category names follow the usual name format;
+  `ads` is reserved for the base list. The webUI offers verified presets
+  (`malware`, `phishing`, `doh-bypass`, `gambling`, `adult`, `social`,
+  `fakenews`, see `frfw.adblock.categories`) -- each list's own license
+  applies (Phishing Army, for example, is CC BY-NC 4.0: non-commercial).
+- `allowlist` entries are removed from every list at refresh time and
+  again on every `apply`; an entry taken *off* the allowlist returns at
+  the next refresh. Firefox's DoH canary domain `use-application-dns.net`
+  is always excluded from every list.
+- `serve_lan` (needs at least one `dhcp` pool): Kea announces the router's
+  own address as the DNS server in every pool, the pools' `dns_servers`
+  become the resolver's upstreams (the router's own addresses are never
+  used as an upstream), and the firewall accepts DNS from the DHCP zones.
+- `force_dns`: every plain DNS query from the DHCP zones is redirected to
+  the resolver, DNS-over-TLS/QUIC (port 853) is rejected, and Firefox's
+  DoH canary answers NXDOMAIN so Firefox keeps using the system resolver.
+  DoH to arbitrary servers on port 443 can't be stopped this way -- the
+  `doh-bypass` category blocks the well-known DoH server names instead.
+- `query_logging`: dnsmasq logs every query (`log-queries=extra`) to the
+  system journal, where `fr-ai-ids` reads it. This records which client
+  looked up which name, for as long as the journal keeps it.
 
 ## `iot`
 

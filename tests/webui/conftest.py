@@ -172,6 +172,7 @@ def webui_env(tmp_path):
         "update_state_path": tmp_path / "update_state.json",
         "xdp_state_path": tmp_path / "xdp_state.json",
         "adblock_hosts_path": tmp_path / "adblock.hosts",
+        "adblock_category_dir": tmp_path / "adblock.d",
         "bruteforce_guard": BruteforceGuard(),
         "iot_inventory_path": tmp_path / "iot_inventory.json",
         # No real multicast/ARP/IEEE registry in route tests: an empty

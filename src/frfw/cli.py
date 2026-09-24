@@ -408,7 +408,11 @@ def _cmd_xdp_status(args: argparse.Namespace) -> int:
 def _cmd_adblock_refresh(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     try:
-        result = adblock_refresh(config.adblocker.source_urls)
+        result = adblock_refresh(
+            config.adblocker.source_urls,
+            categories=config.adblocker.categories,
+            allowlist=config.adblocker.allowlist,
+        )
     except AdblockError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

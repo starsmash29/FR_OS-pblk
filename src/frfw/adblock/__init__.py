@@ -100,20 +100,29 @@ def _fetch_url(url: str, timeout: float) -> str:
 
 
 def parse_hosts_text(text: str) -> set[str]:
-    """Parse one hosts-format blocklist's raw text into a set of
-    unique, lowercased domains: strips comments, skips blank lines,
-    requires the first whitespace-separated token to be a valid IP
-    address (the "0.0.0.0"/"127.0.0.1" blocking address -- any address
-    works, since it's discarded either way and some lists use "::" for
-    IPv6), and validates every remaining token on the line as a
-    hostname (hosts-format allows multiple hostnames per IP)."""
+    """Parse one blocklist's raw text into a set of unique, lowercased
+    domains. Two real-world formats are accepted, line by line:
+
+    - hosts format, "<ip> <name> [<name> ...]" (StevenBlack, URLhaus):
+      the first token must be a valid IP address (the "0.0.0.0" /
+      "127.0.0.1" blocking address -- discarded either way; some lists
+      use "::"), every remaining token is validated as a hostname;
+    - plain domain lists, one name per line (Phishing Army, the DoH
+      resolver list), checked against the real files in phase 15.
+
+    Comments and blank lines are skipped; anything else (adblock filter
+    syntax like `||example.com^`, URLs) fails hostname validation and is
+    dropped rather than guessed at."""
     domains: set[str] = set()
     for line in text.splitlines():
         line = line.split("#", 1)[0].strip()
         if not line:
             continue
         tokens = line.split()
-        if len(tokens) < 2:
+        if len(tokens) == 1:
+            hostname = tokens[0].lower().rstrip(".")
+            if "." in hostname and hostname not in _IGNORED_HOSTNAMES and _HOSTNAME_RE.match(hostname):
+                domains.add(hostname)
             continue
         try:
             ipaddress.ip_address(tokens[0])
@@ -204,51 +213,149 @@ def _require_root() -> None:
         raise AdblockError("Refreshing the ad-block list requires root privileges.")
 
 
+#: The unnamed base list (`adblocker.source_urls`) is reported under this
+#: category name everywhere per-category counts appear (metrics, webUI,
+#: DNS log attribution); `adblocker.categories` may not reuse it.
+BASE_CATEGORY = "ads"
+
+#: Firefox's documented DoH "canary" domain: Firefox leaves DNS-over-HTTPS
+#: off by default when this name does NOT resolve (NXDOMAIN). A blocklist
+#: entry for it would answer 0.0.0.0 -- a positive answer -- and silently
+#: defeat that. Found the hard way in phase 15: the public DoH-resolver
+#: list contains it, and dnsmasq's hosts-file answer wins over the
+#: `address=/<name>/` NXDOMAIN rule frfw.adblock.dns_service sets. So it is
+#: removed from every list we write, like an allowlist entry that can't
+#: be switched off.
+FIREFOX_DOH_CANARY = "use-application-dns.net"
+
+
+def is_allowlisted(domain: str, allowlist: list[str] | set[str]) -> bool:
+    """True if `domain` is an allowlist entry or a subdomain of one."""
+    return any(domain == a or domain.endswith("." + a) for a in allowlist)
+
+
+def apply_allowlist(domains: set[str], allowlist: list[str]) -> set[str]:
+    effective = [*allowlist, FIREFOX_DOH_CANARY]
+    return {d for d in domains if not is_allowlisted(d, effective)}
+
+
+def read_hosts_file(path: Path) -> set[str]:
+    """Domains in one of our own generated hosts files (the inverse of
+    write_hosts_file); empty if it doesn't exist."""
+    try:
+        text = path.read_text()
+    except FileNotFoundError:
+        return set()
+    return parse_hosts_text(text)
+
+
+def category_path(category: str, category_dir: Path = paths.ADBLOCK_CATEGORY_DIR) -> Path:
+    return category_dir / f"{category}.hosts"
+
+
+def category_counts(
+    categories: list[str],
+    *,
+    hosts_path: Path = paths.ADBLOCK_HOSTS_PATH,
+    category_dir: Path = paths.ADBLOCK_CATEGORY_DIR,
+) -> dict[str, int]:
+    """{category: domains currently loaded}, base list included as
+    BASE_CATEGORY -- unprivileged, for the webUI and metrics."""
+    counts = {BASE_CATEGORY: count_blocked_domains(hosts_path)}
+    for name in categories:
+        counts[name] = count_blocked_domains(category_path(name, category_dir))
+    return counts
+
+
 @dataclass(frozen=True)
 class RefreshResult:
     domain_count: int
     failed_urls: list[str]
     message: str
+    category_counts: dict[str, int] | None = None
 
 
 def refresh(
     source_urls: list[str],
     *,
     hosts_path: Path = paths.ADBLOCK_HOSTS_PATH,
+    categories: dict[str, list[str]] | None = None,
+    category_dir: Path = paths.ADBLOCK_CATEGORY_DIR,
+    allowlist: list[str] | None = None,
     timeout: float = DEFAULT_TIMEOUT,
     dry_run: bool = False,
 ) -> RefreshResult:
-    """Fetch, parse, dedupe and (unless `dry_run`) write `hosts_path`.
-    The one function `firewall-cli adblock-refresh` and the apply-helper's
-    `refresh_adblock` socket command both call -- see this module's
-    docstring for why this is deliberately decoupled from `apply_all`.
+    """Fetch, parse, dedupe, drop allowlisted names and (unless
+    `dry_run`) write the base list to `hosts_path` plus one file per
+    category under `category_dir`. The one function `firewall-cli
+    adblock-refresh` and the apply-helper's `refresh_adblock` command
+    both call -- see this module's docstring for why this is
+    deliberately decoupled from `apply_all`.
 
-    Fetching needs no privilege (it's an outbound HTTPS request); only
-    the final write is root-gated, mirroring frfw.kea's
-    "validate/prepare first, `_require_root()` immediately before the
-    real write" ordering.
+    Each list is fetched and written independently: one category whose
+    every source is down keeps its previous file and is reported, it
+    doesn't cost the others their refresh. Category files no longer in
+    the config are removed, so dropping a category actually unblocks it.
+
+    Fetching needs no privilege (outbound HTTPS); only the writes are
+    root-gated, mirroring frfw.kea's "prepare first, `_require_root()`
+    right before the real write" ordering.
     """
-    if not source_urls:
-        raise AdblockError("adblocker.source_urls is empty; nothing to fetch")
+    categories = categories or {}
+    allowlist = allowlist or []
+    if not source_urls and not categories:
+        raise AdblockError("adblocker.source_urls and adblocker.categories are both empty; nothing to fetch")
 
-    result = fetch_and_parse(source_urls, timeout=timeout)
+    lists: list[tuple[str, list[str], Path]] = []
+    if source_urls:
+        lists.append((BASE_CATEGORY, source_urls, hosts_path))
+    for name, urls in sorted(categories.items()):
+        lists.append((name, urls, category_path(name, category_dir)))
+
+    fetched: dict[str, set[str]] = {}
+    failed_urls: list[str] = []
+    problems: list[str] = []
+    for name, urls, _path in lists:
+        try:
+            result = fetch_and_parse(urls, timeout=timeout)
+        except AdblockError as exc:
+            problems.append(f"{name}: {exc}")
+            failed_urls.extend(urls)
+            continue
+        fetched[name] = apply_allowlist(result.domains, allowlist)
+        failed_urls.extend(result.failed_urls)
+
+    if not fetched:
+        raise AdblockError("; ".join(problems) or "nothing fetched")
+
+    counts = {name: len(domains) for name, domains in fetched.items()}
+    total = sum(counts.values())
+    summary = ", ".join(f"{name}={n}" for name, n in counts.items())
 
     if dry_run:
         return RefreshResult(
-            domain_count=len(result.domains),
-            failed_urls=result.failed_urls,
-            message=(
-                f"Would write {len(result.domains)} deduped domains to "
-                f"{hosts_path} (dry-run)"
-            ),
+            domain_count=total,
+            failed_urls=failed_urls,
+            message=f"Would write {total} deduped domains ({summary}) (dry-run)",
+            category_counts=counts,
         )
 
     _require_root()
-    write_hosts_file(result.domains, hosts_path)
+    for name, _urls, path in lists:
+        if name in fetched:
+            write_hosts_file(fetched[name], path)
+    if not source_urls:
+        write_hosts_file(set(), hosts_path)  # base list removed from config: stop blocking it
+    if category_dir.is_dir():
+        for stale in category_dir.glob("*.hosts"):
+            if stale.stem not in categories:
+                stale.unlink()
 
-    message = f"{len(result.domains)} deduped domains written to {hosts_path}"
-    if result.failed_urls:
-        message += f" ({len(result.failed_urls)} source(s) failed: {result.failed_urls})"
+    message = f"{total} deduped domains written ({summary})"
+    if problems:
+        message += f"; kept previous list for: {'; '.join(problems)}"
+    elif failed_urls:
+        message += f" ({len(failed_urls)} source(s) failed: {failed_urls})"
     return RefreshResult(
-        domain_count=len(result.domains), failed_urls=result.failed_urls, message=message
+        domain_count=total, failed_urls=failed_urls, message=message, category_counts=counts
     )

@@ -62,6 +62,7 @@ def apply_all(
     ssh_kex_dropin_path: Path = paths.SSHD_PQC_DROPIN_PATH,
     adblock_hosts_path: Path = paths.ADBLOCK_HOSTS_PATH,
     adblock_dnsmasq_conf_path: Path = paths.ADBLOCK_DNSMASQ_CONF_PATH,
+    adblock_category_dir: Path = paths.ADBLOCK_CATEGORY_DIR,
 ) -> ProvisionResult:
     messages = []
 
@@ -137,6 +138,7 @@ def apply_all(
         dry_run=dry_run,
         hosts_path=adblock_hosts_path,
         conf_path=adblock_dnsmasq_conf_path,
+        category_dir=adblock_category_dir,
     )
     messages.append(adblock_dns_result.message)
 

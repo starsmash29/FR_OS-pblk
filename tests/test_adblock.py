@@ -140,7 +140,7 @@ def test_count_blocked_domains_missing_file_is_zero(tmp_path):
 
 
 def test_refresh_rejects_empty_source_urls():
-    with pytest.raises(adblock.AdblockError, match="source_urls is empty"):
+    with pytest.raises(adblock.AdblockError, match="source_urls and adblocker.categories are both empty"):
         adblock.refresh([])
 
 

@@ -149,6 +149,7 @@ def running_server(tmp_path, monkeypatch):
         ztna_state_path=ztna_state_path,
         adblock_hosts_path=adblock_hosts_path,
         kea_leases_path=tmp_path / "kea-leases4.csv",
+        adblock_category_dir=tmp_path / "adblock.d",
     )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -276,7 +277,7 @@ def test_refresh_adblock_fails_with_no_source_urls(running_server):
     # source_urls defaults to empty.
     response = client.refresh_adblock(running_server)
     assert response["ok"] is False
-    assert "source_urls is empty" in response["message"]
+    assert "source_urls and adblocker.categories are both empty" in response["message"]
 
 
 def test_refresh_adblock_success(running_server, tmp_path, monkeypatch):
@@ -497,3 +498,21 @@ def test_iot_sync_isolation_rejects_malformed_input(running_server, tmp_path):
     assert bad["ok"] is False and "invalid MAC" in bad["message"]
     not_list = client.send_command({"cmd": "iot_sync_isolation", "macs": "aa:bb:cc:dd:ee:01"}, running_server)
     assert not_list == {"ok": False, "message": "'macs' must be a list"}
+
+
+def test_refresh_adblock_writes_categories_and_reports_counts(running_server, tmp_path, monkeypatch):
+    pages = {
+        "https://lists.example/ads": "0.0.0.0 ads.example\n",
+        "https://lists.example/malware": "127.0.0.1\tbad.example\n",
+    }
+    monkeypatch.setattr(adblock_mod, "_fetch_url", lambda url, timeout: pages[url])
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        config_path.read_text()
+        + "\nadblocker:\n  enabled: true\n  source_urls: [https://lists.example/ads]\n"
+        + "  categories:\n    malware: [https://lists.example/malware]\n"
+    )
+    response = client.refresh_adblock(running_server)
+    assert response["ok"] is True, response
+    assert response["category_counts"] == {"ads": 1, "malware": 1}
+    assert (tmp_path / "adblock.d" / "malware.hosts").read_text().endswith("0.0.0.0 bad.example\n")

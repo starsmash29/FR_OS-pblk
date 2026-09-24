@@ -288,6 +288,27 @@ class AdblockerConfig:
     enabled: bool = False
     source_urls: list[str] = field(default_factory=list)
     xdp_critical_limit: int = 0
+    #: Phase 15. Extra, separately-reported blocklists: category name ->
+    #: source URLs (hosts format or plain domain lists). See
+    #: frfw.adblock.categories for the verified presets the webUI offers.
+    categories: dict[str, list[str]] = field(default_factory=dict)
+    #: Domains (and their subdomains) never blocked, whatever list they're on.
+    allowlist: list[str] = field(default_factory=list)
+    #: Make the resolver actually used: hand out the router's own address
+    #: as the DNS server in every DHCP pool (the pool's `dns_servers`
+    #: become the resolver's upstreams instead) and accept DNS from those
+    #: zones in the input chain. Off by default, as in phase 9 -- changing
+    #: what every client's DNS is must be a deliberate choice.
+    serve_lan: bool = False
+    #: Requires serve_lan. Redirect every plain-DNS (port 53) query from
+    #: the DHCP zones to this resolver, drop DNS-over-TLS (port 853), and
+    #: answer Firefox's DoH canary domain with NXDOMAIN so it keeps using
+    #: the system resolver.
+    force_dns: bool = False
+    #: Log every query (dnsmasq `log-queries=extra`) to the journal --
+    #: needed for the AI IDS's NXDOMAIN/DGA and threat-lookup signals.
+    #: Off by default: it records which client looked up which name.
+    query_logging: bool = False
 
 
 class IotIsolationMode(str, Enum):

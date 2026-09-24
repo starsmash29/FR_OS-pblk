@@ -51,7 +51,7 @@ from pathlib import Path
 
 from frfw import paths
 from frfw import xdp as xdp_mod
-from frfw.adblock import count_blocked_domains
+from frfw.adblock import category_counts, count_blocked_domains
 from frfw.config.schema import Config
 
 _PROC_STAT_PATH = Path("/proc/stat")
@@ -232,6 +232,22 @@ def _read_ai_ids_family(helper) -> MetricFamily:
     status = helper.ids_quarantine_status()
     if status.get("ok"):
         fam.add(status.get("count", 0))
+    return fam
+
+
+def _read_dns_category_family(config: Config, hosts_path: Path, category_dir: Path) -> MetricFamily:
+    """Phase 15: domains loaded per blocklist category (the base list is
+    reported as category="ads"). Unprivileged file reads only."""
+    fam = MetricFamily(
+        "fros_dns_blocked_domains",
+        "Domains currently loaded into the DNS resolver, per blocklist category.",
+        "gauge",
+    )
+    counts = category_counts(
+        list(config.adblocker.categories), hosts_path=hosts_path, category_dir=category_dir
+    )
+    for category, n in counts.items():
+        fam.add(n, category=category)
     return fam
 
 
@@ -468,6 +484,7 @@ def generate_metrics_text(
     *,
     adblock_hosts_path: Path,
     iot_inventory_path: Path = paths.IOT_INVENTORY_PATH,
+    adblock_category_dir: Path = paths.ADBLOCK_CATEGORY_DIR,
 ) -> str:
     """The `GET /metrics` route's entire job: gather every metric family
     and render them as one Prometheus text-exposition-format response.
@@ -492,6 +509,7 @@ def generate_metrics_text(
         collect(lambda: _read_interface_bytes_family(config))
         collect(lambda: _read_xdp_status_family(config))
         collect(lambda: _read_iot_families(config, helper, iot_inventory_path))
+        collect(lambda: _read_dns_category_family(config, adblock_hosts_path, adblock_category_dir))
 
     collect(_read_xdp_blocked_family)
     collect(lambda: _read_adblock_family(adblock_hosts_path))

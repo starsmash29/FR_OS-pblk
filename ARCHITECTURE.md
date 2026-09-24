@@ -1013,12 +1013,19 @@ that deserves a permanently skipped or flaky test -- see
   non-trivial integration step (it would affect every existing DHCP
   pool's behavior), which this phase deliberately did not do as a silent
   side effect.
+  *Update, phase 15*: now available as an explicit opt-in,
+  `adblocker.serve_lan` -- still never a silent side effect.
 - **No real hybrid-handshake-level Wireshark analysis** of the download
   process (the HTTPS connection to GitHub/StevenBlack is the one trust
   boundary, the same limitation as the update mechanism).
 - **Missing live-dnsmasq-query automated test** (see above) -- if a
   future CI environment doesn't have this sandbox quirk, it's worth
   trying to automate it again.
+  *Update, phase 15*: automated after all --
+  `tests/test_dns_filtering.py::test_real_dnsmasq_blocks_logs_and_feeds_the_ai_ids`
+  starts a real dnsmasq with the generated config and queries it from
+  the test process itself, which works in this sandbox (the earlier
+  failure was a query sent from a separate shell).
 
 ## In-memory and kernel-level brute-force protection (phase 10)
 
@@ -1997,6 +2004,164 @@ parser reads columns by header name to stay robust to version drift).
 - mDNS finds only devices that implement it; a silent device is
   classified on vendor and hostname alone.
 - The point weights are hand-picked, not tuned on a real device corpus.
+
+## Categorized DNS filtering and DNS threat signals (phase 15)
+
+Goal: take phase 9's single ad-block list to something closer to
+"advanced URL filtering" and "DNS security" for a home or small office --
+block by category, see which category blocked what, make sure clients
+actually use the filtering resolver, and use DNS as a detection signal
+for the AI IDS -- without any cloud lookup service.
+
+### Categories: separate files, verified sources
+
+`adblocker.categories` maps a category name to source URLs. Each
+category is written to its own hosts file (`/etc/fr_os/adblock.d/<name>.hosts`)
+instead of being merged into one, for two reasons: per-category counts
+(webUI, `fros_dns_blocked_domains{category}`), and attribution -- dnsmasq's
+query log names the hosts file that answered a blocked lookup, which is
+how a lookup is known to have hit "malware" rather than "social".
+
+The webUI's presets were each fetched and checked while writing this,
+and some obvious guesses turned out wrong: StevenBlack's
+`extensions/gambling/hosts`, `extensions/social/hosts` and
+`extensions/porn/hosts` are all 404; the real per-category files are
+`alternates/<x>-only/hosts`, whose own header confirms "The unified hosts
+file was not used while generating this file". URLhaus is hosts format
+with `127.0.0.1` and tabs; Phishing Army and the DoH-resolver list are
+plain one-domain-per-line lists, which phase 9's parser (hosts format
+only) would have silently read as empty -- so the parser now accepts both
+formats, and still rejects adblock filter syntax rather than guessing. A
+real refresh of all eight lists took 3.4 s and produced 316,576 domains.
+License terms are the publishers' and are shown next to each preset;
+Phishing Army's header says CC BY-NC 4.0, which matters in an office.
+
+One category's outage doesn't cost the others: every list is fetched
+and written independently, a category whose every source fails keeps
+its previous file, and a category removed from the config has its file
+deleted so it really stops blocking.
+
+### Allowlist, and a real bug found end to end
+
+`adblocker.allowlist` removes names (and their subdomains) at refresh
+time and again on every `apply` (about 1 s over those 316k entries), so
+an allowlist edit takes effect without a re-download.
+
+Running a real dnsmasq with the real lists exposed an interaction no
+unit test would have: the DoH-resolver list contains
+`use-application-dns.net`, Firefox's DoH canary domain. With `force_dns`
+the config also has `address=/use-application-dns.net/`, which makes
+dnsmasq answer NXDOMAIN (checked: A and AAAA both rcode 3) -- but a
+hosts-file entry wins over that rule, so the canary resolved to
+`0.0.0.0`. A positive answer tells Firefox the network does *not* want
+DoH disabled, silently defeating the feature. Fix: the canary is removed
+from every list we write, unconditionally, like an allowlist entry that
+can't be switched off; re-verified with real dnsmasq.
+
+### Making clients actually use it: `serve_lan` and `force_dns`
+
+Phase 9 deliberately left DHCP clients' DNS server alone. That is still
+the default, now with an explicit opt-in:
+
+- `serve_lan`: Kea announces the router's own address as the DNS server
+  in every pool; the pools' configured `dns_servers` become the
+  resolver's upstreams (excluding the router's own addresses, so an
+  admin who already listed the router doesn't get a forwarding loop);
+  the input chain accepts DNS from the DHCP zones.
+- `force_dns`: a `redirect to :53` in the NAT prerouting chain catches
+  clients with a hard-coded resolver (8.8.8.8 and friends);
+  DNS-over-TLS/QUIC on port 853 is *rejected* (not dropped) so clients
+  that try it opportunistically, like Android's "automatic" Private DNS,
+  fall back immediately; and the Firefox canary answers NXDOMAIN. What it
+  cannot do: stop DoH to an arbitrary server on port 443 without
+  breaking HTTPS. The `doh-bypass` category (well-known DoH server names)
+  is the practical complement, not a guarantee.
+
+### DNS as an AI IDS signal
+
+With `query_logging`, dnsmasq runs with `log-queries=extra`. The real
+format (dnsmasq 2.91) puts a per-query serial and the client address on
+every line and names the hosts file for blocked answers:
+
+```
+3 10.0.0.5/46443 reply www.nxtest.example is NXDOMAIN
+1 10.0.0.5/33904 /etc/fr_os/adblock.d/malware.hosts bad.example is 0.0.0.0
+```
+
+`fr-ai-ids` already had journal read access for the SNI logger; it now
+tails `fr-adblock-dns.service` too and feeds three new per-host
+counters into the same z-score-against-own-baseline engine:
+
+- **distinct NXDOMAIN names** per window (floor 30) -- distinct, because
+  an app retrying one dead name in a loop is not the signal, a host
+  walking through dozens of different names is;
+- **distinct DGA-like NXDOMAIN names** (floor 10), using
+  `frfw.adblock.dga`;
+- **lookups answered from a malware or phishing category** (floor 3) --
+  the DNS counterpart of phase 11's SNI-blocklist beacon feature. Other
+  categories (social, gambling) are policy, not compromise, and don't
+  count.
+
+Query logging is off by default: it writes which client looked up which
+name into the system journal, for as long as the journal keeps it.
+
+### The DGA heuristic, measured
+
+`frfw.adblock.dga.looks_generated` scores the *registered* label (a DGA
+must register its random part, whereas CDNs randomize subdomains of an
+ordinary name like `cloudfront.net`), skips single-label names
+(Chromium's random start-up probes NXDOMAIN by design) and punycode
+labels, and flags a label of at least 10 characters with character
+entropy of at least 3.0 bits and fewer than 40% frequent-English-bigram
+pairs. Thresholds were chosen against real data, favouring few false
+positives over recall, because the verdict always comes from a *burst*:
+
+| Input | Flagged |
+|---|---|
+| random letters, 12-20 chars | 57.9% |
+| random letters, 10-11 chars | 32.1% |
+| random alphanumeric, 10-16 chars | 51.1% |
+| random hex, 16 chars | 40.0% |
+| StevenBlack gambling list, one name per registered label (3,040) | 0.03% |
+| StevenBlack fakenews list (2,160) | 0.00% |
+| StevenBlack adult list (38,861) | 0.03% |
+| StevenBlack unified ad list (33,844) | 0.30% (mostly generated spam domains themselves) |
+
+A first attempt (vowel ratio / consonant runs) flagged 0.4-1.1% of the
+human-named lists (e.g. `mrjackpotspins.com`) and was discarded. At
+~50% per name, a DGA burst of 50 lookups still yields ~25 flagged names,
+well over the floor of 10. Known blind spot: dictionary DGAs
+(concatenated real words) look like ordinary names.
+
+### Verification
+
+- Unit tests for every piece (parsing both list formats, refresh with
+  categories/allowlist/failure/stale-file cases, config validation,
+  dnsmasq/Kea/nftables rendering, the DGA rule, the engine's distinct-name
+  counting, the daemon's parsing of the real log format), `nft -c` on the
+  `force_dns` ruleset, `dnsmasq --test` on the full-featured config.
+- One automated end-to-end test with a **real dnsmasq**: a malware-category
+  name is answered `0.0.0.0` and logged with its category file, the DoH
+  canary is NXDOMAIN even though a list contains it, 25 random names are
+  forwarded to an NXDOMAIN-only upstream, and that real log, fed line by
+  line to the AI IDS daemon, gets the client flagged for "DGA-like
+  NXDOMAIN lookups" with one threat lookup counted.
+- By hand: a real refresh of all eight preset lists through the network.
+
+Not verified: real DGA malware traffic (no samples run in this sandbox --
+the positives are synthetic random names), and journald delivery of the
+query log under load (the tests read dnsmasq's `log-facility` file, whose
+message format is the one journald carries).
+
+### Open issues
+
+- DoH to arbitrary servers on 443 is out of reach (see above).
+- No per-zone or per-device category policy: categories apply to every
+  client of the resolver.
+- No Public Suffix List; a handful of common second-level suffixes is
+  hard-coded.
+- Journald may rate-limit a very chatty resolver's query log (systemd's
+  default burst limit); detection then sees a sample, not everything.
 
 ## Open decisions
 

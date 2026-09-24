@@ -51,7 +51,7 @@ def test_adblocker_rejects_invalid_url(minimal_config_dict, url):
 
 def test_adblocker_enabled_requires_at_least_one_source_url(minimal_config_dict):
     minimal_config_dict["adblocker"] = {"enabled": True, "source_urls": []}
-    with pytest.raises(ConfigError, match="source_urls is empty"):
+    with pytest.raises(ConfigError, match="source_urls and categories are both empty"):
         parse_config(minimal_config_dict)
 
 

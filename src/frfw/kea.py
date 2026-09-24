@@ -41,12 +41,17 @@ def build_kea_config(config: Config) -> dict:
     """Translate `config.dhcp` into a Kea `Dhcp4` config dict."""
     interfaces_by_zone = {iface.zone: iface for iface in config.interfaces.values()}
 
+    # Phase 15: with adblocker.serve_lan the router itself is the DNS
+    # server every client is told about; the pool's own dns_servers become
+    # the resolver's upstreams instead (frfw.adblock.dns_service).
+    serve_lan = config.adblocker.enabled and config.adblocker.serve_lan
+
     listen_interfaces = []
     subnets = []
     for zone, pool in config.dhcp.zones.items():
         iface = interfaces_by_zone[zone]
         listen_interfaces.append(iface.device)
-        subnets.append(_build_subnet(iface.address, pool))
+        subnets.append(_build_subnet(iface.address, pool, router_is_dns=serve_lan))
 
     return {
         "Dhcp4": {
@@ -58,8 +63,9 @@ def build_kea_config(config: Config) -> dict:
     }
 
 
-def _build_subnet(iface_address: str, pool: DhcpPool) -> dict:
+def _build_subnet(iface_address: str, pool: DhcpPool, *, router_is_dns: bool = False) -> dict:
     interface = ipaddress.IPv4Interface(iface_address)
+    dns_servers = [str(interface.ip)] if router_is_dns else pool.dns_servers
 
     reservations = [
         {
@@ -76,7 +82,7 @@ def _build_subnet(iface_address: str, pool: DhcpPool) -> dict:
         "valid-lifetime": pool.lease_time,
         "option-data": [
             {"name": "routers", "data": str(interface.ip)},
-            {"name": "domain-name-servers", "data": ", ".join(pool.dns_servers)},
+            {"name": "domain-name-servers", "data": ", ".join(dns_servers)},
         ],
         "reservations": reservations,
     }

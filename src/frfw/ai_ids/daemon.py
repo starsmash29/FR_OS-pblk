@@ -34,6 +34,7 @@ telemetry source rather than everything being read from one log.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 import time
@@ -42,6 +43,8 @@ from pathlib import Path
 from typing import Callable
 
 from frfw import paths
+from frfw.adblock.categories import THREAT_CATEGORIES
+from frfw.adblock.dga import looks_generated
 from frfw.ai_ids.engine import AnomalyEngine, AnomalyEvent
 from frfw.config.schema import Config
 from frfw.helper import client as helper_client
@@ -72,6 +75,17 @@ AI_IDS_SERVICE_NAME = "fr-ai-ids.service"
 #: reason a hiccup in the *logging* source should also interrupt
 #: conntrack-based detection, which does not depend on it at all).
 JOURNAL_RETRY_SECONDS = 5.0
+
+#: One line of the ad-block resolver's query log (dnsmasq with
+#: `log-queries=extra`, phase 15), as journald's `-o cat` hands it over.
+#: Format checked against real dnsmasq 2.91 output:
+#:   "3 10.0.0.5/46443 reply www.nxtest.example is NXDOMAIN"
+#:   "1 10.0.0.5/33904 /etc/fr_os/adblock.d/malware.hosts bad.example is 0.0.0.0"
+#: Every line starts with a per-query serial and the client address/port,
+#: which is what makes per-host attribution possible at all.
+_DNS_LINE_RE = re.compile(r"^\d+ (?P<client>[0-9A-Fa-f:.]+)/\d+ (?P<rest>.+)$")
+_DNS_NXDOMAIN_RE = re.compile(r"^(?:reply|cached) (?P<name>\S+) is NXDOMAIN$")
+_DNS_HOSTS_BLOCK_RE = re.compile(r"^(?P<file>/\S+) (?P<name>\S+) is (?:0\.0\.0\.0|::)$")
 
 
 def resolve_excluded_ips(config: Config) -> set[str]:
@@ -113,6 +127,7 @@ class IDSDaemon:
         conntrack_fn: Callable[[], dict] = helper_client.conntrack_sample,
         events_path: Path = paths.AI_IDS_STATE_PATH,
         clock: Callable[[], float] | None = None,
+        adblock_category_dir: Path = paths.ADBLOCK_CATEGORY_DIR,
     ) -> None:
         self.config = config
         self.engine = engine or AnomalyEngine()
@@ -122,6 +137,11 @@ class IDSDaemon:
         self._clock = clock or time.monotonic
         self._excluded_ips = resolve_excluded_ips(config)
         self._known_flow_keys: set[tuple[str, str, int, str, int]] = set()
+        self._threat_files = {
+            str(adblock_category_dir / f"{name}.hosts")
+            for name in THREAT_CATEGORIES
+            if name in config.adblocker.categories
+        }
 
     # -- ingestion ---------------------------------------------------------
 
@@ -140,6 +160,28 @@ class IDSDaemon:
         src_ip = event.get("saddr")
         if isinstance(src_ip, str) and src_ip:
             self.engine.observe_sni_block(src_ip, now=self._clock())
+
+    def handle_dns_log_line(self, line: str) -> None:
+        """One line of fr-adblock-dns.service's journald output (only
+        produced with `adblocker.query_logging`). NXDOMAIN answers feed the
+        NXDOMAIN/DGA counters; an answer served from a malware/phishing
+        category file feeds the threat-lookup counter. Everything else --
+        the query itself, forwarding, ordinary answers, dnsmasq's own
+        start-up notices, the DoH canary's "config ... is NXDOMAIN" -- is
+        ignored."""
+        match = _DNS_LINE_RE.match(line)
+        if not match:
+            return
+        client, rest = match.group("client"), match.group("rest")
+        now = self._clock()
+        nx = _DNS_NXDOMAIN_RE.match(rest)
+        if nx:
+            name = nx.group("name").lower()
+            self.engine.observe_dns_nxdomain(client, name, generated=looks_generated(name), now=now)
+            return
+        blocked = _DNS_HOSTS_BLOCK_RE.match(rest)
+        if blocked and blocked.group("file") in self._threat_files:
+            self.engine.observe_dns_threat_block(client, now=now)
 
     def poll_conntrack_once(self) -> None:
         """One "conntrack_sample" round trip through the privileged
@@ -228,7 +270,18 @@ class IDSDaemon:
     def run_forever(self) -> None:  # pragma: no cover -- thin composition, see class docstring
         import threading
 
-        threading.Thread(target=self._tail_journal_forever, daemon=True).start()
+        threading.Thread(
+            target=self._tail_journal_forever,
+            args=("fr-xdp-sni-logger.service", self.handle_sni_event_line),
+            daemon=True,
+        ).start()
+        adblocker = self.config.adblocker
+        if adblocker.enabled and adblocker.query_logging:
+            threading.Thread(
+                target=self._tail_journal_forever,
+                args=(f"{paths.ADBLOCK_DNS_SERVICE_NAME}.service", self.handle_dns_log_line),
+                daemon=True,
+            ).start()
 
         next_eval_at = self._clock() + self.engine.window_seconds
         while True:
@@ -238,8 +291,7 @@ class IDSDaemon:
                 self.evaluate_and_enforce()
                 next_eval_at = self._clock() + self.engine.window_seconds
 
-    def _tail_journal_forever(self) -> None:  # pragma: no cover -- thin I/O loop
-        unit = "fr-xdp-sni-logger.service"
+    def _tail_journal_forever(self, unit: str, handler: Callable[[str], None]) -> None:  # pragma: no cover
         while True:
             try:
                 proc = subprocess.Popen(
@@ -249,9 +301,9 @@ class IDSDaemon:
                 )
                 assert proc.stdout is not None
                 for line in proc.stdout:
-                    self.handle_sni_event_line(line.strip())
+                    handler(line.strip())
             except FileNotFoundError:
-                print("fr-ai-ids: 'journalctl' not found; SNI-blocklist signal disabled", file=sys.stderr)
+                print(f"fr-ai-ids: 'journalctl' not found; {unit} signal disabled", file=sys.stderr)
                 return
             time.sleep(JOURNAL_RETRY_SECONDS)
 

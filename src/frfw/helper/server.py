@@ -185,13 +185,19 @@ def _handle_ztna_status(request: dict, server: "ApplyHelperServer") -> dict:
 
 def _handle_refresh_adblock(server: "ApplyHelperServer") -> dict:
     config = load_config(server.config_path)
-    source_urls = config.adblocker.source_urls
-    result = adblock_refresh(source_urls, hosts_path=server.adblock_hosts_path)
+    result = adblock_refresh(
+        config.adblocker.source_urls,
+        hosts_path=server.adblock_hosts_path,
+        categories=config.adblocker.categories,
+        category_dir=server.adblock_category_dir,
+        allowlist=config.adblocker.allowlist,
+    )
     return {
         "ok": True,
         "message": result.message,
         "domain_count": result.domain_count,
         "failed_urls": result.failed_urls,
+        "category_counts": result.category_counts or {},
     }
 
 
@@ -327,8 +333,10 @@ class ApplyHelperServer(socketserver.UnixStreamServer):
         ztna_state_path: Path = paths.ZTNA_STATE_PATH,
         adblock_hosts_path: Path = paths.ADBLOCK_HOSTS_PATH,
         kea_leases_path: Path = iot_leases.KEA_LEASES_PATH,
+        adblock_category_dir: Path = paths.ADBLOCK_CATEGORY_DIR,
         systemd_socket: socket.socket | None = None,
     ) -> None:
+        self.adblock_category_dir = adblock_category_dir
         self.config_path = config_path
         self.backup_dir = backup_dir
         self.kea_config_path = kea_config_path

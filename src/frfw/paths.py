@@ -134,6 +134,13 @@ SSHD_PQC_DROPIN_PATH = Path("/etc/ssh/sshd_config.d/50-fr_os-pqc-kex.conf")
 #: config.yaml.
 ADBLOCK_HOSTS_PATH = Path("/etc/fr_os/adblock.hosts")
 
+#: Per-category blocklists (phase 15, `adblocker.categories`): one
+#: `<category>.hosts` file each, same format and same "frfw's own
+#: generated artifact" status as ADBLOCK_HOSTS_PATH. Kept as separate
+#: files, not merged, so the dedicated dnsmasq instance's query log names
+#: the file (and therefore the category) that blocked each lookup.
+ADBLOCK_CATEGORY_DIR = Path("/etc/fr_os/adblock.d")
+
 #: Complete, self-contained dnsmasq config frfw generates and owns --
 #: intentionally NOT a drop-in under Debian's /etc/dnsmasq.d/, since
 #: that directory is only auto-included if a `conf-dir=` line is

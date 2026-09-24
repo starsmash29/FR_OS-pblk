@@ -990,3 +990,53 @@ lets the internet through but not a router service despite an admin
 accept rule; a real mDNS exchange discovers the responder's services, and
 fails without the generated reply rule. Not verified against physical IoT
 hardware or a live Kea lease file.
+
+## Phase 15 – Categorized DNS filtering and DNS threat signals — **done**
+
+Second of the seven "next-gen homelab / small office" additions. Moves
+phase 9's single ad-block list toward "advanced URL filtering" and "DNS
+security", fully local. Full rationale:
+[ARCHITECTURE.md](ARCHITECTURE.md#categorized-dns-filtering-and-dns-threat-signals-phase-15).
+
+- [x] **Categories** (`adblocker.categories`): one hosts file per
+      category under `/etc/fr_os/adblock.d/`, independent fetch/write
+      per category, stale categories removed, per-category counts.
+      Verified webUI presets (`malware`, `phishing`, `doh-bypass`,
+      `gambling`, `adult`, `social`, `fakenews`) -- every URL fetched and
+      its format and license header checked.
+- [x] **Parser**: plain one-domain-per-line lists in addition to hosts
+      format (Phishing Army and the DoH list are plain lists).
+- [x] **Allowlist** (`adblocker.allowlist`), applied at refresh and on
+      every apply; the Firefox DoH canary is always excluded (a real bug
+      found end to end, see below).
+- [x] **LAN DNS**: `serve_lan` (Kea announces the router as DNS server,
+      pool DNS servers become upstreams without self-loops, input accepts
+      DNS from DHCP zones) and `force_dns` (port-53 redirect, port-853
+      reject, Firefox DoH canary NXDOMAIN).
+- [x] **DGA heuristic** (`frfw.adblock.dga`): registered-label entropy +
+      frequent-bigram ratio, thresholds measured against real lists.
+- [x] **AI IDS DNS signals** (`query_logging`): distinct NXDOMAIN names,
+      distinct DGA-like NXDOMAIN names, and malware/phishing lookups per
+      host, parsed from dnsmasq's real `log-queries=extra` format, scored
+      like every other feature.
+- [x] **WebUI / metrics / Grafana**: category checkboxes, allowlist, LAN
+      DNS switches, per-category counts; `fros_dns_blocked_domains{category}`.
+- [x] Tests: 52 new, including a real dnsmasq end-to-end test. Full
+      suite: 725 passed, 1 skipped.
+
+**Corrections found while building it**: several obvious StevenBlack
+category URLs are 404 (the real files are `alternates/<x>-only/hosts`);
+two useful lists are plain domain lists the old parser would have read
+as empty; the public DoH-resolver list contains Firefox's DoH canary
+domain, and a hosts-file answer for it (0.0.0.0) overrides the NXDOMAIN
+rule and silently re-enables DoH in Firefox -- the canary is now excluded
+from every list. Phishing Army is CC BY-NC 4.0, flagged in the UI.
+
+**Acceptance criterion**: an admin can block whole categories, see which
+category blocks what, allowlist false positives, make every DHCP client
+use (and not bypass via plain DNS/DoT or Firefox DoH) the filtering
+resolver, and get a host flagged when it produces a burst of
+random-looking NXDOMAIN lookups or looks up malware/phishing names. ✅
+Verified with a real dnsmasq instance and real log lines driving the AI
+IDS, and a real download of every preset list. Not verified against
+real DGA malware samples.

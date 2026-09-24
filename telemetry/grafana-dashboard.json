@@ -275,6 +275,25 @@
       "targets": [
         { "expr": "fros_iot_isolated_devices", "refId": "A" }
       ]
+    },
+    {
+      "id": 40,
+      "type": "row",
+      "title": "DNS filtering",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 34 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 41,
+      "type": "bargauge",
+      "title": "Blocked domains by category",
+      "description": "fros_dns_blocked_domains{category} -- domains loaded into the resolver per blocklist category (phase 15).",
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 35 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        { "expr": "fros_dns_blocked_domains", "legendFormat": "{{category}}", "refId": "A" }
+      ]
     }
   ]
 }

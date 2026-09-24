@@ -5,7 +5,9 @@
 
 <p class="muted">
   Real-time, out-of-band anomaly detection: connection-rate spikes,
-  destination-scan patterns, and repeated XDP SNI-blocklist hits are
+  destination-scan patterns, repeated XDP SNI-blocklist hits and -- with
+  DNS query logging on (Ad-Block screen) -- NXDOMAIN bursts, DGA-like
+  lookups and malware/phishing lookups are
   scored against each host's own recent baseline by a separate
   <code>fr-ai-ids</code> daemon, which quarantines a flagged IP in the
   kernel via the privileged apply-helper.
@@ -70,7 +72,7 @@
   <p class="muted">No anomalies flagged yet.</p>
   {% else %}
   <table>
-    <tr><th>IP</th><th>Score</th><th>Reasons</th><th>Conn. rate</th><th>Unique dst. ratio</th><th>SNI blocks</th></tr>
+    <tr><th>IP</th><th>Score</th><th>Reasons</th><th>Conn. rate</th><th>Unique dst. ratio</th><th>SNI blocks</th><th>NXDOMAIN names</th><th>DGA-like</th><th>Threat lookups</th></tr>
     {% for e in recent_events %}
     <tr>
       <td>{{ e.ip }}</td>
@@ -79,6 +81,9 @@
       <td>{{ e.conn_rate }}</td>
       <td>{{ e.unique_dst_ratio }}</td>
       <td>{{ e.sni_block_count }}</td>
+      <td>{{ e.nxdomain_count|default(0) }}</td>
+      <td>{{ e.dga_nxdomain_count|default(0) }}</td>
+      <td>{{ e.dns_threat_count|default(0) }}</td>
     </tr>
     {% endfor %}
   </table>

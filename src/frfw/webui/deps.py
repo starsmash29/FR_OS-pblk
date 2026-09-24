@@ -51,6 +51,10 @@ def get_adblock_hosts_path(request: Request) -> Path:
     return request.app.state.adblock_hosts_path
 
 
+def get_adblock_category_dir(request: Request) -> Path:
+    return request.app.state.adblock_category_dir
+
+
 def get_iot_inventory_path(request: Request) -> Path:
     return request.app.state.iot_inventory_path
 

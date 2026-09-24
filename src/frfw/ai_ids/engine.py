@@ -17,6 +17,10 @@ why those are the real, honest sources rather than a single one, and
 what a request describing "ingest fr-xdp-sni-logger for everything"
 gets wrong about what that logger actually emits.
 
+Phase 15 adds three DNS counters from the ad-block resolver's query log
+(NXDOMAIN answers, NXDOMAINs for random-looking names, and lookups
+blocked by a malware/phishing category), scored the same way.
+
 Design: for each source IP, three sliding-window counters --
 connection-attempt rate, the ratio of unique destination IPs to total
 connection attempts (a portscan/lateral-movement signature: a normal
@@ -67,6 +71,14 @@ ZSCORE_THRESHOLD = 3.0
 ABS_CONN_RATE_FLOOR = 5.0  # new connections/second
 ABS_UNIQUE_DST_RATIO_FLOOR = 0.8  # unique destinations / total connections
 ABS_SNI_BLOCK_COUNT_FLOOR = 3  # blocklist hits within one window
+#: Phase 15 DNS features (from the ad-block resolver's query log, see
+#: frfw.ai_ids.daemon.IDSDaemon.handle_dns_log_line):
+#: Both NXDOMAIN counters count *distinct names*, not answers: an app
+#: retrying one dead domain in a loop is a nuisance, a DGA walking through
+#: dozens of different generated names is the signal.
+ABS_NXDOMAIN_FLOOR = 30  # distinct NXDOMAIN names within one window
+ABS_DGA_NXDOMAIN_FLOOR = 10  # distinct random-looking NXDOMAIN names (frfw.adblock.dga)
+ABS_DNS_THREAT_FLOOR = 3  # lookups blocked by a malware/phishing category
 
 #: A destination-diversity *ratio* is meaningless (and trivially 1.0)
 #: from a tiny handful of connections -- a single connection to a
@@ -90,9 +102,15 @@ class _IpWindow:
     new_conn_ts: deque = field(default_factory=deque)
     dst_ips_seen: dict = field(default_factory=dict)  # dst_ip -> last-seen monotonic ts
     sni_block_ts: deque = field(default_factory=deque)
+    nxdomain_ts: deque = field(default_factory=deque)  # (ts, name)
+    dga_nxdomain_ts: deque = field(default_factory=deque)  # (ts, name)
+    dns_threat_ts: deque = field(default_factory=deque)
     conn_rate_history: deque = field(default_factory=lambda: deque(maxlen=BASELINE_SAMPLES))
     dst_ratio_history: deque = field(default_factory=lambda: deque(maxlen=BASELINE_SAMPLES))
     sni_block_history: deque = field(default_factory=lambda: deque(maxlen=BASELINE_SAMPLES))
+    nxdomain_history: deque = field(default_factory=lambda: deque(maxlen=BASELINE_SAMPLES))
+    dga_nxdomain_history: deque = field(default_factory=lambda: deque(maxlen=BASELINE_SAMPLES))
+    dns_threat_history: deque = field(default_factory=lambda: deque(maxlen=BASELINE_SAMPLES))
     last_seen: float = 0.0
 
 
@@ -110,6 +128,9 @@ class AnomalyEvent:
     conn_rate: float
     unique_dst_ratio: float
     sni_block_count: int
+    nxdomain_count: int = 0
+    dga_nxdomain_count: int = 0
+    dns_threat_count: int = 0
 
 
 class AnomalyEngine:
@@ -161,6 +182,30 @@ class AnomalyEngine:
             window.sni_block_ts.append(now)
             self._prune_locked(window, now)
 
+    def observe_dns_nxdomain(
+        self, src_ip: str, name: str, *, generated: bool, now: float | None = None
+    ) -> None:
+        """One NXDOMAIN answer for `name` to `src_ip`. `generated` is the
+        caller's per-name verdict (frfw.adblock.dga.looks_generated) --
+        this class stays free of any domain-name knowledge, it only counts
+        distinct names."""
+        now = time.monotonic() if now is None else now
+        with self._lock:
+            window = self._get_locked(src_ip, now)
+            window.nxdomain_ts.append((now, name))
+            if generated:
+                window.dga_nxdomain_ts.append((now, name))
+            self._prune_locked(window, now)
+
+    def observe_dns_threat_block(self, src_ip: str, *, now: float | None = None) -> None:
+        """One lookup by `src_ip` answered from a malware/phishing
+        blocklist category -- the DNS counterpart of observe_sni_block."""
+        now = time.monotonic() if now is None else now
+        with self._lock:
+            window = self._get_locked(src_ip, now)
+            window.dns_threat_ts.append(now)
+            self._prune_locked(window, now)
+
     def evaluate(self, ip: str, *, now: float | None = None) -> AnomalyEvent | None:
         """Score `ip`'s current window against its own history, then
         commit the current window into that history for next time.
@@ -183,6 +228,9 @@ class AnomalyEngine:
             total_conns = len(window.new_conn_ts)
             unique_dst_ratio = (len(window.dst_ips_seen) / total_conns) if total_conns else 0.0
             sni_block_count = len(window.sni_block_ts)
+            nxdomain_count = len({name for _ts, name in window.nxdomain_ts})
+            dga_nxdomain_count = len({name for _ts, name in window.dga_nxdomain_ts})
+            dns_threat_count = len(window.dns_threat_ts)
 
             features = [
                 ("connection-rate spike", conn_rate, window.conn_rate_history, ABS_CONN_RATE_FLOOR),
@@ -191,6 +239,19 @@ class AnomalyEngine:
                     float(sni_block_count),
                     window.sni_block_history,
                     ABS_SNI_BLOCK_COUNT_FLOOR,
+                ),
+                ("NXDOMAIN burst", float(nxdomain_count), window.nxdomain_history, ABS_NXDOMAIN_FLOOR),
+                (
+                    "DGA-like NXDOMAIN lookups",
+                    float(dga_nxdomain_count),
+                    window.dga_nxdomain_history,
+                    ABS_DGA_NXDOMAIN_FLOOR,
+                ),
+                (
+                    "malware/phishing DNS lookups",
+                    float(dns_threat_count),
+                    window.dns_threat_history,
+                    ABS_DNS_THREAT_FLOOR,
                 ),
             ]
             # The ratio feature only means something with enough
@@ -224,6 +285,9 @@ class AnomalyEngine:
                 conn_rate=round(conn_rate, 3),
                 unique_dst_ratio=round(unique_dst_ratio, 3),
                 sni_block_count=sni_block_count,
+                nxdomain_count=nxdomain_count,
+                dga_nxdomain_count=dga_nxdomain_count,
+                dns_threat_count=dns_threat_count,
             )
 
     def _score_feature(
@@ -265,8 +329,12 @@ class AnomalyEngine:
         cutoff = now - self._window_seconds
         while window.new_conn_ts and window.new_conn_ts[0] < cutoff:
             window.new_conn_ts.popleft()
-        while window.sni_block_ts and window.sni_block_ts[0] < cutoff:
-            window.sni_block_ts.popleft()
+        for series in (window.sni_block_ts, window.dns_threat_ts):
+            while series and series[0] < cutoff:
+                series.popleft()
+        for series in (window.nxdomain_ts, window.dga_nxdomain_ts):
+            while series and series[0][0] < cutoff:
+                series.popleft()
         stale_dsts = [dst for dst, ts in window.dst_ips_seen.items() if ts < cutoff]
         for dst in stale_dsts:
             del window.dst_ips_seen[dst]
