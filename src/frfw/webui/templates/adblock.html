@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block title %}Ad-Block & DNS Filtering - FR_OS{% endblock %}
+{% block content %}
+<h1>Ad-Block &amp; DNS Filtering</h1>
+<p class="muted">
+  Downloads blocklists (hosts files or plain domain lists), dedupes them,
+  and serves the result from a dedicated, frfw-managed DNS resolver
+  (dnsmasq). Each category is kept as its own list, so blocks and counts
+  can be told apart. Optionally also pushes a small "critical" subset of
+  the base list into the existing Phase 4 XDP kernel filter.
+</p>
+
+<div class="card status-card">
+  <span class="badge {{ badge_class }}">{{ status_label }}</span>
+  <dl>
+    <dt>Domains loaded</dt>
+    <dd>{{ domain_count }}</dd>
+    {% for name, n in counts.items() %}
+    <dt>{{ name }}</dt><dd>{{ n }}</dd>
+    {% endfor %}
+  </dl>
+</div>
+
+<form method="post" action="/adblock/settings">
+<div class="card">
+  <h3>Base list</h3>
+  <label class="checkbox-row"><input type="checkbox" name="enabled" value="true" {{ "checked" if enabled }}> Enabled</label>
+
+  <label for="source_urls">Ad/tracker source lists (one URL per line; reported as "{{ base_category }}")</label>
+  <textarea id="source_urls" name="source_urls" rows="3" placeholder="{{ default_source_url }}">{{ source_urls_text }}</textarea>
+  <p class="muted">Suggested: {{ default_source_url }}</p>
+
+  <label for="xdp_critical_limit">XDP critical-subset size (0 = off)</label>
+  <input type="number" id="xdp_critical_limit" name="xdp_critical_limit" min="0" value="{{ xdp_critical_limit }}">
+  <p class="muted">
+    Feeds up to this many base-list domains into the existing <a href="/xdp">TLS SNI
+    filter</a>'s kernel blocklist -- only takes effect if that filter is
+    also enabled; leave at 0 to keep everything DNS-side.
+  </p>
+</div>
+
+<div class="card">
+  <h3>Categories</h3>
+  <p class="muted">Each list's own license and terms apply -- check them before use in a business.</p>
+  {% for p in presets %}
+  <label class="checkbox-row">
+    <input type="checkbox" name="categories" value="{{ p.name }}" {{ "checked" if p.name in selected_categories }}>
+    <strong>{{ p.title }}</strong> <span class="muted">({{ p.name }}) -- {{ p.note }}</span>
+  </label>
+  {% endfor %}
+  {% if custom_categories %}
+  <p class="muted">Custom categories from config.yaml (kept as they are):</p>
+  <ul>
+    {% for name, urls in custom_categories.items() %}
+    <li><code>{{ name }}</code>: {{ urls|join(", ") }}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
+  <label for="allowlist">Allowlist (one domain per line; its subdomains are allowed too)</label>
+  <textarea id="allowlist" name="allowlist" rows="3" placeholder="example.com">{{ allowlist_text }}</textarea>
+</div>
+
+<div class="card">
+  <h3>LAN DNS</h3>
+  <label class="checkbox-row"><input type="checkbox" name="serve_lan" value="true" {{ "checked" if serve_lan }}>
+    Serve DHCP clients: announce this router as their DNS server (the pools' DNS servers become upstreams)</label>
+  <label class="checkbox-row"><input type="checkbox" name="force_dns" value="true" {{ "checked" if force_dns }}>
+    Enforce: redirect all plain DNS to this resolver, block DNS-over-TLS, disable Firefox's automatic DoH</label>
+  <label class="checkbox-row"><input type="checkbox" name="query_logging" value="true" {{ "checked" if query_logging }}>
+    Log queries for the AI IDS (NXDOMAIN bursts, DGA-like names, malware/phishing lookups) -- records who looked up what in the system journal</label>
+</div>
+
+<button type="submit">Save</button>
+</form>
+
+<div class="card">
+  <h3>Refresh</h3>
+  <p class="muted">
+    Downloads and dedupes the configured lists right now, instead of
+    waiting for the daily <code>fr-adblock-refresh.timer</code>. Can take a
+    while depending on list size and network speed.
+  </p>
+  <form method="post" action="/adblock/refresh">
+    <button type="submit">Refresh now</button>
+  </form>
+</div>
+{% endblock %}

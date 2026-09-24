@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% block title %}ZTNA Gate - FR_OS{% endblock %}
+{% block content %}
+<h1>Zero Trust Network Access Gate</h1>
+<p class="muted">
+  Local, kernel-enforced per-source-IP authorization: a signed-in
+  device's IP is added to the <code>authenticated_ztna_users</code>
+  nftables set for the configured session length, and any firewall rule
+  with "Require ZTNA" checked (see the <a href="/rules">Rules</a>
+  screen) only matches traffic from a source IP currently in that set.
+  The kernel evicts an expired IP on its own -- no cron job, no
+  userspace polling.
+</p>
+
+<div class="card status-card">
+  <span class="badge {{ 'badge-green' if enabled else 'badge-red' }}">
+    {{ "Enabled" if enabled else "Disabled" }}
+  </span>
+  <dl>
+    <div>
+      <dt>Session length</dt>
+      <dd>{{ session_ttl_display }}</dd>
+    </div>
+    <div>
+      <dt>Local accounts</dt>
+      <dd>{{ users|length }}</dd>
+    </div>
+    <div>
+      <dt>Gated rules</dt>
+      <dd>{{ gated_rules|length }}</dd>
+    </div>
+  </dl>
+</div>
+
+<div class="card">
+  <h3>Settings</h3>
+  <form method="post" action="/ztna/settings">
+    <label>
+      <input type="checkbox" name="enabled" value="true" {{ "checked" if enabled else "" }} style="display:inline;width:auto;">
+      Enabled
+    </label>
+    <label>Session length (seconds)</label>
+    <input type="number" name="session_ttl_seconds" value="{{ session_ttl_seconds }}" min="60" max="2592000" required>
+    <p class="muted">60 (1 minute) to 2,592,000 (30 days). Default: 28800 (8 hours).</p>
+    <button type="submit">Save settings</button>
+  </form>
+  <p class="muted" style="margin-top:0.8rem;">
+    Saving only updates <code>config.yaml</code> -- click <a href="/">Apply</a>
+    on the dashboard to load it into the kernel. Applying preserves
+    already-authorized sessions (see ARCHITECTURE.md) rather than
+    logging everyone out.
+  </p>
+</div>
+
+<div class="card">
+  <h3>Local accounts</h3>
+  {% if not users %}
+  <p class="muted">No ZTNA accounts yet -- add one below.</p>
+  {% else %}
+  <table>
+    <tr><th>Username</th><th></th></tr>
+    {% for u in users %}
+    <tr>
+      <td>{{ u }}</td>
+      <td>
+        <form class="inline" method="post" action="/ztna/users/remove/{{ u }}" onsubmit="return confirm('Remove ZTNA user {{ u }}?')">
+          <button type="submit" class="danger">Remove</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+
+  <h3 style="margin-top:1.2rem;">Add account</h3>
+  <form method="post" action="/ztna/users/add">
+    <label>Username</label>
+    <input type="text" name="new_username" required>
+    <label>Password</label>
+    <input type="password" name="new_password" minlength="8" required>
+    <button type="submit">Add account</button>
+  </form>
+</div>
+
+<div class="card">
+  <h3>Gated rules</h3>
+  {% if not gated_rules %}
+  <p class="muted">
+    No firewall rules currently require ZTNA authorization. Check
+    "Require ZTNA" on a rule's <a href="/rules">Rules</a> entry to gate
+    it behind this login.
+  </p>
+  {% else %}
+  <ul>
+    {% for name in gated_rules %}<li>{{ name }}</li>{% endfor %}
+  </ul>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h3>End-user pages</h3>
+  <p class="muted">
+    These are the pages a ZTNA user (not an admin) visits to sign in and
+    check their session -- they do not require the admin login.
+  </p>
+  <p><a href="/ztna/login">/ztna/login</a> &middot; <a href="/ztna/status">/ztna/status</a></p>
+</div>
+{% endblock %}

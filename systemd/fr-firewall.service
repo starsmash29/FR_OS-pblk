@@ -1,0 +1,22 @@
+[Unit]
+Description=FR_OS firewall ruleset (frfw)
+Documentation=https://github.com/starsmash29/FR_OS-pblk
+Wants=network-pre.target
+Before=network-pre.target shutdown.target
+Conflicts=shutdown.target
+DefaultDependencies=no
+ConditionPathExists=/etc/fr_os/config.yaml
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+StandardInput=null
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/etc/fr_os
+ExecStart=firewall-cli apply /etc/fr_os/config.yaml
+ExecReload=firewall-cli apply /etc/fr_os/config.yaml
+ExecStop=/usr/sbin/nft flush ruleset
+
+[Install]
+WantedBy=sysinit.target

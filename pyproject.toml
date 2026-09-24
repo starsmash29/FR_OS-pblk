@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "frfw"
+version = "0.1.0"
+description = "FR_OS firewall config engine: YAML config to nftables ruleset"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "httpx>=0.27"]
+webui = [
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "jinja2>=3.1",
+    "python-multipart>=0.0.9",
+    "itsdangerous>=2.1",
+]
+
+[project.scripts]
+firewall-cli = "frfw.cli:main"
+firewall-helper = "frfw.helper.server:main"
+firewall-update-helper = "frfw.helper.update_server:main"
+fr-webui = "frfw.webui.server:main"
+fr-xdp-sni-logger = "frfw.xdp:main"
+fr-ai-ids = "frfw.ai_ids.daemon:main"
+fr-iot-scan = "frfw.iot.scanner:main"
+fr-appid = "frfw.appid.daemon:main"
+fr-tls-fp = "frfw.tlsfp.daemon:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# Non-Python files that must be inside the installed package. Without
+# this, a regular (non-editable) `pip install` -- which is what the live
+# image's install hook and frfw.update both do -- ships the webUI without
+# its Jinja2 templates. Checked by tests/test_packaging.py.
+[tool.setuptools.package-data]
+"frfw.webui" = ["templates/*.html", "static/*"]
+"frfw.appid" = ["signatures.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

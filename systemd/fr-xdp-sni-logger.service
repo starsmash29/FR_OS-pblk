@@ -1,0 +1,25 @@
+[Unit]
+Description=FR_OS XDP SNI filter event logger (phase 4, see frfw.xdp)
+Documentation=https://github.com/starsmash29/FR_OS-pblk
+After=fr-firewall.service
+Wants=fr-firewall.service
+
+[Service]
+Type=simple
+ExecStart=fr-xdp-sni-logger
+Restart=on-failure
+RestartSec=5
+# Read-only consumer of a pinned BPF ring buffer map under /sys/fs/bpf --
+# needs no ReadWritePaths at all. It runs as root (not a narrower
+# capability like CAP_BPF alone) because the pinned map path frfw.xdp
+# creates is root-only by default, matching every other pinned-BPF-path
+# convention in this project; unlike fr-apply-helper/fr-update-helper,
+# though, this daemon can never make a privileged *decision* -- it only
+# formats and prints records the kernel program already decided to log,
+# so a bug here has no path to widening what gets blocked or how.
+NoNewPrivileges=yes
+ProtectHome=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

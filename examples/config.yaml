@@ -1,0 +1,75 @@
+# Example homelab configuration for the frfw engine.
+# Apply with: firewall-cli apply examples/config.yaml [--dry-run]
+version: 1
+hostname: fr-router
+
+interfaces:
+  wan:
+    device: eth0
+    zone: wan
+    description: "ISP uplink"
+  lan:
+    device: eth1
+    zone: lan
+    description: "Internal LAN"
+  dmz:
+    device: eth2
+    zone: dmz
+    description: "Isolated services"
+
+zones:
+  wan:
+    description: "Untrusted, internet-facing"
+  lan:
+    description: "Trusted internal network"
+  dmz:
+    description: "Publicly reachable services, limited trust"
+
+rules:
+  # The router itself is reachable over SSH from the LAN, and from nowhere else.
+  - name: allow-ssh-from-lan-to-router
+    action: accept
+    from_zone: lan
+    to_zone: self
+    proto: tcp
+    dst_port: 22
+
+  # All outbound traffic from the LAN is allowed (towards WAN or DMZ).
+  - name: lan-to-wan
+    action: accept
+    from_zone: lan
+    to_zone: wan
+
+  - name: lan-to-dmz
+    action: accept
+    from_zone: lan
+    to_zone: dmz
+
+  # The DMZ only accepts traffic from the WAN on the ports it actually serves
+  # (the DNAT itself happens in the nat.port_forwards section; this rule lets
+  # the already-DNATed traffic through the forward chain).
+  - name: wan-to-dmz-https
+    action: accept
+    from_zone: wan
+    to_zone: dmz
+    proto: tcp
+    dst_port: 443
+
+  # All other WAN -> LAN/DMZ traffic is explicitly dropped (the policy is
+  # drop anyway, but this logs it and documents the intent).
+  - name: block-wan-to-lan
+    action: drop
+    from_zone: wan
+    to_zone: lan
+    log: true
+
+nat:
+  masquerade:
+    - out_zone: wan
+  port_forwards:
+    - name: forward-https-to-dmz-web
+      in_zone: wan
+      proto: tcp
+      dst_port: 443
+      to_address: 10.0.2.10
+      to_port: 443

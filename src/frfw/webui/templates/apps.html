@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}Applications - FR_OS{% endblock %}
+{% block content %}
+<h1>Applications</h1>
+<p class="muted">
+  Recognises which apps clients use from the names they look up through the
+  router's resolver and, optionally, the TLS server names (SNI) the XDP
+  filter sees -- nothing is decrypted. A "hit" is one lookup or one TLS
+  connection, a rough activity signal, not traffic volume. Apps are blocked
+  by the resolver answering "no such domain" for all of their names.
+</p>
+
+{% if config_error %}
+<div class="flash-error">Config does not currently pass validation: {{ config_error }}</div>
+{% endif %}
+
+<div class="card">
+  <h3>Settings</h3>
+  <form method="post" action="/apps/settings">
+    <label class="checkbox-row"><input type="checkbox" name="enabled" value="true" {{ "checked" if enabled }}> Enabled (identify apps and enforce the blocked list)</label>
+    <label class="checkbox-row"><input type="checkbox" name="observe_sni" value="true" {{ "checked" if observe_sni }}> Also observe TLS server names with the XDP filter (one journal line per TLS connection)</label>
+    <label class="checkbox-row"><input type="checkbox" name="block_via_xdp" value="true" {{ "checked" if block_via_xdp }}> Also block apps in the XDP SNI filter (catches clients using their own DNS-over-HTTPS)</label>
+    <button type="submit">Save</button>
+  </form>
+  <h4>Prerequisites</h4>
+  <ul>
+    {% for ok, text in prerequisites %}
+    <li>{% if ok %}<span class="badge badge-green">on</span>{% else %}<span class="badge">off</span>{% endif %} {{ text }}</li>
+    {% endfor %}
+  </ul>
+  <p class="muted">
+    Daemon <code>fr-appid</code>:
+    {% if daemon_active %}<span class="badge badge-green">running</span>{% else %}<span class="badge">not running</span>{% endif %}
+    {% if usage_generated %} -- usage last written {{ usage_generated }}{% endif %}.
+    The XDP filter only sees what an interface receives: attach it to the LAN-side interfaces, not the WAN.
+    It also misses names of 32 characters or more, QUIC (HTTP/3) and Encrypted Client Hello.
+  </p>
+</div>
+
+<div class="card">
+  <h3>Apps (last 24 hours)</h3>
+  <form method="post" action="/apps/block">
+  <div class="scroll-table" style="max-height: 640px;">
+  <table>
+    <tr><th>Block</th><th>App</th><th>Category</th><th>Active clients (15 min)</th><th>Hits</th><th>Last seen</th><th>Clients</th></tr>
+    {% for r in rows %}
+    <tr>
+      <td><input type="checkbox" name="blocked_apps" value="{{ r.id }}" {{ "checked" if r.blocked }} aria-label="Block {{ r.name }}"></td>
+      <td>{{ r.name }}{% if r.blocked %} <span class="badge badge-red">blocked</span>{% endif %}<br><span class="muted">{{ r.names }} names</span></td>
+      <td>{{ r.category }}</td>
+      <td>{{ r.active_clients }}</td>
+      <td>{{ r.hits }}</td>
+      <td>{{ r.last_seen or "-" }}</td>
+      <td>
+        {% if r.clients %}
+        <details><summary>{{ r.clients|length }}</summary>
+          <table>
+            {% for c in r.clients %}
+            <tr>
+              <td>{{ c.ip }}{% if c.label %}<br><span class="muted">{{ c.label }}</span>{% endif %}</td>
+              <td>{{ c.hits }}</td>
+              <td>{{ c.last_seen or "-" }}{% if c.active %} <span class="badge badge-green">active</span>{% endif %}</td>
+              <td class="muted">{{ c.sources }}</td>
+            </tr>
+            {% endfor %}
+          </table>
+        </details>
+        {% else %}-{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  </div>
+  <button type="submit">Save blocked apps</button>
+  </form>
+  <p class="muted">
+    App domain lists: <a href="{{ catalog.source }}">v2fly/domain-list-community</a>
+    ({{ catalog.license }} license), commit <code>{{ catalog.ref[:12] }}</code>, generated {{ catalog.generated }}.
+  </p>
+</div>
+{% endblock %}

@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% block title %}Rules - FR_OS{% endblock %}
+{% block content %}
+<h1>Firewall rules</h1>
+<p class="muted">Evaluated in order, first match wins. "self" as a zone means the router itself.
+Scheduled drop/reject rules that cut open connections are evaluated before all other rules.</p>
+
+<table>
+  <tr><th>Name</th><th>Action</th><th>From</th><th>To</th><th>Proto</th><th>Port</th><th>Source MAC</th><th>Schedule</th><th>Log</th><th>ZTNA</th><th></th></tr>
+  {% for rule in rules %}
+  <tr>
+    <td>{{ rule.name }}</td>
+    <td>{{ rule.action }}</td>
+    <td>{{ rule.from_zone or "any" }}</td>
+    <td>{{ rule.to_zone or "any" }}</td>
+    <td>{{ rule.proto or "any" }}</td>
+    <td>{{ rule.dst_port or "-" }}</td>
+    <td>{% if rule.src_mac %}<code>{{ rule.src_mac }}</code>{% else %}-{% endif %}</td>
+    <td>
+      {% set sched = schedules.get(rule.name) %}
+      {% if sched %}
+      {{ sched.text }}
+      {% if sched.active %}<span class="badge badge-green">active now</span>{% else %}<span class="badge">inactive</span>{% endif %}
+      {% if sched.cut %}<br><span class="muted">cuts open connections</span>{% endif %}
+      {% else %}always{% endif %}
+    </td>
+    <td>{{ "yes" if rule.log else "-" }}</td>
+    <td>{{ "yes" if rule.require_ztna else "-" }}</td>
+    <td>
+      <form class="inline" method="post" action="/rules/delete/{{ rule.name }}" onsubmit="return confirm('Delete rule {{ rule.name }}?')">
+        <button type="submit" class="danger">Delete</button>
+      </form>
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+
+<div class="card">
+  <h3>Add rule</h3>
+  <form method="post" action="/rules/add">
+    <label>Name</label>
+    <input type="text" name="name" pattern="[a-z][a-z0-9_-]*" required>
+    <label>Action</label>
+    <select name="action" required>
+      <option value="accept">accept</option>
+      <option value="drop">drop</option>
+      <option value="reject">reject</option>
+    </select>
+    <label>From zone (blank = any)</label>
+    <select name="from_zone">
+      <option value="">any</option>
+      {% for z in zones %}<option value="{{ z }}">{{ z }}</option>{% endfor %}
+    </select>
+    <label>To zone (blank = any, "self" = the router)</label>
+    <select name="to_zone">
+      <option value="">any</option>
+      <option value="self">self</option>
+      {% for z in zones %}<option value="{{ z }}">{{ z }}</option>{% endfor %}
+    </select>
+    <label>Protocol</label>
+    <select name="proto">
+      <option value="any">any</option>
+      <option value="tcp">tcp</option>
+      <option value="udp">udp</option>
+      <option value="icmp">icmp</option>
+    </select>
+    <label>Destination port (tcp/udp only; single port or "1000-2000")</label>
+    <input type="text" name="dst_port" placeholder="443">
+    <label>Source address (optional, CIDR)</label>
+    <input type="text" name="src_address" placeholder="10.0.0.0/24">
+    <label>Destination address (optional, CIDR)</label>
+    <input type="text" name="dst_address">
+    <label>Source MAC address (optional, aa:bb:cc:dd:ee:ff -- a device, whatever address DHCP gave it)</label>
+    <input type="text" name="src_mac" placeholder="aa:bb:cc:dd:ee:ff">
+    <fieldset>
+      <legend>Schedule (optional -- leave the times empty for "always")</legend>
+      {% for day in weekdays %}
+      <label class="checkbox-row" style="display:inline-block;margin-right:0.6rem;"><input type="checkbox" name="schedule_days" value="{{ day }}"> {{ day|capitalize }}</label>
+      {% endfor %}
+      <p class="muted">No day ticked = every day. An end time before the start runs past midnight (22:00-06:00).</p>
+      <label>From</label>
+      <input type="time" name="schedule_start">
+      <label>Until</label>
+      <input type="time" name="schedule_end">
+      <label><input type="checkbox" name="cut_established" value="true" style="display:inline;width:auto;"> Also cut connections opened before the window starts (drop/reject only)</label>
+    </fieldset>
+    <label><input type="checkbox" name="log" value="true" style="display:inline;width:auto;"> Log matches</label>
+    <label>
+      <input type="checkbox" name="require_ztna" value="true" style="display:inline;width:auto;">
+      Require ZTNA (source must be signed in via the <a href="/ztna">ZTNA gate</a>)
+    </label>
+    <button type="submit">Add rule</button>
+  </form>
+</div>
+<div class="card">
+  <h3>Schedule time zone</h3>
+  <p class="muted">Rule schedules are in this zone.{% if router_time %} Router time now: <strong>{{ router_time }}</strong>.{% endif %}
+  Daylight-saving changes are picked up automatically within the hour (<code>fr-schedule-check.timer</code>).</p>
+  <form method="post" action="/rules/timezone">
+    <label>IANA time zone (empty = the router's system time zone)</label>
+    <input type="text" name="timezone" value="{{ timezone }}" placeholder="Europe/Budapest">
+    <button type="submit">Save time zone</button>
+  </form>
+</div>
+{% endblock %}

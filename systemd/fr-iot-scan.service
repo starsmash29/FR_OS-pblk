@@ -1,0 +1,20 @@
+[Unit]
+Description=FR_OS IoT device discovery and isolation scan (phase 14, see frfw.iot)
+Documentation=https://github.com/starsmash29/FR_OS-pblk
+After=fr-apply-helper.socket network.target
+Wants=fr-apply-helper.socket
+
+[Service]
+Type=oneshot
+# Unprivileged on purpose: this is the process that parses untrusted
+# network input (mDNS responses, client-supplied DHCP hostnames). The two
+# privileged steps -- reading Kea's lease file and replacing the kernel
+# iot_isolated set -- go through fr-apply-helper's Unix socket, the same
+# split fr-ai-ids.service uses. Exits immediately if iot.enabled is false.
+User=fr_os-webui
+Group=fr_os-webui
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/etc/fr_os/webui
+ExecStart=fr-iot-scan

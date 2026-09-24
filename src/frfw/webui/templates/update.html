@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}Update - FR_OS{% endblock %}
+{% block content %}
+<h1>Update</h1>
+
+<div class="card">
+  <h3>Version</h3>
+  <p>Installed: <span class="badge">{{ installed_version }}</span></p>
+  <p class="muted">Checked against <code>{{ repo }}</code> (set via config.yaml's <code>update.repo</code>).</p>
+
+  {% if check_error %}
+  <div class="flash-error">Could not check for updates: {{ check_error }}</div>
+  {% elif check_result %}
+    {% if check_result.latest is none %}
+    <p class="muted">No releases have been published for this repo yet.</p>
+    {% elif check_result.update_available %}
+    <p><strong>Update available: {{ check_result.latest.version }}</strong></p>
+    {% if check_result.latest.notes %}
+    <pre style="white-space:pre-wrap;background:#f2f4f6;padding:0.6rem;border-radius:4px;">{{ check_result.latest.notes }}</pre>
+    {% endif %}
+    <form method="post" action="/update/apply" onsubmit="return confirm('Update to {{ check_result.latest.version }} now? The webUI will restart afterwards.')">
+      <input type="hidden" name="version" value="{{ check_result.latest.version }}">
+      <button type="submit">Update to {{ check_result.latest.version }}</button>
+    </form>
+    {% else %}
+    <p class="muted">Already up to date (latest published release: {{ check_result.latest.version }}).</p>
+    {% endif %}
+  {% endif %}
+</div>
+
+<div class="card">
+  <h3>Rollback</h3>
+  {% if state.previous_version %}
+  <p class="muted">Previously running: {{ state.previous_version }}</p>
+  <form method="post" action="/update/rollback" onsubmit="return confirm('Roll back to {{ state.previous_version }} now? The webUI will restart afterwards.')">
+    <button type="submit" class="danger">Roll back to {{ state.previous_version }}</button>
+  </form>
+  {% else %}
+  <p class="muted">No previous version recorded yet -- nothing to roll back to.</p>
+  {% endif %}
+</div>
+
+{% if state.last_update %}
+<div class="card">
+  <h3>Last update attempt</h3>
+  <table>
+    <tr><th>Action</th><td>{{ state.last_update.action }}</td></tr>
+    <tr><th>Version</th><td>{{ state.last_update.version }}</td></tr>
+    <tr><th>When</th><td>{{ state.last_update.applied_at }}</td></tr>
+    <tr><th>Status</th><td><span class="badge">{{ state.last_update.status }}</span></td></tr>
+    {% if state.last_update.message %}
+    <tr><th>Message</th><td>{{ state.last_update.message }}</td></tr>
+    {% endif %}
+  </table>
+</div>
+{% endif %}
+
+<div class="card">
+  <p class="muted">
+    Updates are installed from {{ repo }}'s GitHub releases over HTTPS; there
+    is no separate cryptographic signature check on top of that yet. See
+    ARCHITECTURE.md's update mechanism section for exactly what "update" and
+    "rollback" do.
+  </p>
+</div>
+{% endblock %}

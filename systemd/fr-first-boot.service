@@ -1,0 +1,13 @@
+[Unit]
+Description=FR_OS first-boot setup (interface assignment, admin password, service enablement)
+Documentation=https://github.com/starsmash29/FR_OS-pblk
+After=network-pre.target
+ConditionPathExists=!/etc/fr_os/.first-boot-done
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=fr-first-boot.sh
+
+[Install]
+WantedBy=multi-user.target

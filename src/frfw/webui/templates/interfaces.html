@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Interfaces - FR_OS{% endblock %}
+{% block content %}
+<h1>Interfaces</h1>
+
+<table>
+  <tr><th>Name</th><th>Device</th><th>Zone</th><th>Address</th><th></th></tr>
+  {% for iface in interfaces %}
+  <tr>
+    <td>{{ iface.name }}</td>
+    <td>{{ iface.device }}</td>
+    <td>{{ iface.zone }}</td>
+    <td>{{ iface.address or "-" }}</td>
+    <td>
+      <a href="/interfaces?edit={{ iface.name }}">Edit</a>
+      <form class="inline" method="post" action="/interfaces/delete/{{ iface.name }}" onsubmit="return confirm('Delete interface {{ iface.name }}?')">
+        <button type="submit" class="danger">Delete</button>
+      </form>
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+
+<div class="card">
+  <h3>{{ "Edit interface" if edit else "Add interface" }}</h3>
+  <form method="post" action="/interfaces/save">
+    <label>Name</label>
+    <input type="text" name="name" value="{{ edit.name if edit else '' }}" {{ "readonly" if edit else "" }} pattern="[a-z][a-z0-9_-]*" required>
+    <label>Device</label>
+    <input type="text" name="device" value="{{ edit.device if edit else '' }}" placeholder="eth0" required>
+    <label>Zone</label>
+    <input type="text" name="zone" value="{{ edit.zone if edit else '' }}" placeholder="lan" pattern="[a-z][a-z0-9_-]*" required>
+    <label>Static address (CIDR, optional -- e.g. 10.0.0.1/24)</label>
+    <input type="text" name="address" value="{{ edit.address if edit else '' }}" placeholder="10.0.0.1/24">
+    <button type="submit">Save</button>
+  </form>
+</div>
+
+<div class="card">
+  <h3>Detected network interfaces</h3>
+  <table>
+    <tr><th>Name</th><th>Driver</th><th>MAC</th><th>Link</th></tr>
+    {% for nic in detected %}
+    <tr>
+      <td>{{ nic.name }}</td>
+      <td>{{ nic.driver or "?" }}</td>
+      <td>{{ nic.mac_address or "?" }}</td>
+      <td>{{ "up" if nic.link_up else ("down" if nic.link_up is not none else "?") }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+{% endblock %}

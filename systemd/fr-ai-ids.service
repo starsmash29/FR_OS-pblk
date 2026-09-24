@@ -1,0 +1,29 @@
+[Unit]
+Description=FR_OS AI IDS/IPS anomaly detection daemon (phase 11, see frfw.ai_ids)
+Documentation=https://github.com/starsmash29/FR_OS-pblk
+After=fr-apply-helper.socket network.target
+Wants=fr-apply-helper.socket
+
+[Service]
+Type=simple
+User=fr_os-webui
+Group=fr_os-webui
+# Read-only journal access to tail fr-xdp-sni-logger.service's output
+# for the SNI-blocklist-hit feature -- the identical, minimal-privilege
+# mechanism fr-webui.service already uses for its own live log stream
+# (see that unit's own comment). Everything else this daemon needs
+# (a periodic conntrack table snapshot, and the actual quarantine
+# action) goes through fr-apply-helper's Unix socket -- this process
+# never touches `nft` or /proc/net/nf_conntrack itself, and never gains
+# any capability beyond journal read.
+SupplementaryGroups=systemd-journal
+NoNewPrivileges=yes
+ExecStart=fr-ai-ids
+Restart=on-failure
+RestartSec=5
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/etc/fr_os/webui
+
+[Install]
+WantedBy=multi-user.target

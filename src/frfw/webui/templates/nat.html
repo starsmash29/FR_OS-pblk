@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}NAT - FR_OS{% endblock %}
+{% block content %}
+<h1>NAT</h1>
+
+<div class="card">
+  <h3>Masquerade (outbound NAT)</h3>
+  <table>
+    <tr><th>Out zone</th><th></th></tr>
+    {% for m in masquerade %}
+    <tr>
+      <td>{{ m.out_zone }}</td>
+      <td>
+        <form class="inline" method="post" action="/nat/masquerade/delete/{{ m.out_zone }}">
+          <button type="submit" class="danger">Remove</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  <form method="post" action="/nat/masquerade/add">
+    <label>Out zone</label>
+    <select name="out_zone" required>
+      {% for z in zones %}<option value="{{ z }}">{{ z }}</option>{% endfor %}
+    </select>
+    <button type="submit">Add masquerade</button>
+  </form>
+</div>
+
+<div class="card">
+  <h3>Port forwards (inbound DNAT)</h3>
+  <table>
+    <tr><th>Name</th><th>In zone</th><th>Proto</th><th>Port</th><th>To</th><th></th></tr>
+    {% for pf in port_forwards %}
+    <tr>
+      <td>{{ pf.name }}</td>
+      <td>{{ pf.in_zone }}</td>
+      <td>{{ pf.proto }}</td>
+      <td>{{ pf.dst_port }}</td>
+      <td>{{ pf.to_address }}:{{ pf.to_port }}</td>
+      <td>
+        <form class="inline" method="post" action="/nat/portforward/delete/{{ pf.name }}" onsubmit="return confirm('Delete port forward {{ pf.name }}?')">
+          <button type="submit" class="danger">Delete</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  <form method="post" action="/nat/portforward/add">
+    <label>Name</label>
+    <input type="text" name="name" pattern="[a-z][a-z0-9_-]*" required>
+    <label>In zone</label>
+    <select name="in_zone" required>
+      {% for z in zones %}<option value="{{ z }}">{{ z }}</option>{% endfor %}
+    </select>
+    <label>Protocol</label>
+    <select name="proto" required>
+      <option value="tcp">tcp</option>
+      <option value="udp">udp</option>
+    </select>
+    <label>Destination port</label>
+    <input type="number" name="dst_port" min="1" max="65535" required>
+    <label>Forward to address</label>
+    <input type="text" name="to_address" placeholder="10.0.2.10" required>
+    <label>Forward to port (blank = same as destination port)</label>
+    <input type="number" name="to_port" min="1" max="65535">
+    <button type="submit">Add port forward</button>
+  </form>
+</div>
+{% endblock %}

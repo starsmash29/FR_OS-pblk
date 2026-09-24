@@ -1,0 +1,209 @@
+{% extends "base.html" %}
+{% block title %}TLS SNI Filter - FR_OS{% endblock %}
+{% block content %}
+<h1>XDP TLS SNI Filter</h1>
+<p class="muted">
+  Kernel-space (XDP/eBPF) TLS ClientHello inspection -- drops connections
+  to blocklisted domains before they reach the kernel's normal network
+  stack. See <code>bpf/xdp_sni_filter.c</code> for the real, verified
+  limitations (single-packet ClientHellos only, no ECH support, IPv4
+  only) before relying on this as a complete filter.
+</p>
+
+<div class="card status-card">
+  <span class="badge {{ badge_class }}">{{ xdp_status }}</span>
+  <dl>
+    <div>
+      <dt>Interface</dt>
+      <dd>{{ interface }}</dd>
+    </div>
+    <div>
+      <dt>Blocked domains</dt>
+      <dd>{{ blocked_domains|length }}</dd>
+    </div>
+    <div>
+      <dt>Drops (since last load)</dt>
+      <dd>{{ stats.drop_match }}</dd>
+    </div>
+  </dl>
+</div>
+
+{% if interfaces_status|length > 1 %}
+<div class="card">
+  <h3>Attached interfaces</h3>
+  <table>
+    <tr><th>Interface</th><th>Device</th><th>Mode</th></tr>
+    {% for row in interfaces_status %}
+    <tr>
+      <td>{{ row.name }}</td>
+      <td>{{ row.device }}</td>
+      <td><span class="badge {{ row.badge_class }}">{{ row.label }}</span></td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+{% endif %}
+
+<div class="card">
+  <h3>Settings</h3>
+  <form method="post" action="/xdp/settings">
+    <label>
+      <input type="checkbox" name="enabled" value="true" {{ "checked" if enabled else "" }} style="display:inline;width:auto;">
+      Enabled
+    </label>
+
+    <label>Interfaces to filter</label>
+    <p class="muted">
+      XDP only sees packets an interface <em>receives</em>. To filter what LAN
+      clients connect to, pick the LAN-side interfaces; on the WAN interface it
+      only sees connections coming in from the internet.
+    </p>
+    {% if not available_interfaces %}
+    <p class="muted">No interfaces defined yet -- add one on the Interfaces screen first.</p>
+    {% else %}
+    <div>
+      {% for name in available_interfaces %}
+      <label class="checkbox-row">
+        <input type="checkbox" name="interfaces" value="{{ name }}" {{ "checked" if name in configured_interfaces else "" }}>
+        {{ name }}
+      </label>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    <label>Blocked domains (one per line, or comma-separated)</label>
+    <textarea name="blocklist" rows="6" placeholder="ads.example.com&#10;tracker.example.net">{{ blocklist_text }}</textarea>
+    <p class="muted">
+      Blocking a domain also blocks its subdomains (e.g. "example.com"
+      blocks "www.example.com" too) -- see this project's ARCHITECTURE.md
+      for the LPM-trie matching scheme.
+    </p>
+
+    <button type="submit">Save settings</button>
+  </form>
+  <p class="muted" style="margin-top:0.8rem;">
+    Saving only updates <code>config.yaml</code> -- click <a href="/">Apply</a>
+    on the dashboard to actually load the filter into the kernel.
+  </p>
+</div>
+
+<div class="card">
+  <h3>Blocked domains</h3>
+  {% if not blocked_domains %}
+  <p class="muted">No domains configured yet.</p>
+  {% else %}
+  <div class="scroll-table">
+    <table>
+      <tr><th>Domain</th><th></th></tr>
+      {% for domain in blocked_domains %}
+      <tr>
+        <td>{{ domain }}</td>
+        <td>
+          <form class="inline" method="post" action="/xdp/blocklist/remove">
+            <input type="hidden" name="domain" value="{{ domain }}">
+            <button type="submit" class="danger">Remove</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </table>
+  </div>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h3>
+    <span id="xdp-live-dot" class="live-dot"></span>
+    Live TLS Inspection Logs (40Gbps Wire-Speed Data Plane)
+  </h3>
+  <p class="muted">
+    Streamed from <code>fr-xdp-sni-logger</code>'s journal as each match
+    is logged -- the drop decision itself already happened in the
+    kernel, entirely independent of this page being open. "40Gbps
+    wire-speed" describes what the native (<code>xdpdrv</code>) data
+    plane is designed for on supported hardware, not a throughput
+    number measured on this box -- see ROADMAP.md's phase 4 open items
+    for real hardware benchmarking status.
+    Status: <span id="xdp-live-status">Connecting&hellip;</span>
+  </p>
+  <div id="xdp-terminal" class="terminal"><span class="t-empty">Waiting for events&hellip;</span></div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var term = document.getElementById("xdp-terminal");
+  var dot = document.getElementById("xdp-live-dot");
+  var statusText = document.getElementById("xdp-live-status");
+  var MAX_LINES = 300;
+  var lineCount = 0;
+  var placeholderCleared = false;
+
+  function escapeHtml(value) {
+    return String(value).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  function formatEvent(ev) {
+    if (ev.error) {
+      return '<span class="t-drop">[error] ' + escapeHtml(ev.error) + "</span>";
+    }
+    var ts = ev.ts ? new Date(ev.ts * 1000).toLocaleTimeString() : "";
+    return (
+      '<span class="t-meta">[' + escapeHtml(ts) + "]</span> " +
+      '<span class="t-drop">DROP</span> ' +
+      escapeHtml(ev.saddr) + ":" + escapeHtml(ev.sport) + " &rarr; " +
+      escapeHtml(ev.daddr) + ":" + escapeHtml(ev.dport) +
+      " sni=<strong>" + escapeHtml(ev.sni) + "</strong>"
+    );
+  }
+
+  function appendLine(html) {
+    if (!placeholderCleared) {
+      term.innerHTML = "";
+      placeholderCleared = true;
+    }
+    var atBottom = term.scrollHeight - term.clientHeight <= term.scrollTop + 4;
+    var row = document.createElement("div");
+    row.innerHTML = html;
+    term.appendChild(row);
+    lineCount++;
+    while (lineCount > MAX_LINES && term.firstChild) {
+      term.removeChild(term.firstChild);
+      lineCount--;
+    }
+    if (atBottom) {
+      term.scrollTop = term.scrollHeight;
+    }
+  }
+
+  function connect() {
+    var source = new EventSource("/xdp/logs/stream");
+
+    source.onopen = function () {
+      dot.classList.add("live");
+      statusText.textContent = "Live";
+    };
+
+    source.onmessage = function (event) {
+      try {
+        var parsed = JSON.parse(event.data);
+        appendLine(formatEvent(parsed));
+      } catch (err) {
+        // Malformed line from the stream -- drop it rather than break the page.
+      }
+    };
+
+    source.onerror = function () {
+      dot.classList.remove("live");
+      statusText.textContent = "Reconnecting…";
+      // EventSource retries automatically; nothing else to do here.
+    };
+  }
+
+  connect();
+})();
+</script>
+{% endblock %}

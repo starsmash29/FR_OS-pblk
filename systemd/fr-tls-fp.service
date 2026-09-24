@@ -1,0 +1,23 @@
+[Unit]
+Description=FR_OS TLS client fingerprinting daemon (phase 19, see frfw.tlsfp)
+Documentation=https://github.com/starsmash29/FR_OS-pblk
+After=fr-firewall.service fr-apply-helper.socket
+Wants=fr-apply-helper.socket
+
+[Service]
+Type=simple
+# Starts as root only to open the XDP program's pinned ring buffer
+# (needs CAP_BPF), then drops to fr_os-webui for good before reading any
+# packet data (frfw.tlsfp.daemon.drop_privileges). The capability bounding
+# set is exactly what those two steps need -- checked by hand with setpriv.
+CapabilityBoundingSet=CAP_BPF CAP_SETUID CAP_SETGID
+NoNewPrivileges=yes
+ExecStart=fr-tls-fp
+Restart=always
+RestartSec=5
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/etc/fr_os/webui
+
+[Install]
+WantedBy=multi-user.target
