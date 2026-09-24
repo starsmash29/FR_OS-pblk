@@ -32,6 +32,7 @@ from frfw.webui.deps import (
     get_adblock_category_dir,
     get_adblock_hosts_path,
     get_appid_usage_path,
+    get_tlsfp_state_path,
     get_helper,
     get_iot_inventory_path,
     get_raw_config,
@@ -49,6 +50,7 @@ def metrics(
     iot_inventory_path=Depends(get_iot_inventory_path),
     adblock_category_dir=Depends(get_adblock_category_dir),
     appid_usage_path=Depends(get_appid_usage_path),
+    tlsfp_state_path=Depends(get_tlsfp_state_path),
 ) -> Response:
     try:
         config = parse_config(raw)
@@ -68,5 +70,6 @@ def metrics(
         iot_inventory_path=iot_inventory_path,
         adblock_category_dir=adblock_category_dir,
         appid_usage_path=appid_usage_path,
+        tlsfp_state_path=tlsfp_state_path,
     )
     return Response(content=text, media_type="text/plain; version=0.0.4")

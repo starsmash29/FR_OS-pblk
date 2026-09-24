@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% block title %}TLS Fingerprints - FR_OS{% endblock %}
+{% block content %}
+<h1>TLS Fingerprints</h1>
+<p class="muted">
+  Identifies <em>which TLS software</em> each device uses -- browser, app, library or
+  script -- from the unencrypted first message of every TLS connection (the
+  ClientHello), without decrypting anything. JA4 is stable per client software
+  (the recommended one); JA3 is shown too, but browsers that shuffle their
+  extensions produce a new JA3 on almost every connection.
+</p>
+
+{% if config_error %}
+<div class="flash-error">Config does not currently pass validation: {{ config_error }}</div>
+{% endif %}
+
+<div class="card">
+  <h3>Settings</h3>
+  <form method="post" action="/tls/settings">
+    <label class="checkbox-row"><input type="checkbox" name="enabled" value="true" {{ "checked" if enabled }}> Enabled (needs the XDP SNI filter, attached to the LAN-side interfaces)</label>
+    <label class="checkbox-row"><input type="checkbox" name="quarantine_on_match" value="true" {{ "checked" if quarantine_on_match }}> Quarantine a device that presents a blocklisted fingerprint (AI IDS quarantine set)</label>
+    <button type="submit">Save</button>
+  </form>
+  <p class="muted">
+    XDP filter: {% if xdp_enabled %}<span class="badge badge-green">on</span> ({{ xdp_interfaces|join(", ") }}){% else %}<span class="badge">off</span>{% endif %}
+    &middot; daemon <code>fr-tls-fp</code>: {% if daemon_active %}<span class="badge badge-green">running</span>{% else %}<span class="badge">not running</span>{% endif %}
+    {% if stats %}&middot; {{ stats.hellos or 0 }} hellos fingerprinted, {{ stats.parse_errors or 0 }} unparseable{% endif %}
+    &middot; last written {{ generated }}.
+    {% if learning %}<br><span class="badge badge-yellow">learning</span> "New fingerprint" events start 24 hours after the first run.{% endif %}
+    Not visible: QUIC/HTTP-3 (UDP) connections, and anything a device sends over IPv6.
+  </p>
+</div>
+
+<div class="card">
+  <h3>Events</h3>
+  {% if not events %}<p class="muted">No events yet.</p>{% else %}
+  <div class="scroll-table" style="max-height:360px;">
+  <table>
+    <tr><th>When</th><th>What</th><th>Device</th><th>JA4</th><th>Server name</th><th>Action</th></tr>
+    {% for e in events %}
+    <tr>
+      <td>{{ e.when }}</td>
+      <td>{% if e.type == "blocklist" %}<span class="badge badge-red">blocklisted</span> {{ e.label }}{% else %}<span class="badge badge-yellow">new fingerprint</span>{% endif %}</td>
+      <td>{{ e.client }}</td>
+      <td><code>{{ e.ja4 }}</code></td>
+      <td>{{ e.sni or "-" }}</td>
+      <td>{{ e.action or "-" }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  </div>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h3>Devices and their fingerprints</h3>
+  {% if not rows %}<p class="muted">Nothing fingerprinted yet.</p>{% else %}
+  <div class="scroll-table" style="max-height:600px;">
+  <table>
+    <tr><th>Device</th><th>JA4</th><th>JA3 (latest)</th><th>Server names</th><th>Seen</th><th>Devices with it</th><th></th></tr>
+    {% for r in rows %}
+    <tr>
+      <td>{{ r.client }}{% if r.label %}<br><span class="muted">{{ r.label }}</span>{% endif %}</td>
+      <td><code>{{ r.ja4 }}</code>{% if r.blocked %} <span class="badge badge-red">blocklisted</span>{% endif %}</td>
+      <td><code>{{ r.ja3[-1] if r.ja3 else "-" }}</code>{% if r.ja3|length > 1 %}<br><span class="muted">{{ r.ja3|length }} variants</span>{% endif %}</td>
+      <td>{{ r.sni|join(", ") if r.sni else "-" }}</td>
+      <td>{{ r.count }}&times;, last {{ r.last_seen }}</td>
+      <td>{{ r.clients_with_it }}</td>
+      <td>
+        {% if not r.blocked %}
+        <form class="inline" method="post" action="/tls/block">
+          <input type="hidden" name="fingerprint" value="{{ r.ja4 }}">
+          <input type="hidden" name="label" value="blocked from {{ r.client }}">
+          <button type="submit" class="danger">Block</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  </div>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h3>Blocklist</h3>
+  <p class="muted">JA4 fingerprints or 32-hex-digit JA3 hashes. Changes reach the running daemon within 30 seconds.</p>
+  {% if blocklist %}
+  <table>
+    <tr><th>Fingerprint</th><th>Label</th><th></th></tr>
+    {% for e in blocklist %}
+    <tr>
+      <td><code>{{ e.fingerprint }}</code></td>
+      <td>{{ e.label or "-" }}</td>
+      <td>
+        <form class="inline" method="post" action="/tls/unblock">
+          <input type="hidden" name="fingerprint" value="{{ e.fingerprint }}">
+          <button type="submit" class="secondary">Remove</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+  <form method="post" action="/tls/block">
+    <label>Fingerprint</label>
+    <input type="text" name="fingerprint" placeholder="t13d1516h2_8daaf6152771_e5627efa2ab1" required>
+    <label>Label (optional)</label>
+    <input type="text" name="label" maxlength="80">
+    <button type="submit">Add to blocklist</button>
+  </form>
+</div>
+{% endblock %}

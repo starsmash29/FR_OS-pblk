@@ -419,6 +419,33 @@ class AppControlConfig:
 
 
 @dataclass(frozen=True)
+class TlsFingerprintEntry:
+    fingerprint: str  # a JA4 string or a 32-hex-digit JA3 hash, lowercase
+    label: str = ""
+
+
+@dataclass(frozen=True)
+class TlsFingerprintConfig:
+    """TLS client fingerprinting without decryption (phase 19, see
+    frfw.tlsfp).
+
+    `enabled` makes the XDP program copy every ClientHello it sees (so
+    `xdp_sni_filter` must be enabled, on the LAN-side interfaces) and runs
+    the fr-tls-fp daemon, which computes JA3 and JA4 per client, keeps an
+    inventory, and reports fingerprints never seen on the network before.
+
+    `blocklist` entries are reported when seen; with `quarantine_on_match`
+    the client is also put in the AI IDS quarantine set for
+    `ai_ids.quarantine_duration_seconds` (the kernel set exists whether or
+    not the AI IDS daemon itself runs).
+    """
+
+    enabled: bool = False
+    blocklist: list[TlsFingerprintEntry] = field(default_factory=list)
+    quarantine_on_match: bool = False
+
+
+@dataclass(frozen=True)
 class Config:
     version: int
     hostname: str
@@ -435,6 +462,7 @@ class Config:
     adblocker: AdblockerConfig = field(default_factory=AdblockerConfig)
     iot: IotConfig = field(default_factory=IotConfig)
     app_control: AppControlConfig = field(default_factory=AppControlConfig)
+    tls_fingerprint: TlsFingerprintConfig = field(default_factory=TlsFingerprintConfig)
     #: IANA time zone rule schedules are written in (phase 17); None =
     #: the router's own local zone.
     timezone: str | None = None

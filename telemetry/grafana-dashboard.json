@@ -324,6 +324,39 @@
       "targets": [
         { "expr": "topk(10, fros_app_hits_24h)", "legendFormat": "{{app}}", "refId": "A" }
       ]
+    },
+    {
+      "id": 60,
+      "type": "row",
+      "title": "TLS fingerprints",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 51 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 61,
+      "type": "stat",
+      "title": "Distinct JA4 fingerprints",
+      "gridPos": { "h": 5, "w": 8, "x": 0, "y": 52 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [ { "expr": "fros_tls_distinct_fingerprints", "refId": "A" } ]
+    },
+    {
+      "id": 62,
+      "type": "stat",
+      "title": "Fingerprinted devices",
+      "gridPos": { "h": 5, "w": 8, "x": 8, "y": 52 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [ { "expr": "fros_tls_fingerprinted_clients", "refId": "A" } ]
+    },
+    {
+      "id": 63,
+      "type": "bargauge",
+      "title": "Fingerprint events (24 h)",
+      "description": "fros_tls_fingerprint_events_24h{type}: new fingerprints and blocklist matches (phase 19).",
+      "gridPos": { "h": 5, "w": 8, "x": 16, "y": 52 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [ { "expr": "fros_tls_fingerprint_events_24h", "legendFormat": "{{type}}", "refId": "A" } ]
     }
   ]
 }

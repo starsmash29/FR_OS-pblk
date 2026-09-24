@@ -75,6 +75,7 @@ install -m 0644 "$REPO_ROOT/systemd/fr-xdp-sni-logger.service" "$SYSTEMD_DIR/"
 install -m 0644 "$REPO_ROOT/systemd/fr-appid.service" "$SYSTEMD_DIR/"
 install -m 0644 "$REPO_ROOT/systemd/fr-schedule-check.service" "$SYSTEMD_DIR/"
 install -m 0644 "$REPO_ROOT/systemd/fr-schedule-check.timer" "$SYSTEMD_DIR/"
+install -m 0644 "$REPO_ROOT/systemd/fr-tls-fp.service" "$SYSTEMD_DIR/"
 
 echo "==> Reloading systemd"
 systemctl daemon-reload
@@ -91,6 +92,7 @@ Done. Next steps:
   systemctl enable --now fr-xdp-sni-logger        # XDP SNI filter event log (needs xdp_sni_filter.enabled)
   systemctl enable --now fr-appid                  # app identification (idles until app_control.enabled)
   systemctl enable --now fr-schedule-check.timer  # keeps time-based rules right across DST changes
+  systemctl enable --now fr-tls-fp                # TLS fingerprinting (idles until tls_fingerprint.enabled)
   systemctl enable --now fr-update-helper.socket   # webUI's Update screen
   systemctl enable --now fr-adblock-refresh.timer  # daily ad-block list refresh (needs 'dnsmasq' installed)
 

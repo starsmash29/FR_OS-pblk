@@ -183,3 +183,9 @@ SCHEDULE_STATE_PATH = Path("/etc/fr_os/schedule_state.json")
 #: the HTTP status. Never form contents. Written by the unprivileged
 #: webUI, size-capped with one rotated generation.
 WEBUI_AUDIT_LOG_PATH = WEBUI_STATE_DIR / "audit.log"
+
+#: TLS client fingerprint inventory (phase 19, see frfw.tlsfp.daemon):
+#: which JA4/JA3 fingerprints each client presented, and recent events
+#: (new fingerprints, blocklist matches). Written by fr-tls-fp after it
+#: has dropped to the fr_os-webui account; display-only.
+TLSFP_STATE_PATH = WEBUI_STATE_DIR / "tls_fingerprints.json"

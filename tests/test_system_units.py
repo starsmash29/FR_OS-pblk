@@ -34,9 +34,10 @@ def test_live_build_hook_installs_unit(unit: str):
 
 
 @pytest.mark.skipif(shutil.which("systemd-analyze") is None, reason="systemd-analyze not installed")
-def test_appid_unit_is_valid():
+@pytest.mark.parametrize("unit", ["fr-appid.service", "fr-tls-fp.service"])
+def test_new_daemon_units_are_valid(unit):
     proc = subprocess.run(
-        ["systemd-analyze", "verify", str(REPO_ROOT / "systemd" / "fr-appid.service")],
+        ["systemd-analyze", "verify", str(REPO_ROOT / "systemd" / unit)],
         capture_output=True,
         text=True,
     )

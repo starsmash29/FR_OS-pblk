@@ -39,6 +39,7 @@ from frfw.webui.routes import (
     nat,
     rules,
     system,
+    tls,
     update,
     xdp,
     ztna,
@@ -62,6 +63,7 @@ def create_app(
     adblock_category_dir: Path = paths.ADBLOCK_CATEGORY_DIR,
     appid_usage_path: Path = paths.APPID_USAGE_PATH,
     audit_log_path: Path = paths.WEBUI_AUDIT_LOG_PATH,
+    tlsfp_state_path: Path = paths.TLSFP_STATE_PATH,
 ) -> FastAPI:
     app = FastAPI(title="FR_OS webUI")
     app.state.config_path = config_path
@@ -81,6 +83,7 @@ def create_app(
     app.state.iot_scan_options = iot_scan_options or {}
     app.state.appid_usage_path = appid_usage_path
     app.state.audit_log_path = audit_log_path
+    app.state.tlsfp_state_path = tlsfp_state_path
 
     @app.middleware("http")
     async def audit_changes(request: Request, call_next):
@@ -116,6 +119,7 @@ def create_app(
     app.include_router(adblock.router)
     app.include_router(iot.router)
     app.include_router(apps.router)
+    app.include_router(tls.router)
     app.include_router(metrics.router)
 
     return app

@@ -1152,3 +1152,33 @@ exhaustive route walk that fails if the central check is removed.
 Roles do not protect against a compromised webUI process (unchanged
 trust boundary to the privileged helper).
 
+## Phase 19 – TLS client fingerprinting (JA3/JA4) without decryption — **done**
+
+Sixth of the seven "next-gen homelab / small office" additions. Full
+rationale:
+[ARCHITECTURE.md](ARCHITECTURE.md#tls-client-fingerprinting-without-decryption-phase-19).
+
+- [x] **Kernel**: ClientHello segments copied to a separate ring buffer,
+      including the follow-up segments of hellos that span packets (modern
+      post-quantum hellos do), with verifier-accepted bounds.
+- [x] **`frfw.tlsfp`**: TCP reassembly, strict ClientHello parsing, JA3 and
+      JA4 (both BSD 3-Clause; the FoxIO-licensed JA4+ methods are
+      deliberately not implemented).
+- [x] **Validated** against FoxIO's reference outputs: 151/152 real TCP
+      streams identical; the one difference is a documented
+      spec-vs-reference disagreement.
+- [x] **`fr-tls-fp`** drops root before parsing any packet; per-device
+      inventory, new-fingerprint events after a learning period, blocklist
+      with optional quarantine.
+- [x] **WebUI `/tls`**, `firewall-cli tls-fingerprints`, metrics.
+- [x] Tests: 43 new, including a two-segment post-quantum hello through the
+      real XDP program into a privilege-dropped fingerprinter. Full suite:
+      911 passed, 1 skipped.
+
+**Acceptance criterion**: for every IPv4 TLS connection from the LAN the
+router records the client's JA4/JA3 without decrypting anything, including
+hellos split across packets; admins see fingerprints per device, get told
+about new ones, and can block (and optionally quarantine) a fingerprint.
+✅ Verified on real packets and against the reference implementation's
+outputs. QUIC and IPv6 are not covered.
+

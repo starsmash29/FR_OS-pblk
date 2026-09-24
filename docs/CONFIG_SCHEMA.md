@@ -28,6 +28,7 @@ ai_ids: {...}        # optional, default: empty (disabled)
 adblocker: {...}     # optional, default: empty (disabled)
 iot: {...}           # optional, default: empty (disabled)
 app_control: {...}   # optional, default: empty (disabled)
+tls_fingerprint: {...}  # optional, default: empty (disabled)
 ```
 
 ## `interfaces`
@@ -315,6 +316,34 @@ app_control:
 - These cross-section requirements are only checked while `enabled` is
   true. Changes take effect on the next `apply`; the daemon picks up
   config changes by itself.
+
+## `tls_fingerprint`
+
+TLS client fingerprinting without decryption (phase 19, see `frfw.tlsfp`
+and
+[ARCHITECTURE.md](../ARCHITECTURE.md#tls-client-fingerprinting-without-decryption-phase-19)).
+The XDP program copies every ClientHello (and the rest of hellos that span
+several TCP segments) to the `fr-tls-fp` daemon, which computes JA4 and
+JA3 per device, keeps an inventory and reports new and blocklisted
+fingerprints.
+
+```yaml
+tls_fingerprint:
+  enabled: true                   # optional, default: false; requires xdp_sni_filter.enabled
+  quarantine_on_match: false      # optional, default: false
+  blocklist:                      # optional, default: []
+    - fingerprint: t13d1516h2_8daaf6152771_e5627efa2ab1   # a JA4 fingerprint...
+      label: "unexpected TLS client"                       # optional, at most 80 characters
+    - ada70206e40642a3e4461f35503241d5                     # ...or a JA3 hash (plain string form)
+```
+
+- `xdp_sni_filter` must be enabled and attached to the LAN-side interfaces:
+  that is where LAN clients' ClientHellos arrive.
+- `quarantine_on_match` puts a device presenting a blocklisted fingerprint
+  into the AI IDS quarantine set for `ai_ids.quarantine_duration_seconds`.
+- Blocklist edits reach the running daemon within 30 seconds; `enabled`
+  takes effect on the next `apply`.
+- IPv4 TCP only: QUIC (HTTP/3) and IPv6 connections are not fingerprinted.
 
 ## Known limitations
 

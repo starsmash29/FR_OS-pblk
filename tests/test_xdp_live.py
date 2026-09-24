@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import ctypes.util
 import glob
+import json
 import os
 import shutil
 import subprocess
@@ -257,3 +258,82 @@ def test_pass_events_only_while_reporting_is_on(lab):
     assert passes and passes[0].hostname == "allowed.example"
     assert passes[0].saddr == CLIENT_IP
     assert not xdp.report_pass_enabled()
+
+
+# --- phase 19: ClientHello copies for TLS fingerprinting ---------------------------
+
+_RAW_CLIENT = """
+import socket, sys, time
+hello = bytes.fromhex(sys.argv[3])
+s = socket.create_connection((sys.argv[1], 443), timeout=3)
+s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+split = int(sys.argv[2])
+s.sendall(hello[:split]); time.sleep(0.2); s.sendall(hello[split:]); time.sleep(0.5)
+s.close()
+"""
+
+# Opens the hello ring buffer as root, drops to an unprivileged account
+# exactly like fr-tls-fp, then fingerprints what arrives.
+_FINGERPRINTER = """
+import json, os, sys, time
+from frfw import xdp
+from frfw.config import parse_config
+from frfw.tlsfp.daemon import TlsFingerprintDaemon, drop_privileges
+holder = []
+reader = xdp.RingBufferReader(lambda seg: holder[0].handle_segment(seg), xdp.PIN_HELLO_PKTS_PATH,
+                              decode=xdp.HelloSegment.from_bytes)
+drop_privileges()
+config = parse_config({"version": 1, "hostname": "r", "zones": {"lan": {}},
+                       "interfaces": {"lan": {"device": "x", "zone": "lan"}}, "rules": [], "nat": {}})
+holder.append(TlsFingerprintDaemon(config, state_path=__import__("pathlib").Path("/nonexistent/x"),
+                                   quarantine_fn=lambda ip, d: {"ok": True}))
+print("ready", flush=True)
+deadline = time.time() + float(sys.argv[1])
+while time.time() < deadline:
+    reader.poll(200)
+d = holder[0]
+print(json.dumps({"uid": os.getuid(), "stats": d.stats,
+                  "clients": {c: sorted(fps) for c, fps in d.inventory.clients.items()},
+                  "sni": {c: [s for fp in fps.values() for s in fp.sni] for c, fps in d.inventory.clients.items()}}))
+"""
+
+
+def test_split_client_hello_is_fingerprinted_after_dropping_privileges(lab):
+    import tlsfp_samples as samples
+
+    from frfw.tlsfp.clienthello import parse_client_hello
+    from frfw.tlsfp.fingerprint import ja4
+
+    message = samples.client_hello(samples.default_extensions(sni="pq.example", pq=True))
+    wire = samples.tls_records(message)
+    assert len(wire) > 1460  # more than one full-size segment carries on a 1500-byte MTU
+    expected = ja4(parse_client_hello(message))
+
+    (lab["tmp"] / "raw_client.py").write_text(_RAW_CLIENT)
+    (lab["tmp"] / "fingerprinter.py").write_text(_FINGERPRINTER)
+    env = {**os.environ, "PYTHONPATH": str(Path(xdp.__file__).resolve().parents[1])}
+    _attach(ROUTER_LAN_DEV)
+    xdp.set_settings(xdp.SETTING_REPORT_HELLO)
+    try:
+        fingerprinter = subprocess.Popen(
+            [sys.executable, str(lab["tmp"] / "fingerprinter.py"), "8"],
+            stdout=subprocess.PIPE, text=True, env=env,
+        )
+        assert fingerprinter.stdout.readline().strip() == "ready"
+        subprocess.run(
+            ["ip", "netns", "exec", CLIENT_NS, sys.executable, str(lab["tmp"] / "raw_client.py"),
+             SERVER_IP, "900", wire.hex()],
+            capture_output=True, timeout=20, check=True,
+        )
+        # A real TLS stack too (single segment here: OpenSSL 3.0 sends no PQ share).
+        _connect(lab, "py.example")
+        result = json.loads(fingerprinter.communicate(timeout=30)[0].splitlines()[-1])
+    finally:
+        xdp.set_settings(0)
+        _detach(ROUTER_LAN_DEV)
+
+    assert result["uid"] != 0
+    assert expected in result["clients"][CLIENT_IP]
+    assert {"pq.example", "py.example"} <= set(result["sni"][CLIENT_IP])
+    assert result["stats"]["parse_errors"] == 0
+    assert any(fp.startswith("t13d") for fp in result["clients"][CLIENT_IP] if fp != expected)

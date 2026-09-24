@@ -31,6 +31,9 @@ on purpose:
    anything user space does).
 6. Switch pass-event reporting on or off (`set_report_pass`): phase 16's
    app identification wants to see the SNIs that were *not* blocked too.
+   Phase 19 adds a second switch that copies raw ClientHello segments to
+   their own ring buffer for TLS fingerprinting (`HelloSegment`,
+   frfw.tlsfp); both live in the `settings` map (`set_settings`).
 
 Direction matters: XDP runs on packets an interface *receives*. A LAN
 client's ClientHello is received on the router's LAN-side interface, so
@@ -114,10 +117,18 @@ PIN_BLOCKLIST_PATH = _PIN_MAPS_DIR / "sni_blocklist"
 PIN_STATS_PATH = _PIN_MAPS_DIR / "stats"
 PIN_EVENTS_PATH = _PIN_MAPS_DIR / "events"
 PIN_SETTINGS_PATH = _PIN_MAPS_DIR / "settings"
+PIN_HELLO_PKTS_PATH = _PIN_MAPS_DIR / "hello_pkts"
+PIN_HELLO_FLOWS_PATH = _PIN_MAPS_DIR / "hello_flows"
 
-#: Bit in the `settings` map's single __u32, matching SETTING_REPORT_PASS
-#: in bpf/xdp_sni_filter.c.
+#: Bits in the `settings` map's single __u32, matching SETTING_REPORT_PASS
+#: and SETTING_REPORT_HELLO in bpf/xdp_sni_filter.c.
 SETTING_REPORT_PASS = 0x1
+SETTING_REPORT_HELLO = 0x2
+
+#: struct hello_pkt: saddr(4) daddr(4) sport(2) dport(2) seq(4) len(2)
+#: first(1) pad(1), then HELLO_SNAP data bytes.
+HELLO_SNAP = 2048
+_HELLO_HEADER = struct.Struct("<4s4sHHIHBB")
 
 #: Index order must match bpf/xdp_sni_filter.c's `enum { STAT_... }`.
 STAT_NAMES = ["pass_not_tls", "pass_truncated", "pass_no_sni", "pass_no_match", "drop_match"]
@@ -165,6 +176,32 @@ class SniEvent:
         hostname = raw[16 : 16 + sni_len].decode("ascii", errors="replace")
         return cls(
             saddr=saddr, daddr=daddr, sport=sport, dport=dport, hostname=hostname, action=action
+        )
+
+
+@dataclass(frozen=True)
+class HelloSegment:
+    """One TCP segment of a ClientHello from the `hello_pkts` ring buffer
+    (phase 19). `first` marks the segment the hello starts in."""
+
+    saddr: str
+    daddr: str
+    sport: int
+    dport: int
+    seq: int
+    first: bool
+    payload: bytes
+
+    @classmethod
+    def from_bytes(cls, raw: bytes) -> "HelloSegment":
+        if len(raw) < _HELLO_HEADER.size:
+            raise XdpError(f"short hello record: {len(raw)} bytes")
+        saddr, daddr, sport, dport, seq, length, first, _pad = _HELLO_HEADER.unpack_from(raw)
+        length = min(length, HELLO_SNAP, len(raw) - _HELLO_HEADER.size)
+        return cls(
+            saddr=socket.inet_ntoa(saddr), daddr=socket.inet_ntoa(daddr),
+            sport=sport, dport=dport, seq=seq, first=bool(first),
+            payload=bytes(raw[_HELLO_HEADER.size:_HELLO_HEADER.size + length]),
         )
 
 
@@ -278,7 +315,8 @@ def unload() -> None:
     """Remove the pinned program and maps. Only call once nothing is
     still attached to the program (detach() every interface first) --
     this does not itself detach anything."""
-    for p in (PIN_PROG_PATH, PIN_BLOCKLIST_PATH, PIN_STATS_PATH, PIN_EVENTS_PATH, PIN_SETTINGS_PATH):
+    for p in (PIN_PROG_PATH, PIN_BLOCKLIST_PATH, PIN_STATS_PATH, PIN_EVENTS_PATH, PIN_SETTINGS_PATH,
+              PIN_HELLO_PKTS_PATH, PIN_HELLO_FLOWS_PATH):
         p.unlink(missing_ok=True)
     for d in (_PIN_PROG_DIR, _PIN_MAPS_DIR, _PIN_DIR):
         try:
@@ -368,8 +406,8 @@ def _map_delete(map_path: Path, key: bytes) -> None:
         raise XdpError(f"Deleting from {map_path} failed:\n{proc.stderr}")
 
 
-def set_report_pass(enabled: bool) -> None:
-    """Turn reporting of non-matching SNIs (action "pass") on or off.
+def set_settings(flags: int) -> None:
+    """Write the `settings` map's switch bits (SETTING_REPORT_*).
 
     Raises XdpError if the pinned program has no `settings` map -- i.e. it
     was loaded by an frfw version from before phase 16 and is still
@@ -379,21 +417,37 @@ def set_report_pass(enabled: bool) -> None:
             "The loaded XDP program has no settings map (it predates SNI "
             "observation); disable and re-enable the XDP SNI filter to reload it."
         )
-    value = struct.pack("<I", SETTING_REPORT_PASS if enabled else 0)
-    _map_update(PIN_SETTINGS_PATH, struct.pack("<I", 0), value)
+    _map_update(PIN_SETTINGS_PATH, struct.pack("<I", 0), struct.pack("<I", flags))
 
 
-def report_pass_enabled() -> bool:
-    """Whether the pinned program currently reports passed SNIs."""
+def get_settings() -> int:
     if not PIN_SETTINGS_PATH.exists():
-        return False
+        return 0
     proc = _bpftool(["map", "dump", "pinned", str(PIN_SETTINGS_PATH)])  # see _dump_lpm_keys re: no -j
     if proc.returncode != 0:
         raise XdpError(f"Dumping settings failed:\n{proc.stderr}")
     for entry in json.loads(proc.stdout or "[]"):
         if entry.get("key") == 0:
-            return bool(int(entry.get("value", 0)) & SETTING_REPORT_PASS)
-    return False
+            return int(entry.get("value", 0))
+    return 0
+
+
+def set_report_pass(enabled: bool) -> None:
+    """Turn reporting of non-matching SNIs (action "pass") on or off,
+    leaving the other switches as they are."""
+    flags = get_settings()
+    set_settings(flags | SETTING_REPORT_PASS if enabled else flags & ~SETTING_REPORT_PASS)
+
+
+def report_pass_enabled() -> bool:
+    """Whether the pinned program currently reports passed SNIs."""
+    return bool(get_settings() & SETTING_REPORT_PASS)
+
+
+def set_report_hello(enabled: bool) -> None:
+    """Turn copying of ClientHello segments (phase 19) on or off."""
+    flags = get_settings()
+    set_settings(flags | SETTING_REPORT_HELLO if enabled else flags & ~SETTING_REPORT_HELLO)
 
 
 def get_stats() -> dict[str, int]:
@@ -463,6 +517,7 @@ def sync_sni_filter(
     cfg = config.xdp_sni_filter
     state = _load_state(state_path)
     report_pass = config.app_control.enabled and config.app_control.observe_sni
+    report_hello = config.tls_fingerprint.enabled
 
     if not cfg.enabled:
         if not state.attached:
@@ -488,7 +543,9 @@ def sync_sni_filter(
             f"XDP blocklist has {len(cfg.blocklist)} names, more than the kernel map's "
             f"{BLOCKLIST_MAX_ENTRIES}; lower adblocker.xdp_critical_limit or block fewer apps via XDP"
         )
-    observing = ", reporting passed SNIs" if report_pass else ""
+    observing = (", reporting passed SNIs" if report_pass else "") + (
+        ", copying ClientHellos for fingerprinting" if report_hello else ""
+    )
     if dry_run:
         return SyncResult(
             applied=False,
@@ -519,12 +576,15 @@ def sync_sni_filter(
     sync_blocklist(cfg.blocklist)
     _save_state(XdpState(attached=new_attached), state_path)
 
-    if PIN_SETTINGS_PATH.exists():
-        set_report_pass(report_pass)
-    elif report_pass:
+    flags = (SETTING_REPORT_PASS if report_pass else 0) | (SETTING_REPORT_HELLO if report_hello else 0)
+    if PIN_SETTINGS_PATH.exists() and (not report_hello or PIN_HELLO_PKTS_PATH.exists()):
+        set_settings(flags)
+    elif flags:
+        if PIN_SETTINGS_PATH.exists():
+            set_settings(flags & ~SETTING_REPORT_HELLO)
         observing = (
-            ", SNI observation unavailable until the filter is disabled and "
-            "re-enabled (the loaded program predates it)"
+            ", SNI observation/fingerprinting unavailable until the filter is disabled "
+            "and re-enabled (the loaded program predates it)"
         )
 
     detail = f" ({', '.join(modes_used)})" if modes_used else ""
@@ -571,13 +631,19 @@ class RingBufferReader:
     Usage: `with RingBufferReader(on_event) as r: while True: r.poll()`.
     """
 
-    def __init__(self, on_event: Callable[[SniEvent], None], map_path: Path = PIN_EVENTS_PATH):
+    def __init__(
+        self,
+        on_event: Callable,
+        map_path: Path = PIN_EVENTS_PATH,
+        decode: Callable[[bytes], object] = SniEvent.from_bytes,
+    ):
         if not map_path.exists():
             raise XdpError(
                 f"Ring buffer map not found at {map_path} -- is the XDP SNI "
                 "filter loaded (frfw.xdp.sync_sni_filter with enabled: true)?"
             )
         self._on_event = on_event
+        self._decode = decode
         self._libbpf = _load_libbpf()
         fd = self._libbpf.bpf_obj_get(str(map_path).encode())
         if fd < 0:
@@ -590,7 +656,7 @@ class RingBufferReader:
     def _handle_sample(self, _ctx, data, size) -> int:
         raw = ctypes.string_at(data, size)
         try:
-            event = SniEvent.from_bytes(raw)
+            event = self._decode(raw)
         except XdpError:
             return 0
         self._on_event(event)

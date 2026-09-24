@@ -67,6 +67,10 @@ def get_appid_usage_path(request: Request) -> Path:
     return request.app.state.appid_usage_path
 
 
+def get_tlsfp_state_path(request: Request) -> Path:
+    return request.app.state.tlsfp_state_path
+
+
 def get_audit_log_path(request: Request) -> Path:
     return request.app.state.audit_log_path
 

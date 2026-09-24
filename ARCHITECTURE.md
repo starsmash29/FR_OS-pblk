@@ -2490,6 +2490,122 @@ protection, session invalidation on role/password/deletion, own-password
 change, legacy file migration, store validation, audit contents
 (including denied attempts and failed logins), and the CLI recovery path.
 
+## TLS client fingerprinting without decryption (phase 19)
+
+Goal: know *which TLS software* each device uses -- a browser, an app, a
+library, a script -- and notice when that changes, without decrypting
+anything or installing certificates on clients. Everything needed is in
+the cleartext ClientHello: which cipher suites, extensions, groups and
+signature algorithms the client's TLS library offers.
+
+### Method and licensing, up front
+
+- **JA3** (Salesforce, BSD 3-Clause): MD5 of those lists in wire order.
+- **JA4** (FoxIO, BSD 3-Clause): sorted lists hashed with SHA-256 plus a
+  readable prefix (`t13d1516h2_...`: TCP, TLS 1.3, SNI present, 15
+  ciphers, 16 extensions, ALPN h2).
+- **Not implemented: JA4+** (JA4S, JA4H, JA4T, JA4X, ...). Unlike JA4
+  itself these are under the FoxIO License 1.1, which forbids
+  monetization without an OEM license, and are patent pending -- checked
+  in FoxIO's own License FAQ before starting. An Apache-2.0 router OS that
+  anyone may sell should not ship them.
+- Both implemented from the published specifications, no code copied.
+
+JA3 is shown for compatibility, but it is a weak identifier today: Chrome
+(since v110) and Firefox shuffle their extension order per connection, so
+a browser's JA3 changes on almost every connection (a unit test shows the
+shuffle changing JA3 and not JA4). JA4 is the one inventory, events and
+the blocklist key on.
+
+### Correction to the naive approach: hellos no longer fit one packet
+
+The phase 4 XDP program inspects one packet at a time. That was fine for
+the SNI, but a modern browser's ClientHello often doesn't fit a packet:
+the hybrid post-quantum key share (X25519MLKEM768, on by default in
+Chrome and Firefox) alone is 1,216 bytes, and with a GREASE ECH extension
+a Chrome hello is ~1.8 KB -- two TCP segments on a 1500-byte MTU. The
+extension list, which JA3 and JA4 need entirely, runs into the second
+segment. So:
+
+- **Kernel** (`bpf/xdp_sni_filter.c`, `SETTING_REPORT_HELLO`): the first
+  segment of every ClientHello is copied (up to 2 KB) to a new 1 MiB ring
+  buffer, `hello_pkts`, separate from the drop-event buffer. If the TLS
+  record is longer than the segment, the flow goes into an LRU map and
+  its next (at most 3) segments are copied too. This is copying, not
+  parsing; the forwarding decision never depends on it. The verifier
+  needed three adjustments (pointer-based bounds for the first-byte read,
+  payload offset/length from IP/TCP header fields instead of pointer
+  differences, and a mask bound on the copy length) -- all found by
+  loading the real program, not guessed.
+- **Userspace** (`frfw.tlsfp`): a reassembler places segments by TCP
+  sequence number (reordering, retransmissions and sequence wraparound
+  are handled; everything is bounded by flow count, bytes and a 5-second
+  timeout), reassembles handshake messages across TLS records, parses the
+  ClientHello strictly (malformed input can only raise `ParseError`; a
+  fuzz test throws 3,000 mutated hellos at it) and computes JA3/JA4.
+
+### Validated against the reference
+
+The JA4 code was run over FoxIO's public capture set (39 pcaps, cloned
+into the sandbox only for this, not bundled) with a small pcap reader and
+this project's own reassembler: **151 of 152 TCP streams match the
+reference output exactly**, including multi-segment hellos. The single
+difference is a spec/reference disagreement: for a non-ASCII ALPN value
+the published specification says to use hex characters (this gives
+`bd`), while FoxIO's Rust and Python implementations substitute `9`
+(giving `99`). frfw follows the specification; real clients don't send
+such ALPN values. JA3 matches the JA3 README's worked example.
+
+### `fr-tls-fp` and privilege separation
+
+Opening the pinned ring buffer needs CAP_BPF (this kernel has
+`unprivileged_bpf_disabled=2`). The daemon therefore starts as root,
+opens the buffer, and **drops to fr_os-webui for good before reading any
+packet data** -- untrusted bytes are never parsed with privileges.
+Checked by hand: the open ring buffer keeps delivering after `setuid`,
+and CAP_BPF + CAP_SETUID + CAP_SETGID are the only capabilities needed
+(tried under `setpriv` with just those), which is what the unit's
+`CapabilityBoundingSet` grants. Since the pinned path can't be reopened
+afterwards, `apply` restarts the daemon whenever fingerprinting is on.
+
+It keeps a per-device inventory (JA4s, their JA3 variants, a few server
+names, counts, first/last seen), reports **new fingerprints** -- a JA4
+never seen on the network -- after a 24-hour learning period, and
+reports **blocklist matches** (JA4 or JA3), optionally quarantining the
+device through the helper's existing `quarantine_ip` command.
+
+### Verification
+
+- `tests/test_xdp_live.py`: a synthetic Chrome-sized (post-quantum, ~1.8
+  KB) ClientHello is sent in two TCP segments through the real XDP
+  program in network namespaces, plus a real OpenSSL handshake; a
+  separate process opens the buffer as root, drops to `nobody`, and
+  produces the expected JA4 for both. Disabling the continuation-segment
+  copy in the C code makes the test fail (tried).
+- `tests/test_tlsfp.py` (35): the JA4 spec example end to end, the JA3
+  example, GREASE, extension shuffling, every ALPN rule from the spec,
+  records, reassembly (order, retransmits, wraparound, bounds, expiry),
+  the fuzz test, inventory, daemon decisions (blocklist, quarantine
+  rate-limit, config updates), decoding, settings bits, config, CLI.
+- Route and metrics tests for `/tls`; the phase 18 viewer walk now covers
+  its change routes automatically.
+
+### Open issues
+
+- **QUIC/HTTP-3 is not fingerprinted.** Its ClientHello travels in UDP,
+  encrypted with keys derivable from the packet itself (RFC 9001) --
+  public, but decrypting it needs AES-GCM, which Python's standard library
+  lacks. JA4's `q` prefix is ready for it.
+- IPv6 isn't seen (the XDP program is IPv4-only, see phase 4).
+- Fingerprints identify TLS *libraries*, not apps: every app built on the
+  same OS TLS stack shares one. Useful for "this device suddenly speaks
+  TLS differently", not as proof of identity -- a client can copy
+  another's fingerprint.
+- No public fingerprint database is bundled. The best-known free one,
+  abuse.ch's SSLBL JA3 list, is stale (checked: last updated August 2021,
+  97 entries) and keys on JA3; FoxIO's JA4 database is a separate service
+  with its own terms. Blocklist entries are the admin's own.
+
 ## Open decisions
 
 The points below get settled during their respective phase, once the

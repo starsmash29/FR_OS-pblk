@@ -32,6 +32,7 @@ fr-xdp-sni-logger = "frfw.xdp:main"
 fr-ai-ids = "frfw.ai_ids.daemon:main"
 fr-iot-scan = "frfw.iot.scanner:main"
 fr-appid = "frfw.appid.daemon:main"
+fr-tls-fp = "frfw.tlsfp.daemon:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

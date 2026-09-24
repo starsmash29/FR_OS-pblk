@@ -37,6 +37,8 @@ from frfw.config.schema import (
     Protocol,
     Rule,
     RuleSchedule,
+    TlsFingerprintConfig,
+    TlsFingerprintEntry,
     UpdateConfig,
     XdpSniFilterConfig,
     Zone,
@@ -123,6 +125,7 @@ def parse_config(raw: Any) -> Config:
     app_control = _parse_app_control(
         raw.get("app_control", {}) or {}, adblocker, xdp_sni_filter
     )
+    tls_fingerprint = _parse_tls_fingerprint(raw.get("tls_fingerprint", {}) or {}, xdp_sni_filter)
 
     return Config(
         version=version,
@@ -140,6 +143,7 @@ def parse_config(raw: Any) -> Config:
         adblocker=adblocker,
         iot=iot,
         app_control=app_control,
+        tls_fingerprint=tls_fingerprint,
         timezone=tz_name,
     )
 
@@ -970,3 +974,54 @@ def _parse_schedule(raw: Any, what: str, action: Action) -> RuleSchedule:
         raise ConfigError(f"{what}.cut_established only applies to drop/reject rules")
 
     return RuleSchedule(days=tuple(sorted(days)), start=start, end=end, cut_established=cut_established)
+
+
+JA4_RE = re.compile(r"^[tqd][0-9ds][0-9d][di][0-9]{4}[0-9a-z]{2}_[0-9a-f]{12}_[0-9a-f]{12}$")
+JA3_RE = re.compile(r"^[0-9a-f]{32}$")
+
+
+def _parse_tls_fingerprint(raw: Any, xdp_sni_filter: XdpSniFilterConfig) -> TlsFingerprintConfig:
+    if not isinstance(raw, dict):
+        raise ConfigError("'tls_fingerprint' must be a mapping")
+    flags = {}
+    for key in ("enabled", "quarantine_on_match"):
+        value = raw.get(key, False)
+        if not isinstance(value, bool):
+            raise ConfigError(f"tls_fingerprint.{key} must be a boolean")
+        flags[key] = value
+
+    blocklist_raw = raw.get("blocklist", [])
+    if not isinstance(blocklist_raw, list):
+        raise ConfigError("tls_fingerprint.blocklist must be a list")
+    entries: list[TlsFingerprintEntry] = []
+    seen: set[str] = set()
+    for i, item in enumerate(blocklist_raw):
+        if isinstance(item, str):
+            item = {"fingerprint": item}
+        if not isinstance(item, dict):
+            raise ConfigError(f"tls_fingerprint.blocklist[{i}] must be a mapping or a string")
+        fingerprint = item.get("fingerprint")
+        if not isinstance(fingerprint, str):
+            raise ConfigError(f"tls_fingerprint.blocklist[{i}].fingerprint is required")
+        fingerprint = fingerprint.strip().lower()
+        if not (JA4_RE.match(fingerprint) or JA3_RE.match(fingerprint)):
+            raise ConfigError(
+                f"tls_fingerprint.blocklist[{i}]: {fingerprint!r} is neither a JA4 fingerprint "
+                "(e.g. t13d1516h2_8daaf6152771_e5627efa2ab1) nor a 32-hex-digit JA3 hash"
+            )
+        if fingerprint in seen:
+            raise ConfigError(f"tls_fingerprint.blocklist: {fingerprint!r} is listed twice")
+        seen.add(fingerprint)
+        label = item.get("label", "")
+        if not isinstance(label, str) or len(label) > 80:
+            raise ConfigError(f"tls_fingerprint.blocklist[{i}].label must be a string of at most 80 characters")
+        entries.append(TlsFingerprintEntry(fingerprint=fingerprint, label=label))
+
+    if flags["enabled"] and not xdp_sni_filter.enabled:
+        raise ConfigError(
+            "tls_fingerprint.enabled requires xdp_sni_filter.enabled: the XDP program "
+            "on the LAN-side interfaces is what hands over the ClientHellos"
+        )
+    return TlsFingerprintConfig(
+        enabled=flags["enabled"], blocklist=entries, quarantine_on_match=flags["quarantine_on_match"]
+    )

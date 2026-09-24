@@ -11,6 +11,7 @@
     firewall-cli ids-status
     firewall-cli iot-status
     firewall-cli apps-status [--limit N]
+    firewall-cli tls-fingerprints
     firewall-cli schedule-check [config.yaml]
     firewall-cli update check [config.yaml]
     firewall-cli update apply VERSION [--repo OWNER/REPO]
@@ -47,6 +48,7 @@ from frfw.admin_account import ROLE_ADMIN, AdminStore
 from frfw.appid import load_catalog
 from frfw.appid.daemon import load_usage
 from frfw.apply import NftError, list_backups, rollback_last
+from frfw.tlsfp.daemon import load_state as load_tlsfp_state
 from frfw.config import ConfigError, load_config
 from frfw.ids_quarantine import IdsQuarantineError, list_quarantined
 from frfw.iot_isolation import IotIsolationError, list_isolated
@@ -190,6 +192,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="show the MAC addresses currently isolated by IoT isolation (needs root)",
     )
     p_iot_status.set_defaults(handler=_cmd_iot_status)
+
+    p_tlsfp = sub.add_parser(
+        "tls-fingerprints", help="show the TLS client fingerprints (JA4/JA3) seen per device (from fr-tls-fp)"
+    )
+    p_tlsfp.set_defaults(handler=_cmd_tls_fingerprints)
 
     p_schedule = sub.add_parser(
         "schedule-check",
@@ -377,6 +384,23 @@ def _cmd_iot_status(args: argparse.Namespace) -> int:
     print("IoT isolation: currently isolated devices:")
     for mac in sorted(isolated):
         print(f"  {mac}")
+    return 0
+
+
+def _cmd_tls_fingerprints(args: argparse.Namespace) -> int:
+    state = load_tlsfp_state()
+    clients = state.get("clients") or {}
+    if not clients:
+        print("TLS fingerprinting: nothing recorded yet (is tls_fingerprint enabled and fr-tls-fp running?)")
+        return 0
+    for client in sorted(clients):
+        print(client)
+        for ja4, seen in sorted(clients[client].items(), key=lambda kv: -kv[1].get("last_seen", 0)):
+            names = ", ".join(seen.get("sni", [])) or "-"
+            print(f"  {ja4}  {seen.get('count', 0):>6}x  {names}")
+    blocklisted = [e for e in state.get("events") or [] if e.get("type") == "blocklist"]
+    if blocklisted:
+        print(f"\n{len(blocklisted)} blocklist match(es) in the recent event log")
     return 0
 
 

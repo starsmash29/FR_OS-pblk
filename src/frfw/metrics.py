@@ -54,6 +54,7 @@ from frfw import xdp as xdp_mod
 from frfw.adblock import category_counts, count_blocked_domains
 from frfw.appid import load_catalog
 from frfw.appid.daemon import load_usage
+from frfw.tlsfp.daemon import load_state as load_tlsfp_state
 from frfw.config.schema import Config
 
 _PROC_STAT_PATH = Path("/proc/stat")
@@ -321,6 +322,29 @@ def _read_appid_families(config: Config, usage_path: Path) -> list[MetricFamily]
     return [active, hits, blocked]
 
 
+def _read_tlsfp_families(config: Config, state_path: Path, now: float | None = None) -> list[MetricFamily]:
+    """Phase 19, from fr-tls-fp's display-only state file. Nothing is
+    emitted while fingerprinting is off."""
+    if not config.tls_fingerprint.enabled:
+        return []
+    state = load_tlsfp_state(state_path)
+    clients = state.get("clients") or {}
+    distinct = {ja4 for fps in clients.values() for ja4 in fps}
+    now = now if now is not None else time.time()
+    counts = {"new_fingerprint": 0, "blocklist": 0}
+    for event in state.get("events") or []:
+        if event.get("type") in counts and now - float(event.get("ts", 0)) <= 24 * 3600:
+            counts[event["type"]] += 1
+    fam_clients = MetricFamily("fros_tls_fingerprinted_clients", "Clients with at least one TLS fingerprint recorded.", "gauge")
+    fam_clients.add(len(clients))
+    fam_distinct = MetricFamily("fros_tls_distinct_fingerprints", "Distinct JA4 fingerprints recorded across all clients.", "gauge")
+    fam_distinct.add(len(distinct))
+    fam_events = MetricFamily("fros_tls_fingerprint_events_24h", "TLS fingerprint events in the last 24 hours, by type.", "gauge")
+    for event_type, n in counts.items():
+        fam_events.add(n, type=event_type)
+    return [fam_clients, fam_distinct, fam_events]
+
+
 # --- hardware metrics: CPU, RAM, storage -----------------------------------
 
 
@@ -521,6 +545,7 @@ def generate_metrics_text(
     iot_inventory_path: Path = paths.IOT_INVENTORY_PATH,
     adblock_category_dir: Path = paths.ADBLOCK_CATEGORY_DIR,
     appid_usage_path: Path = paths.APPID_USAGE_PATH,
+    tlsfp_state_path: Path = paths.TLSFP_STATE_PATH,
 ) -> str:
     """The `GET /metrics` route's entire job: gather every metric family
     and render them as one Prometheus text-exposition-format response.
@@ -547,6 +572,7 @@ def generate_metrics_text(
         collect(lambda: _read_iot_families(config, helper, iot_inventory_path))
         collect(lambda: _read_dns_category_family(config, adblock_hosts_path, adblock_category_dir))
         collect(lambda: _read_appid_families(config, appid_usage_path))
+        collect(lambda: _read_tlsfp_families(config, tlsfp_state_path))
 
     collect(_read_xdp_blocked_family)
     collect(lambda: _read_adblock_family(adblock_hosts_path))

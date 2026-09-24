@@ -10,6 +10,12 @@
 // SETTING_REPORT_PASS switch on (phase 16's app identification), an
 // extracted SNI that did *not* match is reported too, as action 0.
 //
+// With SETTING_REPORT_HELLO (phase 19's TLS fingerprinting) the raw
+// bytes of every ClientHello -- and of the next few segments of the same
+// flow, since modern hellos often span two -- go to a second ring buffer
+// for userspace to reassemble and fingerprint (JA3/JA4). This is copying,
+// not parsing: the program still never waits for or depends on it.
+//
 // XDP only sees packets a device *receives*. To filter the ClientHellos
 // LAN clients send out, attach this to the LAN-side interfaces -- on
 // the WAN interface it only sees connections arriving from the internet.
@@ -163,6 +169,7 @@ struct {
 // freshly loaded program behaves exactly like before this map existed:
 // only drops are reported.
 #define SETTING_REPORT_PASS 0x1
+#define SETTING_REPORT_HELLO 0x2
 
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
@@ -177,6 +184,56 @@ struct {
 // this cap a busy network could fill the buffer and starve the drop
 // events the AI IDS scores. The upper half stays reserved for drops.
 #define PASS_EVENT_MAX_BACKLOG (128 * 1024)
+
+// --- phase 19: raw ClientHello segments for fingerprinting ------------------
+
+// Bytes copied per segment. A full-size segment on a 1500-byte MTU
+// carries 1460; anything longer (jumbo frames) is cut here, which leaves a
+// gap userspace can't fill -- that hello simply isn't fingerprinted.
+#define HELLO_SNAP 2048
+
+// Segments that follow a ClientHello's first one and are still reported.
+// A ~2 KB hello needs one more; 3 leaves room for small MSS values.
+#define HELLO_MAX_EXTRA_SEGMENTS 3
+
+struct hello_flow_key {
+	__u32 saddr;
+	__u32 daddr;
+	__u16 sport;
+	__u16 dport;
+};
+
+struct hello_flow {
+	__u32 segments; // continuation segments reported so far
+};
+
+// Flows whose ClientHello didn't fit its first segment. LRU, so flows
+// that never complete (the client gave up) age out on their own.
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__type(key, struct hello_flow_key);
+	__type(value, struct hello_flow);
+	__uint(max_entries, 4096);
+} hello_flows SEC(".maps");
+
+struct hello_pkt {
+	__u32 saddr;
+	__u32 daddr;
+	__u16 sport;
+	__u16 dport;
+	__u32 seq;
+	__u16 len;   // bytes of TCP payload in data[]
+	__u8 first;  // 1 = the segment where the ClientHello starts
+	__u8 pad;
+	__u8 data[HELLO_SNAP];
+};
+
+// 1 MiB: ~500 segments of backlog. A separate buffer from `events`, so
+// fingerprinting can never crowd out the drop events.
+struct {
+	__uint(type, BPF_MAP_TYPE_RINGBUF);
+	__uint(max_entries, 1024 * 1024);
+} hello_pkts SEC(".maps");
 
 static __always_inline void bump(__u32 idx)
 {
@@ -693,11 +750,48 @@ static void build_lpm_key(struct lpm_sni_key *key, const char *sni, __u32 sni_le
 	}
 }
 
-static __always_inline int report_pass_enabled(void)
+static __always_inline __u32 setting_flags(void)
 {
 	__u32 idx = 0;
 	__u32 *flags = bpf_map_lookup_elem(&settings, &idx);
-	return flags && (*flags & SETTING_REPORT_PASS);
+	return flags ? *flags : 0;
+}
+
+static __always_inline int report_pass_enabled(void)
+{
+	return setting_flags() & SETTING_REPORT_PASS;
+}
+
+// Copy one segment's TCP payload to hello_pkts. Best effort, like
+// emit_event(): a full buffer just loses the segment.
+static __always_inline void emit_hello_segment(struct xdp_md *ctx, struct iphdr *ip,
+					       struct tcphdr *tcp, __u32 offset,
+					       __u32 payload_len, __u8 first)
+{
+	if (payload_len < 1)
+		return;
+	__u32 n = payload_len > HELLO_SNAP ? HELLO_SNAP : payload_len;
+	// Same trick as build_lpm_key's bound (see xdp_sni_filter()): a mask
+	// gives the verifier a provable [1, HELLO_SNAP] range that survives
+	// the compiler's register shuffling, which the comparisons alone
+	// don't. HELLO_SNAP is a power of two, so this changes no value.
+	n = ((n - 1) & (HELLO_SNAP - 1)) + 1;
+	struct hello_pkt *pkt = bpf_ringbuf_reserve(&hello_pkts, sizeof(*pkt), 0);
+	if (!pkt)
+		return;
+	pkt->saddr = ip->saddr;
+	pkt->daddr = ip->daddr;
+	pkt->sport = bpf_ntohs(tcp->source);
+	pkt->dport = bpf_ntohs(tcp->dest);
+	pkt->seq = bpf_ntohl(tcp->seq);
+	pkt->first = first;
+	pkt->pad = 0;
+	pkt->len = n;
+	if (bpf_xdp_load_bytes(ctx, offset, pkt->data, n) < 0) {
+		bpf_ringbuf_discard(pkt, 0);
+		return;
+	}
+	bpf_ringbuf_submit(pkt, 0);
 }
 
 // Best effort: if the ring buffer is full the event is simply lost --
@@ -754,6 +848,33 @@ int xdp_sni_filter(struct xdp_md *ctx)
 	if (payload > data_end)
 		return XDP_PASS;
 
+	// Phase 19: the rest of a ClientHello that didn't fit its first
+	// segment. Checked before the "starts a TLS record" test below,
+	// since a continuation segment never does.
+	// Offset and length as plain scalars from header fields (the IP total
+	// length also excludes any Ethernet padding); pointer differences
+	// would be rejected by the verifier once the compiler shifts them.
+	__u32 hdr_len = (__u32)ip->ihl * 4 + (__u32)tcp->doff * 4;
+	__u32 ip_len = bpf_ntohs(ip->tot_len);
+	__u32 payload_off = sizeof(struct ethhdr) + hdr_len;
+	__u32 payload_len = ip_len > hdr_len ? ip_len - hdr_len : 0;
+	int report_hello = setting_flags() & SETTING_REPORT_HELLO;
+	struct hello_flow_key flow_key = {
+		.saddr = ip->saddr, .daddr = ip->daddr,
+		.sport = tcp->source, .dport = tcp->dest,
+	};
+	// (A pointer comparison, not payload_len > 0: the verifier only
+	// accepts a packet read it can prove in bounds that way.)
+	if (report_hello && payload + 1 <= data_end && payload[0] != TLS_CONTENT_TYPE_HANDSHAKE) {
+		struct hello_flow *flow = bpf_map_lookup_elem(&hello_flows, &flow_key);
+		if (flow) {
+			emit_hello_segment(ctx, ip, tcp, payload_off, payload_len, 0);
+			flow->segments += 1;
+			if (flow->segments >= HELLO_MAX_EXTRA_SEGMENTS)
+				bpf_map_delete_elem(&hello_flows, &flow_key);
+		}
+	}
+
 	// TLS record header: content_type(1) version(2) length(2). Only a
 	// fresh handshake record starting exactly here can be a
 	// ClientHello -- a mid-stream continuation segment never starts
@@ -776,6 +897,17 @@ int xdp_sni_filter(struct xdp_md *ctx)
 	if (hs[0] != TLS_HANDSHAKE_TYPE_CLIENT_HELLO) {
 		bump(STAT_PASS_NOT_TLS);
 		return XDP_PASS;
+	}
+
+	if (report_hello) {
+		emit_hello_segment(ctx, ip, tcp, payload_off, payload_len, 1);
+		// Record length (header bytes 3-4) larger than what this segment
+		// carries: remember the flow so its next segments are reported too.
+		__u32 record_len = ((__u32)payload[3] << 8) | payload[4];
+		if (record_len + 5 > payload_len) {
+			struct hello_flow fresh = { .segments = 0 };
+			bpf_map_update_elem(&hello_flows, &flow_key, &fresh, BPF_ANY);
+		}
 	}
 
 	char sni[MAX_SNI_LEN] = {};

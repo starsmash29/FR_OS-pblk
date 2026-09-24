@@ -60,6 +60,7 @@ from frfw.apply import apply_ruleset
 from frfw.config.schema import Config
 from frfw.nft import build_ruleset
 from frfw.nft.schedule import current_clock
+from frfw.tlsfp import daemon as tlsfp_daemon
 
 
 @dataclass(frozen=True)
@@ -204,6 +205,8 @@ def apply_all(
 
     xdp_result = xdp.sync_sni_filter(xdp_config, dry_run=dry_run, state_path=xdp_state_path)
     messages.append(xdp_result.message)
+    if config.tls_fingerprint.enabled and not dry_run:
+        tlsfp_daemon.restart_service()  # phase 19, see its docstring
 
     if dry_run:
         messages.append("Brute-force jail: would preserve active bans across reload (dry-run)")
