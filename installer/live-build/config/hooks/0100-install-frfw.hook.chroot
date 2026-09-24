@@ -25,7 +25,12 @@ for unit in \
     fr-iot-scan.service \
     fr-iot-scan.timer \
     fr-update-helper.socket \
-    fr-update-helper.service
+    fr-update-helper.service \
+    fr-xdp-sni-logger.service \
+    fr-adblock-dns.service \
+    fr-adblock-refresh.service \
+    fr-adblock-refresh.timer \
+    fr-appid.service
 do
     install -m 0644 "/opt/frfw-src/systemd/$unit" "/etc/systemd/system/$unit"
 done

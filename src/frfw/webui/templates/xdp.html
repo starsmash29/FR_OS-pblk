@@ -53,6 +53,11 @@
     </label>
 
     <label>Interfaces to filter</label>
+    <p class="muted">
+      XDP only sees packets an interface <em>receives</em>. To filter what LAN
+      clients connect to, pick the LAN-side interfaces; on the WAN interface it
+      only sees connections coming in from the internet.
+    </p>
     {% if not available_interfaces %}
     <p class="muted">No interfaces defined yet -- add one on the Interfaces screen first.</p>
     {% else %}

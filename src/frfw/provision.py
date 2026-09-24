@@ -23,8 +23,10 @@ error says which step failed and that later steps were not attempted):
 5. XDP TLS SNI filter attach/detach + blocklist sync (`frfw.xdp`) --
    the effective blocklist is `xdp_sni_filter.blocklist` plus, if
    `adblocker.xdp_critical_limit` is set, up to that many domains from
-   the already-refreshed ad-block list, merged in-memory only (never
-   written back to config.yaml -- see step 5's own comment below)
+   the already-refreshed ad-block list, and with
+   `app_control.block_via_xdp` the blocked apps' catalog names, merged
+   in-memory only (never written back to config.yaml -- see step 5's
+   own comment below)
 6. ZTNA gate: report how many active sessions survived step 2's reload,
    then the same for isolated IoT devices (`frfw.iot_isolation`, only
    when `iot.enabled`)
@@ -149,12 +151,21 @@ def apply_all(
     # a ZTNA-authorized IP never gets written into the firewall rules
     # themselves. If xdp_sni_filter.enabled is False, this has no
     # effect: enabling adblocker never silently turns XDP on.
-    xdp_config = config
+    extra_xdp_names: set[str] = set()
     if config.adblocker.enabled and config.adblocker.xdp_critical_limit > 0:
-        critical = adblock_dns.critical_domains(
-            adblock_hosts_path, config.adblocker.xdp_critical_limit
+        extra_xdp_names.update(
+            adblock_dns.critical_domains(adblock_hosts_path, config.adblocker.xdp_critical_limit)
         )
-        merged_blocklist = sorted(set(config.xdp_sni_filter.blocklist) | set(critical))
+    # Phase 16: blocked apps' catalog names, same in-memory-only merge.
+    if config.app_control.block_via_xdp:
+        extra_xdp_names.update(
+            name
+            for name in adblock_dns.blocked_app_names(config)
+            if len(name) < xdp.MAX_SNI_LEN
+        )
+    xdp_config = config
+    if extra_xdp_names:
+        merged_blocklist = sorted(set(config.xdp_sni_filter.blocklist) | extra_xdp_names)
         xdp_config = dataclasses.replace(
             config,
             xdp_sni_filter=dataclasses.replace(config.xdp_sni_filter, blocklist=merged_blocklist),

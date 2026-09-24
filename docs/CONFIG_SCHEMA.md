@@ -26,6 +26,7 @@ dhcp: {...}          # optional, default: empty
 ai_ids: {...}        # optional, default: empty (disabled)
 adblocker: {...}     # optional, default: empty (disabled)
 iot: {...}           # optional, default: empty (disabled)
+app_control: {...}   # optional, default: empty (disabled)
 ```
 
 ## `interfaces`
@@ -248,6 +249,45 @@ iot:
 - Settings take effect on the next `apply` (the set and its rules are
   only in the ruleset while `enabled` is true); trust/isolate changes made
   from the webUI are re-applied immediately.
+
+## `app_control`
+
+Coarse application identification and blocking (phase 16, see
+`frfw.appid` and
+[ARCHITECTURE.md](../ARCHITECTURE.md#coarse-application-identification-phase-16)).
+The `fr-appid` daemon attributes the names clients look up, and optionally
+the TLS server names (SNI) they send, to the apps of a bundled 41-app
+catalog (generated from v2fly/domain-list-community, MIT).
+
+```yaml
+app_control:
+  enabled: true             # optional, default: false
+  blocked_apps: [tiktok]    # optional, default: []; app ids from the catalog
+  observe_sni: false        # optional, default: false; requires xdp_sni_filter.enabled
+  block_via_xdp: false      # optional, default: false; requires xdp_sni_filter.enabled
+```
+
+- App ids are the catalog's (`netflix`, `youtube`, `tiktok`, `steam`,
+  `zoom`, ... -- listed on the webUI's `/apps` screen); an unknown or
+  repeated id is rejected.
+- Observation sources: the resolver's query log (`adblocker.enabled` and
+  `adblocker.query_logging`) and, with `observe_sni`, every SNI the XDP
+  program sees (one journal line per TLS connection). With neither, the
+  daemon idles.
+- `blocked_apps` are answered NXDOMAIN by the resolver for every catalog
+  name of those apps and their subdomains, so blocking requires
+  `adblocker.enabled` and `adblocker.serve_lan`; add `adblocker.force_dns`
+  so clients can't just use another DNS server. The `adblocker.allowlist`
+  does not apply to blocked apps.
+- `block_via_xdp` also puts those names (the ones under 32 characters) on
+  the XDP SNI blocklist at `apply`, which catches clients that resolved
+  the name elsewhere (their own DNS-over-HTTPS).
+- XDP only sees packets an interface *receives*: for `observe_sni` and
+  `block_via_xdp` to see LAN clients, `xdp_sni_filter.interfaces` must be
+  the LAN-side interfaces, not the WAN.
+- These cross-section requirements are only checked while `enabled` is
+  true. Changes take effect on the next `apply`; the daemon picks up
+  config changes by itself.
 
 ## Known limitations
 

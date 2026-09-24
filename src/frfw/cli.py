@@ -9,6 +9,7 @@
     firewall-cli set-admin-password [--username admin] [--generate]
     firewall-cli ids-status
     firewall-cli iot-status
+    firewall-cli apps-status [--limit N]
     firewall-cli update check [config.yaml]
     firewall-cli update apply VERSION [--repo OWNER/REPO]
     firewall-cli update rollback [--repo OWNER/REPO]
@@ -41,6 +42,8 @@ from frfw import update as update_mod
 from frfw.adblock import AdblockError
 from frfw.adblock import refresh as adblock_refresh
 from frfw.admin_account import AdminStore
+from frfw.appid import load_catalog
+from frfw.appid.daemon import load_usage
 from frfw.apply import NftError, list_backups, rollback_last
 from frfw.config import ConfigError, load_config
 from frfw.ids_quarantine import IdsQuarantineError, list_quarantined
@@ -181,6 +184,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="show the MAC addresses currently isolated by IoT isolation (needs root)",
     )
     p_iot_status.set_defaults(handler=_cmd_iot_status)
+
+    p_apps_status = sub.add_parser(
+        "apps-status",
+        help="show which apps clients used in the last 24 hours (from fr-appid)",
+    )
+    p_apps_status.add_argument("--limit", type=int, default=20, help="show at most N apps")
+    p_apps_status.set_defaults(handler=_cmd_apps_status)
 
     p_update = sub.add_parser("update", help="check for / apply / roll back FR_OS updates")
     update_sub = p_update.add_subparsers(dest="update_command", required=True)
@@ -344,6 +354,24 @@ def _cmd_iot_status(args: argparse.Namespace) -> int:
     print("IoT isolation: currently isolated devices:")
     for mac in sorted(isolated):
         print(f"  {mac}")
+    return 0
+
+
+def _cmd_apps_status(args: argparse.Namespace) -> int:
+    usage = load_usage()
+    apps = usage["apps"]
+    if not apps:
+        print("App identification: no usage recorded yet (is app_control enabled and fr-appid running?)")
+        return 0
+    names = {app.id: app.name for app in load_catalog().apps}
+    ranked = sorted(apps.items(), key=lambda kv: (-kv[1].get("active_clients", 0), -kv[1].get("hits_24h", 0)))
+    print(f"{'App':<22} {'Active':>6} {'Hits 24h':>9}  Clients")
+    for app_id, stats in ranked[: max(args.limit, 0)]:
+        clients = ", ".join(sorted(stats.get("clients", {})))
+        print(
+            f"{names.get(app_id, app_id):<22} {stats.get('active_clients', 0):>6} "
+            f"{stats.get('hits_24h', 0):>9}  {clients}"
+        )
     return 0
 
 

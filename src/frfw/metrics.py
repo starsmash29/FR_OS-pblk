@@ -52,6 +52,8 @@ from pathlib import Path
 from frfw import paths
 from frfw import xdp as xdp_mod
 from frfw.adblock import category_counts, count_blocked_domains
+from frfw.appid import load_catalog
+from frfw.appid.daemon import load_usage
 from frfw.config.schema import Config
 
 _PROC_STAT_PATH = Path("/proc/stat")
@@ -286,6 +288,39 @@ def _read_iot_families(config: Config, helper, inventory_path: Path) -> list[Met
     return [devices, isolated]
 
 
+def _read_appid_families(config: Config, usage_path: Path) -> list[MetricFamily]:
+    """Phase 16, from fr-appid's display-only usage summary (unprivileged
+    read). Only apps seen in the last 24 hours are emitted, so the series
+    count stays proportional to what the network actually uses. Nothing
+    is emitted while app identification is off."""
+    if not config.app_control.enabled:
+        return []
+    catalog = load_catalog().by_id()
+    active = MetricFamily(
+        "fros_app_active_clients",
+        "Clients that used the app in the last 15 minutes (DNS lookups / TLS SNIs).",
+        "gauge",
+    )
+    hits = MetricFamily(
+        "fros_app_hits_24h",
+        "DNS lookups and TLS connections attributed to the app in the last 24 hours.",
+        "gauge",
+    )
+    for app_id, stats in sorted(load_usage(usage_path)["apps"].items()):
+        app = catalog.get(app_id)
+        category = app.category if app else "unknown"
+        active.add(stats.get("active_clients", 0), app=app_id, category=category)
+        hits.add(stats.get("hits_24h", 0), app=app_id, category=category)
+    blocked = MetricFamily(
+        "fros_app_blocked",
+        "Apps currently on the blocked list (1 per blocked app).",
+        "gauge",
+    )
+    for app_id in config.app_control.blocked_apps:
+        blocked.add(1, app=app_id)
+    return [active, hits, blocked]
+
+
 # --- hardware metrics: CPU, RAM, storage -----------------------------------
 
 
@@ -485,6 +520,7 @@ def generate_metrics_text(
     adblock_hosts_path: Path,
     iot_inventory_path: Path = paths.IOT_INVENTORY_PATH,
     adblock_category_dir: Path = paths.ADBLOCK_CATEGORY_DIR,
+    appid_usage_path: Path = paths.APPID_USAGE_PATH,
 ) -> str:
     """The `GET /metrics` route's entire job: gather every metric family
     and render them as one Prometheus text-exposition-format response.
@@ -510,6 +546,7 @@ def generate_metrics_text(
         collect(lambda: _read_xdp_status_family(config))
         collect(lambda: _read_iot_families(config, helper, iot_inventory_path))
         collect(lambda: _read_dns_category_family(config, adblock_hosts_path, adblock_category_dir))
+        collect(lambda: _read_appid_families(config, appid_usage_path))
 
     collect(_read_xdp_blocked_family)
     collect(lambda: _read_adblock_family(adblock_hosts_path))

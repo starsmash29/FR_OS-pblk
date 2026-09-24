@@ -163,3 +163,10 @@ ADBLOCK_DNS_SERVICE_NAME = "fr-adblock-dns"
 #: the metrics exporter -- the enforcement state itself lives in the
 #: kernel's nftables set, never here.
 IOT_INVENTORY_PATH = WEBUI_STATE_DIR / "iot_inventory.json"
+
+#: App identification usage summary (phase 16, see frfw.appid.daemon):
+#: which apps each client used recently, written by the unprivileged
+#: fr-appid daemon and read by the webUI and the metrics exporter.
+#: Display-only, like IOT_INVENTORY_PATH -- blocking an app is enforced
+#: by the resolver and (optionally) the XDP blocklist, never from here.
+APPID_USAGE_PATH = WEBUI_STATE_DIR / "appid_usage.json"

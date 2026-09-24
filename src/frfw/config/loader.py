@@ -14,12 +14,14 @@ from typing import Any
 
 import yaml
 
+from frfw.appid import known_app_ids
 from frfw.config.errors import ConfigError
 from frfw.config.schema import (
     SELF_ZONE,
     Action,
     AdblockerConfig,
     AiIdsConfig,
+    AppControlConfig,
     Config,
     DhcpConfig,
     DhcpPool,
@@ -111,6 +113,9 @@ def parse_config(raw: Any) -> Config:
     pqc = _parse_pqc(raw.get("pqc", {}) or {})
     adblocker = _parse_adblocker(raw.get("adblocker", {}) or {}, dhcp)
     iot = _parse_iot(raw.get("iot", {}) or {}, zones, nat)
+    app_control = _parse_app_control(
+        raw.get("app_control", {}) or {}, adblocker, xdp_sni_filter
+    )
 
     return Config(
         version=version,
@@ -127,6 +132,7 @@ def parse_config(raw: Any) -> Config:
         pqc=pqc,
         adblocker=adblocker,
         iot=iot,
+        app_control=app_control,
     )
 
 
@@ -837,3 +843,49 @@ def _parse_ztna(raw: Any) -> ZtnaConfig:
         raise ConfigError("ztna.enabled is true but no users are configured")
 
     return ZtnaConfig(enabled=enabled, session_ttl_seconds=ttl, users=users)
+
+
+def _parse_app_control(
+    raw: Any, adblocker: AdblockerConfig, xdp_sni_filter: XdpSniFilterConfig
+) -> AppControlConfig:
+    if not isinstance(raw, dict):
+        raise ConfigError("'app_control' must be a mapping")
+
+    flags = {}
+    for key in ("enabled", "block_via_xdp", "observe_sni"):
+        value = raw.get(key, False)
+        if not isinstance(value, bool):
+            raise ConfigError(f"app_control.{key} must be a boolean")
+        flags[key] = value
+
+    blocked_raw = raw.get("blocked_apps", [])
+    if not isinstance(blocked_raw, list):
+        raise ConfigError("app_control.blocked_apps must be a list of app ids")
+    known = known_app_ids()
+    blocked: list[str] = []
+    for i, app_id in enumerate(blocked_raw):
+        if not isinstance(app_id, str) or app_id not in known:
+            raise ConfigError(f"app_control.blocked_apps[{i}]: unknown app {app_id!r}")
+        if app_id in blocked:
+            raise ConfigError(f"app_control.blocked_apps: {app_id!r} is listed twice")
+        blocked.append(app_id)
+
+    # Cross-section requirements only matter while the feature is on, so
+    # switching the resolver or XDP off never makes a disabled
+    # app_control section invalid.
+    if flags["enabled"]:
+        if blocked and not (adblocker.enabled and adblocker.serve_lan):
+            raise ConfigError(
+                "app_control.blocked_apps needs adblocker.enabled and adblocker.serve_lan: "
+                "apps are blocked by the router's DNS resolver"
+            )
+        for key in ("block_via_xdp", "observe_sni"):
+            if flags[key] and not xdp_sni_filter.enabled:
+                raise ConfigError(f"app_control.{key} requires xdp_sni_filter.enabled")
+
+    return AppControlConfig(
+        enabled=flags["enabled"],
+        blocked_apps=blocked,
+        block_via_xdp=flags["block_via_xdp"],
+        observe_sni=flags["observe_sni"],
+    )

@@ -179,10 +179,13 @@ class XdpSniFilterConfig:
     frfw.xdp and bpf/xdp_sni_filter.c).
 
     `interfaces` names logical interfaces (keys of `Config.interfaces`,
-    not raw device names) to attach the XDP program to -- almost always
-    just the WAN interface, since inspecting LAN-side traffic for
-    outbound-to-the-internet SNIs is rarely useful and doubles the
-    attach/detach and per-packet cost for no benefit.
+    not raw device names) to attach the XDP program to. XDP only sees
+    packets an interface *receives*, so to filter what LAN clients
+    connect to, list the LAN-side interfaces their ClientHellos arrive
+    on. On the WAN interface the program only sees connections coming in
+    from the internet (e.g. to a port-forwarded HTTPS server). The phase 4
+    docs recommended the WAN interface for outbound filtering, which
+    never worked -- see ARCHITECTURE.md's phase 16 section.
 
     `blocklist` is a list of hostnames (e.g. "ads.example.com"); the
     kernel program also blocks every subdomain of a listed name (see
@@ -361,6 +364,35 @@ class IotConfig:
 
 
 @dataclass(frozen=True)
+class AppControlConfig:
+    """Coarse application identification and blocking (phase 16, see
+    frfw.appid).
+
+    `enabled` runs the fr-appid daemon, which attributes the names clients
+    look up (resolver query log, needs `adblocker.query_logging`) and the
+    TLS SNIs they send (needs `observe_sni`) to the apps of the bundled
+    catalog, and turns on blocking of `blocked_apps`.
+
+    `blocked_apps` (catalog app ids) are blocked by the router's resolver,
+    which answers NXDOMAIN for every catalog name of those apps and their
+    subdomains -- so it needs `adblocker.enabled` and `serve_lan`, and
+    `adblocker.force_dns` to stop clients from simply using another DNS
+    server. `block_via_xdp` additionally puts those names (the ones
+    shorter than the XDP program's 32-byte limit) on the kernel SNI
+    blocklist, which also catches clients that resolved the name some
+    other way (DNS-over-HTTPS, hard-coded addresses).
+
+    `observe_sni` makes the XDP program report every SNI it sees, not
+    only blocklist hits (one journal line per TLS connection).
+    """
+
+    enabled: bool = False
+    blocked_apps: list[str] = field(default_factory=list)
+    block_via_xdp: bool = False
+    observe_sni: bool = False
+
+
+@dataclass(frozen=True)
 class Config:
     version: int
     hostname: str
@@ -376,3 +408,4 @@ class Config:
     pqc: PqcConfig = field(default_factory=PqcConfig)
     adblocker: AdblockerConfig = field(default_factory=AdblockerConfig)
     iot: IotConfig = field(default_factory=IotConfig)
+    app_control: AppControlConfig = field(default_factory=AppControlConfig)

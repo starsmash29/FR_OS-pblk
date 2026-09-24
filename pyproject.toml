@@ -31,6 +31,7 @@ fr-webui = "frfw.webui.server:main"
 fr-xdp-sni-logger = "frfw.xdp:main"
 fr-ai-ids = "frfw.ai_ids.daemon:main"
 fr-iot-scan = "frfw.iot.scanner:main"
+fr-appid = "frfw.appid.daemon:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -41,6 +42,7 @@ where = ["src"]
 # its Jinja2 templates. Checked by tests/test_packaging.py.
 [tool.setuptools.package-data]
 "frfw.webui" = ["templates/*.html", "static/*"]
+"frfw.appid" = ["signatures.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

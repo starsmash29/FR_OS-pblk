@@ -40,6 +40,7 @@ from frfw.adblock import (
     read_hosts_file,
     write_hosts_file,
 )
+from frfw.appid import blocking_names
 from frfw.config.schema import Config
 
 #: Used when no DHCP pool configures its own dns_servers (nothing else
@@ -111,6 +112,14 @@ group=nogroup
 # which frfw.adblock.apply_allowlist guarantees.
 
 
+def blocked_app_names(config: Config) -> list[str]:
+    """Catalog names of `app_control.blocked_apps`, while the feature is on."""
+    app_control = config.app_control
+    if not (app_control.enabled and app_control.blocked_apps):
+        return []
+    return blocking_names(app_control.blocked_apps)
+
+
 def render_dnsmasq_config(
     config: Config,
     *,
@@ -131,6 +140,10 @@ def render_dnsmasq_config(
         extra.append("log-queries=extra")
     if adblocker.force_dns:
         extra.append(f"address=/{FIREFOX_DOH_CANARY}/")
+    # Phase 16 app blocking: the same NXDOMAIN form, which also covers
+    # every subdomain. Deliberately not subject to `allowlist` -- blocking
+    # an app is an explicit choice, the allowlist exists to fix list noise.
+    extra.extend(f"address=/{name}/" for name in blocked_app_names(config))
     extra_lines = "".join(f"{line}\n" for line in extra)
     return _DNSMASQ_CONF_TEMPLATE.format(
         hosts_lines=hosts_lines,
@@ -283,6 +296,8 @@ def sync_dns_resolver(
         message += f" ({len(config.adblocker.categories)} categories)"
     if removed:
         message += f", {removed} allowlisted entries removed"
+    if config.app_control.enabled and config.app_control.blocked_apps:
+        message += f", {len(config.app_control.blocked_apps)} app(s) blocked"
     return DnsSyncResult(True, message)
 
 

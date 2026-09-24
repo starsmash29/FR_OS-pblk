@@ -188,6 +188,15 @@ generic source-IP blocklist, but a **kernel-space TLS ClientHello parser
 that drops packets based on the SNI (Server Name Indication) field** —
 see the exact rationale and the scope difference below.
 
+> **Correction (phase 16):** XDP only runs on packets an interface
+> *receives*. To filter what LAN clients connect to, the program must be
+> attached to the **LAN-side** interfaces their ClientHellos arrive on.
+> Earlier guidance here and in the config docstring recommended the WAN
+> interface; there it only ever sees connections coming *in* from the
+> internet, so outbound filtering silently did nothing. Verified with
+> real network namespaces and the real compiled program, now an automated
+> test (`tests/test_xdp_live.py`) -- see the phase 16 section.
+
 ### Scope: SNI-based TLS filtering, not a generic IP fast-drop
 
 Instead of the "IP source-address blocklist" originally planned here, the
@@ -311,7 +320,7 @@ read-side (it can never influence the drop decision).
 - **Loading + pinning** (`load_and_pin`): loads and pins the program and
   ALL its maps once, under `/sys/fs/bpf/fr_os_xdp` (`bpftool prog loadall
   ... pinmaps ...`) — this is what lets it attach to multiple interfaces
-  (e.g. WAN + a guest-WiFi uplink) and have all of them see *the same*
+  (e.g. a wired LAN and a guest Wi-Fi interface) and have all of them see *the same*
   blocklist/stats/events maps, instead of a separate copy per map per
   interface.
 - **Attachment** (`attach`): tries native (`xdpdrv`) mode first (real
@@ -2162,6 +2171,155 @@ message format is the one journald carries).
   hard-coded.
 - Journald may rate-limit a very chatty resolver's query log (systemd's
   default burst limit); detection then sees a sample, not everything.
+
+## Coarse application identification (phase 16)
+
+Goal: tell a home or small-office admin *which apps* the network uses --
+Netflix, TikTok, Steam, Zoom -- and let them block an app with one
+checkbox, without decrypting anything and without a cloud service.
+
+### Correction to the original idea, up front
+
+The request was "App-ID lite, built on the existing XDP SNI parser". Two
+facts about that parser, checked before building on it, changed the
+design:
+
+1. **It was attached on the wrong side.** XDP runs on packets an
+   interface *receives*. The phase 4 docs said to attach it to the WAN
+   interface -- where a LAN client's ClientHello is never seen (it is
+   *transmitted* there). Reproduced with three network namespaces
+   (client / router / server) and the real compiled program: on the
+   router's WAN-side veth a blocklisted SNI reached the server and the
+   program's counters did not move; on the LAN-side veth it was dropped.
+   The docs, the schema docstring and the webUI now say LAN-side, and the
+   namespace setup is an automated test.
+2. **It only reported drops**, and can only see SNIs shorter than 32
+   bytes, TCP only (QUIC/HTTP-3 is UDP), never behind Encrypted Client
+   Hello. That is too narrow to be the *only* source. The resolver's query
+   log (phase 15) sees every name a client resolves through the router,
+   whatever its length or transport.
+
+So identification uses **both**: DNS lookups as the main signal, XDP SNIs
+as an optional second one that also catches clients resolving names
+elsewhere (their own DNS-over-HTTPS, hard-coded addresses).
+
+### Kernel change: optional pass events
+
+`bpf/xdp_sni_filter.c` gained a one-entry `settings` array map. With its
+`SETTING_REPORT_PASS` bit set (`frfw.xdp.set_report_pass`, driven by
+`app_control.observe_sni` on every `apply`), an extracted SNI that did
+*not* match the blocklist is also pushed to the ring buffer, as action 0.
+Two safeguards:
+
+- The map is zero-initialised, so a freshly loaded program behaves exactly
+  as before -- only drops are reported.
+- A pass event is only queued while less than half the 256 KiB ring
+  buffer holds unread data (`bpf_ringbuf_query`). Pass events vastly
+  outnumber drops; without this cap a busy network could starve the drop
+  events the AI IDS scores. Drops always keep the upper half.
+
+The AI IDS keeps counting drops only (it already ignored anything that
+wasn't `"action": "drop"`). A program pinned by an older frfw has no
+`settings` map; `apply` then says so ("disable and re-enable the filter to
+reload it") instead of failing.
+
+### The catalog: generated from v2fly, pinned to a commit
+
+Per-app domain lists come from
+[v2fly/domain-list-community](https://github.com/v2fly/domain-list-community)
+(MIT), which maintains one list per service. `scripts/update_app_signatures.py`
+(run by a developer, never on the router) downloads 41 of them at an exact
+commit and writes `src/frfw/appid/signatures.json` (about 1,850 names),
+recording the commit. What it keeps and why:
+
+- plain/`domain:` entries as suffix matches, `full:` entries as exact
+  names; `keyword:`/`regexp:` entries are dropped (not expressible as a
+  suffix lookup), and so are `@ads` entries (they belong to the ad
+  blocker and would inflate an app's usage);
+- `include:` is followed only where it really is the same app (Disney+ ->
+  BAMTech, EA -> Origin) -- Disney's list includes ESPN, Hulu and ABC,
+  which would misattribute traffic;
+- a name claimed by two lists goes to the first app in a fixed order, so
+  Messenger and Instagram keep their own names instead of the umbrella
+  Facebook list taking them. The generated catalog was checked for
+  over-broad entries: every CDN name in it is an app-specific host
+  (`steamcdn-a.akamaihd.net`), never a shared suffix like `akamaihd.net`.
+
+Matching (`frfw.appid.AppMatcher`) is an exact-name table plus a suffix
+walk from the longest suffix down, so the most specific entry wins.
+
+### Observation: `fr-appid`
+
+An unprivileged daemon (user `fr_os-webui`, journal read access only, like
+`fr-ai-ids`) follows `fr-adblock-dns`'s query log (the real dnsmasq 2.91
+line is `2 10.0.0.5/46381 query[A] www.netflix.com from 10.0.0.5`) and,
+with `observe_sni`, `fr-xdp-sni-logger`'s events. Each attributed name is
+a "hit" for that app and client, kept in hourly buckets for 24 hours;
+the same name from the same client and source within 10 seconds counts
+once (browsers ask for A, AAAA and HTTPS records together). The summary
+goes to `/etc/fr_os/webui/appid_usage.json` every 30 seconds and survives
+restarts. A hit is an activity signal, not bandwidth or time spent.
+
+The unit is enabled unconditionally and follows `config.yaml` itself:
+it idles while the feature is off and re-executes itself when the set of
+enabled sources changes, so no manual restart is needed.
+
+### Blocking
+
+`app_control.blocked_apps` becomes `address=/<name>/` lines in the
+resolver config -- NXDOMAIN for the name and all its subdomains, the same
+mechanism as the Firefox DoH canary. It therefore requires the resolver
+to serve the LAN (`serve_lan`) and, to be hard to bypass, `force_dns`.
+`block_via_xdp` additionally merges the blocked apps' names (those under
+the 32-byte limit) into the XDP blocklist in memory at `apply`, like the
+phase 9 "critical" subset; `apply` now refuses a merged list larger than
+the kernel map's 4,096 entries up front instead of failing half-way.
+
+### Found along the way
+
+- **The installed webUI had no templates.** `pip install` of the source
+  tree (the live image's hook, `frfw.update`) only copies `.py` files
+  unless package data is declared; every page would have failed with
+  `TemplateNotFound` on a real install. Verified by building a wheel (0
+  templates before, 16 after); `tests/test_packaging.py` now fails for any
+  undeclared non-Python file.
+- **`fr-xdp-sni-logger.service` was never installed** by either installer,
+  and the live image also lacked the ad-block units -- so on a real
+  install the XDP event log, and everything reading it, never ran.
+  `tests/test_system_units.py` now requires every unit in `systemd/` in
+  both installers.
+
+### Verification
+
+- `tests/test_xdp_live.py` (root, clang, bpftool, libbpf): three network
+  namespaces and the real compiled program -- WAN-side attachment never
+  sees a LAN client's ClientHello; LAN-side attachment drops the
+  blocklisted SNI (drop event on the ring buffer with the client's
+  address); a non-matching SNI produces a pass event only while reporting
+  is switched on, and the connection still goes through.
+- `tests/test_appid.py`: the catalog's invariants and real-name spot
+  checks (and look-alikes that must not match), usage accounting and
+  pruning, the daemon's parsing and de-duplication, config validation,
+  resolver/XDP merging, and a **real dnsmasq** run: a blocked app's names
+  answer NXDOMAIN, others resolve, and the real query log fed to the
+  daemon is attributed to the right apps (blocked lookups still count as
+  attempts).
+- Route tests for `/apps` and the new `/metrics` families.
+
+Not verified: real client apps (no phones or consoles in this sandbox --
+the traffic is synthetic lookups and handshakes), and the catalog's
+completeness for any given app; v2fly's lists are community-maintained.
+
+### Open issues
+
+- Coarse by design: a shared CDN name not in any list is unattributed, and
+  an app using a name also used by another service is attributed to one.
+- Blocking is per resolver, for every client -- no per-device or
+  time-based app policy yet (time-based rules are phase 17's topic).
+- Blocking an app through DNS does not end connections already open, and a
+  client with a cached answer keeps working until it expires.
+- QUIC/HTTP-3 SNIs are invisible to XDP; DNS observation still covers them
+  when the client uses the router's resolver.
 
 ## Open decisions
 

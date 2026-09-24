@@ -161,6 +161,12 @@ timer-drop-in rewrite — a small-scope but non-trivial addition).
 
 ## Phase 4 – XDP/eBPF fast path: kernel-level TLS SNI filter — **kernel program + Python orchestrator + webUI done, performance measurement open**
 
+> **Correction (phase 16):** the filter must be attached to the LAN-side
+> interfaces to filter what LAN clients connect to -- XDP only sees
+> received packets, so the WAN attachment this phase recommended never
+> saw an outbound ClientHello. Verified with network namespaces, now an
+> automated test; see phase 16.
+
 The scope, agreed with the user, changed from the generic IP fast-drop
 blocklist originally planned here to a more specific, more practical
 function: **traffic dropped/passed in kernel space based on the SNI
@@ -1040,3 +1046,46 @@ random-looking NXDOMAIN lookups or looks up malware/phishing names. ✅
 Verified with a real dnsmasq instance and real log lines driving the AI
 IDS, and a real download of every preset list. Not verified against
 real DGA malware samples.
+
+## Phase 16 – Coarse application identification (App-ID lite) — **done**
+
+Third of the seven "next-gen homelab / small office" additions: which
+apps the network uses, and one-click app blocking, from names only --
+nothing is decrypted. Full rationale:
+[ARCHITECTURE.md](ARCHITECTURE.md#coarse-application-identification-phase-16).
+
+- [x] **Phase 4 direction fix**: XDP must sit on the LAN-side interfaces
+      (docs, config docstring, webUI hint), proven by a real
+      three-namespace test with the compiled program.
+- [x] **Kernel**: a `settings` map switches on pass events for
+      non-matching SNIs; pass events may only use half the ring buffer so
+      drops (the AI IDS signal) are never starved. Verifier-accepted,
+      exercised on real packets.
+- [x] **Catalog**: 41 apps / ~1,850 names generated from
+      v2fly/domain-list-community (MIT) at a pinned commit by
+      `scripts/update_app_signatures.py`; longest-suffix matching.
+- [x] **`fr-appid` daemon**: follows the resolver's query log and
+      (optionally) the XDP SNI events, 24-hour per-app/per-client usage
+      with de-duplication, persisted; follows config changes by itself.
+- [x] **Blocking** (`app_control.blocked_apps`): resolver NXDOMAIN for all
+      of an app's names; optional merge into the XDP blocklist
+      (`block_via_xdp`), with an up-front kernel-map size check.
+- [x] **WebUI `/apps`, `firewall-cli apps-status`, metrics**
+      (`fros_app_active_clients`, `fros_app_hits_24h`, `fros_app_blocked`),
+      Grafana panels.
+- [x] Tests: 88 new (30 of them per-unit installer checks), including
+      real-packet XDP tests and a real dnsmasq run. Full suite: 815
+      passed, 1 skipped.
+
+**Found and fixed along the way**: a regular `pip install` shipped the
+webUI without its templates (package data was never declared), and
+`fr-xdp-sni-logger.service` (plus the ad-block units in the live image)
+was never installed -- both now guarded by tests.
+
+**Acceptance criterion**: an admin can see which apps each client used in
+the last 24 hours and block an app from the webUI; blocked names answer
+NXDOMAIN, and with `block_via_xdp` TLS connections to them are dropped in
+the kernel even when the client bypassed the resolver. ✅ Verified with a
+real dnsmasq and real packets through the compiled XDP program. Not
+verified with real phones, consoles or smart TVs.
+

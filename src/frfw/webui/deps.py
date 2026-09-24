@@ -63,6 +63,10 @@ def get_iot_scan_options(request: Request) -> dict:
     return request.app.state.iot_scan_options
 
 
+def get_appid_usage_path(request: Request) -> Path:
+    return request.app.state.appid_usage_path
+
+
 def get_bruteforce_guard(request: Request) -> BruteforceGuard:
     return request.app.state.bruteforce_guard
 

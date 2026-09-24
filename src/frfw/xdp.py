@@ -9,9 +9,10 @@ on purpose:
 
 1. Compile the BPF C source if needed (`ensure_compiled`).
 2. Load it once and pin the program + its maps under /sys/fs/bpf, so
-   attaching to *multiple* interfaces (a WAN and a guest-WiFi uplink,
-   say) shares one blocklist and one set of stats/events rather than
-   creating an independent copy per interface (`load_and_pin`).
+   attaching to *multiple* interfaces (a wired LAN and a guest Wi-Fi
+   interface, say) shares one blocklist and one set of stats/events
+   rather than creating an independent copy per interface
+   (`load_and_pin`).
 3. Attach the pinned program to each configured interface, preferring
    native driver mode (`xdpdrv`) for wire-speed hardware offload on NICs
    that support it (Intel XL710/ixgbe, Mellanox ConnectX-4/5 and
@@ -28,6 +29,16 @@ on purpose:
    decision: nothing in this module runs anywhere near the packet path,
    consistent with the C program's own design (it never blocks on
    anything user space does).
+6. Switch pass-event reporting on or off (`set_report_pass`): phase 16's
+   app identification wants to see the SNIs that were *not* blocked too.
+
+Direction matters: XDP runs on packets an interface *receives*. A LAN
+client's ClientHello is received on the router's LAN-side interface, so
+that is where the program must be attached to filter (or observe) what
+LAN clients connect to. Attached to the WAN interface it only ever sees
+connections coming *in* from the internet -- verified with real network
+namespaces in tests/test_xdp_live.py, after the phase 4 docs had
+recommended the WAN interface.
 
 Why CLI tools (`ip`, `bpftool`) instead of a Python eBPF library like
 bcc or a full libbpf-python binding: this matches every other privileged
@@ -73,6 +84,9 @@ from frfw.config.schema import Config
 MAX_SNI_LEN = 32
 LPM_KEY_LEN = MAX_SNI_LEN + 1
 
+#: The sni_blocklist map's max_entries in bpf/xdp_sni_filter.c.
+BLOCKLIST_MAX_ENTRIES = 4096
+
 #: struct lpm_sni_key { u32 prefixlen; unsigned char reversed[LPM_KEY_LEN]; }
 #: -- 4 + 33 = 37, rounded up to 8-byte alignment by the compiler, and
 #: confirmed against the running kernel's own report of the map's key
@@ -99,6 +113,11 @@ PIN_PROG_PATH = _PIN_PROG_DIR / "xdp_sni_filter"
 PIN_BLOCKLIST_PATH = _PIN_MAPS_DIR / "sni_blocklist"
 PIN_STATS_PATH = _PIN_MAPS_DIR / "stats"
 PIN_EVENTS_PATH = _PIN_MAPS_DIR / "events"
+PIN_SETTINGS_PATH = _PIN_MAPS_DIR / "settings"
+
+#: Bit in the `settings` map's single __u32, matching SETTING_REPORT_PASS
+#: in bpf/xdp_sni_filter.c.
+SETTING_REPORT_PASS = 0x1
 
 #: Index order must match bpf/xdp_sni_filter.c's `enum { STAT_... }`.
 STAT_NAMES = ["pass_not_tls", "pass_truncated", "pass_no_sni", "pass_no_match", "drop_match"]
@@ -122,15 +141,17 @@ class SyncResult:
 
 @dataclass(frozen=True)
 class SniEvent:
-    """One decoded record from the kernel's `events` ring buffer --
-    always a drop (the kernel program never logs a pass), see
-    bpf/xdp_sni_filter.c's `struct sni_event`."""
+    """One decoded record from the kernel's `events` ring buffer, see
+    bpf/xdp_sni_filter.c's `struct sni_event`. `action` is "drop" for a
+    blocklist match, or "pass" for a non-matching SNI (only reported
+    while `set_report_pass(True)` is in effect)."""
 
     saddr: str
     daddr: str
     sport: int
     dport: int
     hostname: str
+    action: str = "drop"
 
     @classmethod
     def from_bytes(cls, raw: bytes) -> "SniEvent":
@@ -139,9 +160,12 @@ class SniEvent:
         saddr = socket.inet_ntoa(raw[0:4])
         daddr = socket.inet_ntoa(raw[4:8])
         sport, dport = struct.unpack_from("<HH", raw, 8)
+        action = "drop" if raw[12] == 1 else "pass"
         sni_len = min(struct.unpack_from("<H", raw, 14)[0], MAX_SNI_LEN)
         hostname = raw[16 : 16 + sni_len].decode("ascii", errors="replace")
-        return cls(saddr=saddr, daddr=daddr, sport=sport, dport=dport, hostname=hostname)
+        return cls(
+            saddr=saddr, daddr=daddr, sport=sport, dport=dport, hostname=hostname, action=action
+        )
 
 
 # --- LPM key construction ---------------------------------------------------
@@ -254,7 +278,7 @@ def unload() -> None:
     """Remove the pinned program and maps. Only call once nothing is
     still attached to the program (detach() every interface first) --
     this does not itself detach anything."""
-    for p in (PIN_PROG_PATH, PIN_BLOCKLIST_PATH, PIN_STATS_PATH, PIN_EVENTS_PATH):
+    for p in (PIN_PROG_PATH, PIN_BLOCKLIST_PATH, PIN_STATS_PATH, PIN_EVENTS_PATH, PIN_SETTINGS_PATH):
         p.unlink(missing_ok=True)
     for d in (_PIN_PROG_DIR, _PIN_MAPS_DIR, _PIN_DIR):
         try:
@@ -344,6 +368,34 @@ def _map_delete(map_path: Path, key: bytes) -> None:
         raise XdpError(f"Deleting from {map_path} failed:\n{proc.stderr}")
 
 
+def set_report_pass(enabled: bool) -> None:
+    """Turn reporting of non-matching SNIs (action "pass") on or off.
+
+    Raises XdpError if the pinned program has no `settings` map -- i.e. it
+    was loaded by an frfw version from before phase 16 and is still
+    pinned. Disabling and re-enabling the filter reloads it."""
+    if not PIN_SETTINGS_PATH.exists():
+        raise XdpError(
+            "The loaded XDP program has no settings map (it predates SNI "
+            "observation); disable and re-enable the XDP SNI filter to reload it."
+        )
+    value = struct.pack("<I", SETTING_REPORT_PASS if enabled else 0)
+    _map_update(PIN_SETTINGS_PATH, struct.pack("<I", 0), value)
+
+
+def report_pass_enabled() -> bool:
+    """Whether the pinned program currently reports passed SNIs."""
+    if not PIN_SETTINGS_PATH.exists():
+        return False
+    proc = _bpftool(["map", "dump", "pinned", str(PIN_SETTINGS_PATH)])  # see _dump_lpm_keys re: no -j
+    if proc.returncode != 0:
+        raise XdpError(f"Dumping settings failed:\n{proc.stderr}")
+    for entry in json.loads(proc.stdout or "[]"):
+        if entry.get("key") == 0:
+            return bool(int(entry.get("value", 0)) & SETTING_REPORT_PASS)
+    return False
+
+
 def get_stats() -> dict[str, int]:
     """Read the cheap per-category packet counters (see STAT_NAMES),
     for the webUI/CLI status display. All zero if the filter has never
@@ -410,6 +462,7 @@ def sync_sni_filter(
     backup_dir/kea_config_path are, so tests never touch it."""
     cfg = config.xdp_sni_filter
     state = _load_state(state_path)
+    report_pass = config.app_control.enabled and config.app_control.observe_sni
 
     if not cfg.enabled:
         if not state.attached:
@@ -428,12 +481,20 @@ def sync_sni_filter(
         return SyncResult(applied=True, message=f"Detached XDP SNI filter from: {', '.join(devices)}")
 
     devices = [config.interfaces[name].device for name in cfg.interfaces]
+    if len(cfg.blocklist) > BLOCKLIST_MAX_ENTRIES:
+        # Checked up front: the kernel map would otherwise fail part-way
+        # through sync_blocklist with a bare "map full" error.
+        raise XdpError(
+            f"XDP blocklist has {len(cfg.blocklist)} names, more than the kernel map's "
+            f"{BLOCKLIST_MAX_ENTRIES}; lower adblocker.xdp_critical_limit or block fewer apps via XDP"
+        )
+    observing = ", reporting passed SNIs" if report_pass else ""
     if dry_run:
         return SyncResult(
             applied=False,
             message=(
                 f"Would attach XDP SNI filter to: {', '.join(devices)} "
-                f"({len(cfg.blocklist)} blocked hostnames)"
+                f"({len(cfg.blocklist)} blocked hostnames{observing})"
             ),
         )
 
@@ -458,12 +519,20 @@ def sync_sni_filter(
     sync_blocklist(cfg.blocklist)
     _save_state(XdpState(attached=new_attached), state_path)
 
+    if PIN_SETTINGS_PATH.exists():
+        set_report_pass(report_pass)
+    elif report_pass:
+        observing = (
+            ", SNI observation unavailable until the filter is disabled and "
+            "re-enabled (the loaded program predates it)"
+        )
+
     detail = f" ({', '.join(modes_used)})" if modes_used else ""
     return SyncResult(
         applied=True,
         message=(
             f"XDP SNI filter attached to: {', '.join(devices)}{detail}, "
-            f"{len(cfg.blocklist)} blocked hostnames"
+            f"{len(cfg.blocklist)} blocked hostnames{observing}"
         ),
     )
 
@@ -545,7 +614,7 @@ class RingBufferReader:
 
 
 def format_event_json(event: SniEvent) -> str:
-    """One JSON line per match, the event-logger daemon's actual stdout
+    """One JSON line per event, the event-logger daemon's actual stdout
     format (captured by journald, and what the webUI's live log stream
     -- frfw.webui.routes.xdp -- relays essentially verbatim via
     `journalctl -o cat`). A single `dict`-then-`json.dumps` here, rather
@@ -555,7 +624,7 @@ def format_event_json(event: SniEvent) -> str:
     return json.dumps(
         {
             "ts": time.time(),
-            "action": "drop",
+            "action": event.action,
             "saddr": event.saddr,
             "sport": event.sport,
             "daddr": event.daddr,

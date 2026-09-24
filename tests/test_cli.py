@@ -327,3 +327,25 @@ def test_iot_status_nft_error_returns_1(monkeypatch, capsys):
     monkeypatch.setattr(cli_mod, "list_isolated", boom)
     assert main(["iot-status"]) == 1
     assert "IoT isolation error" in capsys.readouterr().err
+
+
+def test_apps_status_ranks_apps_by_activity(monkeypatch, capsys):
+    import frfw.cli as cli_mod
+
+    usage = {"generated": 1, "apps": {
+        "zoom": {"hits_24h": 50, "active_clients": 0, "clients": {"10.0.0.9": {}}},
+        "netflix": {"hits_24h": 3, "active_clients": 1, "clients": {"10.0.0.5": {}}},
+    }}
+    monkeypatch.setattr(cli_mod, "load_usage", lambda: usage)
+    assert main(["apps-status", "--limit", "5"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[1].startswith("Netflix") and lines[1].endswith("10.0.0.5")
+    assert lines[2].startswith("Zoom")
+
+
+def test_apps_status_without_data(monkeypatch, capsys):
+    import frfw.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "load_usage", lambda: {"generated": None, "apps": {}})
+    assert main(["apps-status"]) == 0
+    assert "no usage recorded yet" in capsys.readouterr().out

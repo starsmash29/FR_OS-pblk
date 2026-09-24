@@ -294,6 +294,36 @@
       "targets": [
         { "expr": "fros_dns_blocked_domains", "legendFormat": "{{category}}", "refId": "A" }
       ]
+    },
+    {
+      "id": 50,
+      "type": "row",
+      "title": "Applications",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 42 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 51,
+      "type": "bargauge",
+      "title": "Active clients per app (15 min)",
+      "description": "fros_app_active_clients{app, category} from fr-appid (phase 16).",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 43 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        { "expr": "topk(10, fros_app_active_clients)", "legendFormat": "{{app}}", "refId": "A" }
+      ]
+    },
+    {
+      "id": 52,
+      "type": "bargauge",
+      "title": "App hits (24 h)",
+      "description": "fros_app_hits_24h{app, category} -- DNS lookups and TLS connections attributed to each app (phase 16).",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 43 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        { "expr": "topk(10, fros_app_hits_24h)", "legendFormat": "{{app}}", "refId": "A" }
+      ]
     }
   ]
 }

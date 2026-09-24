@@ -22,6 +22,7 @@ Design decisions and the phase-by-phase development plan:
 - **⚛️ Post-quantum-ready management plane.** Hybrid classical + post-quantum key exchange — `X25519MLKEM768` for the WebUI's TLS 1.3, `mlkem768x25519-sha256` for OpenSSH 9.9+ — protecting the *management* layer against harvest-now-decrypt-later, with automatic, disclosed fallback to classical-only on older OpenSSL/OpenSSH.
 - **🚫 Local, categorized DNS filtering.** A dedicated `dnsmasq` instance blocks ads plus whole categories — malware, phishing, gambling, adult, social, DoH bypass — each list verified and reported separately, with an allowlist. Optionally it becomes every DHCP client's resolver and can't be bypassed with a hard-coded DNS server, DNS-over-TLS or Firefox's automatic DoH. With query logging on, NXDOMAIN bursts, random-looking (DGA) lookups and malware/phishing lookups feed the AI IDS.
 - **📡 IoT discovery and isolation.** Finds the smart plugs, cameras and speakers in chosen zones (DHCP leases, ARP, mDNS service discovery, IEEE vendor registry), explains every "this is IoT" verdict, and can isolate a device by MAC address in the router's firewall — internet-only or fully blocked — automatically or with one click.
+- **📱 App identification and blocking.** Shows which apps (Netflix, TikTok, Steam, Zoom and ~40 others) each client used in the last 24 hours, from the names it looks up and, optionally, the TLS server names the XDP program sees — nothing is decrypted. Any app can be blocked with one checkbox: the resolver refuses all of its names, and optionally the XDP filter drops its TLS connections too.
 - **🧩 Real privilege separation, not just a warning label.** The FastAPI + Jinja2 WebUI runs unprivileged, full stop. Every root-level action — nftables reload, interface addressing, DHCP config, package updates, hardware queries — goes through one locked-down, protocol-validated JSON Unix socket to `fr-apply-helper`. The WebUI process cannot escalate even if fully compromised; it simply has no path to root.
 - **📊 Built-in, dependency-free Prometheus exporter.** `GET /metrics` in real Prometheus text format, written with plain string formatting against `/proc`, `/sys`, and `os.statvfs` — no `prometheus_client`, no `psutil`, no extra runtime weight. A ready-to-import Grafana dashboard ships in [`telemetry/grafana-dashboard.json`](telemetry/grafana-dashboard.json).
 
@@ -85,6 +86,8 @@ firewall-cli assign-interfaces --wan eth0 --lan eth1
 - `fros_xdp_status` & `fros_xdp_blocked_connections_total`
 - `fros_ztna_active_sessions` & `fros_ai_ids_quarantined_hosts`
 - `fros_bruteforce_banned_ips` (active `/login`/`/ztna/login` rate-limit bans)
+- `fros_dns_blocked_domains{category}`, `fros_iot_devices{category}`, `fros_iot_isolated_devices`
+- `fros_app_active_clients{app,category}`, `fros_app_hits_24h{app,category}`, `fros_app_blocked{app}`
 - `fros_interface_bytes_total{device,direction}` (per-NIC throughput)
 - `fros_hw_cpu_usage_ratio`, `fros_hw_cpu_mhz`, `fros_hw_ram_usage_bytes`, `fros_hw_storage_info` and friends — all parsed straight from `/proc`/`/sys`/`os.statvfs`, no `psutil`
 
@@ -99,7 +102,7 @@ A real, importable dashboard (stat tiles, throughput graphs, hardware gauges) is
 python3 -m pytest
 ```
 
-725 tests pass as of the latest phase (1 skipped, gated on a `dmidecode` binary this dev sandbox doesn't have installed — see ARCHITECTURE.md). Wherever the target environment allows it, tests exercise the real thing instead of a mock: real `nft` ruleset loading and rollback, real kernel-set timeouts (ZTNA sessions, the brute-force jail, AI IDS quarantine), real filesystem-permission checks (e.g. confirming `/proc/net/nf_conntrack` really is root-only before relying on that boundary). IoT isolation is tested on the wire: two network namespaces routed through the actual generated ruleset, with TCP connections and a real mDNS exchange. DNS filtering is tested against a real dnsmasq, whose real query log drives the AI IDS in the same test. The eBPF/XDP C code is written and commented specifically to satisfy the kernel's static verifier — bounded loops, explicit range checks — and is checked against a real packet-capture integration test, not just compiled.
+815 tests pass as of the latest phase (1 skipped, gated on a `dmidecode` binary this dev sandbox doesn't have installed — see ARCHITECTURE.md). Wherever the target environment allows it, tests exercise the real thing instead of a mock: real `nft` ruleset loading and rollback, real kernel-set timeouts (ZTNA sessions, the brute-force jail, AI IDS quarantine), real filesystem-permission checks (e.g. confirming `/proc/net/nf_conntrack` really is root-only before relying on that boundary). IoT isolation is tested on the wire: two network namespaces routed through the actual generated ruleset, with TCP connections and a real mDNS exchange. DNS filtering is tested against a real dnsmasq, whose real query log drives the AI IDS in the same test. The XDP program is loaded into the running kernel and fed real TLS handshakes across three network namespaces (client, router, server), which is how the phase 4 attach-direction mistake was caught. The eBPF/XDP C code is written and commented specifically to satisfy the kernel's static verifier — bounded loops, explicit range checks — and is checked against a real packet-capture integration test, not just compiled.
 
 Config changes are never a one-way door: every real (non-dry-run) apply snapshots the previous ruleset first, keeping the last 10 versions under `/etc/fr_os/backups/` for `firewall-cli rollback`.
 
@@ -187,6 +190,21 @@ sudo firewall-cli iot-status
 Nothing is isolated until you turn on `auto_isolate` or isolate a device
 yourself -- review the inventory first.
 
+## Applications (phase 16)
+
+Needs the local resolver with query logging (`adblocker: {enabled: true,
+serve_lan: true, query_logging: true}`); then enable it on the `/apps`
+screen or in YAML (`app_control: {enabled: true, blocked_apps: [tiktok]}`,
+see [docs/CONFIG_SCHEMA.md](docs/CONFIG_SCHEMA.md#app_control)) and apply.
+
+```bash
+sudo systemctl enable --now fr-appid   # idles until app_control is enabled
+firewall-cli apps-status               # apps used in the last 24 hours
+```
+
+If you also use the XDP SNI filter, attach it to the **LAN-side**
+interfaces: XDP only sees packets an interface receives.
+
 ## AI IDS/IPS (phase 11)
 
 Real-time, kernel-assisted anomaly detection: a separate `fr-ai-ids`
@@ -217,6 +235,7 @@ pfSense and OPNsense are mature, FreeBSD-based projects with a much larger drive
 | Post-quantum key exchange (mgmt plane) | Built in (`X25519MLKEM768`, `mlkem768x25519-sha256`), with disclosed classical fallback | Not available |
 | Category DNS filtering + DGA detection | Built in (verified category lists, allowlist, DNS enforcement, DGA/NXDOMAIN signals into the IDS) | pfBlockerNG / Zenarmor add-ons |
 | IoT device discovery / isolation | Built in (vendor + mDNS + hostname classification, MAC-keyed firewall isolation) | Manual (aliases, VLANs) or third-party packages |
+| Application identification / blocking | Built in (DNS + SNI names, 41-app catalog, one-click resolver/XDP blocking) | Zenarmor / Suricata add-ons |
 | Prometheus metrics | Native `/metrics`, zero extra packages | Needs a community package (`node_exporter` et al.) |
 | Live image size | ~328 MB hybrid BIOS+UEFI | Multi-hundred-MB to several GB installer images |
 | Config model | One YAML file, plain-text diffable, versioned rollback | XML config, less diff-friendly |
@@ -321,6 +340,14 @@ Per-category blocklists with verified presets and an allowlist, optional
 LAN DNS serving and enforcement (port-53 redirect, DoT reject, Firefox
 DoH canary), and NXDOMAIN / DGA-like / malware-lookup signals from the
 resolver's query log feeding the AI IDS.
+
+**Phase 16 (coarse application identification)** — done. A 41-app
+catalog generated from v2fly/domain-list-community, an unprivileged
+`fr-appid` daemon attributing resolver lookups and (new) XDP pass events
+to apps per client, and one-click app blocking in the resolver and
+optionally the XDP blocklist. Also corrected phase 4's advice to attach
+XDP on the WAN side (it must be the LAN side), proven with a
+three-namespace real-packet test.
 
 Full rationale for every phase: [ARCHITECTURE.md](ARCHITECTURE.md).
 

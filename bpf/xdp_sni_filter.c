@@ -6,7 +6,13 @@
 // LPM trie blocklist. A match returns XDP_DROP; everything else (not
 // TLS, not a ClientHello, SNI absent, no match) returns XDP_PASS. Match
 // events are pushed to a ring buffer for userspace (frfw.xdp) to log --
-// userspace never touches the drop decision itself.
+// userspace never touches the drop decision itself. With the
+// SETTING_REPORT_PASS switch on (phase 16's app identification), an
+// extracted SNI that did *not* match is reported too, as action 0.
+//
+// XDP only sees packets a device *receives*. To filter the ClientHellos
+// LAN clients send out, attach this to the LAN-side interfaces -- on
+// the WAN interface it only sees connections arriving from the internet.
 //
 // Read this file's three "IMPORTANT" comments before touching the
 // parsing logic or the LPM key construction; they document real
@@ -135,7 +141,7 @@ struct sni_event {
 	__u32 daddr;
 	__u16 sport;
 	__u16 dport;
-	__u8 action; // 0 = pass (unused -- only matches are logged), 1 = drop
+	__u8 action; // 0 = pass (only with SETTING_REPORT_PASS), 1 = drop
 	__u16 sni_len;
 	char sni[MAX_SNI_LEN];
 };
@@ -151,6 +157,26 @@ struct {
 	__type(value, __u64);
 	__uint(max_entries, STAT_MAX);
 } stats SEC(".maps");
+
+// Runtime switches written by userspace (frfw.xdp.set_report_pass), one
+// __u32 bit field at index 0. An ARRAY map is zero-initialised, so a
+// freshly loaded program behaves exactly like before this map existed:
+// only drops are reported.
+#define SETTING_REPORT_PASS 0x1
+
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__type(key, __u32);
+	__type(value, __u32);
+	__uint(max_entries, 1);
+} settings SEC(".maps");
+
+// A pass event is only queued while less than this much unread data is
+// in the ring buffer. Pass events (one per TLS connection with a visible
+// SNI, for phase 16's app identification) vastly outnumber drops; without
+// this cap a busy network could fill the buffer and starve the drop
+// events the AI IDS scores. The upper half stays reserved for drops.
+#define PASS_EVENT_MAX_BACKLOG (128 * 1024)
 
 static __always_inline void bump(__u32 idx)
 {
@@ -667,6 +693,33 @@ static void build_lpm_key(struct lpm_sni_key *key, const char *sni, __u32 sni_le
 	}
 }
 
+static __always_inline int report_pass_enabled(void)
+{
+	__u32 idx = 0;
+	__u32 *flags = bpf_map_lookup_elem(&settings, &idx);
+	return flags && (*flags & SETTING_REPORT_PASS);
+}
+
+// Best effort: if the ring buffer is full the event is simply lost --
+// the drop/pass decision never depends on userspace keeping up.
+static __always_inline void emit_event(struct iphdr *ip, struct tcphdr *tcp,
+				       const char *sni, __u32 name_len, __u8 action)
+{
+	struct sni_event *ev = bpf_ringbuf_reserve(&events, sizeof(*ev), 0);
+	if (!ev)
+		return;
+	ev->saddr = ip->saddr;
+	ev->daddr = ip->daddr;
+	ev->sport = bpf_ntohs(tcp->source);
+	ev->dport = bpf_ntohs(tcp->dest);
+	ev->action = action;
+	ev->sni_len = name_len;
+#pragma unroll
+	for (int i = 0; i < MAX_SNI_LEN; i++)
+		ev->sni[i] = (i < name_len) ? sni[i] : 0;
+	bpf_ringbuf_submit(ev, 0);
+}
+
 SEC("xdp")
 int xdp_sni_filter(struct xdp_md *ctx)
 {
@@ -763,25 +816,14 @@ int xdp_sni_filter(struct xdp_md *ctx)
 	__u8 *blocked = bpf_map_lookup_elem(&sni_blocklist, &key);
 	if (!blocked) {
 		bump(STAT_PASS_NO_MATCH);
+		if (report_pass_enabled() &&
+		    bpf_ringbuf_query(&events, BPF_RB_AVAIL_DATA) < PASS_EVENT_MAX_BACKLOG)
+			emit_event(ip, tcp, sni, name_len, 0);
 		return XDP_PASS;
 	}
 
 	bump(STAT_DROP_MATCH);
-
-	struct sni_event *ev = bpf_ringbuf_reserve(&events, sizeof(*ev), 0);
-	if (ev) {
-		ev->saddr = ip->saddr;
-		ev->daddr = ip->daddr;
-		ev->sport = bpf_ntohs(tcp->source);
-		ev->dport = bpf_ntohs(tcp->dest);
-		ev->action = 1;
-		ev->sni_len = name_len;
-#pragma unroll
-		for (int i = 0; i < MAX_SNI_LEN; i++)
-			ev->sni[i] = (i < name_len) ? sni[i] : 0;
-		bpf_ringbuf_submit(ev, 0);
-	}
-
+	emit_event(ip, tcp, sni, name_len, 1);
 	return XDP_DROP;
 }
 

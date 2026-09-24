@@ -26,6 +26,7 @@ from frfw.webui.helper_client import (
 from frfw.webui.routes import (
     adblock,
     ai_ids,
+    apps,
     auth,
     dashboard,
     dhcp,
@@ -56,6 +57,7 @@ def create_app(
     iot_inventory_path: Path = paths.IOT_INVENTORY_PATH,
     iot_scan_options: dict | None = None,
     adblock_category_dir: Path = paths.ADBLOCK_CATEGORY_DIR,
+    appid_usage_path: Path = paths.APPID_USAGE_PATH,
 ) -> FastAPI:
     app = FastAPI(title="FR_OS webUI")
     app.state.config_path = config_path
@@ -73,6 +75,7 @@ def create_app(
     # Extra keyword arguments for frfw.iot.scanner.run_scan (mdns_fn,
     # arp_path, oui_path) -- empty in production, overridden by tests.
     app.state.iot_scan_options = iot_scan_options or {}
+    app.state.appid_usage_path = appid_usage_path
 
     app.include_router(auth.router)
     app.include_router(dashboard.router)
@@ -87,6 +90,7 @@ def create_app(
     app.include_router(system.router)
     app.include_router(adblock.router)
     app.include_router(iot.router)
+    app.include_router(apps.router)
     app.include_router(metrics.router)
 
     return app

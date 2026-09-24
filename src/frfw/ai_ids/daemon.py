@@ -10,7 +10,9 @@ decision, makes exactly one kind of privileged request:
 
 1. `fr-xdp-sni-logger.service`'s journald output (one JSON line per TLS
    ClientHello the phase 4 XDP filter dropped for matching the SNI
-   blocklist) -- tailed via `journalctl -f -o cat`, the identical
+   blocklist; with phase 16's `app_control.observe_sni` also one per
+   passed SNI, which this daemon ignores) -- tailed via
+   `journalctl -f -o cat`, the identical
    mechanism and identical `SupplementaryGroups=systemd-journal`
    permission model the webUI's own `/xdp/logs/stream` route already
    uses to read the same daemon's output without needing root.
@@ -49,6 +51,7 @@ from frfw.ai_ids.engine import AnomalyEngine, AnomalyEvent
 from frfw.config.schema import Config
 from frfw.helper import client as helper_client
 from frfw.helper.client import HelperError
+from frfw.journal import tail_journal_forever
 
 #: How often to poll conntrack and check whether a window has elapsed.
 #: Independent of frfw.ai_ids.engine.WINDOW_SECONDS (the *scoring*
@@ -66,15 +69,6 @@ RECENT_EVENTS_LIMIT = 50
 
 #: The systemd unit this process runs under -- see `is_daemon_active`.
 AI_IDS_SERVICE_NAME = "fr-ai-ids.service"
-
-#: journalctl restart backoff if the unit isn't running yet (e.g. XDP
-#: disabled, or fr-xdp-sni-logger just hasn't started at boot yet) or the
-#: pipe otherwise closes -- retries forever rather than letting one
-#: transient failure take the whole daemon down (systemd would restart
-#: the whole process anyway per Restart=on-failure, but there is no
-#: reason a hiccup in the *logging* source should also interrupt
-#: conntrack-based detection, which does not depend on it at all).
-JOURNAL_RETRY_SECONDS = 5.0
 
 #: One line of the ad-block resolver's query log (dnsmasq with
 #: `log-queries=extra`, phase 15), as journald's `-o cat` hands it over.
@@ -292,20 +286,7 @@ class IDSDaemon:
                 next_eval_at = self._clock() + self.engine.window_seconds
 
     def _tail_journal_forever(self, unit: str, handler: Callable[[str], None]) -> None:  # pragma: no cover
-        while True:
-            try:
-                proc = subprocess.Popen(
-                    ["journalctl", "-u", unit, "-f", "-n", "0", "-o", "cat"],
-                    stdout=subprocess.PIPE,
-                    text=True,
-                )
-                assert proc.stdout is not None
-                for line in proc.stdout:
-                    handler(line.strip())
-            except FileNotFoundError:
-                print(f"fr-ai-ids: 'journalctl' not found; {unit} signal disabled", file=sys.stderr)
-                return
-            time.sleep(JOURNAL_RETRY_SECONDS)
+        tail_journal_forever(unit, handler, program="fr-ai-ids")
 
 
 def is_daemon_active() -> bool:
