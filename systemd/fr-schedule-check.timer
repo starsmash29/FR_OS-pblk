@@ -1,0 +1,12 @@
+[Unit]
+Description=Hourly FR_OS scheduled-rule DST check
+Documentation=https://github.com/starsmash29/FR_OS-pblk
+
+[Timer]
+# A few minutes past every hour: DST switches happen on the hour, so the
+# rules are at most a few minutes off afterwards.
+OnCalendar=*-*-* *:02:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

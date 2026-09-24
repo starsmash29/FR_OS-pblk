@@ -1,0 +1,15 @@
+[Unit]
+Description=FR_OS scheduled-rule DST check (phase 17, see frfw.schedule_refresh)
+Documentation=https://github.com/starsmash29/FR_OS-pblk
+After=fr-firewall.service
+ConditionPathExists=/etc/fr_os/config.yaml
+
+[Service]
+Type=oneshot
+# Root, like fr-firewall.service: when the UTC offset changed it re-runs
+# the same `apply` that service runs at boot. It never applies a config
+# that differs from the last applied one (see frfw.schedule_refresh).
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/etc/fr_os
+ExecStart=firewall-cli schedule-check /etc/fr_os/config.yaml

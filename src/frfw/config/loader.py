@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ipaddress
 import re
+import zoneinfo
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +36,7 @@ from frfw.config.schema import (
     PqcConfig,
     Protocol,
     Rule,
+    RuleSchedule,
     UpdateConfig,
     XdpSniFilterConfig,
     Zone,
@@ -101,6 +103,11 @@ def parse_config(raw: Any) -> Config:
     if not isinstance(hostname, str) or not hostname:
         raise ConfigError("'hostname' is required and must be a non-empty string")
 
+    tz_name = raw.get("timezone")
+    if tz_name is not None:
+        if not isinstance(tz_name, str) or not _valid_timezone(tz_name):
+            raise ConfigError(f"'timezone' must be an IANA time zone name (e.g. Europe/Budapest), got {tz_name!r}")
+
     zones = _parse_zones(raw.get("zones", {}))
     interfaces = _parse_interfaces(raw.get("interfaces", {}), zones)
     rules = _parse_rules(raw.get("rules", []), zones)
@@ -133,6 +140,7 @@ def parse_config(raw: Any) -> Config:
         adblocker=adblocker,
         iot=iot,
         app_control=app_control,
+        timezone=tz_name,
     )
 
 
@@ -269,6 +277,16 @@ def _parse_rules(raw: Any, zones: dict[str, Zone]) -> list[Rule]:
         log = bool(body.get("log", False))
         require_ztna = bool(body.get("require_ztna", False))
 
+        src_mac = body.get("src_mac")
+        if src_mac is not None:
+            if not isinstance(src_mac, str) or not _MAC_RE.match(src_mac):
+                raise ConfigError(f"Rule {name!r}: invalid src_mac {src_mac!r}")
+            src_mac = src_mac.lower()
+
+        schedule = None
+        if body.get("schedule") is not None:
+            schedule = _parse_schedule(body["schedule"], f"Rule {name!r} schedule", action)
+
         rules.append(
             Rule(
                 name=name,
@@ -281,6 +299,8 @@ def _parse_rules(raw: Any, zones: dict[str, Zone]) -> list[Rule]:
                 dst_address=dst_address,
                 log=log,
                 require_ztna=require_ztna,
+                src_mac=src_mac,
+                schedule=schedule,
             )
         )
     return rules
@@ -889,3 +909,64 @@ def _parse_app_control(
         block_via_xdp=flags["block_via_xdp"],
         observe_sni=flags["observe_sni"],
     )
+
+
+_HHMM_RE = re.compile(r"^([01][0-9]|2[0-3]):([0-5][0-9])$|^24:00$")
+
+#: Shortcuts accepted in schedule.days besides mon..sun.
+_DAY_GROUPS = {
+    "daily": tuple(range(7)),
+    "weekdays": (0, 1, 2, 3, 4),
+    "weekend": (5, 6),
+}
+_DAY_KEYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+
+def _valid_timezone(name: str) -> bool:
+    try:
+        zoneinfo.ZoneInfo(name)
+    except (zoneinfo.ZoneInfoNotFoundError, ValueError):
+        return False
+    return True
+
+
+def _parse_hhmm(value: Any, what: str) -> int:
+    if not isinstance(value, str) or not _HHMM_RE.match(value):
+        raise ConfigError(f"{what} must be a \"HH:MM\" time (00:00-24:00), got {value!r}")
+    hours, minutes = value.split(":")
+    return int(hours) * 60 + int(minutes)
+
+
+def _parse_schedule(raw: Any, what: str, action: Action) -> RuleSchedule:
+    if not isinstance(raw, dict):
+        raise ConfigError(f"{what} must be a mapping")
+
+    days_raw = raw.get("days", ["daily"])
+    if isinstance(days_raw, str):
+        days_raw = [days_raw]
+    if not isinstance(days_raw, list) or not days_raw:
+        raise ConfigError(f"{what}.days must be a non-empty list (mon..sun, weekdays, weekend, daily)")
+    days: set[int] = set()
+    for day in days_raw:
+        key = day.lower() if isinstance(day, str) else day
+        if key in _DAY_GROUPS:
+            days.update(_DAY_GROUPS[key])
+        elif key in _DAY_KEYS:
+            days.add(_DAY_KEYS.index(key))
+        else:
+            raise ConfigError(f"{what}.days: unknown day {day!r} (mon..sun, weekdays, weekend, daily)")
+
+    start = _parse_hhmm(raw.get("start"), f"{what}.start")
+    end = _parse_hhmm(raw.get("end"), f"{what}.end")
+    if start == 24 * 60:
+        raise ConfigError(f"{what}.start cannot be 24:00")
+    if start == end:
+        raise ConfigError(f"{what}: start and end are both {raw.get('start')}; use 00:00-24:00 for a whole day")
+
+    cut_established = raw.get("cut_established", False)
+    if not isinstance(cut_established, bool):
+        raise ConfigError(f"{what}.cut_established must be a boolean")
+    if cut_established and action == Action.ACCEPT:
+        raise ConfigError(f"{what}.cut_established only applies to drop/reject rules")
+
+    return RuleSchedule(days=tuple(sorted(days)), start=start, end=end, cut_established=cut_established)

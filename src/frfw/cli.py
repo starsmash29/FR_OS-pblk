@@ -10,6 +10,7 @@
     firewall-cli ids-status
     firewall-cli iot-status
     firewall-cli apps-status [--limit N]
+    firewall-cli schedule-check [config.yaml]
     firewall-cli update check [config.yaml]
     firewall-cli update apply VERSION [--repo OWNER/REPO]
     firewall-cli update rollback [--repo OWNER/REPO]
@@ -37,7 +38,7 @@ import secrets
 import sys
 from pathlib import Path
 
-from frfw import __version__, netdetect, paths, skeleton, xdp as xdp_mod
+from frfw import __version__, netdetect, paths, schedule_refresh, skeleton, xdp as xdp_mod
 from frfw import update as update_mod
 from frfw.adblock import AdblockError
 from frfw.adblock import refresh as adblock_refresh
@@ -184,6 +185,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="show the MAC addresses currently isolated by IoT isolation (needs root)",
     )
     p_iot_status.set_defaults(handler=_cmd_iot_status)
+
+    p_schedule = sub.add_parser(
+        "schedule-check",
+        help="re-apply if scheduled rules are stale after a DST/time zone change (hourly timer)",
+    )
+    add_config_arg(p_schedule)
+    p_schedule.set_defaults(handler=_cmd_schedule_check)
 
     p_apps_status = sub.add_parser(
         "apps-status",
@@ -354,6 +362,19 @@ def _cmd_iot_status(args: argparse.Namespace) -> int:
     print("IoT isolation: currently isolated devices:")
     for mac in sorted(isolated):
         print(f"  {mac}")
+    return 0
+
+
+def _cmd_schedule_check(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    result = schedule_refresh.check(config)
+    print(result.message)
+    if result.status == "config_changed":
+        return 1
+    if result.status != "refresh":
+        return 0
+    for message in apply_all(config).messages:
+        print(message)
     return 0
 
 

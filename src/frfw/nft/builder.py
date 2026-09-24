@@ -25,6 +25,7 @@ from frfw.config.schema import (
     Protocol,
     Rule,
 )
+from frfw.nft.schedule import ScheduleClock, current_clock, segments
 
 #: Single `inet` table holding both the filter and NAT chains. `inet`
 #: supports `type nat` chains (nftables >= 0.9.7), which lets NAT rules
@@ -118,7 +119,14 @@ IOT_ISOLATED_SET_NAME = "iot_isolated"
 IOT_MDNS_REPLY_PORT = 53530
 
 
-def build_ruleset(config: Config) -> str:
+def build_ruleset(config: Config, *, clock: ScheduleClock | None = None) -> str:
+    """Render `config` as one nft script. `clock` only matters for rules
+    with a `schedule` (phase 17): it defaults to the current offset of
+    `config.timezone` and the kernel's zone, see frfw.nft.schedule --
+    tests pass a fixed one. The result must be loaded with TZ=UTC
+    (frfw.apply does), since scheduled rules carry UTC hours."""
+    if clock is None and any(r.schedule is not None for r in config.rules):
+        clock = current_clock(config.timezone)
     zone_devices = _zone_devices(config)
     lines: list[str] = ["flush ruleset", "", f"table inet {FILTER_TABLE} {{"]
 
@@ -139,8 +147,13 @@ def build_ruleset(config: Config) -> str:
         lines.append("")
         lines.extend(_render_iot_isolated_set())
 
-    input_rules = [r for r in config.rules if r.to_zone == SELF_ZONE]
-    forward_rules = [r for r in config.rules if r.to_zone != SELF_ZONE]
+    def _cuts(rule: Rule) -> bool:
+        return rule.schedule is not None and rule.schedule.cut_established
+
+    input_cut = [r for r in config.rules if r.to_zone == SELF_ZONE and _cuts(r)]
+    forward_cut = [r for r in config.rules if r.to_zone != SELF_ZONE and _cuts(r)]
+    input_rules = [r for r in config.rules if r.to_zone == SELF_ZONE and not _cuts(r)]
+    forward_rules = [r for r in config.rules if r.to_zone != SELF_ZONE and not _cuts(r)]
 
     lines.append("")
     lines.append("\tchain input {")
@@ -158,6 +171,10 @@ def build_ruleset(config: Config) -> str:
         # the moment it's isolated, not whenever they happen to close.
         lines.extend(f"\t\t{r}" for r in _render_iot_input_rules(config))
     lines.append('\t\tiifname "lo" accept')
+    # Phase 17: scheduled drop/reject rules with cut_established go ahead
+    # of the established accept, so a connection opened before the window
+    # started is cut when it starts, not left running.
+    lines.extend(f"\t\t{line}" for r in input_cut for line in _render_rule(r, clock))
     lines.append("\t\tct state established,related accept")
     lines.append("\t\tct state invalid drop")
     dns_zones = _dns_resolver_zones(config)
@@ -168,7 +185,7 @@ def build_ruleset(config: Config) -> str:
             )
     if input_rules:
         lines.append("")
-        lines.extend(f"\t\t{_render_rule(r)}" for r in input_rules)
+        lines.extend(f"\t\t{line}" for r in input_rules for line in _render_rule(r, clock))
     lines.append("\t}")
 
     lines.append("")
@@ -181,6 +198,7 @@ def build_ruleset(config: Config) -> str:
         # accidentally re-open an isolated device -- iot.trusted_macs is
         # the one way to exempt it.
         lines.extend(f"\t\t{r}" for r in _render_iot_forward_rules(config))
+    lines.extend(f"\t\t{line}" for r in forward_cut for line in _render_rule(r, clock))
     lines.append("\t\tct state established,related accept")
     lines.append("\t\tct state invalid drop")
     if config.adblocker.enabled and config.adblocker.force_dns:
@@ -196,7 +214,7 @@ def build_ruleset(config: Config) -> str:
                 )
     if forward_rules:
         lines.append("")
-        lines.extend(f"\t\t{_render_rule(r)}" for r in forward_rules)
+        lines.extend(f"\t\t{line}" for r in forward_rules for line in _render_rule(r, clock))
     lines.append("\t}")
 
     lines.append("")
@@ -324,7 +342,9 @@ def _comment(text: str) -> str:
     return f'comment "{text.replace(chr(34), chr(39))}"'
 
 
-def _render_rule(rule: Rule) -> str:
+def _render_rule(rule: Rule, clock: ScheduleClock | None = None) -> list[str]:
+    """One nft line per rule -- or, for a scheduled rule, one per time
+    segment (frfw.nft.schedule.segments), all carrying the same comment."""
     exprs: list[str] = []
 
     if rule.from_zone is not None:
@@ -340,6 +360,8 @@ def _render_rule(rule: Rule) -> str:
     elif rule.proto != Protocol.ANY:
         exprs.append(f"ip protocol {rule.proto.value}")
 
+    if rule.src_mac is not None:
+        exprs.append(f"ether saddr {rule.src_mac}")
     if rule.src_address is not None:
         exprs.append(f"ip saddr {rule.src_address}")
     if rule.dst_address is not None:
@@ -350,7 +372,16 @@ def _render_rule(rule: Rule) -> str:
 
     exprs.append(rule.action.value)
     exprs.append(_comment(f"rule:{rule.name}"))
-    return " ".join(exprs)
+    if rule.schedule is None:
+        return [" ".join(exprs)]
+    if clock is None:
+        raise ValueError(f"rule {rule.name!r} has a schedule but no clock was given")
+    sched = rule.schedule
+    lines = []
+    for segment in segments(sched.days, sched.start, sched.end, clock):
+        time_match = segment.render()
+        lines.append(" ".join([time_match, *exprs]) if time_match else " ".join(exprs))
+    return lines
 
 
 def _dns_resolver_zones(config: Config) -> list[str]:

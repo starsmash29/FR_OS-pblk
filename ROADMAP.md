@@ -1089,3 +1089,41 @@ the kernel even when the client bypassed the resolver. ✅ Verified with a
 real dnsmasq and real packets through the compiled XDP program. Not
 verified with real phones, consoles or smart TVs.
 
+## Phase 17 – Time-based firewall rules — **done**
+
+Fourth of the seven "next-gen homelab / small office" additions: rules
+that apply only at certain times, optionally per device (MAC). Full
+rationale:
+[ARCHITECTURE.md](ARCHITECTURE.md#time-based-rules-phase-17).
+
+- [x] **Schedule syntax** on any rule: days (mon..sun, weekdays, weekend,
+      daily), local start/end, windows past midnight; top-level
+      `timezone` (IANA, validated).
+- [x] **Correct kernel rendering** (`frfw.nft.schedule`): local windows
+      converted to UTC hours and the kernel's own day clock, cut at both
+      midnights; nft always run with `TZ=UTC`.
+- [x] **DST / time zone refresh**: offset recorded at apply, hourly
+      `fr-schedule-check.timer` re-applies -- never an unapplied config.
+- [x] **`cut_established`** for drop/reject rules, so open connections
+      end when the window starts.
+- [x] **`src_mac`** on rules.
+- [x] **WebUI**: schedule fields, "active now" per rule, time zone with
+      the router's current time; `firewall-cli schedule-check`.
+- [x] Tests: 35 new, including a real-kernel test in five time zones and
+      a per-minute check of the conversion. Full suite: 850 passed, 1
+      skipped.
+
+**Corrections found while building it**: `meta hour` is UTC in the
+kernel and nft converts it with its own process time zone at load time
+(so it drifts after DST); `meta day` follows the kernel's separate
+`sys_tz`, not UTC; and time rules alone never end an open connection.
+All three are handled and each was verified on the real kernel.
+
+**Acceptance criterion**: an admin can block or allow traffic for chosen
+devices and times from the webUI, including windows past midnight, see
+which rules are active now, and the rules stay correct across
+daylight-saving changes without re-applying unapplied edits. ✅ Verified
+against the real kernel's verdicts in five time zones and a non-zero
+kernel time zone. An actual DST switch on a running router was not
+observed.
+

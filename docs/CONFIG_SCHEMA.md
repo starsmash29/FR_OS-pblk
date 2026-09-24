@@ -18,6 +18,7 @@ with a lowercase letter, containing lowercase letters/digits/`-`/`_`
 ```yaml
 version: 1          # required, only 1 is currently supported
 hostname: fr-router  # required, non-empty string
+timezone: Europe/Budapest  # optional, IANA zone rule schedules are written in; default: the system's
 interfaces: {...}    # required, see below
 zones: {...}         # required, see below
 rules: [...]         # optional, default: []
@@ -80,12 +81,38 @@ rules:
     dst_port: 22               # optional, only with proto: tcp/udp; int or a "1000-2000" range string
     src_address: 10.0.0.0/24    # optional, IPv4 address/network
     dst_address: 10.0.0.5         # optional, IPv4 address/network
+    src_mac: aa:bb:cc:dd:ee:ff     # optional, source MAC address (a device, whatever its IP)
     log: false                     # optional, default: false
+    schedule:                      # optional, default: always
+      days: [weekdays]             # mon..sun, weekdays, weekend, daily; default: daily
+      start: "21:30"               # required with schedule, local "HH:MM"
+      end: "06:30"                 # required with schedule, "HH:MM" or "24:00"
+      cut_established: false       # optional; drop/reject only
 ```
 
 With `to_zone: self`, the rule goes into the `input` chain (no `oifname`
 constraint, since the destination is the router itself); otherwise into
 the `forward` chain.
+
+### Schedules (phase 17)
+
+A rule with a `schedule` only matches during that window, in the
+top-level `timezone` (see
+[ARCHITECTURE.md](../ARCHITECTURE.md#time-based-rules-phase-17)).
+
+- An `end` at or before `start` runs past midnight into the next day:
+  `days: [fri], start: "22:00", end: "06:00"` covers Friday 22:00 to
+  Saturday 06:00. `00:00`-`24:00` is a whole day; `start` and `end` may
+  not be equal.
+- Like every rule, a scheduled rule only sees *new* connections: one
+  opened before the window keeps going. `cut_established: true` (drop and
+  reject rules only) moves the rule ahead of the chain's established-
+  connection accept, so those are cut too -- and such rules are evaluated
+  before all ordinary rules.
+- Rules are rendered for the zone's current UTC offset at `apply`;
+  `fr-schedule-check.timer` re-applies within the hour after a
+  daylight-saving change, but only if config.yaml is still the config
+  that was last applied.
 
 ## `nat`
 

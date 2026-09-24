@@ -170,3 +170,10 @@ IOT_INVENTORY_PATH = WEBUI_STATE_DIR / "iot_inventory.json"
 #: Display-only, like IOT_INVENTORY_PATH -- blocking an app is enforced
 #: by the resolver and (optionally) the XDP blocklist, never from here.
 APPID_USAGE_PATH = WEBUI_STATE_DIR / "appid_usage.json"
+
+#: Time-based rules (phase 17, see frfw.schedule_refresh): the UTC offset
+#: and kernel time zone the currently loaded ruleset's scheduled rules
+#: were rendered for, plus a fingerprint of the config applied, so the
+#: hourly check can tell a DST change from an unapplied config edit.
+#: Root-only, written by apply.
+SCHEDULE_STATE_PATH = Path("/etc/fr_os/schedule_state.json")

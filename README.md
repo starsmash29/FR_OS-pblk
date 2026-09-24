@@ -23,6 +23,7 @@ Design decisions and the phase-by-phase development plan:
 - **🚫 Local, categorized DNS filtering.** A dedicated `dnsmasq` instance blocks ads plus whole categories — malware, phishing, gambling, adult, social, DoH bypass — each list verified and reported separately, with an allowlist. Optionally it becomes every DHCP client's resolver and can't be bypassed with a hard-coded DNS server, DNS-over-TLS or Firefox's automatic DoH. With query logging on, NXDOMAIN bursts, random-looking (DGA) lookups and malware/phishing lookups feed the AI IDS.
 - **📡 IoT discovery and isolation.** Finds the smart plugs, cameras and speakers in chosen zones (DHCP leases, ARP, mDNS service discovery, IEEE vendor registry), explains every "this is IoT" verdict, and can isolate a device by MAC address in the router's firewall — internet-only or fully blocked — automatically or with one click.
 - **📱 App identification and blocking.** Shows which apps (Netflix, TikTok, Steam, Zoom and ~40 others) each client used in the last 24 hours, from the names it looks up and, optionally, the TLS server names the XDP program sees — nothing is decrypted. Any app can be blocked with one checkbox: the resolver refuses all of its names, and optionally the XDP filter drops its TLS connections too.
+- **⏰ Time-based rules.** Any firewall rule can apply only on chosen days and times — "no internet for the kids' tablets on school nights", "SSH only during office hours" — per device by MAC address, optionally cutting connections that were already open. Rendered correctly for the kernel's UTC clocks and kept right across daylight-saving changes.
 - **🧩 Real privilege separation, not just a warning label.** The FastAPI + Jinja2 WebUI runs unprivileged, full stop. Every root-level action — nftables reload, interface addressing, DHCP config, package updates, hardware queries — goes through one locked-down, protocol-validated JSON Unix socket to `fr-apply-helper`. The WebUI process cannot escalate even if fully compromised; it simply has no path to root.
 - **📊 Built-in, dependency-free Prometheus exporter.** `GET /metrics` in real Prometheus text format, written with plain string formatting against `/proc`, `/sys`, and `os.statvfs` — no `prometheus_client`, no `psutil`, no extra runtime weight. A ready-to-import Grafana dashboard ships in [`telemetry/grafana-dashboard.json`](telemetry/grafana-dashboard.json).
 
@@ -102,7 +103,7 @@ A real, importable dashboard (stat tiles, throughput graphs, hardware gauges) is
 python3 -m pytest
 ```
 
-815 tests pass as of the latest phase (1 skipped, gated on a `dmidecode` binary this dev sandbox doesn't have installed — see ARCHITECTURE.md). Wherever the target environment allows it, tests exercise the real thing instead of a mock: real `nft` ruleset loading and rollback, real kernel-set timeouts (ZTNA sessions, the brute-force jail, AI IDS quarantine), real filesystem-permission checks (e.g. confirming `/proc/net/nf_conntrack` really is root-only before relying on that boundary). IoT isolation is tested on the wire: two network namespaces routed through the actual generated ruleset, with TCP connections and a real mDNS exchange. DNS filtering is tested against a real dnsmasq, whose real query log drives the AI IDS in the same test. The XDP program is loaded into the running kernel and fed real TLS handshakes across three network namespaces (client, router, server), which is how the phase 4 attach-direction mistake was caught. The eBPF/XDP C code is written and commented specifically to satisfy the kernel's static verifier — bounded loops, explicit range checks — and is checked against a real packet-capture integration test, not just compiled.
+850 tests pass as of the latest phase (1 skipped, gated on a `dmidecode` binary this dev sandbox doesn't have installed — see ARCHITECTURE.md). Wherever the target environment allows it, tests exercise the real thing instead of a mock: real `nft` ruleset loading and rollback, real kernel-set timeouts (ZTNA sessions, the brute-force jail, AI IDS quarantine), real filesystem-permission checks (e.g. confirming `/proc/net/nf_conntrack` really is root-only before relying on that boundary). IoT isolation is tested on the wire: two network namespaces routed through the actual generated ruleset, with TCP connections and a real mDNS exchange. DNS filtering is tested against a real dnsmasq, whose real query log drives the AI IDS in the same test. The XDP program is loaded into the running kernel and fed real TLS handshakes across three network namespaces (client, router, server), which is how the phase 4 attach-direction mistake was caught. The eBPF/XDP C code is written and commented specifically to satisfy the kernel's static verifier — bounded loops, explicit range checks — and is checked against a real packet-capture integration test, not just compiled.
 
 Config changes are never a one-way door: every real (non-dry-run) apply snapshots the previous ruleset first, keeping the last 10 versions under `/etc/fr_os/backups/` for `firewall-cli rollback`.
 
@@ -205,6 +206,27 @@ firewall-cli apps-status               # apps used in the last 24 hours
 If you also use the XDP SNI filter, attach it to the **LAN-side**
 interfaces: XDP only sees packets an interface receives.
 
+## Time-based rules (phase 17)
+
+Add a `schedule` to any rule (see
+[docs/CONFIG_SCHEMA.md](docs/CONFIG_SCHEMA.md#schedules-phase-17)) or use
+the schedule fields on the `/rules` screen:
+
+```yaml
+timezone: Europe/Budapest
+rules:
+  - name: kids-bedtime
+    action: reject
+    from_zone: lan
+    to_zone: wan
+    src_mac: aa:bb:cc:dd:ee:01
+    schedule: {days: [weekdays], start: "21:30", end: "06:30", cut_established: true}
+```
+
+```bash
+sudo systemctl enable --now fr-schedule-check.timer   # keeps schedules right across DST
+```
+
 ## AI IDS/IPS (phase 11)
 
 Real-time, kernel-assisted anomaly detection: a separate `fr-ai-ids`
@@ -236,6 +258,7 @@ pfSense and OPNsense are mature, FreeBSD-based projects with a much larger drive
 | Category DNS filtering + DGA detection | Built in (verified category lists, allowlist, DNS enforcement, DGA/NXDOMAIN signals into the IDS) | pfBlockerNG / Zenarmor add-ons |
 | IoT device discovery / isolation | Built in (vendor + mDNS + hostname classification, MAC-keyed firewall isolation) | Manual (aliases, VLANs) or third-party packages |
 | Application identification / blocking | Built in (DNS + SNI names, 41-app catalog, one-click resolver/XDP blocking) | Zenarmor / Suricata add-ons |
+| Time-based rules | Built in (per-rule schedules, per-device MAC matching, DST-safe) | Built in (schedules) |
 | Prometheus metrics | Native `/metrics`, zero extra packages | Needs a community package (`node_exporter` et al.) |
 | Live image size | ~328 MB hybrid BIOS+UEFI | Multi-hundred-MB to several GB installer images |
 | Config model | One YAML file, plain-text diffable, versioned rollback | XML config, less diff-friendly |
@@ -348,6 +371,13 @@ to apps per client, and one-click app blocking in the resolver and
 optionally the XDP blocklist. Also corrected phase 4's advice to attach
 XDP on the WAN side (it must be the LAN side), proven with a
 three-namespace real-packet test.
+
+**Phase 17 (time-based rules)** — done. Per-rule schedules in a
+configurable time zone, rendered for the kernel's actual clocks (UTC
+`meta hour`, `sys_tz`-shifted `meta day`), an hourly DST refresh that
+never applies unapplied edits, optional cutting of open connections, and
+MAC-based rule matching; verified against the real kernel in five time
+zones.
 
 Full rationale for every phase: [ARCHITECTURE.md](ARCHITECTURE.md).
 

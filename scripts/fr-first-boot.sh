@@ -67,6 +67,7 @@ systemctl enable --now fr-ai-ids
 systemctl enable --now fr-iot-scan.timer
 systemctl enable --now fr-xdp-sni-logger
 systemctl enable --now fr-appid
+systemctl enable --now fr-schedule-check.timer
 systemctl enable --now fr-update-helper.socket
 
 mkdir -p "$CONFIG_DIR"

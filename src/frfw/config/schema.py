@@ -57,6 +57,28 @@ class Zone:
 
 
 @dataclass(frozen=True)
+class RuleSchedule:
+    """When a rule applies (phase 17, see frfw.nft.schedule), in the
+    config's `timezone`.
+
+    `days` are weekday indexes, 0 = Monday. `start`/`end` are minutes
+    after local midnight; `end` may be 1440 (24:00). An `end` at or
+    before `start` means the window runs past midnight into the next
+    day: Friday 22:00-06:00 ends Saturday 06:00.
+
+    `cut_established` (drop/reject rules only) moves the rule ahead of
+    the chain's `ct state established,related accept`, so connections
+    opened before the window started are cut too, not only new ones.
+    Such rules are evaluated before every ordinary rule.
+    """
+
+    days: tuple[int, ...]
+    start: int
+    end: int
+    cut_established: bool = False
+
+
+@dataclass(frozen=True)
 class Rule:
     """A filter rule. `from_zone`/`to_zone` of `None` mean "any zone".
 
@@ -84,6 +106,10 @@ class Rule:
     dst_address: str | None = None
     log: bool = False
     require_ztna: bool = False
+    #: Source MAC address (lowercase aa:bb:cc:dd:ee:ff), phase 17 -- names
+    #: a device regardless of the address DHCP gave it.
+    src_mac: str | None = None
+    schedule: RuleSchedule | None = None
 
 
 @dataclass(frozen=True)
@@ -409,3 +435,6 @@ class Config:
     adblocker: AdblockerConfig = field(default_factory=AdblockerConfig)
     iot: IotConfig = field(default_factory=IotConfig)
     app_control: AppControlConfig = field(default_factory=AppControlConfig)
+    #: IANA time zone rule schedules are written in (phase 17); None =
+    #: the router's own local zone.
+    timezone: str | None = None

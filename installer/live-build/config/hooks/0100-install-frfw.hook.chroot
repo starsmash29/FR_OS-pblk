@@ -30,7 +30,9 @@ for unit in \
     fr-adblock-dns.service \
     fr-adblock-refresh.service \
     fr-adblock-refresh.timer \
-    fr-appid.service
+    fr-appid.service \
+    fr-schedule-check.service \
+    fr-schedule-check.timer
 do
     install -m 0644 "/opt/frfw-src/systemd/$unit" "/etc/systemd/system/$unit"
 done

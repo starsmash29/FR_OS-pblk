@@ -2315,11 +2315,110 @@ completeness for any given app; v2fly's lists are community-maintained.
 - Coarse by design: a shared CDN name not in any list is unattributed, and
   an app using a name also used by another service is attributed to one.
 - Blocking is per resolver, for every client -- no per-device or
-  time-based app policy yet (time-based rules are phase 17's topic).
+  time-based app policy (phase 17's time-based rules act on firewall
+  rules, not on the resolver).
 - Blocking an app through DNS does not end connections already open, and a
   client with a cached answer keeps working until it expires.
 - QUIC/HTTP-3 SNIs are invisible to XDP; DNS observation still covers them
   when the client uses the router's resolver.
+
+## Time-based rules (phase 17)
+
+Goal: "granular policy" for a home or small office -- a rule that only
+applies at certain times ("no internet for the kids' tablets on school
+nights after 21:30", "SSH to the router only during office hours"),
+optionally tied to a device by MAC address rather than an IP that DHCP
+may change.
+
+### Corrections found before writing any rule, up front
+
+nftables has `meta day` and `meta hour`, so the obvious implementation is
+to write `meta hour "21:30"-"06:30"` and be done. Checked against the
+real `nft` 1.0.9 binary and the kernel source (net/netfilter/nft_meta.c),
+that is wrong in three ways:
+
+1. **`meta hour` is UTC in the kernel.** The `nft` tool converts the
+   written time using *its own process's* time zone when the ruleset is
+   loaded (loading the same file with `TZ=Europe/Budapest` stored 06:00
+   UTC for "08:00", with `TZ=UTC` 08:00). The result depends on the
+   environment of whoever ran nft, and after every daylight-saving change
+   the loaded rule is an hour off until something reloads it.
+2. **`meta day` uses a different clock.** `nft_meta_weekday()` computes
+   the weekday from UTC shifted by the kernel's own time zone (`sys_tz`,
+   set via settimeofday -- 0 on this machine, but systemd sets it to the
+   local offset when the RTC keeps local time), while `nft_meta_hour()`
+   uses plain UTC. Near midnight the two disagree about which day it is,
+   so "Monday 23:30-24:00" in UTC+2 would match on the wrong day.
+3. **A time rule never ends a connection.** Rules sit after the chain's
+   `ct state established,related accept`, so a stream opened at 21:29
+   keeps running through a 21:30 block.
+
+### How it works
+
+- `frfw.nft.schedule` converts each local weekly window to UTC with the
+  configured zone's *current* offset, cuts it wherever either UTC or the
+  kernel's day clock crosses midnight, and renders each piece as the
+  kernel's day name(s) plus a UTC hour range; pieces with the same hours
+  are grouped into one `meta day { ... }` set and adjacent ranges merged.
+  A scheduled rule becomes one nft line per piece, all with the rule's
+  comment. The kernel zone is read with gettimeofday(2).
+- `frfw.apply` runs every ruleset load and listing with `TZ=UTC`, so nft
+  leaves those hour values alone and backups round-trip unchanged.
+- `apply` records the offset it rendered for (`/etc/fr_os/
+  schedule_state.json`, with a fingerprint of the applied config). The
+  hourly `fr-schedule-check.timer` re-applies when the offset or kernel
+  zone has changed -- but refuses when config.yaml no longer matches the
+  applied config, so an edit saved in the webUI but not yet applied is
+  never put live behind the admin's back; it says so instead.
+- `cut_established` (drop/reject only) places a scheduled rule ahead of
+  the established-connection accept, like the IoT isolation rules, so
+  open connections are cut when the window starts. Those rules are
+  evaluated before all ordinary rules, which the webUI states.
+- Rules gained `src_mac` (`ether saddr`, already proven in the `inet`
+  forward and input hooks by phase 14).
+- The webUI's rule form has day checkboxes, from/until times, the cut
+  option and the MAC field; the rule list shows each schedule and whether
+  it is active right now; a time zone field shows the router's current
+  time. `tzdata` joined the live image's package list.
+
+### Verification
+
+- **The conversion against a reference, every minute of the week:**
+  random schedules (days, start, end, wrap-around) under offsets including
+  +05:30, +05:45, +12:45 and -10:00 and several kernel zones; for every
+  minute, the reference "is the local time inside the window" agrees with
+  a simulation of what the kernel decides for the rendered pieces.
+- **The real kernel, now:** `tests/test_schedule_live.py` loads rendered
+  rules into a network namespace with `TZ=UTC nft`, sends a packet through
+  each and compares the kernel's counters with the reference, in five
+  zones (UTC, Budapest, Los Angeles, Kolkata, Chatham). Checked by hand
+  that it is not vacuous: rendering with the offset ignored fails it in
+  all three non-UTC zones tried.
+- **The kernel time zone, by hand:** with `sys_tz` set to UTC+10 through
+  settimeofday (after a first zero-offset call, so the kernel's one-time
+  clock warp could not move the clock -- it didn't, and `sys_tz` was put
+  back to 0), the compensated rendering matched the kernel in three zones
+  and the uncompensated one failed in all three.
+- `nft -c` on a ruleset with scheduled and cut rules (an odd +05:45 offset
+  with a non-zero kernel zone), unit tests for parsing, rendering, rule
+  placement, the refresh check's decisions, apply recording and clearing
+  the record, the CLI, and the webUI routes.
+
+Not verified: an actual DST transition on a running router (the refresh
+logic is tested with injected offsets), and systemd's handling of
+`sys_tz` on a real local-time-RTC machine (the compensation itself was
+tested on the real kernel).
+
+### Open issues
+
+- Time-based *app* blocking (phase 16) is not covered: app blocking lives
+  in the DNS resolver, which has no notion of time. A scheduled firewall
+  rule can cut a device's internet access, not a single app.
+- Between a DST change and the next hourly check (at most ~2 minutes past
+  the hour, when the switch happens on the hour) the rules are an hour
+  off.
+- IPv6 is still out of scope for rules as a whole (see Known limitations
+  in docs/CONFIG_SCHEMA.md).
 
 ## Open decisions
 

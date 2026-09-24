@@ -10,7 +10,9 @@ rollback is attempted -- if step 2 fails, step 1's effects stand, and the
 error says which step failed and that later steps were not attempted):
 
 1. Interface static addresses (`frfw.ifaddr`)
-2. nftables ruleset, backing up the previous one first (`frfw.apply`) --
+2. nftables ruleset, backing up the previous one first (`frfw.apply`),
+   with scheduled rules rendered for the current UTC offset and that
+   offset recorded for the hourly DST check (`frfw.schedule_refresh`) --
    bracketed by a brute-force jail snapshot/restore, an AI IDS
    quarantine snapshot/restore, and a ZTNA session snapshot/restore (see
    step 5's comment and `frfw.bruteforce`/`frfw.ids_quarantine`/
@@ -41,11 +43,23 @@ import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
 
-from frfw import bruteforce, ids_quarantine, ifaddr, iot_isolation, kea, paths, pqc, xdp, ztna
+from frfw import (
+    bruteforce,
+    ids_quarantine,
+    ifaddr,
+    iot_isolation,
+    kea,
+    paths,
+    pqc,
+    schedule_refresh,
+    xdp,
+    ztna,
+)
 from frfw.adblock import dns_service as adblock_dns
 from frfw.apply import apply_ruleset
 from frfw.config.schema import Config
 from frfw.nft import build_ruleset
+from frfw.nft.schedule import current_clock
 
 
 @dataclass(frozen=True)
@@ -65,13 +79,20 @@ def apply_all(
     adblock_hosts_path: Path = paths.ADBLOCK_HOSTS_PATH,
     adblock_dnsmasq_conf_path: Path = paths.ADBLOCK_DNSMASQ_CONF_PATH,
     adblock_category_dir: Path = paths.ADBLOCK_CATEGORY_DIR,
+    schedule_state_path: Path = paths.SCHEDULE_STATE_PATH,
 ) -> ProvisionResult:
     messages = []
 
     addr_result = ifaddr.sync_addresses(config, dry_run=dry_run)
     messages.append(addr_result.message)
 
-    ruleset = build_ruleset(config)
+    # Phase 17: scheduled rules are rendered for the offset in effect now;
+    # the same clock is recorded below so the hourly schedule-check can
+    # spot a DST change (frfw.schedule_refresh).
+    schedule_clock = (
+        current_clock(config.timezone) if schedule_refresh.has_schedules(config) else None
+    )
+    ruleset = build_ruleset(config, clock=schedule_clock)
     # Step 2's `nft -f` reload does `flush ruleset` first (see
     # frfw.nft.builder's docstring), which wipes both the brute-force
     # jail and the ZTNA gate's authorized-clients set along with
@@ -111,6 +132,16 @@ def apply_all(
 
     nft_result = apply_ruleset(ruleset, dry_run=dry_run, backup_dir=backup_dir)
     messages.append(nft_result.message)
+    if schedule_clock is not None:
+        scheduled = sum(1 for r in config.rules if r.schedule is not None)
+        zone = config.timezone or "system local time"
+        messages.append(
+            f"Scheduled rules: {scheduled}, rendered for {schedule_clock.describe()} ({zone})"
+        )
+        if not dry_run:
+            schedule_refresh.record_applied(config, schedule_clock, schedule_state_path)
+    elif not dry_run:
+        schedule_refresh.clear_record(schedule_state_path)
 
     bruteforce_preserved = 0
     if preserve_bruteforce and bruteforce_snapshot:

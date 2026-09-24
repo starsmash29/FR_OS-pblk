@@ -22,6 +22,16 @@ from pathlib import Path
 from frfw import paths
 
 
+def _nft_env() -> dict[str, str]:
+    """Environment for every ruleset load/list: TZ=UTC. `nft` converts
+    `meta hour` values between the text it reads/prints and the kernel's
+    UTC representation using its own process time zone; frfw writes
+    scheduled rules in UTC already (frfw.nft.schedule), so nft must not
+    shift them -- and a backup listed and later restored must round-trip
+    through the same zone."""
+    return {**os.environ, "TZ": "UTC"}
+
+
 class NftError(Exception):
     """Raised when the `nft` binary rejects a ruleset or fails to apply it."""
 
@@ -46,7 +56,7 @@ def capture_running_ruleset() -> str:
     """Return the ruleset currently loaded in the kernel (`nft list ruleset`)."""
     try:
         proc = subprocess.run(
-            ["nft", "list", "ruleset"], capture_output=True, text=True
+            ["nft", "list", "ruleset"], capture_output=True, text=True, env=_nft_env()
         )
     except FileNotFoundError as exc:
         raise NftError("'nft' binary not found; install the nftables package") from exc
@@ -143,6 +153,7 @@ def _run_nft(args: list[str], stdin_text: str) -> None:
             input=stdin_text,
             capture_output=True,
             text=True,
+            env=_nft_env(),
         )
     except FileNotFoundError as exc:
         raise NftError("'nft' binary not found; install the nftables package") from exc
