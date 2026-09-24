@@ -25,6 +25,8 @@ from frfw.config.schema import (
     DhcpPool,
     DhcpReservation,
     Interface,
+    IotConfig,
+    IotIsolationMode,
     Masquerade,
     NatConfig,
     PortForward,
@@ -108,6 +110,7 @@ def parse_config(raw: Any) -> Config:
     ztna = _parse_ztna(raw.get("ztna", {}) or {})
     pqc = _parse_pqc(raw.get("pqc", {}) or {})
     adblocker = _parse_adblocker(raw.get("adblocker", {}) or {})
+    iot = _parse_iot(raw.get("iot", {}) or {}, zones, nat)
 
     return Config(
         version=version,
@@ -123,6 +126,7 @@ def parse_config(raw: Any) -> Config:
         ztna=ztna,
         pqc=pqc,
         adblocker=adblocker,
+        iot=iot,
     )
 
 
@@ -653,6 +657,79 @@ def _parse_adblocker(raw: Any) -> AdblockerConfig:
         enabled=enabled,
         source_urls=source_urls,
         xdp_critical_limit=xdp_critical_limit,
+    )
+
+
+def _parse_mac_list(raw: Any, what: str) -> list[str]:
+    if not isinstance(raw, list):
+        raise ConfigError(f"{what} must be a list")
+    macs: list[str] = []
+    for i, mac in enumerate(raw):
+        if not isinstance(mac, str) or not _MAC_RE.match(mac):
+            raise ConfigError(f"{what}[{i}]: invalid MAC address {mac!r}")
+        mac = mac.lower()
+        if mac not in macs:
+            macs.append(mac)
+    return macs
+
+
+def _parse_iot(raw: Any, zones: dict[str, Zone], nat: NatConfig) -> IotConfig:
+    if not isinstance(raw, dict):
+        raise ConfigError("'iot' must be a mapping")
+
+    enabled = raw.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ConfigError("iot.enabled must be a boolean")
+
+    zones_raw = raw.get("zones", [])
+    if not isinstance(zones_raw, list):
+        raise ConfigError("iot.zones must be a list of zone names")
+    internet_zones = {m.out_zone for m in nat.masquerade}
+    iot_zones: list[str] = []
+    for zone in zones_raw:
+        if not isinstance(zone, str) or zone not in zones:
+            raise ConfigError(f"iot.zones: undefined zone {zone!r}")
+        if zone in internet_zones:
+            raise ConfigError(
+                f"iot.zones: {zone!r} is an internet-facing (nat.masquerade) zone; "
+                "list the LAN-side zone(s) your devices live in instead"
+            )
+        if zone not in iot_zones:
+            iot_zones.append(zone)
+    if enabled and not iot_zones:
+        raise ConfigError("iot.enabled is true but iot.zones is empty")
+
+    auto_isolate = raw.get("auto_isolate", False)
+    if not isinstance(auto_isolate, bool):
+        raise ConfigError("iot.auto_isolate must be a boolean")
+
+    mode_raw = raw.get("isolation_mode", IotIsolationMode.INTERNET_ONLY.value)
+    try:
+        isolation_mode = IotIsolationMode(mode_raw)
+    except ValueError as exc:
+        raise ConfigError(
+            f"iot.isolation_mode: invalid value {mode_raw!r}; "
+            f"expected one of {[m.value for m in IotIsolationMode]}"
+        ) from exc
+    if enabled and isolation_mode == IotIsolationMode.INTERNET_ONLY and not internet_zones:
+        raise ConfigError(
+            "iot.isolation_mode 'internet_only' needs at least one nat.masquerade "
+            "entry to know which zone is the internet; add one or use 'block'"
+        )
+
+    trusted = _parse_mac_list(raw.get("trusted_macs", []), "iot.trusted_macs")
+    isolated = _parse_mac_list(raw.get("isolated_macs", []), "iot.isolated_macs")
+    overlap = sorted(set(trusted) & set(isolated))
+    if overlap:
+        raise ConfigError(f"iot: MAC(s) listed as both trusted and isolated: {overlap}")
+
+    return IotConfig(
+        enabled=enabled,
+        zones=iot_zones,
+        auto_isolate=auto_isolate,
+        isolation_mode=isolation_mode,
+        trusted_macs=trusted,
+        isolated_macs=isolated,
     )
 
 

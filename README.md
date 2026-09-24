@@ -21,6 +21,7 @@ Design decisions and the phase-by-phase development plan:
 - **🛡️ Local AI IDS/IPS.** A pure-stdlib (no scikit-learn/pandas/numpy) sliding-window anomaly detector profiles each source IP's connection rate, destination diversity, and SNI-blocklist-hit frequency against its own recent baseline, entirely offline. A flagged IP is quarantined straight into the kernel via the same privileged Unix-socket helper every other enforcement path uses.
 - **⚛️ Post-quantum-ready management plane.** Hybrid classical + post-quantum key exchange — `X25519MLKEM768` for the WebUI's TLS 1.3, `mlkem768x25519-sha256` for OpenSSH 9.9+ — protecting the *management* layer against harvest-now-decrypt-later, with automatic, disclosed fallback to classical-only on older OpenSSL/OpenSSH.
 - **🚫 Local, dual-layer ad-blocking.** A dedicated `dnsmasq` instance serves deduped hosts-format blocklists for the whole LAN, with an optional "critical" subset also pushed into the same in-kernel XDP LPM trie the SNI filter uses.
+- **📡 IoT discovery and isolation.** Finds the smart plugs, cameras and speakers in chosen zones (DHCP leases, ARP, mDNS service discovery, IEEE vendor registry), explains every "this is IoT" verdict, and can isolate a device by MAC address in the router's firewall — internet-only or fully blocked — automatically or with one click.
 - **🧩 Real privilege separation, not just a warning label.** The FastAPI + Jinja2 WebUI runs unprivileged, full stop. Every root-level action — nftables reload, interface addressing, DHCP config, package updates, hardware queries — goes through one locked-down, protocol-validated JSON Unix socket to `fr-apply-helper`. The WebUI process cannot escalate even if fully compromised; it simply has no path to root.
 - **📊 Built-in, dependency-free Prometheus exporter.** `GET /metrics` in real Prometheus text format, written with plain string formatting against `/proc`, `/sys`, and `os.statvfs` — no `prometheus_client`, no `psutil`, no extra runtime weight. A ready-to-import Grafana dashboard ships in [`telemetry/grafana-dashboard.json`](telemetry/grafana-dashboard.json).
 
@@ -98,7 +99,7 @@ A real, importable dashboard (stat tiles, throughput graphs, hardware gauges) is
 python3 -m pytest
 ```
 
-576 tests pass as of the latest phase (1 skipped, gated on a `dmidecode` binary this dev sandbox doesn't have installed — see ARCHITECTURE.md). Wherever the target environment allows it, tests exercise the real thing instead of a mock: real `nft` ruleset loading and rollback, real kernel-set timeouts (ZTNA sessions, the brute-force jail, AI IDS quarantine), real filesystem-permission checks (e.g. confirming `/proc/net/nf_conntrack` really is root-only before relying on that boundary). The eBPF/XDP C code is written and commented specifically to satisfy the kernel's static verifier — bounded loops, explicit range checks — and is checked against a real packet-capture integration test, not just compiled.
+673 tests pass as of the latest phase (1 skipped, gated on a `dmidecode` binary this dev sandbox doesn't have installed — see ARCHITECTURE.md). Wherever the target environment allows it, tests exercise the real thing instead of a mock: real `nft` ruleset loading and rollback, real kernel-set timeouts (ZTNA sessions, the brute-force jail, AI IDS quarantine), real filesystem-permission checks (e.g. confirming `/proc/net/nf_conntrack` really is root-only before relying on that boundary). IoT isolation is tested on the wire: two network namespaces routed through the actual generated ruleset, with TCP connections and a real mDNS exchange. The eBPF/XDP C code is written and commented specifically to satisfy the kernel's static verifier — bounded loops, explicit range checks — and is checked against a real packet-capture integration test, not just compiled.
 
 Config changes are never a one-way door: every real (non-dry-run) apply snapshots the previous ruleset first, keeping the last 10 versions under `/etc/fr_os/backups/` for `firewall-cli rollback`.
 
@@ -169,6 +170,23 @@ the self-signed certificate until you replace it with a real one
 fr-webui --host 127.0.0.1 --port 8443 --config examples/config.yaml
 ```
 
+## IoT devices (phase 14)
+
+Enable it in YAML (`iot: {enabled: true, zones: [lan]}`, see
+[docs/CONFIG_SCHEMA.md](docs/CONFIG_SCHEMA.md#iot)) or on the `/iot`
+screen, apply, then:
+
+```bash
+sudo systemctl enable --now fr-iot-scan.timer   # scan every 10 minutes
+sudo apt-get install ieee-data                  # optional: vendor names
+
+# Currently isolated MAC addresses
+sudo firewall-cli iot-status
+```
+
+Nothing is isolated until you turn on `auto_isolate` or isolate a device
+yourself -- review the inventory first.
+
 ## AI IDS/IPS (phase 11)
 
 Real-time, kernel-assisted anomaly detection: a separate `fr-ai-ids`
@@ -197,6 +215,7 @@ pfSense and OPNsense are mature, FreeBSD-based projects with a much larger drive
 | Zero Trust network access | Built in (`/ztna/login` + kernel-enforced sessions) | Needs a third-party package or external IdP integration |
 | AI-based anomaly detection / auto-quarantine | Built in, 100% local, no cloud/telemetry | Not built in |
 | Post-quantum key exchange (mgmt plane) | Built in (`X25519MLKEM768`, `mlkem768x25519-sha256`), with disclosed classical fallback | Not available |
+| IoT device discovery / isolation | Built in (vendor + mDNS + hostname classification, MAC-keyed firewall isolation) | Manual (aliases, VLANs) or third-party packages |
 | Prometheus metrics | Native `/metrics`, zero extra packages | Needs a community package (`node_exporter` et al.) |
 | Live image size | ~328 MB hybrid BIOS+UEFI | Multi-hundred-MB to several GB installer images |
 | Config model | One YAML file, plain-text diffable, versioned rollback | XML config, less diff-friendly |
@@ -289,6 +308,12 @@ minis, Lenovo Tiny clients) as well as legacy BIOS, from the same
 (`installer/make-hybrid-uefi-iso.sh`) that adds a real GRUB 2 EFI boot
 path and GPT EFI System Partition on top of the existing, unchanged
 isolinux/BIOS path — under 1 MB of size overhead on the ~327 MB image.
+
+**Phase 14 (IoT device discovery and isolation)** — done. Inventory from
+DHCP leases, ARP and mDNS; transparent point-based classification with
+stated reasons; MAC-keyed isolation (`internet_only` or `block`) in the
+router's own nftables ruleset, decided by an unprivileged scanner and
+enforced through the privileged helper.
 
 Full rationale for every phase: [ARCHITECTURE.md](ARCHITECTURE.md).
 

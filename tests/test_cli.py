@@ -302,3 +302,28 @@ def test_update_rollback_invokes_rollback_update(monkeypatch, capsys):
 
     assert exit_code == 0
     assert "0.1.0" in out
+
+
+def test_iot_status_lists_isolated_macs(monkeypatch, capsys):
+    import frfw.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "list_isolated", lambda: ["aa:bb:cc:dd:ee:02", "aa:bb:cc:dd:ee:01"])
+    assert main(["iot-status"]) == 0
+    out = capsys.readouterr().out
+    assert out.splitlines() == [
+        "IoT isolation: currently isolated devices:",
+        "  aa:bb:cc:dd:ee:01",
+        "  aa:bb:cc:dd:ee:02",
+    ]
+
+
+def test_iot_status_nft_error_returns_1(monkeypatch, capsys):
+    import frfw.cli as cli_mod
+    from frfw.iot_isolation import IotIsolationError
+
+    def boom():
+        raise IotIsolationError("'nft' binary not found; install the nftables package")
+
+    monkeypatch.setattr(cli_mod, "list_isolated", boom)
+    assert main(["iot-status"]) == 1
+    assert "IoT isolation error" in capsys.readouterr().err

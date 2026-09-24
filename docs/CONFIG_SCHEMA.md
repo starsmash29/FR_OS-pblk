@@ -24,6 +24,7 @@ rules: [...]         # optional, default: []
 nat: {...}           # optional, default: empty
 dhcp: {...}          # optional, default: empty
 ai_ids: {...}        # optional, default: empty (disabled)
+iot: {...}           # optional, default: empty (disabled)
 ```
 
 ## `interfaces`
@@ -158,6 +159,45 @@ Note: `enabled`/`excluded_macs`/`quarantine_duration_seconds` are only
 picked up when the `fr-ai-ids` daemon (re)starts -- like several other
 subsystems in this project (e.g. the PQC hybrid TLS setting), saving
 this section does not hot-reload the running daemon.
+
+## `iot`
+
+Light-weight IoT device discovery and isolation (phase 14, see
+`frfw.iot` and
+[ARCHITECTURE.md](../ARCHITECTURE.md#iot-device-discovery-and-isolation-phase-14)).
+A periodic scan (`fr-iot-scan.timer`, every 10 minutes, or the webUI's
+"Scan now") inventories the devices in `zones` from DHCP leases, the ARP
+table and an mDNS service query, classifies each one, and keeps the
+kernel's `iot_isolated` MAC set in sync with the decision.
+
+```yaml
+iot:
+  enabled: true                   # optional, default: false
+  zones: [lan]                    # required when enabled; zones to inventory -- never a nat.masquerade zone
+  auto_isolate: false             # optional, default: false (discover and classify only)
+  isolation_mode: internet_only   # optional, default: internet_only; internet_only | block
+  trusted_macs:                   # optional, default: []; never isolated
+    - aa:bb:cc:dd:ee:01
+  isolated_macs:                  # optional, default: []; always isolated
+    - aa:bb:cc:dd:ee:02
+```
+
+- `internet_only`: an isolated device can still reach the zone(s) a
+  `nat.masquerade` entry points at (so at least one is required), but no
+  other zone and no router service except DHCP and DNS.
+- `block`: an isolated device gets DHCP and DNS from the router, nothing
+  else.
+- A MAC may not be both trusted and isolated; MACs are normalized to
+  lowercase.
+- mDNS discovery only runs on IoT-zone interfaces that have a static
+  `address`; without one, DHCP leases and ARP entries are still used.
+- Isolation is enforced by this router's firewall, so it covers traffic
+  routed *through* it. Two devices on the same switch/Wi-Fi segment can
+  still talk to each other directly -- use a dedicated zone (for example
+  a VLAN interface such as `eth1.30`) for real layer-2 separation.
+- Settings take effect on the next `apply` (the set and its rules are
+  only in the ruleset while `enabled` is true); trust/isolate changes made
+  from the webUI are re-applied immediately.
 
 ## Known limitations
 

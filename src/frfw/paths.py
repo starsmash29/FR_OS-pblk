@@ -148,3 +148,11 @@ ADBLOCK_DNSMASQ_CONF_PATH = Path("/etc/fr_os/dnsmasq_adblock.conf")
 
 #: systemd unit name for frfw's dedicated dnsmasq instance (see above).
 ADBLOCK_DNS_SERVICE_NAME = "fr-adblock-dns"
+
+#: IoT device inventory (phase 14, see frfw.iot.scanner): the last
+#: scan's discovered devices, their classification and the reasons for
+#: it. Display-only state written by the unprivileged scanner (running
+#: as fr_os-webui, like AI_IDS_STATE_PATH) and read back by the webUI and
+#: the metrics exporter -- the enforcement state itself lives in the
+#: kernel's nftables set, never here.
+IOT_INVENTORY_PATH = WEBUI_STATE_DIR / "iot_inventory.json"

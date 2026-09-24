@@ -245,6 +245,36 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "id": 30,
+      "type": "row",
+      "title": "IoT",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 27 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 31,
+      "type": "bargauge",
+      "title": "Devices by classification",
+      "description": "fros_iot_devices{category} from the last IoT scan (phase 14).",
+      "gridPos": { "h": 6, "w": 16, "x": 0, "y": 28 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        { "expr": "fros_iot_devices", "legendFormat": "{{category}}", "refId": "A" }
+      ]
+    },
+    {
+      "id": 32,
+      "type": "stat",
+      "title": "IoT devices isolated",
+      "description": "MACs currently in the kernel iot_isolated set (phase 14).",
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 28 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        { "expr": "fros_iot_isolated_devices", "refId": "A" }
+      ]
     }
   ]
 }

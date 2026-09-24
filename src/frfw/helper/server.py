@@ -28,8 +28,10 @@ from pathlib import Path
 
 import yaml
 
-from frfw import bruteforce, conntrack, hwinfo, ids_quarantine, kea, paths, ztna
+from frfw import bruteforce, conntrack, hwinfo, ids_quarantine, iot_isolation, kea, paths, ztna
 from frfw.adblock import AdblockError
+from frfw.iot import leases as iot_leases
+from frfw.iot_isolation import IotIsolationError
 from frfw.adblock import refresh as adblock_refresh
 from frfw.apply import NftError, rollback_last
 from frfw.bruteforce import BruteforceError
@@ -116,11 +118,20 @@ def _handle_request(request: dict, server: "ApplyHelperServer") -> dict:
         if cmd == "hw_ram_info":
             return _handle_hw_ram_info()
 
+        if cmd == "dhcp_leases":
+            return _handle_dhcp_leases(server)
+
+        if cmd == "iot_sync_isolation":
+            return _handle_iot_sync_isolation(request, server)
+
+        if cmd == "iot_isolation_status":
+            return _handle_iot_isolation_status()
+
         return {"ok": False, "message": f"unknown command {cmd!r}"}
     except (
         ConfigError, NftError, IfaddrError, KeaError, ZtnaError, PqcError, AdblockError,
-        BruteforceError, IdsQuarantineError, ConntrackError, HwInfoError, FileNotFoundError,
-        yaml.YAMLError,
+        BruteforceError, IdsQuarantineError, ConntrackError, HwInfoError, IotIsolationError,
+        FileNotFoundError, yaml.YAMLError,
     ) as exc:
         return {"ok": False, "message": str(exc)}
 
@@ -245,6 +256,40 @@ def _handle_hw_ram_info() -> dict:
     return {"ok": True, "modules": modules}
 
 
+def _handle_dhcp_leases(server: "ApplyHelperServer") -> dict:
+    leases = [
+        {"ip": l.ip, "mac": l.mac, "hostname": l.hostname, "expire": l.expire}
+        for l in iot_leases.read_leases(server.kea_leases_path)
+    ]
+    return {"ok": True, "leases": leases, "count": len(leases)}
+
+
+def _handle_iot_sync_isolation(request: dict, server: "ApplyHelperServer") -> dict:
+    macs = request.get("macs")
+    if not isinstance(macs, list):
+        return {"ok": False, "message": "'macs' must be a list"}
+    normalized = iot_isolation.normalize_macs(macs)
+
+    config = load_config(server.config_path)
+    if not config.iot.enabled:
+        return {"ok": False, "message": "IoT isolation is disabled in the current config"}
+    trusted = set(config.iot.trusted_macs)
+    skipped = [m for m in normalized if m in trusted]
+    written = iot_isolation.sync_isolated([m for m in normalized if m not in trusted])
+    return {
+        "ok": True,
+        "message": f"{len(written)} device(s) isolated",
+        "isolated": written,
+        "count": len(written),
+        "skipped_trusted": skipped,
+    }
+
+
+def _handle_iot_isolation_status() -> dict:
+    isolated = iot_isolation.list_isolated()
+    return {"ok": True, "isolated": isolated, "count": len(isolated)}
+
+
 def _write_atomic(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_suffix(path.suffix + ".tmp")
@@ -281,6 +326,7 @@ class ApplyHelperServer(socketserver.UnixStreamServer):
         kea_config_path: Path = kea.KEA_CONFIG_PATH,
         ztna_state_path: Path = paths.ZTNA_STATE_PATH,
         adblock_hosts_path: Path = paths.ADBLOCK_HOSTS_PATH,
+        kea_leases_path: Path = iot_leases.KEA_LEASES_PATH,
         systemd_socket: socket.socket | None = None,
     ) -> None:
         self.config_path = config_path
@@ -288,6 +334,7 @@ class ApplyHelperServer(socketserver.UnixStreamServer):
         self.kea_config_path = kea_config_path
         self.ztna_state_path = ztna_state_path
         self.adblock_hosts_path = adblock_hosts_path
+        self.kea_leases_path = kea_leases_path
         self._owns_socket_file = systemd_socket is None
 
         if systemd_socket is not None:

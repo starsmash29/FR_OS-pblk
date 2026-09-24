@@ -43,11 +43,13 @@ losing one metric family.
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from frfw import paths
 from frfw import xdp as xdp_mod
 from frfw.adblock import count_blocked_domains
 from frfw.config.schema import Config
@@ -231,6 +233,41 @@ def _read_ai_ids_family(helper) -> MetricFamily:
     if status.get("ok"):
         fam.add(status.get("count", 0))
     return fam
+
+
+def _read_iot_families(config: Config, helper, inventory_path: Path) -> list[MetricFamily]:
+    """Phase 14. Device counts per category come from the scanner's
+    display-only inventory file (unprivileged read); the isolated count
+    is the live kernel set, via the helper, like every other enforcement
+    count on this endpoint. Nothing is emitted while IoT discovery is off."""
+    if not config.iot.enabled:
+        return []
+    devices = MetricFamily(
+        "fros_iot_devices",
+        "Devices found by the last IoT scan, by classification.",
+        "gauge",
+    )
+    counts = {"iot": 0, "general": 0, "unknown": 0}
+    try:
+        inventory = json.loads(inventory_path.read_text())
+        for device in inventory.get("devices", []):
+            category = device.get("category")
+            if category in counts:
+                counts[category] += 1
+    except (OSError, ValueError, AttributeError):
+        pass
+    for category, n in counts.items():
+        devices.add(n, category=category)
+
+    isolated = MetricFamily(
+        "fros_iot_isolated_devices",
+        "Devices currently isolated by MAC address in the kernel iot_isolated set.",
+        "gauge",
+    )
+    status = helper.iot_isolation_status()
+    if status.get("ok"):
+        isolated.add(status.get("count", 0))
+    return [devices, isolated]
 
 
 # --- hardware metrics: CPU, RAM, storage -----------------------------------
@@ -425,7 +462,13 @@ def _read_storage_families() -> list[MetricFamily]:
 # --- top-level entry point ---------------------------------------------------
 
 
-def generate_metrics_text(config: Config | None, helper, *, adblock_hosts_path: Path) -> str:
+def generate_metrics_text(
+    config: Config | None,
+    helper,
+    *,
+    adblock_hosts_path: Path,
+    iot_inventory_path: Path = paths.IOT_INVENTORY_PATH,
+) -> str:
     """The `GET /metrics` route's entire job: gather every metric family
     and render them as one Prometheus text-exposition-format response.
 
@@ -448,6 +491,7 @@ def generate_metrics_text(config: Config | None, helper, *, adblock_hosts_path: 
     if config is not None:
         collect(lambda: _read_interface_bytes_family(config))
         collect(lambda: _read_xdp_status_family(config))
+        collect(lambda: _read_iot_families(config, helper, iot_inventory_path))
 
     collect(_read_xdp_blocked_family)
     collect(lambda: _read_adblock_family(adblock_hosts_path))

@@ -30,6 +30,7 @@ firewall-update-helper = "frfw.helper.update_server:main"
 fr-webui = "frfw.webui.server:main"
 fr-xdp-sni-logger = "frfw.xdp:main"
 fr-ai-ids = "frfw.ai_ids.daemon:main"
+fr-iot-scan = "frfw.iot.scanner:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

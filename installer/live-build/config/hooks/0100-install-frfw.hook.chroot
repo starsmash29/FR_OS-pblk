@@ -22,6 +22,8 @@ for unit in \
     fr-apply-helper.service \
     fr-webui.service \
     fr-ai-ids.service \
+    fr-iot-scan.service \
+    fr-iot-scan.timer \
     fr-update-helper.socket \
     fr-update-helper.service
 do

@@ -925,3 +925,68 @@ Partition, and a `file`-confirmed valid PE32+ EFI binary inside it.
 Actually booting that ISO on real or virtual UEFI hardware, and Secure
 Boot support, are both open -- see ARCHITECTURE.md's open issues for
 this phase.
+
+## Phase 14 – IoT device discovery and isolation — **done**
+
+First of seven "next-gen homelab / small office" additions (phases
+14–20). Finds IoT devices in chosen zones, classifies them with a
+transparent point system, and can isolate them by MAC address in the
+router's own firewall. Full rationale:
+[ARCHITECTURE.md](ARCHITECTURE.md#iot-device-discovery-and-isolation-phase-14).
+
+- [x] **Inventory** (`frfw.iot.leases`, `frfw.iot.arp`, `frfw.iot.mdns`):
+      Kea DHCP leases (read by the privileged helper's new `dhcp_leases`
+      command -- the lease file belongs to Kea's user), the world-readable
+      ARP table, and a one-shot mDNS/DNS-SD service query per IoT-zone
+      interface, sent as an RFC 6762 "legacy unicast" query so replies
+      come back by unicast to one fixed port and the firewall needs one
+      narrow accept rule instead of opening mDNS. Bounded,
+      loop-safe DNS parser for the untrusted responses.
+- [x] **Classification** (`frfw.iot.classify`): IEEE OUI vendor (from
+      Debian's `ieee-data`, nothing bundled), advertised mDNS service
+      types, DHCP hostname, randomized-MAC bit -- each adds/subtracts
+      points with a stated reason; "iot" / "general" / "unknown".
+- [x] **Enforcement** (`frfw.iot_isolation`, `iot_isolated` nftables
+      set of `ether_addr`): `internet_only` or `block` mode, rules ahead of
+      `established` and of every config rule, DHCP/DNS always allowed,
+      atomic whole-set replacement per sync, snapshot/restore across
+      `flush ruleset` in `apply_all`. Decision made by the unprivileged
+      scanner (`fr-iot-scan`, `fr-iot-scan.timer` every 10 min, as
+      fr_os-webui); the helper's `iot_sync_isolation` drops trusted MACs
+      before touching the kernel.
+- [x] **Config** (`iot:` section): `enabled`, `zones`, `auto_isolate`
+      (off by default -- discover first, isolate on purpose),
+      `isolation_mode`, `trusted_macs`, `isolated_macs`, all validated.
+- [x] **WebUI** (`/iot`): settings, inventory with vendor/services/verdict
+      and every reason, live kernel isolation state, "Scan now", and
+      per-device Trust / Isolate / Clear that re-applies immediately.
+- [x] **Metrics**: `fros_iot_devices{category}`, `fros_iot_isolated_devices`.
+- [x] **CLI**: `firewall-cli iot-status`.
+- [x] Tests: config validation, all three sources (including the real
+      `ieee-data` file and real `/proc/net/arp`), hostile mDNS packets,
+      a real UDP round trip, classification, the scanner end to end with
+      injected I/O, helper commands, webUI routes, metrics -- and real
+      packet-level namespace tests (see below). Full suite: 673 passed,
+      1 skipped.
+
+**Corrections to the original idea**: "automatically move an unknown IoT
+device into a separate VLAN/zone" isn't something a router can do on its
+own (VLAN membership is set by the switch port/SSID). Implemented instead:
+MAC-keyed isolation in the router's firewall, which covers all traffic
+routed through it, plus clear documentation that same-segment traffic
+needs a dedicated VLAN zone. `auto_isolate` defaults to off so enabling
+the feature never cuts anything off before the admin has seen the
+inventory.
+
+**Acceptance criterion**: an IoT device in a configured zone is
+discovered and classified with visible reasons, and once isolated can no
+longer reach other zones or the router's services (and, in `block` mode,
+the internet), surviving any later config apply, while a trusted device
+is never isolated. ✅ Verified on the wire with two network namespaces
+routed through the actual generated ruleset: TCP connections fail once
+the real MAC is isolated and succeed again when cleared; a full reload
+releases the device and snapshot/restore re-isolates it; `internet_only`
+lets the internet through but not a router service despite an admin
+accept rule; a real mDNS exchange discovers the responder's services, and
+fails without the generated reply rule. Not verified against physical IoT
+hardware or a live Kea lease file.

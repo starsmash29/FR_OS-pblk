@@ -21,6 +21,7 @@ from frfw import bruteforce as bruteforce_mod
 from frfw import conntrack as conntrack_mod
 from frfw import hwinfo as hwinfo_mod
 from frfw import ids_quarantine as ids_quarantine_mod
+from frfw import iot_isolation as iot_isolation_mod
 from frfw import ztna as ztna_mod
 from frfw.admin_account import hash_password
 from frfw.helper import client
@@ -128,12 +129,26 @@ def running_server(tmp_path, monkeypatch):
     ztna_state_path = tmp_path / "ztna_state.json"
     adblock_hosts_path = tmp_path / "adblock.hosts"
 
+    # frfw.iot_isolation's real-nft behavior (and the real packet-level
+    # effect) is exercised in test_iot_isolation.py; here an in-memory
+    # list stands in for the kernel set, same reasoning as the fakes above.
+    iot_set: list[str] = []
+
+    def fake_sync_isolated(macs):
+        macs = iot_isolation_mod.normalize_macs(macs)
+        iot_set[:] = macs
+        return macs
+
+    monkeypatch.setattr(iot_isolation_mod, "sync_isolated", fake_sync_isolated)
+    monkeypatch.setattr(iot_isolation_mod, "list_isolated", lambda: list(iot_set))
+
     server = ApplyHelperServer(
         socket_path,
         config_path,
         backup_dir=backup_dir,
         ztna_state_path=ztna_state_path,
         adblock_hosts_path=adblock_hosts_path,
+        kea_leases_path=tmp_path / "kea-leases4.csv",
     )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -431,3 +446,54 @@ def test_hw_ram_info_relays_parsed_modules(running_server, monkeypatch):
         "ok": True,
         "modules": [{"part_number": "M471A1K43CB1-CTD", "speed_mhz": 2667}],
     }
+
+
+def _enable_iot(config_path: Path, trusted: list[str] | None = None) -> None:
+    text = config_path.read_text()
+    text += "\niot:\n  enabled: true\n  zones: [lan]\n"
+    if trusted:
+        text += "  trusted_macs: [" + ", ".join(trusted) + "]\n"
+    config_path.write_text(text)
+
+
+def test_dhcp_leases_empty_without_lease_file(running_server):
+    assert client.dhcp_leases(running_server) == {"ok": True, "leases": [], "count": 0}
+
+
+def test_dhcp_leases_relays_active_leases(running_server, tmp_path):
+    import time as _time
+
+    expire = int(_time.time()) + 600
+    (tmp_path / "kea-leases4.csv").write_text(
+        "address,hwaddr,client_id,valid_lifetime,expire,subnet_id,fqdn_fwd,fqdn_rev,hostname,state,user_context\n"
+        f"10.0.1.50,24:0A:C4:11:22:33,,3600,{expire},1,0,0,esp_112233,0,\n"
+    )
+    response = client.dhcp_leases(running_server)
+    assert response["ok"] is True
+    assert response["leases"] == [
+        {"ip": "10.0.1.50", "mac": "24:0a:c4:11:22:33", "hostname": "esp_112233", "expire": expire}
+    ]
+
+
+def test_iot_sync_isolation_refused_when_disabled(running_server):
+    response = client.iot_sync_isolation(["aa:bb:cc:dd:ee:01"], running_server)
+    assert response == {"ok": False, "message": "IoT isolation is disabled in the current config"}
+
+
+def test_iot_sync_isolation_drops_trusted_macs(running_server, tmp_path):
+    _enable_iot(tmp_path / "config.yaml", trusted=["aa:bb:cc:dd:ee:02"])
+    response = client.iot_sync_isolation(["AA:BB:CC:DD:EE:01", "aa:bb:cc:dd:ee:02"], running_server)
+    assert response["ok"] is True
+    assert response["isolated"] == ["aa:bb:cc:dd:ee:01"]
+    assert response["skipped_trusted"] == ["aa:bb:cc:dd:ee:02"]
+
+    status = client.iot_isolation_status(running_server)
+    assert status == {"ok": True, "isolated": ["aa:bb:cc:dd:ee:01"], "count": 1}
+
+
+def test_iot_sync_isolation_rejects_malformed_input(running_server, tmp_path):
+    _enable_iot(tmp_path / "config.yaml")
+    bad = client.iot_sync_isolation(["not-a-mac"], running_server)
+    assert bad["ok"] is False and "invalid MAC" in bad["message"]
+    not_list = client.send_command({"cmd": "iot_sync_isolation", "macs": "aa:bb:cc:dd:ee:01"}, running_server)
+    assert not_list == {"ok": False, "message": "'macs' must be a list"}

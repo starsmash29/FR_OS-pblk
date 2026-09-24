@@ -1844,6 +1844,160 @@ different `binary/` trees:
   measured output (~6 MB) leaves comfortable headroom for this
   project's fixed, small module list.
 
+## IoT device discovery and isolation (phase 14)
+
+Goal: find the IoT gadgets on a home/small-office network, tell them
+apart from phones and computers, and cut them off from everything they
+don't need -- automatically if the admin wants, with a human-readable
+reason for every verdict, and without any cloud service or device
+database this project would have to maintain.
+
+### Correction to the original idea, up front
+
+The idea as first written was "move an unknown IoT device into a
+separate VLAN/zone automatically". A router alone cannot do that: VLAN
+membership is decided by the switch port or the Wi-Fi SSID a device is
+on (or by 802.1X dynamic VLAN assignment, which needs managed switches
+and APs this project doesn't control), and DHCP-class-based subnet
+assignment would still leave the device on the same layer-2 segment as
+everything else. What *is* achievable, and implemented here, is
+**isolation enforced by this router's own firewall, keyed on the
+device's MAC address**. That covers everything routed through the box:
+other zones, the router's own services (webUI, SSH), and -- in `block`
+mode -- the internet. It does not cover two devices talking directly on
+the same switch or Wi-Fi network; for that, the documented answer is a
+dedicated IoT zone on its own VLAN interface (e.g. `eth1.30`), which
+this project already supports as an ordinary interface/zone. Both halves
+of that are stated in the config reference and the webUI, not only here.
+
+### Inventory: three sources, none needing decryption
+
+- **DHCP leases** (`frfw.iot.leases`): Kea's memfile lease database, an
+  append-only CSV where a renewal is a new row, so the last row per
+  address wins and `state != 0` or an expired lease retires it. Columns
+  are read by header name, so Kea 2.4's extra `pool_id` column doesn't
+  matter. The file belongs to Kea's own user, so it is read by the
+  privileged apply-helper (`dhcp_leases` command), which only returns
+  parsed, sanitized fields (the hostname is client-supplied DHCP option
+  12 -- printable ASCII only, capped at 253 characters).
+- **ARP table** (`frfw.iot.arp`): `/proc/net/arp` is world-readable
+  (checked), so the scanner reads it directly. It is the only source for
+  devices with a static IP that never talk to the DHCP server.
+- **mDNS / DNS-SD** (`frfw.iot.mdns`): one `_services._dns-sd._udp.local
+  PTR` query per IoT-zone interface, collecting which service types each
+  host advertises (`_hap._tcp` HomeKit, `_googlecast._tcp` Chromecast,
+  `_esphomelib._tcp` ESPHome, `_ipp._tcp` printers, ...). The query goes
+  out from a fixed non-5353 source port, which RFC 6762 section 6.7
+  defines as a "legacy unicast" query: responders reply by unicast to
+  that port. That means nothing has to listen on 5353 (no clash with an
+  avahi-daemon on the router) and the firewall needs exactly one narrow
+  input rule, `iifname @<iot zone> udp sport 5353 udp dport 53530
+  accept`. The obvious alternative, accepting anything *from* source
+  port 5353, was rejected on purpose: any LAN host could then reach
+  every UDP service on the router just by choosing that source port.
+
+mDNS runs *before* the ARP table is read: a device answering the query
+first ARP-resolves the router, and Linux records the requester in its
+own neighbour table, so static-IP devices found only via mDNS are
+already in `/proc/net/arp` by the time it's parsed.
+
+Vendor names come from the IEEE MA-L registry as packaged by Debian
+(`ieee-data`, `/usr/share/ieee-data/oui.csv` -- installed in this
+sandbox to check the real format: quoted organization names containing
+commas, `MA-L`/`MA-M`/`MA-S` registries in one file). Nothing is bundled
+into this project; without the package the vendor signal is just absent.
+A locally administered ("randomized") MAC never gets a vendor, since its
+prefix isn't a real assignment.
+
+### Classification: a transparent point system, not a model
+
+`frfw.iot.classify` adds and subtracts points and keeps a sentence for
+each: +3 for a vendor that ships almost only IoT hardware (Espressif,
+Tuya, Signify, Sonos, Hikvision, ...; names checked against the real
+registry), +1 for mixed vendors (TP-Link, Amazon, Google, Xiaomi, ...),
++3 for advertising any IoT service type, -3 for computer services
+(`_workstation._tcp`, `_smb._tcp`, `_ssh._tcp`, Apple
+companion-link), +2/-2 for IoT-looking / phone-or-computer-looking DHCP
+hostnames, and -2 for a randomized MAC (phones and laptops use them for
+privacy; embedded devices practically never do). A score of 3 or more is
+"iot", -2 or less "general", anything else "unknown". No single signal
+decides on its own, and the webUI shows every reason next to the
+verdict. It is a heuristic and is documented as one: the admin can
+always override it with `trusted_macs` / `isolated_macs`.
+
+### Enforcement: a MAC set in the kernel, same privilege split as IDS
+
+The decision (`frfw.iot.scanner.decide_isolation`) is `isolated_macs`,
+plus -- only with `auto_isolate` -- every device classified "iot", minus
+`trusted_macs`. It is made in the unprivileged scanner, which is also
+the process parsing untrusted network input; that is why it runs as
+`fr_os-webui` (from `fr-iot-scan.timer` or the webUI) and never as root.
+The kernel side (`frfw.iot_isolation`, a structural mirror of
+`frfw.ids_quarantine`) is reached only through the helper's
+`iot_sync_isolation` command, which drops any MAC the current config
+marks trusted before touching the set -- a misbehaving scanner still
+can't isolate a device the admin trusted.
+
+The set is `type ether_addr`, matched with `ether saddr`, so a device
+can't escape by taking a new DHCP lease, and it applies to IPv4 and IPv6
+alike since the IP header is never consulted. Membership is replaced in
+one `nft -f` transaction per sync (`flush set` + `add element`), so the
+set is never half-updated. The rules sit ahead of `ct state
+established,related accept` in both chains, so an isolated device's
+already-open connections are cut immediately, and ahead of every
+config-derived rule, so an admin accept rule can't accidentally reopen
+it (`trusted_macs` is the one exemption). Isolated devices keep DHCP and
+DNS from the router in both modes. The set has the same `flush ruleset`
+problem as the ZTNA/jail/quarantine sets and the same answer: snapshot
+and restore around the reload in `frfw.provision.apply_all`.
+
+### Real, hands-on verification
+
+Beyond unit tests with mocked I/O, this phase was verified on the wire,
+and the checks are automated (`tests/test_iot_isolation.py`, run as
+root): two network namespaces joined to the host by veth pairs, the host
+routing between them with the *actual generated* FR_OS ruleset loaded.
+
+- **block mode**: a TCP connection from the "IoT" namespace through the
+  router succeeds, fails once `sync_isolated()` puts that namespace's
+  real MAC into the set, fails against a router service as well, and
+  succeeds again after the set is cleared.
+- **flush survival**: a full ruleset reload (the same `flush ruleset`
+  every apply does) lets the connection through again -- the exact
+  problem -- and `restore_after_reload()` with the pre-reload snapshot
+  cuts it off again.
+- **internet_only mode**: while isolated, the connection to the
+  masquerade ("internet") zone succeeds and the connection to a router
+  service fails, even though an explicit admin rule accepts that service
+  from the IoT zone.
+- **mDNS discovery end to end**: a responder in the IoT namespace joins
+  224.0.0.251 and answers with compression-pointer-encoded PTR records;
+  `mdns.discover()` on the router finds `_hap._tcp` and
+  `_googlecast._tcp` for it. With the generated ruleset minus the one
+  `iot-mdns-replies` rule, the same discovery returns nothing -- proving
+  the rule is both necessary and sufficient.
+- The mDNS parser is fed hostile input in the unit tests: a
+  self-referencing compression pointer, labels running past the packet,
+  an absurd record count, truncated records -- all return an empty
+  result without hanging.
+
+Not verified: real IoT hardware (no physical devices in this sandbox --
+the responder above is a faithful stand-in for the protocol, not for any
+particular vendor's firmware), and Kea's lease file from a live Kea
+server (the CSV format is from Kea's documented memfile layout; the
+parser reads columns by header name to stay robust to version drift).
+
+### Open issues
+
+- Same-segment traffic between devices is out of reach of router-side
+  enforcement (see the correction above).
+- IPv6-only devices are isolated (the match is on the MAC), but not
+  *discovered*: inventory sources are DHCPv4 leases, the IPv4 ARP table
+  and IPv4 mDNS. Adding `ip -6 neigh` and IPv6 mDNS is future work.
+- mDNS finds only devices that implement it; a silent device is
+  classified on vendor and hostname alone.
+- The point weights are hand-picked, not tuned on a real device corpus.
+
 ## Open decisions
 
 The points below get settled during their respective phase, once the

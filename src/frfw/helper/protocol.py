@@ -51,6 +51,14 @@ from __future__ import annotations
 #: needs root to read the SMBIOS/DMI tables -- the metrics exporter's
 #: only genuinely privileged hardware fact (everything else it reads
 #: comes from world-readable /proc, /sys, or `os.statvfs`).
+#: "dhcp_leases" (see frfw.iot.leases, phase 14) returns the active
+#: DHCPv4 leases from Kea's lease file, which belongs to Kea's own user
+#: -- the unprivileged IoT scanner's inventory source.
+#: "iot_sync_isolation" (see frfw.iot_isolation) replaces the kernel's
+#: `iot_isolated` MAC set with the scanner's decision, after dropping any
+#: MAC the current config marks as trusted (defense in depth: a
+#: misbehaving scanner still can't isolate a device the admin trusted).
+#: "iot_isolation_status" is its read-only counterpart.
 COMMANDS = (
     "ping",
     "apply",
@@ -66,6 +74,9 @@ COMMANDS = (
     "bruteforce_status",
     "ztna_sessions_status",
     "hw_ram_info",
+    "dhcp_leases",
+    "iot_sync_isolation",
+    "iot_isolation_status",
 )
 
 #: Maximum accepted request/response line length, to bound memory use from

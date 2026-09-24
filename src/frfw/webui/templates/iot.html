@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block title %}IoT Devices - FR_OS{% endblock %}
+{% block content %}
+<h1>IoT Devices</h1>
+<p class="muted">
+  Discovers devices in the selected zones (DHCP leases, the ARP table and
+  an mDNS service query), classifies them by hardware vendor, advertised
+  services and hostname, and can isolate IoT devices by MAC address in the
+  router's own firewall. Isolation covers everything routed through this
+  box; devices on the same switch/Wi-Fi segment can still reach each other
+  directly -- put IoT gear in its own zone/VLAN for full separation.
+</p>
+
+{% if config_error %}
+<div class="flash-error">Config does not currently pass validation: {{ config_error }}</div>
+{% endif %}
+
+<div class="card">
+  <h3>Settings</h3>
+  <form method="post" action="/iot/settings">
+    <label class="checkbox-row"><input type="checkbox" name="enabled" value="true" {{ "checked" if enabled }}> Enabled</label>
+
+    <label>Zones to scan</label>
+    {% for zone in all_zones %}
+    <label class="checkbox-row"><input type="checkbox" name="zones" value="{{ zone }}" {{ "checked" if zone in selected_zones }}> {{ zone }}</label>
+    {% else %}
+    <p class="muted">No zones defined yet.</p>
+    {% endfor %}
+
+    <label class="checkbox-row"><input type="checkbox" name="auto_isolate" value="true" {{ "checked" if auto_isolate }}> Automatically isolate devices classified as IoT (unless trusted)</label>
+
+    <label for="isolation_mode">Isolation mode</label>
+    <select id="isolation_mode" name="isolation_mode">
+      <option value="internet_only" {{ "selected" if isolation_mode == "internet_only" }}>Internet only (no other zones, no router services except DHCP/DNS)</option>
+      <option value="block" {{ "selected" if isolation_mode == "block" }}>Block (DHCP/DNS only)</option>
+    </select>
+    <button type="submit">Save</button>
+  </form>
+</div>
+
+<div class="card">
+  <h3>Scan</h3>
+  <p class="muted">
+    Runs every 10 minutes via <code>fr-iot-scan.timer</code>.
+    {% if scanned_at %}Last scan: {{ scanned_at }}.{% else %}No scan has run yet.{% endif %}
+  </p>
+  {% if scan_messages %}<p class="muted">{{ scan_messages|join("; ") }}</p>{% endif %}
+  <form method="post" action="/iot/scan"><button type="submit">Scan now</button></form>
+</div>
+
+<div class="card">
+  <h3>Currently isolated (live kernel state)</h3>
+  {% if not enabled %}
+  <p class="muted">IoT isolation is disabled.</p>
+  {% elif isolation_error %}
+  <p class="flash-error">Could not read kernel isolation state: {{ isolation_error }}</p>
+  {% elif not live_isolated %}
+  <p class="muted">No devices isolated.</p>
+  {% else %}
+  <p>{{ live_isolated|join(", ") }}</p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h3>Inventory</h3>
+  {% if not devices %}
+  <p class="muted">No devices found yet.</p>
+  {% else %}
+  <div class="scroll-table" style="max-height: 520px;">
+  <table>
+    <tr><th>Device</th><th>Vendor</th><th>Services</th><th>Class</th><th>Why</th><th>State</th><th></th></tr>
+    {% for d in devices %}
+    <tr>
+      <td><code>{{ d.mac }}</code><br>{{ d.ip or "-" }}{% if d.hostname %}<br><span class="muted">{{ d.hostname }}</span>{% endif %}</td>
+      <td>{{ d.vendor or "-" }}</td>
+      <td>{{ d.services|join(", ") if d.services else "-" }}</td>
+      <td>
+        {% if d.category == "iot" %}<span class="badge badge-yellow">IoT</span>
+        {% elif d.category == "general" %}<span class="badge badge-green">general</span>
+        {% else %}<span class="badge">unknown</span>{% endif %}
+        <br><span class="muted">score {{ d.score }}</span>
+      </td>
+      <td class="muted">{{ d.reasons|join("; ") }}</td>
+      <td>
+        {% if d.live_isolated %}<span class="badge badge-red">isolated</span>{% endif %}
+        {% if d.mac in trusted_macs %}<span class="badge badge-green">trusted</span>{% endif %}
+        {% if d.mac in isolated_macs %}<span class="badge">manually isolated</span>{% endif %}
+      </td>
+      <td>
+        <form method="post" action="/iot/device" class="inline">
+          <input type="hidden" name="mac" value="{{ d.mac }}">
+          <input type="hidden" name="action" value="trust">
+          <button type="submit" class="secondary">Trust</button>
+        </form>
+        <form method="post" action="/iot/device" class="inline">
+          <input type="hidden" name="mac" value="{{ d.mac }}">
+          <input type="hidden" name="action" value="isolate">
+          <button type="submit" class="danger">Isolate</button>
+        </form>
+        {% if d.mac in trusted_macs or d.mac in isolated_macs %}
+        <form method="post" action="/iot/device" class="inline">
+          <input type="hidden" name="mac" value="{{ d.mac }}">
+          <input type="hidden" name="action" value="clear">
+          <button type="submit" class="secondary">Clear</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

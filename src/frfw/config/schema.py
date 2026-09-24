@@ -290,6 +290,55 @@ class AdblockerConfig:
     xdp_critical_limit: int = 0
 
 
+class IotIsolationMode(str, Enum):
+    #: An isolated device may still reach the internet (every zone a
+    #: `nat.masquerade` entry points at), but nothing else routed through
+    #: this box -- no other zone, and no service on the router itself
+    #: beyond DHCP and DNS.
+    INTERNET_ONLY = "internet_only"
+    #: An isolated device gets DHCP and DNS from the router and nothing
+    #: else routed at all.
+    BLOCK = "block"
+
+
+@dataclass(frozen=True)
+class IotConfig:
+    """Settings for light-weight IoT device discovery and isolation
+    (phase 14, see frfw.iot and frfw.iot_isolation).
+
+    `zones` lists the zones whose devices are inventoried: DHCP leases
+    and ARP entries inside those zones, plus an active mDNS service query
+    on each of their interfaces that has a static `address`. Every device
+    found is classified (OUI vendor, mDNS service types, DHCP hostname,
+    randomized-MAC bit -- see frfw.iot.classify) as "iot", "general" or
+    "unknown".
+
+    Isolation is enforced by the router's own nftables ruleset on the
+    device's MAC address (`frfw.nft.builder.IOT_ISOLATED_SET_NAME`), so it
+    covers everything *routed through this box* -- other zones, the
+    router's own services, and (in `block` mode) the internet. It cannot
+    see traffic two devices exchange directly on the same switch/Wi-Fi
+    segment; real layer-2 separation needs a dedicated IoT zone (its own
+    VLAN interface, e.g. `eth1.30`), which this project already supports
+    as an ordinary interface/zone -- see ARCHITECTURE.md's phase 14
+    section.
+
+    `auto_isolate` is off by default: enabling the feature alone only
+    discovers and classifies devices, so an admin can review the
+    inventory before anything is cut off. With it on, every device
+    classified "iot" that is not in `trusted_macs` is isolated.
+    `isolated_macs` are always isolated regardless of classification;
+    `trusted_macs` are never isolated (a MAC may not appear in both).
+    """
+
+    enabled: bool = False
+    zones: list[str] = field(default_factory=list)
+    auto_isolate: bool = False
+    isolation_mode: IotIsolationMode = IotIsolationMode.INTERNET_ONLY
+    trusted_macs: list[str] = field(default_factory=list)
+    isolated_macs: list[str] = field(default_factory=list)
+
+
 @dataclass(frozen=True)
 class Config:
     version: int
@@ -305,3 +354,4 @@ class Config:
     ztna: ZtnaConfig = field(default_factory=ZtnaConfig)
     pqc: PqcConfig = field(default_factory=PqcConfig)
     adblocker: AdblockerConfig = field(default_factory=AdblockerConfig)
+    iot: IotConfig = field(default_factory=IotConfig)

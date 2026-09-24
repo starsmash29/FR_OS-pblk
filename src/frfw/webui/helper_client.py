@@ -31,6 +31,9 @@ class HelperClient(Protocol):
     def bruteforce_status(self) -> dict: ...
     def ztna_sessions_status(self) -> dict: ...
     def hw_ram_info(self) -> dict: ...
+    def dhcp_leases(self) -> dict: ...
+    def iot_sync_isolation(self, macs: list[str]) -> dict: ...
+    def iot_isolation_status(self) -> dict: ...
 
 
 class SocketHelperClient:
@@ -72,6 +75,15 @@ class SocketHelperClient:
 
     def hw_ram_info(self) -> dict:
         return helper_client.hw_ram_info(self.socket_path)
+
+    def dhcp_leases(self) -> dict:
+        return helper_client.dhcp_leases(self.socket_path)
+
+    def iot_sync_isolation(self, macs: list[str]) -> dict:
+        return helper_client.iot_sync_isolation(macs, self.socket_path)
+
+    def iot_isolation_status(self) -> dict:
+        return helper_client.iot_isolation_status(self.socket_path)
 
 
 class UpdateHelperClient(Protocol):

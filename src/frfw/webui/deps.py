@@ -51,6 +51,14 @@ def get_adblock_hosts_path(request: Request) -> Path:
     return request.app.state.adblock_hosts_path
 
 
+def get_iot_inventory_path(request: Request) -> Path:
+    return request.app.state.iot_inventory_path
+
+
+def get_iot_scan_options(request: Request) -> dict:
+    return request.app.state.iot_scan_options
+
+
 def get_bruteforce_guard(request: Request) -> BruteforceGuard:
     return request.app.state.bruteforce_guard
 

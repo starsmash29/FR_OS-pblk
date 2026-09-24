@@ -5,12 +5,13 @@ The generated ruleset is meant to be loaded with `nft -f` (see
 replaces whatever nftables state was previously loaded -- this keeps
 "config file is the source of truth" simple, at the cost of not being able
 to coexist with hand-written nftables rules outside of frfw. See
-`BRUTEFORCE_JAIL_SET_NAME`'s, `IDS_QUARANTINE_SET_NAME`'s and
-`ZTNA_SET_NAME`'s own comments below for the three deliberate exceptions
-to "fully reproducible from YAML alone": each set holds runtime state by
-design (banned IPs; IDS-quarantined IPs; authorized ZTNA clients), and
-surviving a `flush ruleset` for each is handled one layer up, in
-`frfw.provision.apply_all`, not here.
+`BRUTEFORCE_JAIL_SET_NAME`'s, `IDS_QUARANTINE_SET_NAME`'s,
+`ZTNA_SET_NAME`'s and `IOT_ISOLATED_SET_NAME`'s own comments below for
+the four deliberate exceptions to "fully reproducible from YAML alone":
+each set holds runtime state by design (banned IPs; IDS-quarantined IPs;
+authorized ZTNA clients; isolated IoT MACs), and surviving a `flush
+ruleset` for each is handled one layer up, in `frfw.provision.apply_all`,
+not here.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from __future__ import annotations
 from frfw.config.schema import (
     SELF_ZONE,
     Config,
+    IotIsolationMode,
     Masquerade,
     PortForward,
     Protocol,
@@ -92,6 +94,29 @@ IDS_QUARANTINE_SET_NAME = "ids_quarantine"
 #: nobody "cleans up" that snapshot/restore call thinking it's dead code.
 ZTNA_SET_NAME = "authenticated_ztna_users"
 
+#: IoT isolation set (phase 14, see frfw.iot_isolation and frfw.iot):
+#: MAC addresses (not IPs -- a DHCP renewal must not let a device slip
+#: out) the privileged apply-helper puts here, never this module.
+#: Matched with `ether saddr`, confirmed against the real `nft` binary to
+#: work in an `inet` table's input and forward hooks, and it matches IPv4
+#: and IPv6 traffic alike since it never looks at the IP header. Rendered
+#: only when `config.iot.enabled`, like ZTNA_SET_NAME, and with the same
+#: `flush ruleset` survival problem, handled the same way in
+#: frfw.provision.apply_all via frfw.iot_isolation's snapshot/restore
+#: pair. No `flags timeout`: membership is recomputed wholesale on every
+#: scan (frfw.iot_isolation.sync_isolated), not aged out.
+IOT_ISOLATED_SET_NAME = "iot_isolated"
+
+#: Fixed local UDP port the IoT scanner (frfw.iot.mdns) sends its mDNS
+#: query from. RFC 6762 section 6.7: a query from a source port other
+#: than 5353 is a "legacy unicast" query, answered by unicast straight
+#: back to that port -- so the input chain needs exactly one narrow
+#: accept (`udp sport 5353 udp dport <this>`, from the IoT zones only)
+#: instead of opening 5353 or accepting anything *from* port 5353, which
+#: would let any LAN host reach every UDP service on the router just by
+#: choosing that source port.
+IOT_MDNS_REPLY_PORT = 53530
+
 
 def build_ruleset(config: Config) -> str:
     zone_devices = _zone_devices(config)
@@ -110,6 +135,10 @@ def build_ruleset(config: Config) -> str:
         lines.append("")
         lines.extend(_render_ztna_set(config))
 
+    if config.iot.enabled:
+        lines.append("")
+        lines.extend(_render_iot_isolated_set())
+
     input_rules = [r for r in config.rules if r.to_zone == SELF_ZONE]
     forward_rules = [r for r in config.rules if r.to_zone != SELF_ZONE]
 
@@ -123,6 +152,11 @@ def build_ruleset(config: Config) -> str:
     # ones below) gets a chance to match it first.
     lines.append(f"\t\t{_render_bruteforce_drop_rule()}")
     lines.append(f"\t\t{_render_ids_quarantine_drop_rule()}")
+    if config.iot.enabled:
+        # Ahead of `ct state established,related accept` on purpose: an
+        # isolated device's already-open sessions to the router are cut
+        # the moment it's isolated, not whenever they happen to close.
+        lines.extend(f"\t\t{r}" for r in _render_iot_input_rules(config))
     lines.append('\t\tiifname "lo" accept')
     lines.append("\t\tct state established,related accept")
     lines.append("\t\tct state invalid drop")
@@ -135,6 +169,12 @@ def build_ruleset(config: Config) -> str:
     lines.append("\tchain forward {")
     lines.append("\t\ttype filter hook forward priority filter; policy drop;")
     lines.append("")
+    if config.iot.enabled:
+        # Same "before established" placement as the input chain above,
+        # and before every config-derived rule: an admin rule can't
+        # accidentally re-open an isolated device -- iot.trusted_macs is
+        # the one way to exempt it.
+        lines.extend(f"\t\t{r}" for r in _render_iot_forward_rules(config))
     lines.append("\t\tct state established,related accept")
     lines.append("\t\tct state invalid drop")
     if forward_rules:
@@ -226,6 +266,40 @@ def _render_ztna_set(config: Config) -> list[str]:
         f"\t\ttimeout {config.ztna.session_ttl_seconds}s",
         "\t}",
     ]
+
+
+def _render_iot_isolated_set() -> list[str]:
+    return [
+        f"\tset {IOT_ISOLATED_SET_NAME} {{",
+        "\t\ttype ether_addr",
+        "\t}",
+    ]
+
+
+def _render_iot_input_rules(config: Config) -> list[str]:
+    rules = [
+        f"iifname @{_iface_set_name(zone)} udp sport 5353 udp dport {IOT_MDNS_REPLY_PORT} "
+        f"accept {_comment('iot-mdns-replies')}"
+        for zone in config.iot.zones
+    ]
+    isolated = f"ether saddr @{IOT_ISOLATED_SET_NAME}"
+    rules.append(f"{isolated} udp dport {{ 53, 67 }} accept {_comment('iot-isolated-dhcp-dns')}")
+    rules.append(f"{isolated} tcp dport 53 accept {_comment('iot-isolated-dns-tcp')}")
+    rules.append(f"{isolated} drop {_comment('iot-isolated-input')}")
+    return rules
+
+
+def _render_iot_forward_rules(config: Config) -> list[str]:
+    isolated = f"ether saddr @{IOT_ISOLATED_SET_NAME}"
+    rules: list[str] = []
+    if config.iot.isolation_mode == IotIsolationMode.INTERNET_ONLY:
+        for zone in sorted({m.out_zone for m in config.nat.masquerade}):
+            rules.append(
+                f"{isolated} oifname @{_iface_set_name(zone)} accept "
+                f"{_comment('iot-isolated-internet')}"
+            )
+    rules.append(f"{isolated} drop {_comment('iot-isolated-forward')}")
+    return rules
 
 
 def _comment(text: str) -> str:

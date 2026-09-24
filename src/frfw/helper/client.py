@@ -123,3 +123,15 @@ def ztna_sessions_status(socket_path: Path = paths.APPLY_SOCKET_PATH) -> dict:
 
 def hw_ram_info(socket_path: Path = paths.APPLY_SOCKET_PATH) -> dict:
     return send_command({"cmd": "hw_ram_info"}, socket_path)
+
+
+def dhcp_leases(socket_path: Path = paths.APPLY_SOCKET_PATH) -> dict:
+    return send_command({"cmd": "dhcp_leases"}, socket_path)
+
+
+def iot_sync_isolation(macs: list[str], socket_path: Path = paths.APPLY_SOCKET_PATH) -> dict:
+    return send_command({"cmd": "iot_sync_isolation", "macs": macs}, socket_path)
+
+
+def iot_isolation_status(socket_path: Path = paths.APPLY_SOCKET_PATH) -> dict:
+    return send_command({"cmd": "iot_isolation_status"}, socket_path)

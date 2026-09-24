@@ -12,6 +12,7 @@ from frfw import apply as apply_mod
 from frfw import bruteforce as bruteforce_mod
 from frfw import ids_quarantine as ids_quarantine_mod
 from frfw import ifaddr as ifaddr_mod
+from frfw import iot_isolation as iot_isolation_mod
 from frfw import xdp as xdp_mod
 from frfw import ztna as ztna_mod
 from frfw.adblock import dns_service as adblock_dns_mod
@@ -31,7 +32,7 @@ def _fake_nft(monkeypatch):
     monkeypatch.setattr(apply_mod, "capture_running_ruleset", lambda: "")
 
 
-def test_apply_all_runs_all_ten_steps_in_order(minimal_config_dict, tmp_path):
+def test_apply_all_runs_all_eleven_steps_in_order(minimal_config_dict, tmp_path):
     config = parse_config(minimal_config_dict)  # no address, no dhcp, no xdp, no ztna, no pqc
     result = apply_all(
         config,
@@ -44,7 +45,7 @@ def test_apply_all_runs_all_ten_steps_in_order(minimal_config_dict, tmp_path):
         adblock_dnsmasq_conf_path=tmp_path / "dnsmasq_adblock.conf",
     )
 
-    assert len(result.messages) == 10
+    assert len(result.messages) == 11
     assert "No interface addresses" in result.messages[0]
     assert "Ruleset applied" in result.messages[1]
     assert "No DHCP zones" in result.messages[2]
@@ -55,11 +56,76 @@ def test_apply_all_runs_all_ten_steps_in_order(minimal_config_dict, tmp_path):
     assert "AI IDS quarantine" in result.messages[6]
     assert "0 active quarantine(s) preserved" in result.messages[6]
     assert "ZTNA gate disabled" in result.messages[7]
-    assert "PQC hybrid TLS disabled" in result.messages[8]
+    assert "IoT isolation disabled" in result.messages[8]
+    assert "PQC hybrid TLS disabled" in result.messages[9]
     # This sandbox has no sshd installed at all, which is itself a real,
     # correctly-detected state (see frfw.pqc.sync_ssh_kex) rather than a
     # mock -- there is nothing to fake here.
-    assert "sshd not installed" in result.messages[9] or "PQC hybrid SSH KEX disabled" in result.messages[9]
+    assert "sshd not installed" in result.messages[10] or "PQC hybrid SSH KEX disabled" in result.messages[10]
+
+
+def _iot_config_dict(base: dict) -> dict:
+    cfg = dict(base)
+    cfg["iot"] = {"enabled": True, "zones": ["lan"], "isolation_mode": "block"}
+    return cfg
+
+
+def test_apply_all_skips_iot_snapshot_restore_when_disabled(minimal_config_dict, tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(iot_isolation_mod, "snapshot_before_reload", lambda: calls.append("snap") or [])
+    monkeypatch.setattr(iot_isolation_mod, "restore_after_reload", lambda s: calls.append("restore"))
+    apply_all(
+        parse_config(minimal_config_dict),
+        backup_dir=tmp_path / "backups",
+        kea_config_path=tmp_path / "kea.json",
+        xdp_state_path=tmp_path / "xdp_state.json",
+        pqc_conf_path=tmp_path / "pqc_openssl.cnf",
+        ssh_kex_dropin_path=tmp_path / "50-fr_os-pqc-kex.conf",
+        adblock_hosts_path=tmp_path / "adblock.hosts",
+        adblock_dnsmasq_conf_path=tmp_path / "dnsmasq_adblock.conf",
+    )
+    assert calls == []
+
+
+def test_apply_all_snapshots_and_restores_iot_isolation_when_enabled(
+    minimal_config_dict, tmp_path, monkeypatch
+):
+    restored = []
+    monkeypatch.setattr(
+        iot_isolation_mod, "snapshot_before_reload", lambda: ["aa:bb:cc:dd:ee:01", "aa:bb:cc:dd:ee:02"]
+    )
+    monkeypatch.setattr(iot_isolation_mod, "restore_after_reload", lambda s: restored.append(list(s)))
+    result = apply_all(
+        parse_config(_iot_config_dict(minimal_config_dict)),
+        backup_dir=tmp_path / "backups",
+        kea_config_path=tmp_path / "kea.json",
+        xdp_state_path=tmp_path / "xdp_state.json",
+        pqc_conf_path=tmp_path / "pqc_openssl.cnf",
+        ssh_kex_dropin_path=tmp_path / "50-fr_os-pqc-kex.conf",
+        adblock_hosts_path=tmp_path / "adblock.hosts",
+        adblock_dnsmasq_conf_path=tmp_path / "dnsmasq_adblock.conf",
+    )
+    assert restored == [["aa:bb:cc:dd:ee:01", "aa:bb:cc:dd:ee:02"]]
+    assert "IoT isolation: 2 isolated device(s) preserved across reload" in result.messages
+
+
+def test_apply_all_skips_iot_snapshot_restore_on_dry_run(minimal_config_dict, tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(iot_isolation_mod, "snapshot_before_reload", lambda: calls.append("snap") or [])
+    monkeypatch.setattr(iot_isolation_mod, "restore_after_reload", lambda s: calls.append("restore"))
+    result = apply_all(
+        parse_config(_iot_config_dict(minimal_config_dict)),
+        dry_run=True,
+        backup_dir=tmp_path / "backups",
+        kea_config_path=tmp_path / "kea.json",
+        xdp_state_path=tmp_path / "xdp_state.json",
+        pqc_conf_path=tmp_path / "pqc_openssl.cnf",
+        ssh_kex_dropin_path=tmp_path / "50-fr_os-pqc-kex.conf",
+        adblock_hosts_path=tmp_path / "adblock.hosts",
+        adblock_dnsmasq_conf_path=tmp_path / "dnsmasq_adblock.conf",
+    )
+    assert calls == []
+    assert any("IoT isolation: would preserve" in m for m in result.messages)
 
 
 def test_apply_all_dry_run_touches_nothing(dhcp_config_dict, tmp_path, monkeypatch):
@@ -100,6 +166,7 @@ def test_apply_all_dry_run_touches_nothing(dhcp_config_dict, tmp_path, monkeypat
     always_off_substrings = (
         "XDP SNI filter disabled",
         "ZTNA gate disabled",
+        "IoT isolation disabled",
         "PQC hybrid TLS disabled",
         "sshd not installed",
         "Ad-block DNS resolver disabled",

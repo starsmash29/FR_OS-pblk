@@ -41,6 +41,9 @@ class FakeHelper:
         self.banned_ips: dict[str, int] = {}  # ip -> expires_in, set by tests directly
         self.ztna_sessions: dict[str, int] = {}  # ip -> expires_in, set by tests directly
         self.ram_modules: list[dict] = []  # [{"part_number": ..., "speed_mhz": ...}, ...]
+        self.leases: list[dict] = []  # dhcp_leases() payload, set by tests directly
+        self.iot_isolated: list[str] = []  # stands in for the kernel iot_isolated set
+        self.iot_sync_calls: list[list[str]] = []
 
     def ping(self):
         return {"ok": True, "message": "pong"}
@@ -110,6 +113,23 @@ class FakeHelper:
     def hw_ram_info(self) -> dict:
         return {"ok": True, "modules": self.ram_modules}
 
+    def dhcp_leases(self) -> dict:
+        return {"ok": True, "leases": self.leases, "count": len(self.leases)}
+
+    def iot_sync_isolation(self, macs: list[str]) -> dict:
+        """Mirrors the real helper's checks: refuses while iot is disabled
+        in the saved config, and never isolates a trusted MAC."""
+        self.iot_sync_calls.append(list(macs))
+        config = parse_config(yaml.safe_load(self.config_path.read_text()))
+        if not config.iot.enabled:
+            return {"ok": False, "message": "IoT isolation is disabled in the current config"}
+        trusted = set(config.iot.trusted_macs)
+        self.iot_isolated = [m.lower() for m in macs if m.lower() not in trusted]
+        return {"ok": True, "isolated": list(self.iot_isolated), "count": len(self.iot_isolated)}
+
+    def iot_isolation_status(self) -> dict:
+        return {"ok": True, "isolated": list(self.iot_isolated), "count": len(self.iot_isolated)}
+
 
 class FakeUpdateHelper:
     """An in-memory stand-in for the real Unix-socket update-helper.
@@ -153,6 +173,24 @@ def webui_env(tmp_path):
         "xdp_state_path": tmp_path / "xdp_state.json",
         "adblock_hosts_path": tmp_path / "adblock.hosts",
         "bruteforce_guard": BruteforceGuard(),
+        "iot_inventory_path": tmp_path / "iot_inventory.json",
+        # No real multicast/ARP/IEEE registry in route tests: an empty
+        # ARP table, an empty OUI file and a canned mDNS answer.
+        "iot_scan_options": _iot_scan_options(tmp_path),
+    }
+
+
+def _iot_scan_options(tmp_path):
+    arp = tmp_path / "arp"
+    arp.write_text("IP address HW type Flags HW address Mask Device\n")
+    oui = tmp_path / "oui.csv"
+    oui.write_text(
+        "Registry,Assignment,Organization Name,Organization Address\nMA-L,240AC4,Espressif Inc.,x\n"
+    )
+    return {
+        "arp_path": arp,
+        "oui_path": oui,
+        "mdns_fn": lambda addrs: {"10.0.1.50": {"_esphomelib._tcp"}},
     }
 
 

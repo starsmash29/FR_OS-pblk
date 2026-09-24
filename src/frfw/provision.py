@@ -25,7 +25,9 @@ error says which step failed and that later steps were not attempted):
    `adblocker.xdp_critical_limit` is set, up to that many domains from
    the already-refreshed ad-block list, merged in-memory only (never
    written back to config.yaml -- see step 5's own comment below)
-6. ZTNA gate: report how many active sessions survived step 2's reload
+6. ZTNA gate: report how many active sessions survived step 2's reload,
+   then the same for isolated IoT devices (`frfw.iot_isolation`, only
+   when `iot.enabled`)
 7. Hybrid PQC management-layer key exchange: refresh the webUI's
    OpenSSL config fragment and, if sshd is installed, its KexAlgorithms
    drop-in (`frfw.pqc`)
@@ -37,7 +39,7 @@ import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
 
-from frfw import bruteforce, ids_quarantine, ifaddr, kea, paths, pqc, xdp, ztna
+from frfw import bruteforce, ids_quarantine, ifaddr, iot_isolation, kea, paths, pqc, xdp, ztna
 from frfw.adblock import dns_service as adblock_dns
 from frfw.apply import apply_ruleset
 from frfw.config.schema import Config
@@ -97,6 +99,13 @@ def apply_all(
     preserve_ztna = not dry_run and config.ztna.enabled
     ztna_snapshot = ztna.snapshot_before_reload() if preserve_ztna else []
 
+    # IoT isolation (phase 14): only declared when iot.enabled, so only
+    # bracketed then -- same reasoning as ZTNA just above. Without this,
+    # every unrelated config save would silently release every isolated
+    # device until the next scan re-synced the set.
+    preserve_iot = not dry_run and config.iot.enabled
+    iot_snapshot = iot_isolation.snapshot_before_reload() if preserve_iot else []
+
     nft_result = apply_ruleset(ruleset, dry_run=dry_run, backup_dir=backup_dir)
     messages.append(nft_result.message)
 
@@ -114,6 +123,11 @@ def apply_all(
     if preserve_ztna and ztna_snapshot:
         ztna.restore_after_reload(ztna_snapshot)
         ztna_preserved = len(ztna_snapshot)
+
+    iot_preserved = 0
+    if preserve_iot and iot_snapshot:
+        iot_isolation.restore_after_reload(iot_snapshot)
+        iot_preserved = len(iot_snapshot)
 
     dhcp_result = kea.apply_dhcp_config(config, dry_run=dry_run, config_path=kea_config_path)
     messages.append(dhcp_result.message)
@@ -165,6 +179,13 @@ def apply_all(
         messages.append("ZTNA gate: would preserve active sessions across reload (dry-run)")
     else:
         messages.append(f"ZTNA gate: {ztna_preserved} active session(s) preserved across reload")
+
+    if not config.iot.enabled:
+        messages.append("IoT isolation disabled")
+    elif dry_run:
+        messages.append("IoT isolation: would preserve isolated devices across reload (dry-run)")
+    else:
+        messages.append(f"IoT isolation: {iot_preserved} isolated device(s) preserved across reload")
 
     tls_pqc_result = pqc.sync_tls_pqc_conf(config, dry_run=dry_run, conf_path=pqc_conf_path)
     messages.append(tls_pqc_result.message)

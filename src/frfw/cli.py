@@ -8,6 +8,7 @@
     firewall-cli assign-interfaces --wan DEV --lan DEV [--opt NAME:DEV ...] [--out PATH]
     firewall-cli set-admin-password [--username admin] [--generate]
     firewall-cli ids-status
+    firewall-cli iot-status
     firewall-cli update check [config.yaml]
     firewall-cli update apply VERSION [--repo OWNER/REPO]
     firewall-cli update rollback [--repo OWNER/REPO]
@@ -43,6 +44,7 @@ from frfw.admin_account import AdminStore
 from frfw.apply import NftError, list_backups, rollback_last
 from frfw.config import ConfigError, load_config
 from frfw.ids_quarantine import IdsQuarantineError, list_quarantined
+from frfw.iot_isolation import IotIsolationError, list_isolated
 from frfw.ifaddr import IfaddrError
 from frfw.kea import KeaError
 from frfw.nft import build_ruleset
@@ -77,6 +79,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     except IdsQuarantineError as exc:
         print(f"AI IDS quarantine error: {exc}", file=sys.stderr)
+        return 1
+    except IotIsolationError as exc:
+        print(f"IoT isolation error: {exc}", file=sys.stderr)
         return 1
 
 
@@ -170,6 +175,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="show the AI IDS/IPS engine's currently quarantined hosts",
     )
     p_ids_status.set_defaults(handler=_cmd_ids_status)
+
+    p_iot_status = sub.add_parser(
+        "iot-status",
+        help="show the MAC addresses currently isolated by IoT isolation (needs root)",
+    )
+    p_iot_status.set_defaults(handler=_cmd_iot_status)
 
     p_update = sub.add_parser("update", help="check for / apply / roll back FR_OS updates")
     update_sub = p_update.add_subparsers(dest="update_command", required=True)
@@ -322,6 +333,17 @@ def _cmd_ids_status(args: argparse.Namespace) -> int:
     print("AI IDS/IPS: currently quarantined hosts:")
     for ip, remaining in sorted(quarantined):
         print(f"  {ip}: {remaining}s remaining")
+    return 0
+
+
+def _cmd_iot_status(args: argparse.Namespace) -> int:
+    isolated = list_isolated()
+    if not isolated:
+        print("IoT isolation: no devices currently isolated")
+        return 0
+    print("IoT isolation: currently isolated devices:")
+    for mac in sorted(isolated):
+        print(f"  {mac}")
     return 0
 
 
