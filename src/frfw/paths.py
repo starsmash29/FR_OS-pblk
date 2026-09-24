@@ -177,3 +177,9 @@ APPID_USAGE_PATH = WEBUI_STATE_DIR / "appid_usage.json"
 #: hourly check can tell a DST change from an unapplied config edit.
 #: Root-only, written by apply.
 SCHEDULE_STATE_PATH = Path("/etc/fr_os/schedule_state.json")
+
+#: WebUI audit log (phase 18, see frfw.webui.audit): one JSON line per
+#: change request and login -- who, when, from where, which endpoint, and
+#: the HTTP status. Never form contents. Written by the unprivileged
+#: webUI, size-capped with one rotated generation.
+WEBUI_AUDIT_LOG_PATH = WEBUI_STATE_DIR / "audit.log"

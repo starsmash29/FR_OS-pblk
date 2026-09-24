@@ -6,9 +6,13 @@ lives in `frfw.admin_account` -- it's stdlib-only and shared with
 extra dependencies. Only the session-cookie signing here needs
 itsdangerous, so that stays webUI-only.
 
-Sessions are a signed (not encrypted) cookie -- the payload (just a
-username) isn't secret, only tamper-proof, so a plain signed timed token
-needs no server-side session store.
+Sessions are a signed (not encrypted) cookie -- the payload (a username
+and the account's session version) isn't secret, only tamper-proof, so a
+plain signed timed token needs no server-side session store. The session
+version (phase 18, `AdminAccount.session_version`) changes with the
+password, and every request re-reads the account (frfw.webui.deps.
+require_login), so deleting an account, changing its role or password
+takes effect on that account's open sessions at once.
 """
 
 from __future__ import annotations
@@ -45,14 +49,17 @@ class SessionManager:
     def __init__(self, secret_key_path: Path = SECRET_KEY_PATH) -> None:
         self._serializer = URLSafeTimedSerializer(_load_or_create_secret_key(secret_key_path))
 
-    def create_cookie_value(self, username: str) -> str:
-        return self._serializer.dumps({"username": username})
+    def create_cookie_value(self, account: AdminAccount) -> str:
+        return self._serializer.dumps({"username": account.username, "v": account.session_version()})
 
-    def username_from_cookie(self, cookie_value: str | None) -> str | None:
+    def session_from_cookie(self, cookie_value: str | None) -> tuple[str, str] | None:
+        """(username, session version) from a valid, unexpired cookie."""
         if not cookie_value:
             return None
         try:
             data = self._serializer.loads(cookie_value, max_age=_SESSION_MAX_AGE_SECONDS)
         except (BadSignature, SignatureExpired):
             return None
-        return data.get("username")
+        if not isinstance(data, dict) or not isinstance(data.get("username"), str):
+            return None
+        return data["username"], str(data.get("v", ""))

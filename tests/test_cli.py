@@ -349,3 +349,20 @@ def test_apps_status_without_data(monkeypatch, capsys):
     monkeypatch.setattr(cli_mod, "load_usage", lambda: {"generated": None, "apps": {}})
     assert main(["apps-status"]) == 0
     assert "no usage recorded yet" in capsys.readouterr().out
+
+
+def test_set_admin_password_promotes_and_users_lists_roles(monkeypatch, capsys, tmp_path):
+    from frfw.admin_account import AdminStore
+
+    store = AdminStore(tmp_path / "auth.json")
+    store.set_password("boss", "adminpass1", "admin")
+    store.add_user("guest", "viewerpass1", "viewer")
+    monkeypatch.setattr("frfw.cli.AdminStore", lambda: store)
+    monkeypatch.setattr("getpass.getpass", lambda prompt="": "recovered99")
+
+    # Root's recovery path always yields an admin, even for a viewer account.
+    assert main(["set-admin-password", "--username", "guest"]) == 0
+    assert store.get("guest").is_admin
+    capsys.readouterr()
+    assert main(["users"]) == 0
+    assert capsys.readouterr().out.split() == ["boss", "admin", "guest", "admin"]

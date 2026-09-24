@@ -7,6 +7,7 @@
     firewall-cli detect-interfaces [--include-virtual]
     firewall-cli assign-interfaces --wan DEV --lan DEV [--opt NAME:DEV ...] [--out PATH]
     firewall-cli set-admin-password [--username admin] [--generate]
+    firewall-cli users
     firewall-cli ids-status
     firewall-cli iot-status
     firewall-cli apps-status [--limit N]
@@ -42,7 +43,7 @@ from frfw import __version__, netdetect, paths, schedule_refresh, skeleton, xdp 
 from frfw import update as update_mod
 from frfw.adblock import AdblockError
 from frfw.adblock import refresh as adblock_refresh
-from frfw.admin_account import AdminStore
+from frfw.admin_account import ROLE_ADMIN, AdminStore
 from frfw.appid import load_catalog
 from frfw.appid.daemon import load_usage
 from frfw.apply import NftError, list_backups, rollback_last
@@ -163,7 +164,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p_assign.set_defaults(handler=_cmd_assign_interfaces)
 
     p_admin = sub.add_parser(
-        "set-admin-password", help="set/reset the webUI's local admin account"
+        "set-admin-password",
+        help="create or reset a webUI account as admin (recovery path: always grants the admin role)",
     )
     p_admin.add_argument("--username", default="admin")
     p_admin.add_argument(
@@ -173,6 +175,9 @@ def _build_parser() -> argparse.ArgumentParser:
         "the password to stdout (for non-interactive first-boot use)",
     )
     p_admin.set_defaults(handler=_cmd_set_admin_password)
+
+    p_users = sub.add_parser("users", help="list the webUI accounts and their roles")
+    p_users.set_defaults(handler=_cmd_users)
 
     p_ids_status = sub.add_parser(
         "ids-status",
@@ -324,7 +329,7 @@ def _cmd_set_admin_password(args: argparse.Namespace) -> int:
         # caller can safely capture it (e.g. `pw=$(firewall-cli
         # set-admin-password --generate)`) without scraping other output.
         password = secrets.token_urlsafe(18)
-        AdminStore().set_password(args.username, password)
+        AdminStore().set_password(args.username, password, ROLE_ADMIN)
         print(password)
         return 0
 
@@ -337,8 +342,18 @@ def _cmd_set_admin_password(args: argparse.Namespace) -> int:
         print("error: password must be at least 8 characters", file=sys.stderr)
         return 1
 
-    AdminStore().set_password(args.username, password)
+    AdminStore().set_password(args.username, password, ROLE_ADMIN)
     print(f"Admin account {args.username!r} set")
+    return 0
+
+
+def _cmd_users(args: argparse.Namespace) -> int:
+    accounts = AdminStore().users()
+    if not accounts:
+        print("No webUI accounts yet (the first login creates one, or run set-admin-password)")
+        return 0
+    for name in sorted(accounts):
+        print(f"{name:<32} {accounts[name].role}")
     return 0
 
 

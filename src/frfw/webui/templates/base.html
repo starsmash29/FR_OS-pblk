@@ -58,9 +58,15 @@
   .live-dot { display: inline-block; width: 0.5rem; height: 0.5rem; border-radius: 50%; background: #7d8590; margin-right: 0.4rem; }
   .live-dot.live { background: #2f7d32; box-shadow: 0 0 0 0 rgba(47,125,50,0.6); animation: live-pulse 1.6s infinite; }
   @keyframes live-pulse { 0% { box-shadow: 0 0 0 0 rgba(47,125,50,0.5); } 70% { box-shadow: 0 0 0 6px rgba(47,125,50,0); } 100% { box-shadow: 0 0 0 0 rgba(47,125,50,0); } }
+  /* Phase 18: a viewer sees every screen but none of the change forms.
+     The server refuses their POSTs regardless (deps.require_login) --
+     this only keeps the UI honest about it. */
+  .role-viewer main form[method="post"]:not(.allow-viewer) { display: none; }
+  .readonly-banner { background: #eef2f6; border: 1px solid #dde3e8; border-radius: 6px; padding: 0.5rem 0.8rem; margin-bottom: 1rem; }
 </style>
 </head>
-<body>
+{% set current_user = request.state.user if (request is defined and request.state.user is defined) else none %}
+<body class="{{ 'role-viewer' if current_user and not current_user.is_admin else '' }}">
 {% if username %}
 <header>
   <div>
@@ -78,14 +84,16 @@
     <a href="/ztna">ZTNA Gate</a>
     <a href="/update">Update</a>
     <a href="/system">System</a>
+    {% if current_user and current_user.is_admin %}<a href="/users">Users</a>{% endif %}
   </div>
   <form method="post" action="/logout">
-    <span style="margin-right:0.8rem;">{{ username }}</span>
+    <a href="/account" style="margin-right:0.8rem;">{{ username }}{% if current_user and not current_user.is_admin %} (read-only){% endif %}</a>
     <button type="submit" class="secondary">Logout</button>
   </form>
 </header>
 {% endif %}
 <main>
+{% if current_user and not current_user.is_admin %}<div class="readonly-banner">Read-only account: you can look at everything, but changes are disabled. You can change your own password under <a href="/account">Account</a>.</div>{% endif %}
 {% if error %}<div class="flash-error">{{ error }}</div>{% endif %}
 {% if success %}<div class="flash-success">{{ success }}</div>{% endif %}
 {% block content %}{% endblock %}

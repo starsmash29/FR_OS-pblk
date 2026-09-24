@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block title %}Users - FR_OS{% endblock %}
+{% block content %}
+<h1>Users</h1>
+<p class="muted">
+  <strong>admin</strong>: everything, including this page.
+  <strong>viewer</strong>: every screen read-only, can change only its own password.
+  At least one admin always remains. Changing a password or role, or deleting an
+  account, ends its open sessions immediately.
+</p>
+
+<div class="card">
+  <h3>Accounts</h3>
+  <table>
+    <tr><th>User</th><th>Role</th><th>Change role</th><th>Reset password</th><th></th></tr>
+    {% for u in users %}
+    <tr>
+      <td>{{ u.username }}{% if u.username == username %} <span class="muted">(you)</span>{% endif %}</td>
+      <td>{% if u.is_admin %}<span class="badge badge-yellow">admin</span>{% else %}<span class="badge">viewer</span>{% endif %}</td>
+      <td>
+        <form class="inline" method="post" action="/users/{{ u.username }}/role">
+          <select name="role" aria-label="Role of {{ u.username }}">
+            {% for r in roles %}<option value="{{ r }}" {{ "selected" if r == u.role }}>{{ r }}</option>{% endfor %}
+          </select>
+          <button type="submit" class="secondary">Set</button>
+        </form>
+      </td>
+      <td>
+        <form class="inline" method="post" action="/users/{{ u.username }}/password">
+          <input type="password" name="new_password" minlength="8" required aria-label="New password for {{ u.username }}" style="width:10rem;display:inline-block;">
+          <button type="submit" class="secondary">Reset</button>
+        </form>
+      </td>
+      <td>
+        <form class="inline" method="post" action="/users/{{ u.username }}/delete" onsubmit="return confirm('Delete user {{ u.username }}?')">
+          <button type="submit" class="danger">Delete</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+
+<div class="card">
+  <h3>Add user</h3>
+  <form method="post" action="/users/add">
+    <label>Username</label>
+    <input type="text" name="new_username" pattern="[a-z_][a-z0-9_.\-]{0,31}" required>
+    <label>Password (at least 8 characters)</label>
+    <input type="password" name="new_password" minlength="8" required>
+    <label>Role</label>
+    <select name="role">
+      <option value="viewer">viewer (read-only)</option>
+      <option value="admin">admin</option>
+    </select>
+    <button type="submit">Add user</button>
+  </form>
+</div>
+
+<div class="card">
+  <h3>Audit log (latest 200)</h3>
+  <p class="muted">Every change request and login: who, when, from where, which endpoint and the outcome. Form contents are never recorded.</p>
+  {% if not audit %}
+  <p class="muted">Nothing recorded yet.</p>
+  {% else %}
+  <div class="scroll-table" style="max-height:480px;">
+  <table>
+    <tr><th>When</th><th>User</th><th>From</th><th>What</th><th>Result</th></tr>
+    {% for e in audit %}
+    <tr>
+      <td>{{ e.when }}</td>
+      <td>{{ e.user or "-" }}{% if e.role %} <span class="muted">({{ e.role }})</span>{% endif %}</td>
+      <td>{{ e.client or "-" }}</td>
+      <td>{% if e.event %}{{ e.event }}{% else %}<code>{{ e.method }} {{ e.path }}</code>{% endif %}</td>
+      <td>{% if e.status %}{% if e.status == 403 %}<span class="badge badge-red">denied</span>{% elif e.status < 400 %}{{ e.status }}{% else %}<span class="badge badge-red">{{ e.status }}</span>{% endif %}{% else %}-{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

@@ -2420,6 +2420,76 @@ tested on the real kernel).
 - IPv6 is still out of scope for rules as a whole (see Known limitations
   in docs/CONFIG_SCHEMA.md).
 
+## Multiple webUI accounts with roles (phase 18)
+
+Goal: more than one person can manage the router -- a second admin, a
+helpdesk colleague or a curious family member who may look but not
+touch -- and it is visible afterwards who changed what.
+
+### What it is
+
+- **Accounts and roles** (`frfw.admin_account`): any number of local
+  accounts, each `admin` (everything, including account management) or
+  `viewer` (every screen read-only; may only change its own password).
+  The store refuses any change that would leave no admin, and the first
+  account is always an admin. The pre-phase-18 single-account file is
+  read as one admin and rewritten in the new format on the next change.
+- **One enforcement point** (`frfw.webui.deps.require_login`): every
+  protected route already depended on it, so the role check lives there
+  rather than in each route -- a viewer gets 403 for any non-GET request
+  except `/logout` and `/account/password`. A per-route check would be
+  one forgotten decorator away from a hole; this can't be forgotten on a
+  new route. `tests/webui/test_rbac.py` enumerates *every* registered
+  route (two independent listings: the router tree and the OpenAPI
+  schema, which must agree) and sends each change route as a viewer:
+  all 35 answer 403 and neither the config nor the account file changes.
+  Removing the check makes that test fail (tried).
+- **Sessions follow the account.** The signed cookie carries the username
+  and a version derived from the password hash, and every request
+  re-reads the account. Deleting an account, changing its role or
+  resetting its password therefore applies to its open sessions on the
+  next request; changing your own password keeps your current session
+  (fresh cookie) and ends the others.
+- **Audit log** (`frfw.webui.audit`, `/etc/fr_os/webui/audit.log`): one
+  JSON line per change request by a logged-in account (user, role,
+  client address, method, path, HTTP status -- a refused viewer attempt
+  shows as 403) and per login attempt, successful or not. Form contents
+  are never written (they can hold passwords; a test checks that a
+  password set through the UI does not appear in the log). Capped at
+  1 MiB with one rotated generation. Admins see the latest 200 entries on
+  `/users`.
+- **UI**: `/users` (admin only) to add accounts, change roles, reset
+  passwords, delete; `/account` for everyone's own password; viewers see
+  a read-only banner and no change forms (cosmetic -- the server enforces
+  it regardless). `firewall-cli users` lists accounts; `firewall-cli
+  set-admin-password`, run as root, always grants the admin role -- the
+  recovery path if the last admin's password is lost.
+
+### Honest boundaries
+
+- Roles are enforced in the webUI process. The privileged apply-helper
+  still trusts whatever the `fr_os-webui` account sends over its socket,
+  exactly as before: a compromised webUI process is not stopped by
+  roles. What roles add is separation *between people using the webUI*.
+- "Read-only" still means seeing everything the screens show, including
+  per-client data: which apps each device used (phase 16), the live XDP
+  SNI log, DHCP leases and the IoT inventory. Give the viewer role only
+  to people who may see that.
+- No per-screen permissions and no external identity provider (LDAP,
+  OIDC) -- two roles are what a home or small office needs; anything
+  finer would be a different project.
+- The webUI accounts are separate from the ZTNA gate's users (phase 7),
+  which grant network access, not router management.
+
+### Verification
+
+18 new tests: the all-routes viewer walk above, the anonymous walk (every
+change route except `/login`, `/logout` and `/ztna/login` sends an
+anonymous caller to the login page), account management, last-admin
+protection, session invalidation on role/password/deletion, own-password
+change, legacy file migration, store validation, audit contents
+(including denied attempts and failed logins), and the CLI recovery path.
+
 ## Open decisions
 
 The points below get settled during their respective phase, once the

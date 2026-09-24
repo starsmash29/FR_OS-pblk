@@ -67,6 +67,10 @@ def get_appid_usage_path(request: Request) -> Path:
     return request.app.state.appid_usage_path
 
 
+def get_audit_log_path(request: Request) -> Path:
+    return request.app.state.audit_log_path
+
+
 def get_bruteforce_guard(request: Request) -> BruteforceGuard:
     return request.app.state.bruteforce_guard
 
@@ -75,12 +79,46 @@ def get_raw_config(config_path: Path = Depends(get_config_path)) -> dict:
     return load_raw(config_path)
 
 
+#: Methods that never change anything; everything else is a change.
+_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+#: The only changes a viewer may make (phase 18).
+VIEWER_ALLOWED_PATHS = frozenset({"/logout", "/account/password"})
+
+
 def require_login(
-    request: Request, session_manager: SessionManager = Depends(get_session_manager)
+    request: Request,
+    session_manager: SessionManager = Depends(get_session_manager),
+    admin_store: AdminStore = Depends(get_admin_store),
 ) -> str:
-    username = session_manager.username_from_cookie(request.cookies.get(COOKIE_NAME))
-    if username is None:
+    """Every protected route depends on this. It re-reads the account on
+    each request (so a deleted account, a changed role or password counts
+    immediately), records it on `request.state.user` for templates and the
+    audit log, and enforces the role in one place: a viewer may only use
+    safe methods, plus VIEWER_ALLOWED_PATHS. Keeping the check here, not in
+    each route, is what makes it impossible to forget on a new POST route
+    -- tests/webui/test_rbac.py walks every registered route to prove it."""
+    session = session_manager.session_from_cookie(request.cookies.get(COOKIE_NAME))
+    account = admin_store.get(session[0]) if session else None
+    if account is None or session[1] != account.session_version():
         raise HTTPException(
             status_code=status.HTTP_303_SEE_OTHER, headers={"Location": "/login"}
         )
+    request.state.user = account
+    if (
+        not account.is_admin
+        and request.method not in _SAFE_METHODS
+        and request.url.path not in VIEWER_ALLOWED_PATHS
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This account is read-only (viewer role)",
+        )
+    return account.username
+
+
+def require_admin(request: Request, username: str = Depends(require_login)) -> str:
+    """For admin-only *pages* (account management): viewers can't even look."""
+    if not request.state.user.is_admin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admins only")
     return username

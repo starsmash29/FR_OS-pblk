@@ -12,11 +12,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 
 from frfw import paths
+from frfw.webui import audit
 from frfw.webui.auth import AdminStore, SessionManager
 from frfw.webui.auth_rate_limiter import BruteforceGuard
+from frfw.webui.client_ip import client_ip
 from frfw.webui.helper_client import (
     HelperClient,
     SocketHelperClient,
@@ -24,6 +26,7 @@ from frfw.webui.helper_client import (
     UpdateHelperClient,
 )
 from frfw.webui.routes import (
+    accounts,
     adblock,
     ai_ids,
     apps,
@@ -58,6 +61,7 @@ def create_app(
     iot_scan_options: dict | None = None,
     adblock_category_dir: Path = paths.ADBLOCK_CATEGORY_DIR,
     appid_usage_path: Path = paths.APPID_USAGE_PATH,
+    audit_log_path: Path = paths.WEBUI_AUDIT_LOG_PATH,
 ) -> FastAPI:
     app = FastAPI(title="FR_OS webUI")
     app.state.config_path = config_path
@@ -76,8 +80,29 @@ def create_app(
     # arp_path, oui_path) -- empty in production, overridden by tests.
     app.state.iot_scan_options = iot_scan_options or {}
     app.state.appid_usage_path = appid_usage_path
+    app.state.audit_log_path = audit_log_path
+
+    @app.middleware("http")
+    async def audit_changes(request: Request, call_next):
+        # Phase 18: one audit line per change request by a logged-in
+        # account (request.state.user is set by deps.require_login, also
+        # when it then refuses a viewer with 403). Logins are recorded by
+        # the login route itself.
+        response = await call_next(request)
+        user = getattr(request.state, "user", None)
+        if user is not None and request.method not in ("GET", "HEAD", "OPTIONS"):
+            audit.append(audit_log_path, {
+                "user": user.username,
+                "role": user.role,
+                "client": client_ip(request),
+                "method": request.method,
+                "path": request.url.path,
+                "status": response.status_code,
+            })
+        return response
 
     app.include_router(auth.router)
+    app.include_router(accounts.router)
     app.include_router(dashboard.router)
     app.include_router(interfaces.router)
     app.include_router(rules.router)

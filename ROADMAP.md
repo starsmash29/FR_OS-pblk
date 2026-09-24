@@ -1127,3 +1127,28 @@ against the real kernel's verdicts in five time zones and a non-zero
 kernel time zone. An actual DST switch on a running router was not
 observed.
 
+## Phase 18 – Multiple webUI accounts with roles (RBAC) — **done**
+
+Fifth of the seven "next-gen homelab / small office" additions. Full
+rationale:
+[ARCHITECTURE.md](ARCHITECTURE.md#multiple-webui-accounts-with-roles-phase-18).
+
+- [x] **Accounts**: any number, role `admin` or `viewer`; at least one
+      admin always remains; legacy single-account file still read.
+- [x] **Central enforcement** in `require_login`: viewers get 403 on
+      every change route (proven by walking all registered routes).
+- [x] **Sessions follow the account**: role changes, password resets and
+      deletions apply to open sessions immediately.
+- [x] **Audit log**: every change request and login, never form
+      contents, size-capped; shown to admins on `/users`.
+- [x] **WebUI** `/users` and `/account`, read-only banner for viewers;
+      `firewall-cli users`; `set-admin-password` always grants admin.
+- [x] Tests: 18 new. Full suite: 868 passed, 1 skipped.
+
+**Acceptance criterion**: several people can have their own login, some
+read-only; a read-only account cannot change anything through any
+endpoint; admins can see who changed what and when. ✅ Verified by an
+exhaustive route walk that fails if the central check is removed.
+Roles do not protect against a compromised webUI process (unchanged
+trust boundary to the privileged helper).
+

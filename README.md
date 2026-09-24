@@ -24,6 +24,7 @@ Design decisions and the phase-by-phase development plan:
 - **📡 IoT discovery and isolation.** Finds the smart plugs, cameras and speakers in chosen zones (DHCP leases, ARP, mDNS service discovery, IEEE vendor registry), explains every "this is IoT" verdict, and can isolate a device by MAC address in the router's firewall — internet-only or fully blocked — automatically or with one click.
 - **📱 App identification and blocking.** Shows which apps (Netflix, TikTok, Steam, Zoom and ~40 others) each client used in the last 24 hours, from the names it looks up and, optionally, the TLS server names the XDP program sees — nothing is decrypted. Any app can be blocked with one checkbox: the resolver refuses all of its names, and optionally the XDP filter drops its TLS connections too.
 - **⏰ Time-based rules.** Any firewall rule can apply only on chosen days and times — "no internet for the kids' tablets on school nights", "SSH only during office hours" — per device by MAC address, optionally cutting connections that were already open. Rendered correctly for the kernel's UTC clocks and kept right across daylight-saving changes.
+- **👥 Multiple admins with roles and an audit log.** Any number of webUI accounts, each `admin` or read-only `viewer`, enforced in one place for every change endpoint; role changes and password resets end open sessions at once; every change and login is recorded (who, when, from where, result — never form contents).
 - **🧩 Real privilege separation, not just a warning label.** The FastAPI + Jinja2 WebUI runs unprivileged, full stop. Every root-level action — nftables reload, interface addressing, DHCP config, package updates, hardware queries — goes through one locked-down, protocol-validated JSON Unix socket to `fr-apply-helper`. The WebUI process cannot escalate even if fully compromised; it simply has no path to root.
 - **📊 Built-in, dependency-free Prometheus exporter.** `GET /metrics` in real Prometheus text format, written with plain string formatting against `/proc`, `/sys`, and `os.statvfs` — no `prometheus_client`, no `psutil`, no extra runtime weight. A ready-to-import Grafana dashboard ships in [`telemetry/grafana-dashboard.json`](telemetry/grafana-dashboard.json).
 
@@ -103,7 +104,7 @@ A real, importable dashboard (stat tiles, throughput graphs, hardware gauges) is
 python3 -m pytest
 ```
 
-850 tests pass as of the latest phase (1 skipped, gated on a `dmidecode` binary this dev sandbox doesn't have installed — see ARCHITECTURE.md). Wherever the target environment allows it, tests exercise the real thing instead of a mock: real `nft` ruleset loading and rollback, real kernel-set timeouts (ZTNA sessions, the brute-force jail, AI IDS quarantine), real filesystem-permission checks (e.g. confirming `/proc/net/nf_conntrack` really is root-only before relying on that boundary). IoT isolation is tested on the wire: two network namespaces routed through the actual generated ruleset, with TCP connections and a real mDNS exchange. DNS filtering is tested against a real dnsmasq, whose real query log drives the AI IDS in the same test. The XDP program is loaded into the running kernel and fed real TLS handshakes across three network namespaces (client, router, server), which is how the phase 4 attach-direction mistake was caught. The eBPF/XDP C code is written and commented specifically to satisfy the kernel's static verifier — bounded loops, explicit range checks — and is checked against a real packet-capture integration test, not just compiled.
+868 tests pass as of the latest phase (1 skipped, gated on a `dmidecode` binary this dev sandbox doesn't have installed — see ARCHITECTURE.md). Wherever the target environment allows it, tests exercise the real thing instead of a mock: real `nft` ruleset loading and rollback, real kernel-set timeouts (ZTNA sessions, the brute-force jail, AI IDS quarantine), real filesystem-permission checks (e.g. confirming `/proc/net/nf_conntrack` really is root-only before relying on that boundary). IoT isolation is tested on the wire: two network namespaces routed through the actual generated ruleset, with TCP connections and a real mDNS exchange. DNS filtering is tested against a real dnsmasq, whose real query log drives the AI IDS in the same test. The XDP program is loaded into the running kernel and fed real TLS handshakes across three network namespaces (client, router, server), which is how the phase 4 attach-direction mistake was caught. The eBPF/XDP C code is written and commented specifically to satisfy the kernel's static verifier — bounded loops, explicit range checks — and is checked against a real packet-capture integration test, not just compiled.
 
 Config changes are never a one-way door: every real (non-dry-run) apply snapshots the previous ruleset first, keeping the last 10 versions under `/etc/fr_os/backups/` for `firewall-cli rollback`.
 
@@ -163,6 +164,7 @@ required permissions; after that:
 
 ```bash
 sudo firewall-cli set-admin-password   # set the admin password (interactive)
+sudo firewall-cli users                # list webUI accounts; add more (admin/viewer) on the /users screen
 sudo systemctl enable --now fr-webui
 ```
 
@@ -259,6 +261,7 @@ pfSense and OPNsense are mature, FreeBSD-based projects with a much larger drive
 | IoT device discovery / isolation | Built in (vendor + mDNS + hostname classification, MAC-keyed firewall isolation) | Manual (aliases, VLANs) or third-party packages |
 | Application identification / blocking | Built in (DNS + SNI names, 41-app catalog, one-click resolver/XDP blocking) | Zenarmor / Suricata add-ons |
 | Time-based rules | Built in (per-rule schedules, per-device MAC matching, DST-safe) | Built in (schedules) |
+| Multiple admins / read-only role / audit log | Built in (admin + viewer roles, per-request enforcement, audit log) | Built in (users, groups, privileges) |
 | Prometheus metrics | Native `/metrics`, zero extra packages | Needs a community package (`node_exporter` et al.) |
 | Live image size | ~328 MB hybrid BIOS+UEFI | Multi-hundred-MB to several GB installer images |
 | Config model | One YAML file, plain-text diffable, versioned rollback | XML config, less diff-friendly |
@@ -378,6 +381,11 @@ configurable time zone, rendered for the kernel's actual clocks (UTC
 never applies unapplied edits, optional cutting of open connections, and
 MAC-based rule matching; verified against the real kernel in five time
 zones.
+
+**Phase 18 (multiple webUI accounts with roles)** — done. Admin and
+read-only viewer accounts, one central enforcement point proven against
+every registered route, sessions that follow account changes, and an
+audit log of every change and login.
 
 Full rationale for every phase: [ARCHITECTURE.md](ARCHITECTURE.md).
 
