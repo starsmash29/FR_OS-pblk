@@ -4,6 +4,24 @@ Phase-by-phase development plan. At the end of every phase the system must
 be in a working, testable state on a plain Debian VM before the next phase
 starts. For the architecture decisions, see: [ARCHITECTURE.md](ARCHITECTURE.md).
 
+## 🗺️ Release cycle & codenames
+
+FR_OS releases follow a thematic "I"-codename convention:
+
+| Versions | Codename | Status |
+|---|---|---|
+| v0.1.0 – v1.0.0 | **Ice Breaker** 🧊 | **Current.** v0.1.0 is the first release: everything in phases 1–20 below. |
+| v1.x.x | **Idun** 🍏 | Planned |
+| v2.x.x | **Ivar** ⚡ | Planned |
+| v3.x.x | **Inari** 🌌 | Planned |
+| v4.x.x | **Ingemar** 🏰 | Planned |
+
+1.0.0 closes Ice Breaker; Idun starts with the first release after it.
+The mapping lives in one place, `frfw.codename_for()`, and shows up in
+`firewall-cli --version`, `firewall-cli update check`, the webUI's Update
+screen, and the `codename` label of the `fros_info` metric (so the fleet
+dashboard shows which release each site runs).
+
 ## Phase 1 – Firewall engine core — **done**
 
 - [x] `ARCHITECTURE.md` / `ROADMAP.md`

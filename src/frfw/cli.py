@@ -44,7 +44,7 @@ from pathlib import Path
 
 import yaml
 
-from frfw import __version__, netdetect, paths, schedule_refresh, skeleton, xdp as xdp_mod
+from frfw import __version__, codename_for, netdetect, paths, schedule_refresh, skeleton, xdp as xdp_mod
 from frfw import update as update_mod
 from frfw.adblock import AdblockError
 from frfw.adblock import refresh as adblock_refresh
@@ -99,6 +99,7 @@ def main(argv: list[str] | None = None) -> int:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="firewall-cli")
+    parser.add_argument("--version", action="version", version=f"FR_OS {_with_codename(__version__)}")
     sub = parser.add_subparsers(dest="command", required=True)
 
     def add_config_arg(p: argparse.ArgumentParser) -> None:
@@ -499,15 +500,20 @@ def _resolve_update_repo(config_path: str) -> str:
     return config.update.repo or update_mod.DEFAULT_REPO
 
 
+def _with_codename(version: str) -> str:
+    codename = codename_for(version)
+    return f'{version} "{codename}"' if codename else version
+
+
 def _cmd_update_check(args: argparse.Namespace) -> int:
     repo = _resolve_update_repo(args.config)
     result = update_mod.check_latest(__version__, repo=repo)
-    print(f"Installed version: {result.current_version}")
+    print(f"Installed version: {_with_codename(result.current_version)}")
     print(f"Repo checked:      {repo}")
     if result.latest is None:
         print("No releases published for this repo yet.")
         return 0
-    print(f"Latest release:    {result.latest.version} ({result.latest.tag})")
+    print(f"Latest release:    {_with_codename(result.latest.version)} ({result.latest.tag})")
     if result.update_available:
         print("Update available.")
         if result.latest.notes:
