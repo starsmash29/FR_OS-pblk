@@ -30,8 +30,8 @@ def test_update_page_requires_login(client):
 def test_update_page_shows_installed_and_latest_version(logged_in_client):
     page = logged_in_client.get("/update")
     assert page.status_code == 200
-    assert "0.1.0" in page.text
-    assert "0.2.0" in page.text
+    assert "0.1.0 “Ice Breaker”" in page.text
+    assert "Update available: 0.2.0 “Ice Breaker”" in page.text
     assert "release notes here" in page.text
 
 

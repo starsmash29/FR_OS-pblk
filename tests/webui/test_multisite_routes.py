@@ -10,6 +10,7 @@ import subprocess
 import pytest
 import yaml
 
+from frfw import __codename__, __version__
 from frfw.metrics import generate_metrics_token, hash_metrics_token
 
 requires_openssl = pytest.mark.skipif(shutil.which("openssl") is None, reason="openssl not installed")
@@ -34,6 +35,7 @@ def test_metrics_endpoint_requires_the_token_once_set(client, webui_env):
     ok = client.get("/metrics", headers={"Authorization": f"Bearer {token}"})
     assert ok.status_code == 200
     assert 'fros_info{site_name="szeged",hostname="router-a",version="' in ok.text
+    assert f'version="{__version__}",codename="{__codename__}"' in ok.text
     assert "fros_config_valid 1" in ok.text
 
 

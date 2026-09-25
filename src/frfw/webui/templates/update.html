@@ -5,7 +5,7 @@
 
 <div class="card">
   <h3>Version</h3>
-  <p>Installed: <span class="badge">{{ installed_version }}</span></p>
+  <p>Installed: <span class="badge">{{ installed_version | with_codename }}</span></p>
   <p class="muted">Checked against <code>{{ repo }}</code> (set via config.yaml's <code>update.repo</code>).</p>
 
   {% if check_error %}
@@ -14,7 +14,7 @@
     {% if check_result.latest is none %}
     <p class="muted">No releases have been published for this repo yet.</p>
     {% elif check_result.update_available %}
-    <p><strong>Update available: {{ check_result.latest.version }}</strong></p>
+    <p><strong>Update available: {{ check_result.latest.version | with_codename }}</strong></p>
     {% if check_result.latest.notes %}
     <pre style="white-space:pre-wrap;background:#f2f4f6;padding:0.6rem;border-radius:4px;">{{ check_result.latest.notes }}</pre>
     {% endif %}
@@ -23,7 +23,7 @@
       <button type="submit">Update to {{ check_result.latest.version }}</button>
     </form>
     {% else %}
-    <p class="muted">Already up to date (latest published release: {{ check_result.latest.version }}).</p>
+    <p class="muted">Already up to date (latest published release: {{ check_result.latest.version | with_codename }}).</p>
     {% endif %}
   {% endif %}
 </div>

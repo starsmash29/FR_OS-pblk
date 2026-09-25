@@ -52,7 +52,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from frfw import __version__, paths
+from frfw import __codename__, __version__, paths
 from frfw import xdp as xdp_mod
 from frfw.adblock import category_counts, count_blocked_domains
 from frfw.appid import load_catalog
@@ -353,13 +353,14 @@ def _read_info_families(config: Config | None) -> list[MetricFamily]:
     emitted -- with an invalid config the site falls back to "unknown" and
     fros_config_valid says why the other families are missing."""
     info = MetricFamily(
-        "fros_info", "Constant 1; labels identify this router (site name, hostname, version).", "gauge"
+        "fros_info", "Constant 1; labels identify this router (site name, hostname, version, release codename).", "gauge"
     )
     if config is None:
-        info.add(1, site_name="unknown", hostname="unknown", version=__version__)
+        info.add(1, site_name="unknown", hostname="unknown", version=__version__,
+                 codename=__codename__ or "")
     else:
         info.add(1, site_name=config.metrics.site or config.hostname, hostname=config.hostname,
-                 version=__version__)
+                 version=__version__, codename=__codename__ or "")
     valid = MetricFamily(
         "fros_config_valid", "1 if the on-disk config.yaml passes validation, else 0.", "gauge"
     )

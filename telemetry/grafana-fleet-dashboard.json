@@ -306,7 +306,7 @@
           "format": "table"
         },
         {
-          "expr": "max by (site, hostname, version) (fros_info{site=~\"$site\"})",
+          "expr": "max by (site, hostname, version, codename) (fros_info{site=~\"$site\"})",
           "refId": "INFO",
           "instant": true,
           "format": "table"

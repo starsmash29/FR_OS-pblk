@@ -2644,7 +2644,7 @@ thing to secure.
   router certificate (`ca_file`), whose SHA-256 the System screen shows
   and offers for download.
 - **Nothing said which router a series came from** beyond Prometheus's
-  target labels. `fros_info{site_name, hostname, version}` and
+  target labels. `fros_info{site_name, hostname, version, codename}` and
   `fros_config_valid` are always exported.
 
 ### What ships

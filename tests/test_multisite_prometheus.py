@@ -153,7 +153,8 @@ def test_prometheus_scrapes_two_sites_and_every_dashboard_query_works(tmp_path):
         # Panels that must show real data even without the privileged helper.
         must_have = {
             'count(up{job=~"fr_os.*", site=~".*"} == 1) or vector(0)': lambda r: float(r[0]["value"][1]) == 2,
-            'max by (site, hostname, version) (fros_info{site=~".*"})': lambda r: len(r) == 2,
+            'max by (site, hostname, version, codename) (fros_info{site=~".*"})':
+                lambda r: len(r) == 2 and all(x["metric"]["codename"] for x in r),
             'max by (site) (fros_config_valid{site=~".*"})': lambda r: all(x["value"][1] == "1" for x in r) and len(r) == 2,
             'sum by (site, direction) (irate(fros_interface_bytes_total{site=~".*"}[5m]))': lambda r: len(r) == 4,
             'max by (site) (fros_hw_cpu_usage_ratio{site=~".*"})': lambda r: len(r) == 2,

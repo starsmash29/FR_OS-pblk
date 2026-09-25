@@ -12,6 +12,10 @@ Design decisions and the phase-by-phase development plan:
 - [ROADMAP.md](ROADMAP.md) — phase-by-phase plan and acceptance criteria
 - [docs/CONFIG_SCHEMA.md](docs/CONFIG_SCHEMA.md) — full YAML config schema reference
 
+**Current release: v0.1.0 "Ice Breaker" 🧊.** Releases follow thematic
+"I" codenames -- Ice Breaker (v0.1.0 – v1.0.0), Idun (1.x), Ivar (2.x),
+Inari (3.x), Ingemar (4.x); see "Release cycle & codenames" in [ROADMAP.md](ROADMAP.md).
+
 ---
 
 ## 🌟 Core pillars
