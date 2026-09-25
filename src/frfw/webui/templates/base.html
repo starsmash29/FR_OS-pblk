@@ -3,101 +3,72 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
 <title>{% block title %}FR_OS{% endblock %}</title>
-<style>
-  :root { color-scheme: light dark; }
-  * { box-sizing: border-box; }
-  body { font-family: system-ui, -apple-system, sans-serif; margin: 0; background: #f2f4f6; color: #1a1a1a; }
-  header { background: #17324d; color: white; padding: 0.75rem 1.25rem; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem; }
-  header a { color: #dce7f0; text-decoration: none; margin-right: 1.1rem; font-weight: 500; }
-  header a:hover { color: white; }
-  header a.brand { color: white; font-weight: 700; font-size: 1.05rem; }
-  header form { margin: 0; }
-  main { max-width: 980px; margin: 1.5rem auto; padding: 0 1rem 3rem; }
-  h1 { font-size: 1.4rem; }
-  h3 { margin-top: 0; font-size: 1rem; }
-  table { border-collapse: collapse; width: 100%; margin-bottom: 1rem; background: white; }
-  th, td { border: 1px solid #dde3e8; padding: 0.4rem 0.6rem; text-align: left; font-size: 0.88rem; }
-  th { background: #eef2f6; }
-  form.inline { display: inline-block; margin-right: 0.4rem; }
-  .card { background: white; border: 1px solid #dde3e8; border-radius: 6px; padding: 1rem 1.2rem; margin-bottom: 1.2rem; }
-  label { display: block; margin-top: 0.6rem; font-size: 0.82rem; font-weight: 600; color: #333; }
-  input, select { padding: 0.35rem 0.5rem; margin-top: 0.2rem; width: 100%; max-width: 340px; border: 1px solid #c7cfd6; border-radius: 4px; font-size: 0.9rem; }
-  input[type=checkbox] { width: auto; }
-  button, input[type=submit] { background: #17324d; color: white; border: none; padding: 0.45rem 1rem; border-radius: 4px; cursor: pointer; margin-top: 0.9rem; font-size: 0.88rem; }
-  button:hover { background: #204a72; }
-  button.danger { background: #a83232; }
-  button.danger:hover { background: #c23d3d; }
-  button.secondary { background: #5c6b78; }
-  .flash-error { background: #fbe1e1; border: 1px solid #a83232; color: #6b1717; padding: 0.6rem 1rem; border-radius: 4px; margin-bottom: 1rem; }
-  .flash-success { background: #e1f2e1; border: 1px solid #2f7d32; color: #1c4b1e; padding: 0.6rem 1rem; border-radius: 4px; margin-bottom: 1rem; }
-  .flash-mock { background: #fff4d6; border: 1px solid #b8860b; color: #6b4e00; padding: 0.6rem 1rem; border-radius: 4px; margin-bottom: 1rem; font-weight: 600; }
-  .muted { color: #667; font-size: 0.85rem; }
-  .progress-track { background: #e4e8ec; border-radius: 999px; height: 0.9rem; overflow: hidden; width: 100%; }
-  .progress-fill { background: #2f7d32; height: 100%; border-radius: 999px 0 0 999px; transition: width 0.3s ease; }
-  .progress-label { font-size: 0.8rem; color: #556; margin-top: 0.3rem; }
-  .badge { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 999px; font-size: 0.78rem; background: #eef2f6; border: 1px solid #dde3e8; }
-  .badge-green { background: #e1f2e1; border-color: #2f7d32; color: #1c4b1e; }
-  .badge-yellow { background: #fff4d6; border-color: #b8860b; color: #6b4e00; }
-  .badge-red { background: #fbe1e1; border-color: #a83232; color: #6b1717; }
-  .status-card { display: flex; align-items: center; gap: 1.2rem; flex-wrap: wrap; }
-  .status-card .badge { font-size: 0.95rem; padding: 0.25rem 0.8rem; }
-  .status-card dl { margin: 0; display: flex; gap: 1.6rem; flex-wrap: wrap; }
-  .status-card dt { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.03em; color: #667; margin: 0; }
-  .status-card dd { margin: 0.1rem 0 0; font-size: 1.05rem; font-weight: 600; }
-  .scroll-table { max-height: 320px; overflow-y: auto; border: 1px solid #dde3e8; border-radius: 6px; }
-  .scroll-table table { margin-bottom: 0; }
-  .scroll-table th { position: sticky; top: 0; }
-  textarea { padding: 0.35rem 0.5rem; margin-top: 0.2rem; width: 100%; max-width: 480px; border: 1px solid #c7cfd6; border-radius: 4px; font-size: 0.85rem; font-family: ui-monospace, monospace; }
-  .checkbox-row { display: block; font-weight: 400; margin: 0.15rem 0; }
-  .checkbox-row input { width: auto; display: inline-block; margin-right: 0.4rem; }
-  .terminal { background: #0d1117; color: #9be29b; border-radius: 6px; padding: 0.8rem 1rem; height: 260px; overflow-y: auto; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.8rem; line-height: 1.45; white-space: pre-wrap; word-break: break-word; }
-  .terminal .t-drop { color: #ff8a8a; }
-  .terminal .t-meta { color: #7d8590; }
-  .terminal .t-empty { color: #7d8590; font-style: italic; }
-  .live-dot { display: inline-block; width: 0.5rem; height: 0.5rem; border-radius: 50%; background: #7d8590; margin-right: 0.4rem; }
-  .live-dot.live { background: #2f7d32; box-shadow: 0 0 0 0 rgba(47,125,50,0.6); animation: live-pulse 1.6s infinite; }
-  @keyframes live-pulse { 0% { box-shadow: 0 0 0 0 rgba(47,125,50,0.5); } 70% { box-shadow: 0 0 0 6px rgba(47,125,50,0); } 100% { box-shadow: 0 0 0 0 rgba(47,125,50,0); } }
-  /* Phase 18: a viewer sees every screen but none of the change forms.
-     The server refuses their POSTs regardless (deps.require_login) --
-     this only keeps the UI honest about it. */
-  .role-viewer main form[method="post"]:not(.allow-viewer) { display: none; }
-  .readonly-banner { background: #eef2f6; border: 1px solid #dde3e8; border-radius: 6px; padding: 0.5rem 0.8rem; margin-bottom: 1rem; }
-</style>
+<link rel="stylesheet" href="/static/fros.css?v={{ FROS_VERSION }}">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23070f19'/%3E%3Cpath d='M16 5l9 3.5v6.8c0 5.6-3.8 10.1-9 11.7-5.2-1.6-9-6.1-9-11.7V8.5z' fill='none' stroke='%234cd7f6' stroke-width='2.2'/%3E%3C/svg%3E">
 </head>
 {% set current_user = request.state.user if (request is defined and request.state.user is defined) else none %}
-<body class="{{ 'role-viewer' if current_user and not current_user.is_admin else '' }}">
+{% set is_viewer = current_user and not current_user.is_admin %}
+<body class="{{ 'role-viewer' if is_viewer else '' }}">
+{% block page %}
 {% if username %}
-<header>
-  <div>
-    <a class="brand" href="/">FR_OS</a>
-    <a href="/">Dashboard</a>
-    <a href="/interfaces">Interfaces</a>
-    <a href="/rules">Rules</a>
-    <a href="/nat">NAT</a>
-    <a href="/dhcp">DHCP</a>
-    <a href="/ai-ids">AI IDS/IPS</a>
-    <a href="/xdp">TLS SNI Filter</a>
-    <a href="/adblock">Ad-Block</a>
-    <a href="/iot">IoT Devices</a>
-    <a href="/apps">Applications</a>
-    <a href="/tls">TLS Fingerprints</a>
-    <a href="/ztna">ZTNA Gate</a>
-    <a href="/update">Update</a>
-    <a href="/system">System</a>
-    {% if current_user and current_user.is_admin %}<a href="/users">Users</a>{% endif %}
+{% set here = nav_location(request.url.path) %}
+<input type="checkbox" id="nav-toggle" aria-hidden="true">
+<header class="topbar">
+  <div class="topbar-left">
+    <label for="nav-toggle" class="icon-button nav-toggle-button" title="Menu"><svg class="icon"><use href="/static/icons.svg#menu"/></svg></label>
+    <a class="brand" href="/">
+      <span class="brand-mark"><svg class="icon"><use href="/static/icons.svg#shield"/></svg></span>
+      <span class="brand-name">FR_OS</span>
+    </a>
+    <span class="chip hide-narrow" title="Installed release">v{{ FROS_VERSION }}{% if FROS_CODENAME %} &middot; {{ FROS_CODENAME }}{% endif %}</span>
+    <span class="divider-v hide-narrow"></span>
+    <span class="host"><span class="status-dot"></span><span class="host-name">{{ shell_hostname(request) }}</span></span>
   </div>
-  <form method="post" action="/logout">
-    <a href="/account" style="margin-right:0.8rem;">{{ username }}{% if current_user and not current_user.is_admin %} (read-only){% endif %}</a>
-    <button type="submit" class="secondary">Logout</button>
-  </form>
+  <div class="topbar-right">
+    <a class="user" href="/account" title="Account">
+      <span class="avatar"><svg class="icon"><use href="/static/icons.svg#person"/></svg></span>
+      <span class="user-text">
+        <span class="user-name">{{ username }}</span>
+        <span class="user-role">{{ "Read-only" if is_viewer else "Admin" }}</span>
+      </span>
+    </a>
+    <form method="post" action="/logout" class="allow-viewer">
+      <button type="submit" class="icon-button" title="Logout" aria-label="Logout"><svg class="icon"><use href="/static/icons.svg#logout"/></svg></button>
+    </form>
+  </div>
 </header>
-{% endif %}
-<main>
-{% if current_user and not current_user.is_admin %}<div class="readonly-banner">Read-only account: you can look at everything, but changes are disabled. You can change your own password under <a href="/account">Account</a>.</div>{% endif %}
+<nav class="sidebar" aria-label="Main">
+  {% for section, items in NAV %}
+  <div class="nav-section">
+    <div class="nav-heading">{{ section }}</div>
+    {% for label, href, icon, admin_only in items %}
+    {% if not admin_only or (current_user and current_user.is_admin) %}
+    <a class="nav-link{{ ' active' if nav_matches(request.url.path, href) else '' }}" href="{{ href }}"><svg class="icon"><use href="/static/icons.svg#{{ icon }}"/></svg>{{ label }}</a>
+    {% endif %}
+    {% endfor %}
+  </div>
+  {% endfor %}
+</nav>
+<main class="content">
+<div class="content-inner">
+{% if here %}<div class="breadcrumb"><span>FR_OS</span><span>{{ here[0] }}</span><span class="here">{{ here[1] }}</span></div>{% endif %}
+{% if is_viewer %}<div class="readonly-banner"><svg class="icon"><use href="/static/icons.svg#visibility"/></svg><span>Read-only account: you can look at everything, but changes are disabled. You can change your own password under <a href="/account">Account</a>.</span></div>{% endif %}
 {% if error %}<div class="flash-error">{{ error }}</div>{% endif %}
 {% if success %}<div class="flash-success">{{ success }}</div>{% endif %}
 {% block content %}{% endblock %}
+</div>
 </main>
+{% else %}
+<main class="auth-page">
+<div style="width:100%;max-width:460px;">
+{% if error %}<div class="flash-error">{{ error }}</div>{% endif %}
+{% if success %}<div class="flash-success">{{ success }}</div>{% endif %}
+{% block standalone %}{{ self.content() }}{% endblock %}
+</div>
+</main>
+{% endif %}
+{% endblock %}
 </body>
 </html>

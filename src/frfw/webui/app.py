@@ -13,6 +13,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import FastAPI, Request
+from fastapi.staticfiles import StaticFiles
 
 from frfw import paths
 from frfw.webui import audit
@@ -44,6 +45,9 @@ from frfw.webui.routes import (
     xdp,
     ztna,
 )
+
+
+STATIC_DIR = Path(__file__).parent / "static"
 
 
 def create_app(
@@ -123,5 +127,10 @@ def create_app(
     app.include_router(apps.router)
     app.include_router(tls.router)
     app.include_router(metrics.router)
+
+    # The stylesheet, fonts and icon sprite. Public on purpose -- the login
+    # page needs them -- and they hold nothing about this router. Everything
+    # is served from here: the webUI never loads anything from the internet.
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     return app

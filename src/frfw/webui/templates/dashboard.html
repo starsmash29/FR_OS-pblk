@@ -1,81 +1,142 @@
 {% extends "base.html" %}
 {% block title %}Dashboard - FR_OS{% endblock %}
 {% block content %}
-<h1>{{ hostname }}</h1>
+{% macro icon(name, cls="") %}<svg class="icon {{ cls }}"><use href="/static/icons.svg#{{ name }}"/></svg>{% endmacro %}
+{% macro state_badge(state) %}<span class="badge {{ 'badge-green' if state in ('running', 'on') else 'badge-red' if state == 'not running' else '' }}">{{ state }}</span>{% endmacro %}
+
+<section class="card hero">
+  <div class="hero-id">
+    <div class="hero-mark">{{ icon("router", "icon-lg") }}<span class="status-dot{{ '' if config_valid else ' bad' }}"></span></div>
+    <div>
+      <h1>{{ hostname }}</h1>
+      <div class="hero-meta">
+        <span>FR_OS {{ FROS_VERSION }}{% if FROS_CODENAME %} &ldquo;{{ FROS_CODENAME }}&rdquo;{% endif %}</span>
+        {% if system.kernel %}<span>Kernel {{ system.kernel }}</span>{% endif %}
+        {% if system.cpu_model %}<span>{{ system.cpu_model }}{% if system.cpu_count %} ({{ system.cpu_count }} CPU){% endif %}</span>{% endif %}
+      </div>
+      <div class="hero-meta" style="margin-top:0.5rem;">
+        {% if config_valid %}<span class="badge badge-green">config valid</span>{% else %}<span class="badge badge-red">config invalid</span>{% endif %}
+        {% if pqc_status %}
+        <span class="muted">Management session:
+          {% if pqc_status.quantum_safe %}
+          <span class="badge badge-green">Quantum-safe (hybrid X25519MLKEM768)</span>
+          {% elif pqc_status.enabled_in_config %}
+          <span class="badge badge-yellow">PQC enabled, not yet active</span>
+          {% else %}
+          <span class="badge badge-red">Classical only</span>
+          {% endif %}
+          <a href="/system">details</a></span>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+  <div class="actions">
+    <form method="post" action="/apply" class="inline"><button type="submit">{{ icon("play_arrow", "icon-sm") }}Apply now</button></form>
+    <form method="post" action="/apply?dry_run=1" class="inline"><button type="submit" class="secondary">{{ icon("science", "icon-sm") }}Dry-run only</button></form>
+    <form method="post" action="/rollback" class="inline" onsubmit="return confirm('Roll back to the previous firewall ruleset?')">
+      <button type="submit" class="danger">{{ icon("undo", "icon-sm") }}Rollback firewall ruleset</button>
+    </form>
+  </div>
+</section>
+
 {% if not config_valid %}
 <div class="flash-error">The saved config does not currently pass validation -- fix it on the relevant screen before applying.</div>
 {% endif %}
 
-{% if pqc_status %}
-<p class="muted">
-  Management session:
-  {% if pqc_status.quantum_safe %}
-  <span class="badge badge-green">Quantum-safe (hybrid X25519MLKEM768)</span>
-  {% elif pqc_status.enabled_in_config %}
-  <span class="badge badge-yellow">PQC enabled, not yet active</span>
-  {% else %}
-  <span class="badge badge-red">Classical only</span>
-  {% endif %}
-  &middot; <a href="/system">details</a>
-</p>
-{% endif %}
-
-<div class="card">
-  <h3>Overview</h3>
-  <p>
-    Zones: <strong>{{ zone_count }}</strong> &middot;
-    Interfaces: <strong>{{ interface_count }}</strong> &middot;
-    Rules: <strong>{{ rule_count }}</strong> &middot;
-    Port forwards: <strong>{{ port_forward_count }}</strong> &middot;
-    DHCP zones: <strong>{{ dhcp_zone_count }}</strong>
-  </p>
-  <p class="muted">Ruleset backups available for rollback: {{ backup_count }}</p>
-</div>
-
-{% if ai_ids_enabled %}
-<div class="card">
-  <h3>AI IDS/IPS <span class="muted">(see <a href="/ai-ids">AI IDS/IPS</a>)</span></h3>
-  <p>
-    Engine:
-    {% if ai_ids_daemon_active %}
-    <span class="badge badge-green">running</span>
+<div class="stats">
+  <a class="stat" href="/rules">
+    <div class="stat-top"><span class="stat-label">Firewall rules</span><span class="stat-icon">{{ icon("security", "icon-sm") }}</span></div>
+    <div class="stat-value">{{ rule_count }}</div>
+    <div class="stat-sub">{{ port_forward_count }} port forward(s) &middot; {{ zone_count }} zone(s)</div>
+  </a>
+  <a class="stat" href="/interfaces">
+    <div class="stat-top"><span class="stat-label">Interfaces</span><span class="stat-icon">{{ icon("settings_ethernet", "icon-sm") }}</span></div>
+    {% if links_known %}
+    <div class="stat-value">{{ links_up }}<small>/ {{ links_known }} link up</small></div>
     {% else %}
-    <span class="badge badge-red">not running</span>
+    <div class="stat-value">{{ interface_count }}<small>configured</small></div>
     {% endif %}
-    &middot;
-    {% if ai_ids_quarantined_count is not none %}
-    <strong>{{ ai_ids_quarantined_count }}</strong> host(s) currently quarantined
+    <div class="stat-sub">DHCP on {{ dhcp_zone_count }} zone(s)</div>
+  </a>
+  <a class="stat" href="/ai-ids">
+    <div class="stat-top"><span class="stat-label">Quarantined hosts</span><span class="stat-icon">{{ icon("psychology", "icon-sm") }}</span></div>
+    {% if ai_ids_enabled and ai_ids_quarantined_count is not none %}
+    <div class="stat-value">{{ ai_ids_quarantined_count }}</div>
+    <div class="stat-sub">AI IDS engine {{ "running" if ai_ids_daemon_active else "not running" }}</div>
     {% else %}
-    <span class="muted">quarantine status unavailable</span>
+    <div class="stat-value">-</div>
+    <div class="stat-sub">{{ "quarantine status unavailable" if ai_ids_enabled else "AI IDS/IPS is off" }}</div>
     {% endif %}
-  </p>
+  </a>
+  <a class="stat" href="/adblock">
+    <div class="stat-top"><span class="stat-label">Blocked domains</span><span class="stat-icon">{{ icon("block", "icon-sm") }}</span></div>
+    <div class="stat-value">{{ "{:,}".format(adblock_domain_count) if adblocker_enabled and adblock_domain_count is not none else "-" }}</div>
+    <div class="stat-sub">{{ "DNS filtering on" if adblocker_enabled else "DNS filtering is off" }}</div>
+  </a>
 </div>
-{% endif %}
 
-{% if adblocker_enabled %}
-<div class="card">
-  <h3>Ad-Block <span class="muted">(see <a href="/adblock">Ad-Block</a>)</span></h3>
-  <p><strong>{{ adblock_domain_count }}</strong> domains currently blocked</p>
+<div class="grid-2">
+  <section class="card">
+    <div class="card-head"><h3>{{ icon("shield_lock") }}Protection services</h3></div>
+    {% if services %}
+    <div class="service-list">
+      {% for service in services %}
+      <div class="service">
+        <div>
+          <div class="service-name"><span class="status-dot{{ '' if service.state in ('running', 'on') else ' bad' if service.state == 'not running' else ' off' }}"></span><a href="{{ service.href }}" style="color:inherit;">{{ service.name }}</a></div>
+          <div class="service-desc">{{ service.desc }}</div>
+        </div>
+        {{ state_badge(service.state) }}
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="muted">Service states appear once the saved config is valid.</p>
+    {% endif %}
+    {% if ai_ids_enabled %}
+    <p class="muted" style="margin-top:0.9rem;">
+      AI IDS/IPS:
+      {% if ai_ids_quarantined_count is not none %}
+      <strong>{{ ai_ids_quarantined_count }}</strong> host(s) currently quarantined
+      {% else %}
+      quarantine status unavailable
+      {% endif %}
+      &middot; <a href="/ai-ids">details</a>
+    </p>
+    {% endif %}
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h3>{{ icon("memory") }}System resources</h3><span class="muted">uptime {{ format_duration(system.uptime_seconds) }}</span></div>
+    <div class="meter">
+      <div class="meter-row"><span>CPU load (1 min){% if system.load %} &middot; {{ "%.2f"|format(system.load[0]) }} / {{ "%.2f"|format(system.load[1]) }} / {{ "%.2f"|format(system.load[2]) }}{% endif %}</span><strong>{{ "%d%%"|format(system.load_ratio * 100) if system.load_ratio is not none else "-" }}</strong></div>
+      <div class="progress-track"><div class="progress-fill" style="width:{{ (system.load_ratio or 0) * 100 }}%;"></div></div>
+    </div>
+    <div class="meter">
+      <div class="meter-row"><span>Memory &middot; {{ format_bytes(system.ram_used) }} / {{ format_bytes(system.ram_total) }}</span><strong>{{ "%d%%"|format(system.ram_ratio * 100) if system.ram_ratio is not none else "-" }}</strong></div>
+      <div class="progress-track"><div class="progress-fill" style="width:{{ (system.ram_ratio or 0) * 100 }}%;"></div></div>
+    </div>
+    <div class="meter">
+      <div class="meter-row"><span>Root filesystem &middot; {{ format_bytes(system.disk_used) }} / {{ format_bytes(system.disk_total) }}</span><strong>{{ "%d%%"|format(system.disk_ratio * 100) if system.disk_ratio is not none else "-" }}</strong></div>
+      <div class="progress-track"><div class="progress-fill" style="width:{{ (system.disk_ratio or 0) * 100 }}%;"></div></div>
+    </div>
+    <p class="muted" style="margin-top:1rem;">Ruleset backups available for rollback: {{ backup_count }} &middot; Prometheus metrics at <a href="/metrics">/metrics</a></p>
+  </section>
 </div>
-{% endif %}
 
-<div class="card">
-  <h3>Interfaces</h3>
+<section class="card">
+  <div class="card-head"><h3>{{ icon("lan") }}Interfaces</h3><a href="/interfaces" class="muted">manage</a></div>
   <table>
     <tr><th>Zone</th><th>Device</th><th>Address</th><th>Link</th></tr>
     {% for row in interface_rows %}
-    <tr><td>{{ row.zone }}</td><td>{{ row.device }}</td><td>{{ row.address or "-" }}</td><td>{{ row.link }}</td></tr>
+    <tr>
+      <td>{{ row.zone }}</td><td>{{ row.device }}</td><td>{{ row.address or "-" }}</td>
+      <td><span class="badge {{ 'badge-green' if row.link == 'up' else 'badge-red' if row.link == 'down' else '' }}">{{ row.link }}</span></td>
+    </tr>
+    {% else %}
+    <tr><td colspan="4" class="muted">No interfaces configured yet.</td></tr>
     {% endfor %}
   </table>
-</div>
-
-<div class="card">
-  <h3>Apply changes</h3>
-  <p class="muted">Applies the saved config to the running system: interface addresses, the nftables firewall ruleset, and DHCP (Kea) if configured.</p>
-  <form method="post" action="/apply" class="inline"><button type="submit">Apply now</button></form>
-  <form method="post" action="/apply?dry_run=1" class="inline"><button type="submit" class="secondary">Dry-run only</button></form>
-  <form method="post" action="/rollback" class="inline" onsubmit="return confirm('Roll back to the previous firewall ruleset?')">
-    <button type="submit" class="danger">Rollback firewall ruleset</button>
-  </form>
-</div>
+  <p class="muted">Apply now pushes the saved config to the running system: interface addresses, the nftables firewall ruleset, and DHCP (Kea) if configured.</p>
+</section>
 {% endblock %}

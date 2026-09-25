@@ -10,7 +10,7 @@ Scheduled drop/reject rules that cut open connections are evaluated before all o
   {% for rule in rules %}
   <tr>
     <td>{{ rule.name }}</td>
-    <td>{{ rule.action }}</td>
+    <td><span class="badge {{ 'badge-green' if rule.action == 'accept' else 'badge-red' if rule.action == 'drop' else 'badge-yellow' }}">{{ rule.action }}</span></td>
     <td>{{ rule.from_zone or "any" }}</td>
     <td>{{ rule.to_zone or "any" }}</td>
     <td>{{ rule.proto or "any" }}</td>

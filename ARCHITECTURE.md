@@ -2702,6 +2702,54 @@ Grafana's), and scraping over a real WAN/VPN.
   privileged helper running on each router, as before.
 - Metrics stay IPv4-centric like the rest of the project.
 
+## WebUI look and feel: dark control plane
+
+The webUI's design comes from the FR_OS Google Stitch project; DESIGN.md
+holds the design system (tokens, components, rules) in the Google Labs
+DESIGN.md format.
+
+### Decisions
+
+- **Hand-written CSS on the existing templates, not Stitch's HTML.**
+  Stitch exports every screen as a standalone page built with the Tailwind
+  CDN script, Google Fonts and the Material Symbols web font -- several
+  hundred remote references across the project, and sample data in the
+  markup. Copying that would make the UI depend on the internet (a router
+  UI must work with the WAN down) and replace real templates with
+  mock-ups. Instead the Stitch theme's tokens were carried into one
+  stylesheet (`src/frfw/webui/static/fros.css`, ~400 lines) that styles
+  the small class vocabulary the templates already used (`card`, `badge`,
+  `flash-*`, `muted`, tables, forms). No build step, no Node dependency at
+  runtime.
+- **Everything local.** Geist and JetBrains Mono ship as variable woff2
+  subsets (latin + latin-ext, ~100 KB, OFL licences alongside), icons as
+  one SVG sprite of the 47 Material Symbols in use (~21 KB, Apache-2.0),
+  rebuilt by `scripts/build-webui-icons.py`. `/static` is mounted without
+  login -- the sign-in page needs it and it holds nothing about the
+  router. A test fails if any template or the stylesheet loads a remote
+  resource.
+- **Navigation lives in one place**: `frfw.webui.templating.NAV` feeds the
+  sidebar, the active-item highlight and the breadcrumb. The off-canvas
+  menu on phones is a checkbox and CSS, no script.
+- **Real data only.** The dashboard's new figures come from
+  `frfw.sysinfo` (unprivileged /proc and statvfs reads, no sampling
+  delay) and the saved config; a service is "running"/"not running" only
+  where its daemon can actually be checked (AI IDS, TLS fingerprinting),
+  otherwise "on"/"off" from the config. Stitch screens for features that
+  don't exist are listed in ROADMAP.md instead of being shipped as
+  mock-ups.
+- **Viewer role**: besides hiding change forms, CSS now hides a card that
+  would contain nothing but its title for a read-only account.
+
+### What's honestly limited
+
+- Dark theme only (as designed); there is no light variant.
+- No charts yet (the Stitch dashboard has throughput graphs): the webUI
+  keeps no time series. Grafana (phase 12/20) is the place for history.
+- The two-column form layout relies on CSS `:has()`, supported by current
+  Chrome, Edge, Firefox and Safari; an older browser shows the forms
+  stacked, which still works.
+
 ## Open decisions
 
 The points below get settled during their respective phase, once the

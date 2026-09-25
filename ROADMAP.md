@@ -1227,3 +1227,56 @@ security enforcement per site, with drill-down -- scraped over verified
 TLS with per-router tokens. ✅ Verified with a real Prometheus and two live
 routers; Grafana rendering itself not verified here.
 
+## WebUI redesign – dark control plane (Stitch) — **done**
+
+The webUI takes the dark design from the FR_OS Google Stitch project.
+Full rationale:
+[ARCHITECTURE.md](ARCHITECTURE.md#webui-look-and-feel-dark-control-plane);
+the design system itself: [DESIGN.md](DESIGN.md).
+
+- [x] **Design system**: `static/fros.css` with the Stitch tokens (navy
+      tonal surfaces, cyan accent, Geist + JetBrains Mono), served by the
+      router itself -- fonts (OFL) and a Material Symbols icon sprite
+      (Apache-2.0) included, nothing loaded from the internet.
+- [x] **App shell**: top bar (release, hostname, user and role, logout),
+      grouped sidebar (Core / Network / Protection / System) that never
+      wraps, breadcrumb, CSS-only off-canvas menu on phones.
+- [x] **Dashboard**: hero with the apply actions, stat tiles, protection
+      services with real running/on/off states, system resources (load,
+      memory, root filesystem, uptime -- `frfw.sysinfo`), interfaces.
+- [x] **Sign-in** screen redesigned (password only -- see below).
+- [x] Every other screen restyled through shared components: two-column
+      forms, framed tables, state badges, notices; read-only viewers no
+      longer see cards that would be empty.
+- [x] Tests: static assets served without login, no remote resources in
+      any template or the stylesheet, every icon present in the sprite,
+      every static file packaged, sidebar/breadcrumb, sysinfo.
+
+**Acceptance criterion**: every existing screen uses the Stitch look with
+real data only, works offline and on a phone, and every existing test
+still passes. ✅
+
+### Stitch screens for features FR_OS doesn't have yet
+
+The Stitch project also designs screens for features that aren't built.
+They are **not** in the product (no mock-ups with sample data); they are
+candidates for later releases:
+
+- **Networking**: VLAN provisioning and a port matrix, LACP link
+  aggregation, policy-based routing and multi-WAN failover, BGP/OSPF
+  peering, WireGuard VPN (peers with QR provisioning), Dynamic DNS,
+  DNS static overrides, encrypted DoH/DoT upstreams, DHCP lease inventory
+  with static-lease pinning, ARP/NDP neighbour table.
+- **Traffic shaping**: CAKE/fq_codel smart queue management, HTB tree
+  editor, `tc qdisc` inspector, bufferbloat benchmark.
+- **Diagnostics**: path analyzer, MTR/packet loss, iPerf3 speed test, DNS
+  leak test, live packet capture (PCAP), live sessions explorer, client
+  deep-dive inspector, geo-IP lookup and a Geo-IP country filter.
+- **Security and identity**: FIDO2/WebAuthn sign-in, hardware HSM /
+  security-token keystore and key rotation, time-limited privilege
+  elevation, signed compliance/attestation reports, threat-intel feeds.
+- **Operations**: first-run setup wizard, configuration backup with git
+  history and rollback, alert rules and an incident dispatcher, syslog /
+  SIEM forwarding, a live system log console, command palette (Cmd+K),
+  rescue shell.
+

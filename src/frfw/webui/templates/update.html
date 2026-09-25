@@ -16,7 +16,7 @@
     {% elif check_result.update_available %}
     <p><strong>Update available: {{ check_result.latest.version | with_codename }}</strong></p>
     {% if check_result.latest.notes %}
-    <pre style="white-space:pre-wrap;background:#f2f4f6;padding:0.6rem;border-radius:4px;">{{ check_result.latest.notes }}</pre>
+    <pre>{{ check_result.latest.notes }}</pre>
     {% endif %}
     <form method="post" action="/update/apply" onsubmit="return confirm('Update to {{ check_result.latest.version }} now? The webUI will restart afterwards.')">
       <input type="hidden" name="version" value="{{ check_result.latest.version }}">

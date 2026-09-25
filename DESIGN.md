@@ -2,238 +2,319 @@
 version: alpha
 name: FR_OS Control Plane
 description: >-
-  Visual identity of the FR_OS router webUI: a calm, dense, utilitarian
-  control panel for a firewall/router that people run at home or in a
-  small office. Values below are the ones src/frfw/webui/templates/base.html
-  actually uses.
+  Visual identity of the FR_OS router webUI: a dark, dense, calm control
+  plane for a firewall/router run at home or in a small office. Designed
+  in the FR_OS Google Stitch project; the values below are the ones
+  src/frfw/webui/static/fros.css actually uses.
 colors:
-  primary: "#17324D"
-  primary-hover: "#204A72"
-  on-primary: "#FFFFFF"
-  nav-link: "#DCE7F0"
-  secondary: "#5C6B78"
-  on-secondary: "#FFFFFF"
-  neutral: "#F2F4F6"
-  surface: "#FFFFFF"
-  surface-subtle: "#EEF2F6"
-  on-surface: "#1A1A1A"
-  label: "#333333"
-  muted: "#666677"
-  outline: "#DDE3E8"
-  outline-input: "#C7CFD6"
-  success: "#2F7D32"
-  success-container: "#E1F2E1"
-  on-success-container: "#1C4B1E"
-  warning: "#B8860B"
-  warning-container: "#FFF4D6"
-  on-warning-container: "#6B4E00"
-  error: "#A83232"
-  error-hover: "#C23D3D"
-  error-container: "#FBE1E1"
-  on-error-container: "#6B1717"
-  on-error: "#FFFFFF"
-  terminal: "#0D1117"
-  on-terminal: "#9BE29B"
-  terminal-alert: "#FF8A8A"
-  terminal-meta: "#7D8590"
+  primary: "#4CD7F6"
+  primary-strong: "#06B6D4"
+  primary-hover: "#ACEDFF"
+  on-primary: "#003640"
+  primary-tint: "#122E3C"
+  surface-lowest: "#070F19"
+  background: "#0C141F"
+  surface-low: "#141C27"
+  surface: "#18202B"
+  surface-high: "#232A36"
+  surface-highest: "#2D3541"
+  on-surface: "#DBE3F2"
+  on-surface-strong: "#FFFFFF"
+  on-surface-variant: "#BCC9CD"
+  outline: "#869397"
+  outline-variant: "#3D494C"
+  hairline: "#2B353B"
+  success: "#4EDEA3"
+  success-container: "#1B3336"
+  warning: "#F5C451"
+  warning-container: "#2F302C"
+  error: "#FFB4AB"
+  error-strong: "#93000A"
+  error-container: "#3D131E"
+  on-error-container: "#FFDAD6"
+  info: "#D0BCFF"
+  info-container: "#272C3D"
+  on-info-container: "#E9DDFF"
 typography:
   headline-lg:
-    fontFamily: system-ui, -apple-system, sans-serif
-    fontSize: 1.4rem
-    fontWeight: 700
-    lineHeight: 1.25
-  headline-sm:
-    fontFamily: system-ui, -apple-system, sans-serif
-    fontSize: 1rem
-    fontWeight: 700
-    lineHeight: 1.3
-  brand:
-    fontFamily: system-ui, -apple-system, sans-serif
-    fontSize: 1.05rem
-    fontWeight: 700
-    lineHeight: 1.2
-  body-md:
-    fontFamily: system-ui, -apple-system, sans-serif
-    fontSize: 1rem
-    fontWeight: 400
-    lineHeight: 1.5
-  body-sm:
-    fontFamily: system-ui, -apple-system, sans-serif
-    fontSize: 0.88rem
-    fontWeight: 400
-    lineHeight: 1.4
-  label-md:
-    fontFamily: system-ui, -apple-system, sans-serif
-    fontSize: 0.82rem
+    fontFamily: Geist
+    fontSize: 24px
     fontWeight: 600
-    lineHeight: 1.3
-  caption:
-    fontFamily: system-ui, -apple-system, sans-serif
-    fontSize: 0.85rem
+    lineHeight: 32px
+    letterSpacing: -0.015em
+  headline-md:
+    fontFamily: Geist
+    fontSize: 18px
+    fontWeight: 600
+    lineHeight: 24px
+    letterSpacing: -0.01em
+  headline-sm:
+    fontFamily: Geist
+    fontSize: 15px
+    fontWeight: 600
+    lineHeight: 20px
+  brand:
+    fontFamily: Geist
+    fontSize: 16px
+    fontWeight: 700
+    lineHeight: 20px
+    letterSpacing: -0.01em
+  body-md:
+    fontFamily: JetBrains Mono
+    fontSize: 13px
     fontWeight: 400
-    lineHeight: 1.4
+    lineHeight: 20px
+  body-sm:
+    fontFamily: JetBrains Mono
+    fontSize: 12px
+    fontWeight: 400
+    lineHeight: 18px
+  label-md:
+    fontFamily: JetBrains Mono
+    fontSize: 11px
+    fontWeight: 600
+    lineHeight: 16px
+    letterSpacing: 0.05em
   label-sm:
-    fontFamily: system-ui, -apple-system, sans-serif
-    fontSize: 0.78rem
-    fontWeight: 400
-    lineHeight: 1.3
-  stat-label:
-    fontFamily: system-ui, -apple-system, sans-serif
-    fontSize: 0.75rem
-    fontWeight: 400
-    lineHeight: 1.3
-    letterSpacing: 0.03em
-  data-mono:
-    fontFamily: ui-monospace, SF Mono, Menlo, monospace
-    fontSize: 0.8rem
-    fontWeight: 400
-    lineHeight: 1.45
+    fontFamily: JetBrains Mono
+    fontSize: 10px
+    fontWeight: 600
+    lineHeight: 14px
+    letterSpacing: 0.08em
+  metric-display:
+    fontFamily: JetBrains Mono
+    fontSize: 28px
+    fontWeight: 700
+    lineHeight: 34px
+    letterSpacing: -0.03em
 rounded:
-  none: 0px
   sm: 4px
-  md: 6px
+  md: 8px
+  lg: 12px
   full: 999px
 spacing:
-  content-max-width: 980px
-  xs: 0.2rem
-  sm: 0.4rem
-  md: 0.6rem
+  topbar-height: 56px
+  sidebar-width: 240px
+  content-max-width: 1240px
+  page-gutter: 1.5rem
+  xs: 0.25rem
+  sm: 0.5rem
+  md: 0.75rem
   lg: 1rem
-  xl: 1.2rem
+  xl: 1.25rem
   xxl: 1.5rem
-  card-padding-y: 1rem
-  card-padding-x: 1.2rem
-  card-gap: 1.2rem
-  page-gutter: 1rem
-  header-padding-y: 0.75rem
-  header-padding-x: 1.25rem
-  input-max-width: 340px
+  card-padding: 1.1rem
+  field-max-width: 380px
 components:
-  header:
-    backgroundColor: "{colors.primary}"
-    textColor: "{colors.nav-link}"
-    typography: "{typography.body-md}"
-    padding: 0.75rem
-  header-link-active:
-    backgroundColor: "{colors.primary}"
-    textColor: "{colors.on-primary}"
-  page:
-    backgroundColor: "{colors.neutral}"
+  topbar:
+    backgroundColor: "{colors.surface-lowest}"
     textColor: "{colors.on-surface}"
-    width: 980px
+    typography: "{typography.body-sm}"
+    height: 56px
+  brand-mark:
+    backgroundColor: "{colors.primary-tint}"
+    textColor: "{colors.primary}"
+    typography: "{typography.brand}"
+    rounded: "{rounded.sm}"
+    size: 30px
+  sidebar:
+    backgroundColor: "{colors.surface-lowest}"
+    textColor: "{colors.on-surface-variant}"
+    typography: "{typography.body-md}"
+    width: 240px
+  sidebar-heading:
+    backgroundColor: "{colors.surface-lowest}"
+    textColor: "{colors.outline}"
+    typography: "{typography.label-sm}"
+  nav-link-active:
+    backgroundColor: "{colors.primary-tint}"
+    textColor: "{colors.primary}"
+    typography: "{typography.body-md}"
+    rounded: "{rounded.sm}"
+    padding: 0.5rem
+  page:
+    backgroundColor: "{colors.background}"
+    textColor: "{colors.on-surface}"
+    typography: "{typography.body-md}"
+    width: 1240px
+  page-title:
+    backgroundColor: "{colors.background}"
+    textColor: "{colors.on-surface-strong}"
+    typography: "{typography.headline-lg}"
   card:
-    backgroundColor: "{colors.surface}"
+    backgroundColor: "{colors.surface-low}"
     textColor: "{colors.on-surface}"
     rounded: "{rounded.md}"
+    padding: 1.1rem
+  card-title:
+    backgroundColor: "{colors.surface-low}"
+    textColor: "{colors.on-surface-strong}"
+    typography: "{typography.headline-sm}"
+  card-border:
+    backgroundColor: "{colors.hairline}"
+    height: 1px
+  stat-tile:
+    backgroundColor: "{colors.surface-low}"
+    textColor: "{colors.on-surface-strong}"
+    typography: "{typography.metric-display}"
+    rounded: "{rounded.md}"
     padding: 1rem
+  stat-label:
+    backgroundColor: "{colors.surface-low}"
+    textColor: "{colors.on-surface-variant}"
+    typography: "{typography.label-sm}"
+  service-row:
+    backgroundColor: "{colors.surface}"
+    textColor: "{colors.on-surface-strong}"
+    typography: "{typography.headline-sm}"
+    rounded: "{rounded.sm}"
+    padding: 0.65rem
+  table-header:
+    backgroundColor: "{colors.surface}"
+    textColor: "{colors.on-surface-variant}"
+    typography: "{typography.label-sm}"
+    padding: 0.6rem
+  table-cell:
+    backgroundColor: "{colors.surface-low}"
+    textColor: "{colors.on-surface}"
+    typography: "{typography.body-sm}"
+    padding: 0.6rem
+  table-row-hover:
+    backgroundColor: "{colors.surface-high}"
+    textColor: "{colors.on-surface}"
+  form-label:
+    backgroundColor: "{colors.surface-low}"
+    textColor: "{colors.on-surface-variant}"
+    typography: "{typography.label-md}"
+  input-field:
+    backgroundColor: "{colors.surface-lowest}"
+    textColor: "{colors.on-surface}"
+    typography: "{typography.body-md}"
+    rounded: "{rounded.sm}"
+    padding: 0.5rem
+    width: 380px
+  input-border:
+    backgroundColor: "{colors.outline-variant}"
+    height: 1px
+  input-placeholder:
+    backgroundColor: "{colors.surface-lowest}"
+    textColor: "{colors.outline}"
   button-primary:
     backgroundColor: "{colors.primary}"
     textColor: "{colors.on-primary}"
-    typography: "{typography.body-sm}"
+    typography: "{typography.label-md}"
     rounded: "{rounded.sm}"
-    padding: 0.45rem
+    padding: 0.5rem
+    height: 34px
   button-primary-hover:
     backgroundColor: "{colors.primary-hover}"
     textColor: "{colors.on-primary}"
   button-secondary:
-    backgroundColor: "{colors.secondary}"
-    textColor: "{colors.on-secondary}"
-    typography: "{typography.body-sm}"
-    rounded: "{rounded.sm}"
-    padding: 0.45rem
-  button-danger:
-    backgroundColor: "{colors.error}"
-    textColor: "{colors.on-error}"
-    typography: "{typography.body-sm}"
-    rounded: "{rounded.sm}"
-    padding: 0.45rem
-  button-danger-hover:
-    backgroundColor: "{colors.error-hover}"
-    textColor: "{colors.on-error}"
-  input-field:
-    backgroundColor: "{colors.surface}"
+    backgroundColor: "{colors.surface-high}"
     textColor: "{colors.on-surface}"
-    typography: "{typography.body-sm}"
-    rounded: "{rounded.sm}"
-    padding: 0.35rem
-    width: 340px
-  input-field-border:
-    backgroundColor: "{colors.outline-input}"
-    height: 1px
-  form-label:
-    textColor: "{colors.label}"
     typography: "{typography.label-md}"
-  help-text:
-    backgroundColor: "{colors.surface}"
-    textColor: "{colors.muted}"
-    typography: "{typography.caption}"
-  table-header:
-    backgroundColor: "{colors.surface-subtle}"
-    textColor: "{colors.on-surface}"
-    typography: "{typography.body-sm}"
-    padding: 0.4rem
-  table-cell:
-    backgroundColor: "{colors.surface}"
-    textColor: "{colors.on-surface}"
-    typography: "{typography.body-sm}"
-    padding: 0.4rem
+    rounded: "{rounded.sm}"
+    padding: 0.5rem
+  button-secondary-hover:
+    backgroundColor: "{colors.surface-highest}"
+    textColor: "{colors.on-surface-strong}"
+  button-danger:
+    backgroundColor: "{colors.error-container}"
+    textColor: "{colors.error}"
+    typography: "{typography.label-md}"
+    rounded: "{rounded.sm}"
+    padding: 0.5rem
+  button-danger-hover:
+    backgroundColor: "{colors.error-strong}"
+    textColor: "{colors.on-error-container}"
   badge-neutral:
-    backgroundColor: "{colors.surface-subtle}"
-    textColor: "{colors.on-surface}"
+    backgroundColor: "{colors.surface-high}"
+    textColor: "{colors.on-surface-variant}"
     typography: "{typography.label-sm}"
-    rounded: "{rounded.full}"
+    rounded: "{rounded.sm}"
   badge-success:
     backgroundColor: "{colors.success-container}"
-    textColor: "{colors.on-success-container}"
+    textColor: "{colors.success}"
     typography: "{typography.label-sm}"
-    rounded: "{rounded.full}"
+    rounded: "{rounded.sm}"
   badge-warning:
     backgroundColor: "{colors.warning-container}"
-    textColor: "{colors.on-warning-container}"
+    textColor: "{colors.warning}"
     typography: "{typography.label-sm}"
-    rounded: "{rounded.full}"
+    rounded: "{rounded.sm}"
   badge-error:
     backgroundColor: "{colors.error-container}"
-    textColor: "{colors.on-error-container}"
+    textColor: "{colors.error}"
     typography: "{typography.label-sm}"
-    rounded: "{rounded.full}"
+    rounded: "{rounded.sm}"
+  badge-accent:
+    backgroundColor: "{colors.primary-tint}"
+    textColor: "{colors.primary}"
+    typography: "{typography.label-sm}"
+    rounded: "{rounded.sm}"
   flash-success:
     backgroundColor: "{colors.success-container}"
-    textColor: "{colors.on-success-container}"
-    rounded: "{rounded.sm}"
-    padding: 0.6rem
+    textColor: "{colors.on-surface-strong}"
+    typography: "{typography.body-sm}"
+    rounded: "{rounded.md}"
+    padding: 0.7rem
   flash-error:
     backgroundColor: "{colors.error-container}"
     textColor: "{colors.on-error-container}"
-    rounded: "{rounded.sm}"
-    padding: 0.6rem
+    typography: "{typography.body-sm}"
+    rounded: "{rounded.md}"
+    padding: 0.7rem
+  flash-warning:
+    backgroundColor: "{colors.warning-container}"
+    textColor: "{colors.warning}"
+    typography: "{typography.body-sm}"
+    rounded: "{rounded.md}"
+    padding: 0.7rem
   readonly-banner:
-    backgroundColor: "{colors.surface-subtle}"
-    textColor: "{colors.on-surface}"
+    backgroundColor: "{colors.info-container}"
+    textColor: "{colors.on-info-container}"
+    typography: "{typography.body-sm}"
     rounded: "{rounded.md}"
-    padding: 0.5rem
-  live-log:
-    backgroundColor: "{colors.terminal}"
-    textColor: "{colors.on-terminal}"
-    typography: "{typography.data-mono}"
-    rounded: "{rounded.md}"
-    padding: 0.8rem
-    height: 260px
-  live-log-drop:
-    backgroundColor: "{colors.terminal}"
-    textColor: "{colors.terminal-alert}"
-    typography: "{typography.data-mono}"
-  live-log-meta:
-    backgroundColor: "{colors.terminal}"
-    textColor: "{colors.terminal-meta}"
-    typography: "{typography.data-mono}"
-  progress-track:
-    backgroundColor: "{colors.surface-subtle}"
-    rounded: "{rounded.full}"
-    height: 0.9rem
-  progress-fill:
+    padding: 0.7rem
+  readonly-icon:
+    backgroundColor: "{colors.info-container}"
+    textColor: "{colors.info}"
+  status-dot-ok:
     backgroundColor: "{colors.success}"
     rounded: "{rounded.full}"
+    size: 8px
+  status-dot-off:
+    backgroundColor: "{colors.outline}"
+    rounded: "{rounded.full}"
+    size: 8px
+  progress-track:
+    backgroundColor: "{colors.surface-highest}"
+    rounded: "{rounded.full}"
+    height: 8px
+  progress-fill:
+    backgroundColor: "{colors.primary-strong}"
+    rounded: "{rounded.full}"
+  live-log:
+    backgroundColor: "{colors.surface-lowest}"
+    textColor: "{colors.on-surface}"
+    typography: "{typography.body-sm}"
+    rounded: "{rounded.md}"
+    padding: 0.8rem
+    height: 280px
+  live-log-drop:
+    backgroundColor: "{colors.surface-lowest}"
+    textColor: "{colors.error}"
+  live-log-meta:
+    backgroundColor: "{colors.surface-lowest}"
+    textColor: "{colors.outline}"
+  auth-card:
+    backgroundColor: "{colors.surface-low}"
+    textColor: "{colors.on-surface}"
+    rounded: "{rounded.lg}"
+    padding: 2rem
+  auth-accent-line:
+    backgroundColor: "{colors.primary-strong}"
+    height: 3px
 ---
 
 # FR_OS Control Plane
@@ -241,156 +322,163 @@ components:
 ## Overview
 
 FR_OS is a firewall and router operating system for homelab and
-small-office hardware. Its webUI is where a technically curious owner --
-not necessarily a network engineer -- sees what the network is doing and
-changes how it is protected. The interface should feel like **a
-well-labelled instrument panel**: calm, honest and dense, never flashy.
+small-office hardware. Its webUI is a **dark control plane**: navy
+surfaces, one cyan accent, and a monospace body that makes addresses,
+ports, MACs and fingerprints read like the machine values they are. It
+should feel like a precise instrument -- modern and calm, never a
+"hacker movie" -- and stay friendly for an owner who is technically
+curious but not a network engineer.
 
-- **Trustworthy over impressive.** Every number on screen is something the
-  router actually measured; states the system can't know are shown as
-  unknown ("-", "?", "not running"), never guessed. Visual confidence
-  must never exceed the underlying data.
-- **Explain, then act.** Each screen opens with one or two sentences of
-  plain-language context (what this does, what it can't see) before the
-  controls. Security features state their limits right where they are
-  switched on.
-- **Dense but breathable.** Tables and small type carry a lot of
-  information; generous card padding and consistent vertical rhythm keep
-  it readable.
-- **Server-rendered and dependency-free.** No web fonts, icon fonts,
-  JavaScript frameworks or CDNs: the router may have no internet access,
-  and the UI must load instantly from a small device. System fonts and
-  plain CSS only.
-- **Audience:** the owner/administrator (full control) and read-only
-  viewers (a colleague, a family member) who see everything but change
-  nothing.
+The design comes from the FR_OS Google Stitch project (dark theme, Geist
+and JetBrains Mono, cyan `#06B6D4` seed colour). The Stitch screens were
+the reference; the webUI implements them for the features FR_OS actually
+has, with real data only. Stitch screens for features that don't exist yet
+are listed in ROADMAP.md, not mocked up in the product.
+
+Principles, in priority order:
+
+1. **True before pretty.** Every number, state and badge comes from the
+   running system or the saved config. A figure that can't be read shows
+   "-", never a plausible-looking placeholder.
+2. **Local only.** The stylesheet, both fonts and the icon sprite are
+   served by the router itself. Nothing is fetched from the internet; the
+   UI works with the WAN down. No JavaScript framework; the only script is
+   the live-log stream on the TLS SNI Filter screen.
+3. **One accent.** Cyan marks what is interactive or current (primary
+   buttons, the active nav item, links, meters). Green, amber, red and
+   violet are reserved for states.
+4. **Dense, not cramped.** Many facts per screen, separated by hairlines
+   and consistent spacing rather than heavy boxes.
 
 ## Colors
 
-A single deep navy carries the brand and every primary action; everything
-else is quiet neutrals, with three semantic status colors used only to
-report state.
+The palette is Material-3-style tonal navy, from `surface-lowest`
+(#070F19, top bar, sidebar, inputs, consoles) through `background`
+(#0C141F, the page) and `surface-low` (#141C27, cards) up to
+`surface-highest` (#2D3541, progress tracks, hover states).
 
-- **Harbor Navy (#17324D, `primary`):** the header bar and every primary
-  button. It signals "this is the control plane" and the one action per
-  form that commits a change. Hover deepens to **#204A72**.
-- **Slate (#5C6B78, `secondary`):** secondary and cancel-type buttons
-  (Dry-run, Remove, Set).
-- **Mist (#F2F4F6, `neutral`):** the page background behind cards.
-- **Paper (#FFFFFF, `surface`)** for cards, tables and inputs, with
-  **Frost (#EEF2F6, `surface-subtle`)** for table headers, neutral badges
-  and the read-only banner.
-- **Ink (#1A1A1A, `on-surface`)** for text, **#333333** for form labels
-  and **#666677 (`muted`)** for explanations, captions and metadata.
-- **Hairline (#DDE3E8, `outline`)** borders every card, table and cell;
-  inputs use the slightly stronger **#C7CFD6**.
-- **Status colors** always come as a trio -- a strong tone for borders
-  and fills, a pale container and a dark text tone:
-  - **Forest (#2F7D32)** = on / active / allowed / healthy;
-  - **Amber (#B8860B)** = attention / learning / not yet active;
-  - **Brick (#A83232)** = blocked / isolated / denied / destructive
-    actions (Delete, Rollback). Hover brightens to **#C23D3D**.
-- **Console (#0D1117 with #9BE29B text)** is reserved for live log
-  streams (the XDP event log), with **#FF8A8A** for drop lines and
-  **#7D8590** for meta lines.
+- **Primary cyan (#4CD7F6)** -- primary buttons, links, active navigation,
+  meter fills (gradient from `primary-strong` #06B6D4), focus rings.
+  Text on it is `on-primary` (#003640).
+- **Text** -- `on-surface` (#DBE3F2) for body, pure white for headings
+  and key figures, `on-surface-variant` (#BCC9CD) for labels and help,
+  `outline` (#869397) for metadata and placeholders.
+- **Lines** -- `hairline` (#2B353B, the outline-variant at 55 % over a
+  card) between rows and around cards; `outline-variant` (#3D494C) for
+  input borders.
+- **States** -- success green #4EDEA3 (running, on, accept, valid),
+  warning amber #F5C451 (not yet active, reject, IoT), error salmon
+  #FFB4AB on a deep red container (not running, drop, blocked, isolated,
+  destructive buttons), info violet #D0BCFF (the read-only banner).
+- **Containers** are the state colour at 10-32 % opacity; the hex values
+  above are what they resolve to on a card.
 
 ## Typography
 
-One family everywhere: the platform's own UI font (`system-ui`), so the
-router ships no font files and every device renders it natively.
-
-- **Page title (`headline-lg`, 1.4rem bold)** -- one per screen.
-- **Card title (`headline-sm`, 1rem bold)** -- every card starts with one.
-- **Body (`body-md`, 16px)** for prose; **tables, buttons and inputs use
-  `body-sm` (0.88rem)** to fit dense data.
-- **Form labels (`label-md`, 0.82rem semibold)** sit above their field.
-- **Explanations (`caption`, 0.85rem, muted)** follow titles and sit under
-  controls.
-- **Badges (`label-sm`, 0.78rem)** for states.
-- **Machine values -- MAC and IP addresses, fingerprints, config keys,
-  service names -- are set in `data-mono`** (the platform monospace font)
-  so they can be read and compared character by character.
+- **Geist** (variable, OFL) for page titles, card titles, the brand and
+  service names.
+- **JetBrains Mono** (variable, OFL) for everything else: body text,
+  tables, forms, badges, figures. Machine values stay aligned and
+  unambiguous (0/O, 1/l).
+- Labels, table headers and tile captions are small uppercase mono with
+  wide tracking (`label-md` / `label-sm`).
+- Key figures use `metric-display`: 28px bold mono, tight tracking.
+- Both fonts ship as latin + latin-ext subsets (about 100 KB in total)
+  under `static/fonts/`, with their licences.
 
 ## Layout
 
-A single centred column, **max 980px wide** with a 1rem gutter, below a
-full-width header. Content is grouped into **cards** (1rem/1.2rem padding,
-1.2rem apart). A screen reads top to bottom: title → context sentence →
-settings card → status card(s) → data table(s) → "add" form.
-
-- Forms are single-column, label above field, inputs capped at 340px so
-  lines stay short.
-- Long tables scroll *vertically* inside their card (sticky header), never
-  the whole page sideways.
-- Spacing follows a small rem scale (0.2 / 0.4 / 0.6 / 1 / 1.2 / 1.5rem);
-  don't invent in-between values.
-- The layout must work at phone width (390px): the column simply narrows;
-  tables that are too wide collapse secondary columns rather than scroll
-  horizontally.
+- **Shell**: a fixed 56px top bar (brand, release chip, hostname with a
+  status dot, the signed-in user and a logout button) and a fixed 240px
+  sidebar with the navigation grouped as **Core** (Dashboard),
+  **Network** (Interfaces, Rules, NAT, DHCP), **Protection** (AI IDS/IPS,
+  TLS SNI Filter, Ad-Block, IoT Devices, Applications, TLS Fingerprints,
+  ZTNA Gate) and **System** (Update, System, Users -- admins only).
+- **Content**: max 1240px wide, 1.5rem gutter, starting with a
+  breadcrumb (`FR_OS / Section / Page`) and the page title.
+- **Dashboard**: a hero card (hostname, release, kernel, CPU, config and
+  management-session state, the Apply / Dry-run / Rollback actions), a
+  row of four stat tiles, then Protection services beside System
+  resources, then the interface table.
+- **Forms** inside cards are a two-column grid: label on the left, field
+  on the right; help text, fieldsets, checkbox rows and the submit button
+  span both columns. Below 700px they stack.
+- **Below 900px** the sidebar becomes an off-canvas menu behind a menu
+  button (CSS only); below 560px stat tiles go two per row and the user
+  name hides.
+- The sign-in screen is standalone: facts about the router on the left,
+  the sign-in card on the right, on a faint grid with a cyan glow.
 
 ## Elevation & Depth
 
-Flat. Hierarchy comes from **tonal layers and hairline borders**, not
-shadows: Mist page → white cards with a 1px `outline` border → Frost table
-headers. The only motion is the pulsing green "live" dot next to an active
-log stream.
+Depth comes from **tone, not shadow**: each layer is one step lighter
+than the one below it (page -> card -> row -> hover). The only shadows
+are the green glow of a live status dot and the drop shadow of the
+off-canvas menu on phones. The top bar is slightly translucent with a
+backdrop blur so content scrolling under it stays legible.
 
 ## Shapes
 
-Soft but engineered: **4px** on buttons and inputs, **6px** on cards,
-scroll containers and the log console, **fully rounded pills** for badges
-and progress bars. Nothing else is rounded; icons are not used.
+- 4px (`sm`): buttons, inputs, badges, nav items, chips.
+- 8px (`md`): cards, tables, notices, consoles.
+- 12px (`lg`): the sign-in card.
+- Full: status dots, avatars, progress bars.
+
+Badges are small rectangles with a 1px border in the state colour, not
+pills -- they read as instrument labels.
 
 ## Components
 
-- **Header / navigation:** navy bar, brand "FR_OS" in bold white, links in
-  #DCE7F0 turning white on hover, the signed-in user (with "(read-only)"
-  for viewers) and a Logout button on the right. **Navigation is grouped**
-  so it never wraps: *Network* (Interfaces, Rules, NAT, DHCP), *Protection*
-  (AI IDS/IPS, TLS SNI Filter, Ad-Block, IoT Devices, Applications, TLS
-  Fingerprints, ZTNA Gate) and *System* (Update, System, Users -- the last
-  for admins only), plus Dashboard.
-- **Buttons:** one primary (navy) per form; destructive actions in Brick
-  and always behind a confirmation; secondary actions in Slate.
-- **Cards:** white, hairline border, 6px radius, title first.
-- **Form fields:** white inputs with a slightly darker border
-  (`outline-input`) than the card hairline, labels above in `label-md`,
-  help text below in `caption`, colored `muted` (#666677).
-- **Tables:** full width, hairline grid, Frost header row, `body-sm` text,
-  machine values in `data-mono`. Row actions (Delete, Block, Isolate) sit
-  in the last column and must stay visible without horizontal scrolling.
-- **Badges:** state pills -- green (on, active, trusted, allowed), amber
-  (learning, not yet active, IoT), red (blocked, isolated, denied, not
-  running), neutral (unknown, off). The word inside always states the
-  state; color only reinforces it.
-- **Flash messages:** one line under the header after every change,
-  green for success, red for errors, with what happened and what to do
-  next ("saved -- click Apply on the dashboard").
-- **Read-only banner:** Frost strip at the top of every page for viewers.
-- **Live log:** dark console card for streaming events, newest at the
-  bottom, drops in light red (`terminal-alert`), timestamps and other
-  metadata in grey (`terminal-meta`).
-- **Secrets shown once** (a new metrics token): a success flash with the
-  value in selectable monospace and the words "copy it now".
+- **Top bar / brand**: shield icon in a cyan-tinted square, "FR_OS" in
+  Geist cyan, a chip with version and codename, the hostname with a green
+  dot, then user avatar, name and role ("Admin" / "Read-only").
+- **Sidebar**: section headings in `label-sm` outline grey; items with a
+  Material Symbols icon; the current page gets the cyan tint, cyan text
+  and a 2px cyan left edge.
+- **Stat tile**: uppercase caption, icon in a small square, a
+  `metric-display` figure (with an optional unit in cyan), one line of
+  context. Tiles that correspond to a screen are links to it.
+- **Service row**: status dot, name (Geist), one-line description, state
+  badge. States are "running"/"not running" where a daemon can be
+  checked, otherwise "on"/"off" from the config.
+- **Tables**: uppercase header row on `surface`, hairline row dividers,
+  hover tint, machine values in `code`. Row actions sit in the last
+  column as compact buttons. A table directly on the page gets the card
+  frame.
+- **Buttons**: primary cyan with dark text; secondary on `surface-high`;
+  danger is salmon text on a deep red container and is always behind a
+  confirmation. Icons precede the label where they help (Apply, Dry-run,
+  Rollback, Sign in).
+- **Badges**: green / amber / red / neutral / cyan accent. The word inside
+  always states the state; colour only reinforces it.
+- **Notices**: success (check mark), error ("!"), warning, and the
+  violet read-only banner with an eye icon. One line under the breadcrumb
+  after every change, saying what happened and what to do next.
+- **Meters**: label and value on one line, an 8px track with a cyan
+  gradient fill.
+- **Live log**: `surface-lowest` console, mono 12px, timestamps in
+  outline grey, drops in salmon, a pulsing green dot while connected.
+- **Icons**: Material Symbols Outlined (Apache-2.0), only the ones in use,
+  compiled into `static/icons.svg` by `scripts/build-webui-icons.py`.
 
 ## Do's and Don'ts
 
-- Do show the limits of a feature next to its switch ("not visible: QUIC,
-  IPv6") -- honesty is part of the design.
-- Do use exactly one primary button per form; Brick only for destructive
-  actions, and confirm them.
-- Do pair every status color with a word; never rely on color alone.
-- Do keep all text contrast at WCAG AA (4.5:1) or better, including
-  muted captions and badge text.
-- Do render machine values (addresses, fingerprints, keys) in monospace.
-- Do hide a card entirely when a viewer would see it empty; don't leave
-  empty frames where forms were removed.
-- Don't let the header navigation wrap onto a second line -- group it.
-- Don't make tables scroll sideways; drop or merge secondary columns, or
-  let long values wrap.
-- Don't add web fonts, icon sets, JavaScript frameworks or external
-  assets -- the UI must work offline, from the router itself.
-- Don't declare `color-scheme: light dark` without dark-mode tokens:
-  either design a full dark palette or keep the page light-only, so
-  browser-drawn controls don't turn dark inside light cards.
-- Don't put a secret (token, password) in a URL, a redirect or a log.
+- **Do** show real values or "-". **Don't** copy Stitch's sample figures,
+  and don't add a screen for a feature that doesn't exist.
+- **Do** serve every asset from the router. **Don't** link a CDN, Google
+  Fonts, a remote icon font or a JS framework
+  (`tests/webui/test_design_shell.py` enforces this).
+- **Do** keep cyan for interaction and state colours for state. **Don't**
+  use red for anything that isn't a failure, a block or a destructive
+  action.
+- **Do** keep text on the dark surfaces at `on-surface` or brighter;
+  secondary text no dimmer than `on-surface-variant` for anything a user
+  must read.
+- **Do** keep row actions visible and tables inside the content width.
+  **Don't** let the sidebar navigation wrap or scroll sideways.
+- **Do** hide change forms from read-only viewers (the server refuses
+  them anyway). **Don't** show a viewer an empty card.
+- **Don't** put secrets in URLs; a new token is shown once, in the page
+  body.
+- **Do** add a new icon by listing it in `scripts/build-webui-icons.py`
+  and rebuilding the sprite; **don't** hand-edit `icons.svg`.
