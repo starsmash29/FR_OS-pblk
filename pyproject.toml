@@ -42,7 +42,7 @@ where = ["src"]
 # image's install hook and frfw.update both do -- ships the webUI without
 # its Jinja2 templates. Checked by tests/test_packaging.py.
 [tool.setuptools.package-data]
-"frfw.webui" = ["templates/*.html", "static/*"]
+"frfw.webui" = ["templates/*.html", "static/*", "static/fonts/*"]
 "frfw.appid" = ["signatures.json"]
 
 [tool.pytest.ini_options]

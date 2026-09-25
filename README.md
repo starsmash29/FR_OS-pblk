@@ -183,6 +183,16 @@ the self-signed certificate until you replace it with a real one
 fr-webui --host 127.0.0.1 --port 8443 --config examples/config.yaml
 ```
 
+The webUI is a dark control plane designed in Google Stitch (design
+system: [DESIGN.md](DESIGN.md)). Fonts and icons are served by the router
+itself -- nothing is loaded from the internet. Screenshots (demo data):
+
+| Dashboard | Firewall rules |
+|---|---|
+| ![Dashboard](docs/screenshots/dashboard.png) | ![Firewall rules](docs/screenshots/rules.png) |
+| **IoT devices** | **Sign in** |
+| ![IoT devices](docs/screenshots/iot.png) | ![Sign in](docs/screenshots/login.png) |
+
 ## IoT devices (phase 14)
 
 Enable it in YAML (`iot: {enabled: true, zones: [lan]}`, see

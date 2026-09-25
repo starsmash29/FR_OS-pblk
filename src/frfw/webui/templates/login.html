@@ -1,21 +1,44 @@
 {% extends "base.html" %}
 {% block title %}Sign in - FR_OS{% endblock %}
-{% block content %}
-<div class="card" style="max-width:360px;margin:3rem auto;">
-  <h2>{{ "Set up admin account" if first_run else "Sign in" }}</h2>
-  {% if first_run %}
-  <p class="muted">No admin account exists yet. Create one now.</p>
-  {% endif %}
-  <form method="post" action="/login">
-    <label>Username</label>
-    <input type="text" name="username" value="{{ 'admin' if first_run else '' }}" required>
-    <label>Password</label>
-    <input type="password" name="password" required>
-    {% if first_run %}
-    <label>Confirm password</label>
-    <input type="password" name="password_confirm" required>
-    {% endif %}
-    <button type="submit">{{ "Create admin account" if first_run else "Sign in" }}</button>
-  </form>
-</div>
+{% block page %}
+<main class="auth-page">
+  <div class="auth-shell">
+    <section class="auth-brand">
+      <div class="auth-title">
+        <span class="brand-mark"><svg class="icon"><use href="/static/icons.svg#shield"/></svg></span>
+        <div>
+          <h1>FR_OS <span class="badge badge-blue plain">v{{ FROS_VERSION }}</span></h1>
+          <p>Firewall &amp; router control plane</p>
+        </div>
+      </div>
+      <dl class="auth-facts">
+        <div><dt>Router</dt><dd>{{ shell_hostname(request) }}</dd></div>
+        <div><dt>Release</dt><dd>{{ FROS_VERSION }}{% if FROS_CODENAME %} &middot; {{ FROS_CODENAME }}{% endif %}</dd></div>
+        <div><dt>Sign-in attempts</dt><dd>rate-limited per client</dd></div>
+        <div><dt>Audit</dt><dd>every sign-in and change is logged</dd></div>
+      </dl>
+    </section>
+
+    <section class="auth-card">
+      <h2>{{ "Set up admin account" if first_run else "Sign in" }}</h2>
+      <p class="muted">
+        {% if first_run %}No admin account exists yet. Create one now.
+        {% else %}Sign in to manage this router.{% endif %}
+      </p>
+      {% if error %}<div class="flash-error">{{ error }}</div>{% endif %}
+      <form method="post" action="/login">
+        <label for="username">Username</label>
+        <input type="text" id="username" name="username" value="{{ 'admin' if first_run else '' }}" autocomplete="username" autofocus required>
+        <label for="password">Password</label>
+        <input type="password" id="password" name="password" autocomplete="{{ 'new-password' if first_run else 'current-password' }}" required>
+        {% if first_run %}
+        <label for="password_confirm">Confirm password</label>
+        <input type="password" id="password_confirm" name="password_confirm" autocomplete="new-password" required>
+        {% endif %}
+        <button type="submit"><svg class="icon icon-sm"><use href="/static/icons.svg#lock"/></svg>{{ "Create admin account" if first_run else "Sign in" }}</button>
+      </form>
+      <div class="auth-foot">Read-only accounts can sign in here too; they see every screen but cannot change anything.</div>
+    </section>
+  </div>
+</main>
 {% endblock %}

@@ -4,12 +4,13 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, Request
 
-from frfw import netdetect
+from frfw import netdetect, sysinfo
 from frfw import pqc as pqc_mod
 from frfw.adblock import count_blocked_domains
 from frfw.ai_ids import is_daemon_active
 from frfw.apply import list_backups
 from frfw.config import ConfigError, parse_config
+from frfw.tlsfp.daemon import is_daemon_active as tlsfp_daemon_active
 from frfw.webui.deps import (
     get_adblock_hosts_path,
     get_helper,
@@ -21,6 +22,48 @@ from frfw.webui.responses import redirect_with
 from frfw.webui.templating import templates
 
 router = APIRouter()
+
+
+def _services(config, ai_ids_running: bool, adblock_domain_count: int | None) -> list[dict]:
+    """The protection features, each with a state badge: "running"/"not
+    running" where a daemon can be checked, else "on"/"off" from config."""
+    if config is None:
+        return []
+    tlsfp_running = config.tls_fingerprint.enabled and tlsfp_daemon_active()
+    xdp_ifaces = ", ".join(config.xdp_sni_filter.interfaces) or "no interfaces"
+    return [
+        {
+            "name": "AI IDS/IPS", "href": "/ai-ids", "icon": "psychology",
+            "desc": "Behavioural anomaly detection with kernel quarantine",
+            "state": ("running" if ai_ids_running else "not running") if config.ai_ids.enabled else "off",
+        },
+        {
+            "name": "TLS SNI filter", "href": "/xdp", "icon": "filter_alt",
+            "desc": f"eBPF/XDP ClientHello filter on {xdp_ifaces}",
+            "state": "on" if config.xdp_sni_filter.enabled else "off",
+        },
+        {
+            "name": "DNS filtering", "href": "/adblock", "icon": "block",
+            "desc": (f"{adblock_domain_count:,} domains blocked" if adblock_domain_count is not None
+                     else "Ads and category blocklists"),
+            "state": "on" if config.adblocker.enabled else "off",
+        },
+        {
+            "name": "IoT isolation", "href": "/iot", "icon": "devices",
+            "desc": f"{len(config.iot.isolated_macs)} device(s) isolated by MAC",
+            "state": "on" if config.iot.enabled else "off",
+        },
+        {
+            "name": "TLS fingerprinting", "href": "/tls", "icon": "fingerprint",
+            "desc": "JA4/JA3 client inventory, no decryption",
+            "state": ("running" if tlsfp_running else "not running") if config.tls_fingerprint.enabled else "off",
+        },
+        {
+            "name": "ZTNA gate", "href": "/ztna", "icon": "vpn_lock",
+            "desc": f"{len(config.ztna.users)} identity account(s)",
+            "state": "on" if config.ztna.enabled else "off",
+        },
+    ]
 
 
 @router.get("/")
@@ -60,6 +103,11 @@ def dashboard(
                 {"zone": iface.zone, "device": iface.device, "address": iface.address, "link": link}
             )
 
+    ai_ids_running = is_daemon_active()
+    system = sysinfo.snapshot()
+    links_up = sum(1 for row in interface_rows if row["link"] == "up")
+    links_known = sum(1 for row in interface_rows if row["link"] != "?")
+
     return templates.TemplateResponse(
         request,
         "dashboard.html",
@@ -75,7 +123,13 @@ def dashboard(
             "backup_count": len(list_backups()),
             "interface_rows": interface_rows,
             "ai_ids_enabled": ai_ids_enabled,
-            "ai_ids_daemon_active": is_daemon_active(),
+            "ai_ids_daemon_active": ai_ids_running,
+            "services": _services(config, ai_ids_running, adblock_domain_count),
+            "links_up": links_up,
+            "links_known": links_known,
+            "system": system,
+            "format_bytes": sysinfo.format_bytes,
+            "format_duration": sysinfo.format_duration,
             "ai_ids_quarantined_count": ai_ids_quarantined_count,
             "pqc_status": pqc_status,
             "adblocker_enabled": adblocker_enabled,
