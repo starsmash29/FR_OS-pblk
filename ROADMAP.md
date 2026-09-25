@@ -6,33 +6,21 @@ starts. For the architecture decisions, see: [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## 🗺️ Release cycle & codenames
 
-FR_OS follows a strict, thematic "I"-codename convention reflecting the
-evolution, intelligence, and defense capabilities of the platform:
+FR_OS releases follow a thematic "I"-codename convention:
 
-| Versions | Codename | Theme |
+| Versions | Codename | Status |
 |---|---|---|
-| v0.1.0 – v1.0.0 | **Ice Breaker** 🧊 | The multi-phase breakthrough. Establishing the core architecture, eBPF/XDP fast path, and decryption-free JA4 fingerprinting. |
-| v1.x.x | **Idun** 🍏 | The first production-ready, stable milestone. Named after the guardian of eternal youth -- representing pristine, rock-solid core code. |
-| v2.x.x | **Ivar** ⚡ | Advanced telemetry, granular application control, and adaptive, kernel-assisted threat hunting (AI IDS/IPS). |
-| v3.x.x | **Inari** 🌌 | Global fleet optimization, multi-site monitoring tokens, and distributed management panels. |
-| v4.x.x | **Ingemar** 🏰 | The final fortress. Absolute immutability, zero-trust expansion, and quantum-safe (PQC) supremacy. |
+| v0.1.0 – v1.0.0 | **Ice Breaker** 🧊 | **Current.** v0.1.0 is the first release: everything in phases 1–20 below. |
+| v1.x.x | **Idun** 🍏 | Planned |
+| v2.x.x | **Ivar** ⚡ | Planned |
+| v3.x.x | **Inari** 🌌 | Planned |
+| v4.x.x | **Ingemar** 🏰 | Planned |
 
-How the names are applied:
-
-- **1.0.0 closes Ice Breaker**; Idun starts with the first release after
-  it and covers the rest of 1.x. A major version without a name yet has
-  no codename.
-- The mapping lives in one place, `frfw.codename_for()`, and shows up in
-  `firewall-cli --version`, `firewall-cli update check`, the webUI's
-  Update screen, and the `codename` label of the `fros_info` metric (so
-  the fleet dashboard shows which generation each site runs).
-- A codename names the theme a major version **matures**, not the first
-  appearance of a feature. v0.1.0 already ships a first version of several
-  later themes -- the AI IDS/IPS (phase 11), App-ID lite (phase 16),
-  metrics tokens and fleet monitoring (phase 20), ZTNA (phase 7) and a
-  hybrid post-quantum management plane (phase 8). The phases below keep
-  saying exactly what is built and what is measured; a codename is never a
-  claim that a theme is finished.
+1.0.0 closes Ice Breaker; Idun starts with the first release after it.
+The mapping lives in one place, `frfw.codename_for()`, and shows up in
+`firewall-cli --version`, `firewall-cli update check`, the webUI's Update
+screen, and the `codename` label of the `fros_info` metric (so the fleet
+dashboard shows which release each site runs).
 
 ## Phase 1 – Firewall engine core — **done**
 
