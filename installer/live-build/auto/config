@@ -104,6 +104,9 @@
 #   build. NICs that need non-free firmware (some Realtek chips) are a
 #   known gap until firmware packages are listed explicitly.
 # - `--initramfs live-boot` rather than "auto"; `--win32-loader false`.
+# - `--iso-preparer` as a plain string: the default is a literal
+#   "live-build $VERSION; ...", which make-hybrid-uefi-iso.sh (sourcing
+#   config/binary under `set -u`) failed on as an unbound variable.
 # - security mirror at its bookworm path and backports off (neither is
 #   used with --security false, but the defaults are wrong for bookworm).
 set -e
@@ -138,6 +141,7 @@ lb config noauto \
     --firmware-chroot false \
     --firmware-binary false \
     --win32-loader false \
+    --iso-preparer "live-build (FR_OS installer/build-live-image.sh)" \
     --mirror-chroot-security "http://security.debian.org/debian-security/" \
     --mirror-binary-security "http://security.debian.org/debian-security/" \
     --parent-mirror-chroot-security "http://security.debian.org/debian-security/" \
