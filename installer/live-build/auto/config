@@ -94,6 +94,18 @@
 # would still compute "linux-amd64", which also doesn't exist -- Debian's
 # actual meta-package is "linux-image-amd64", hence --linux-packages
 # linux-image below.
+#
+# Pinned so a fresh checkout (CI) builds the same image as the one booted
+# and tested with installer/qemu-boot-test.py -- values a clean `lb config`
+# would otherwise pick differently than a long-lived build tree:
+# - `--firmware-chroot/--firmware-binary false`: with firmware on, this
+#   snapshot downloads dists/<dist>/Contents-amd64.gz, which Debian no
+#   longer publishes there (now under main/) -- a 404 that fails the
+#   build. NICs that need non-free firmware (some Realtek chips) are a
+#   known gap until firmware packages are listed explicitly.
+# - `--initramfs live-boot` rather than "auto"; `--win32-loader false`.
+# - security mirror at its bookworm path and backports off (neither is
+#   used with --security false, but the defaults are wrong for bookworm).
 set -e
 
 DEBIAN_MIRROR=http://deb.debian.org/debian/
@@ -122,6 +134,18 @@ lb config noauto \
     --bootloader syslinux \
     --syslinux-theme live-build \
     --initsystem systemd \
+    --initramfs live-boot \
+    --firmware-chroot false \
+    --firmware-binary false \
+    --win32-loader false \
+    --mirror-chroot-security "http://security.debian.org/debian-security/" \
+    --mirror-binary-security "http://security.debian.org/debian-security/" \
+    --parent-mirror-chroot-security "http://security.debian.org/debian-security/" \
+    --parent-mirror-binary-security "http://security.debian.org/debian-security/" \
+    --mirror-chroot-backports none \
+    --mirror-binary-backports none \
+    --parent-mirror-chroot-backports none \
+    --parent-mirror-binary-backports none \
     --bootappend-live "persistence live-config.nocomponents=user-setup,sudo live-config.noautologin console=tty0 console=ttyS0,115200n8" \
     --debian-installer false \
     --debian-installer-gui false \

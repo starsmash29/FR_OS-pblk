@@ -99,3 +99,12 @@ def test_units_that_apply_can_write_what_an_apply_writes():
         text = (REPO / "systemd" / f"{unit}.service").read_text()
         paths = next(line for line in text.splitlines() if line.startswith("ReadWritePaths=")).split("=", 1)[1].split()
         assert {"/etc/fr_os", "/etc/kea"} <= set(paths), unit
+
+
+def test_a_fresh_checkout_builds_the_tested_image():
+    # CI builds from a clean checkout; without these pins it picked other
+    # defaults than the tested build tree -- and firmware-chroot fetches
+    # a Contents file Debian no longer serves (404, failed build).
+    assert _auto_config_option("firmware-chroot") == "false"
+    assert _auto_config_option("firmware-binary") == "false"
+    assert _auto_config_option("initramfs") == "live-boot"
