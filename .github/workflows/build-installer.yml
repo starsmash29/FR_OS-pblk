@@ -4,9 +4,22 @@ name: Build installer ISO
 # assembles an entire Debian system (tens of minutes, real bandwidth),
 # which is wasteful to run on every commit. Trigger it explicitly from
 # the Actions tab when the installer/ tree changes and you want a fresh
-# ISO to test.
+# ISO to test -- or with a release tag, to attach the tested ISO to that
+# GitHub release.
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Attach the ISO to this existing release (e.g. v0.1.0); empty = artifact only"
+        required: false
+        default: ""
+      boot_test:
+        description: "Boot the ISO in QEMU three times before publishing it (installer/qemu-boot-test.py)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write  # only used by the release upload step
 
 jobs:
   build:
@@ -17,17 +30,60 @@ jobs:
       - name: Install live-build tooling
         run: |
           sudo apt-get update
+          # The full list from installer/build-live-image.sh's header --
+          # syslinux-common provides the ldlinux/libcom32/libutil modules
+          # the isolinux bootloader directory links to.
           sudo apt-get install -y \
             live-build debootstrap xorriso squashfs-tools isolinux \
-            syslinux-efi grub-pc-bin grub-efi-amd64-bin mtools dosfstools \
+            syslinux-common syslinux-efi syslinux-utils librsvg2-bin \
+            grub-pc-bin grub-efi-amd64-bin grub-common mtools dosfstools \
             debian-archive-keyring rsync
 
       - name: Build hybrid live/installer ISO
         run: sudo ./installer/build-live-image.sh
 
-      - name: Upload ISO
+      - name: Name the ISO
+        id: iso
+        run: |
+          version=$(python3 -c "import re;print(re.search(r'__version__ = \"([^\"]+)\"', open('src/frfw/__init__.py').read()).group(1))")
+          name="FR_OS-${version}-amd64.iso"
+          sudo mv installer/live-build/binary.hybrid.iso "$name"
+          sudo chown "$(id -u):$(id -g)" "$name"
+          sha256sum "$name" > SHA256SUMS
+          {
+            echo
+            echo "# FR_OS ${version} -- hybrid BIOS/UEFI live image, amd64."
+            echo "# Built by GitHub Actions from commit ${GITHUB_SHA} (${GITHUB_REF_NAME})."
+            echo "# Verify: sha256sum -c SHA256SUMS"
+          } >> SHA256SUMS
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          cat SHA256SUMS
+
+      - name: Boot test in QEMU (three boots, persistence, first boot, webUI)
+        if: ${{ inputs.boot_test }}
+        run: |
+          sudo apt-get install -y qemu-system-x86
+          sudo python3 installer/qemu-boot-test.py "${{ steps.iso.outputs.name }}" --kvm --workdir qemu-test
+
+      - name: Upload QEMU logs
+        if: ${{ always() && inputs.boot_test }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: qemu-boot-test-logs
+          path: qemu-test/boot*.log
+          if-no-files-found: ignore
+
+      - name: Upload ISO artifact
         uses: actions/upload-artifact@v4
         with:
           name: fr-os-installer
-          path: installer/live-build/*.iso
+          path: |
+            ${{ steps.iso.outputs.name }}
+            SHA256SUMS
           if-no-files-found: error
+
+      - name: Attach to the release
+        if: ${{ inputs.release_tag != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ inputs.release_tag }}" "${{ steps.iso.outputs.name }}" SHA256SUMS --clobber
