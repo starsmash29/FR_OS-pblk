@@ -1,0 +1,21 @@
+[Unit]
+Description=FR_OS persistence setup (keep the live system's state across reboots)
+Documentation=https://github.com/starsmash29/FR_OS-pblk
+# Only on the live image booted with the "persistence" option; the
+# command itself does nothing when persistence is already in use. It
+# runs before fr-first-boot so that, when it creates the persistence
+# partition and reboots, first-boot's password and settings are made on
+# the persistent system, not in RAM.
+ConditionKernelCommandLine=boot=live
+ConditionKernelCommandLine=persistence
+Before=fr-first-boot.service
+After=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=firewall-cli persistence auto --reboot
+StandardOutput=journal+console
+
+[Install]
+WantedBy=multi-user.target

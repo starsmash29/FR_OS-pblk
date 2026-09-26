@@ -19,8 +19,8 @@ UNITS = sorted(p.name for p in (REPO_ROOT / "systemd").glob("fr-*"))
 INSTALL_SCRIPT = REPO_ROOT / "scripts" / "install-system-integration.sh"
 LIVE_BUILD_HOOK = REPO_ROOT / "installer" / "live-build" / "config" / "hooks" / "0100-install-frfw.hook.chroot"
 
-#: fr-first-boot only makes sense inside the live image.
-_LIVE_IMAGE_ONLY = {"fr-first-boot.service"}
+#: fr-first-boot and fr-persistence-setup only make sense inside the live image.
+_LIVE_IMAGE_ONLY = {"fr-first-boot.service", "fr-persistence-setup.service"}
 
 
 @pytest.mark.parametrize("unit", [u for u in UNITS if u not in _LIVE_IMAGE_ONLY])

@@ -61,10 +61,10 @@ def test_system_page_shows_enabled_but_not_active_when_host_unsupported(logged_i
 
     response = logged_in_client.get("/system")
     assert "Enabled, not yet active" in response.text
-    # "badge-green" alone also appears in base.html's shared <style> block
-    # regardless of whether it's used -- check for an actual rendered
-    # badge element instead of the CSS class definition.
-    assert 'class="badge badge-green"' not in response.text
+    # Only the PQC status card is about this: other cards (storage &
+    # persistence) may legitimately show a green badge.
+    pqc_card = response.text.split('class="card status-card"', 1)[1].split("</div>", 1)[0]
+    assert "badge-green" not in pqc_card
 
 
 def test_dashboard_shows_pqc_badge(logged_in_client):

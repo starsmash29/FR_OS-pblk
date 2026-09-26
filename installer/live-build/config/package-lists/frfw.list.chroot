@@ -12,3 +12,11 @@ sudo
 isolinux
 syslinux-common
 syslinux-utils
+# frfw.persistence: sfdisk/partx to add the persistence partition
+fdisk
+# systemd-logind needs D-Bus: without it the power button does nothing
+# (found booting the ISO in QEMU -- an ACPI power-off was ignored)
+dbus
+# the dnsmasq binary for fr-adblock-dns.service (DNS filtering); -base
+# has no dnsmasq.service of its own to fight over port 53
+dnsmasq-base

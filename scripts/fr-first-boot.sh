@@ -38,9 +38,24 @@ install-system-integration.sh
 # through the webUI's Interfaces screen afterwards.
 mapfile -t DEVICES < <(firewall-cli detect-interfaces | awk 'NR>1 {print $1}')
 
+WEBUI_HINT=""
 if [[ ${#DEVICES[@]} -ge 2 ]]; then
-    firewall-cli assign-interfaces --wan "${DEVICES[0]}" --lan "${DEVICES[1]}" --force
-    echo "fr-first-boot: assigned WAN=${DEVICES[0]} LAN=${DEVICES[1]}"
+    WAN="${DEVICES[0]}"
+    LAN="${DEVICES[1]}"
+    firewall-cli assign-interfaces --wan "$WAN" --lan "$LAN" --force
+    # The webUI reads the config as the unprivileged fr_os-webui user.
+    chgrp fr_os-webui "$CONFIG_DIR/config.yaml"
+    chmod 0640 "$CONFIG_DIR/config.yaml"
+    echo "fr-first-boot: assigned WAN=$WAN LAN=$LAN (LAN 192.168.1.1/24 with DHCP)"
+    # live-boot sets every NIC to DHCP in /etc/network/interfaces. The WAN
+    # keeps that (addresses from the upstream network); on the LAN the
+    # router *is* the DHCP server, so its client is stopped and the port
+    # left to frfw's static address.
+    if grep -qx "iface $LAN inet dhcp" /etc/network/interfaces 2>/dev/null; then
+        ifdown "$LAN" || true
+        sed -i "s/^iface $LAN inet dhcp\$/iface $LAN inet manual/" /etc/network/interfaces
+    fi
+    WEBUI_HINT="webUI: https://192.168.1.1/ from a computer on the LAN port ($LAN)"
 else
     echo "fr-first-boot: fewer than 2 network interfaces detected (${#DEVICES[@]});" >&2
     echo "  skipping auto-assignment -- run 'firewall-cli assign-interfaces' manually" >&2
@@ -54,23 +69,41 @@ PASSWORD="$(firewall-cli set-admin-password --generate)"
 # credential on a headless appliance with no prior admin session.
 {
     echo "FR_OS: initial webUI admin login is 'admin' / '$PASSWORD'"
+    [[ -n "$WEBUI_HINT" ]] && echo "$WEBUI_HINT"
     echo "Change it after logging in, then this line stays until you edit /etc/issue."
     echo
     cat /etc/issue 2>/dev/null || true
 } > /etc/issue.new
 mv /etc/issue.new /etc/issue
 
-systemctl enable --now fr-firewall
-systemctl enable --now fr-apply-helper.socket
-systemctl enable --now fr-webui
-systemctl enable --now fr-ai-ids
-systemctl enable --now fr-iot-scan.timer
-systemctl enable --now fr-xdp-sni-logger
-systemctl enable --now fr-appid
-systemctl enable --now fr-schedule-check.timer
-systemctl enable --now fr-tls-fp
-systemctl enable --now fr-update-helper.socket
+# Each unit on its own: one that fails to start is reported and stays
+# enabled (systemd retries it every boot), but doesn't stop the others --
+# nor leave first boot unfinished, which would rerun it (and replace the
+# admin password) at every boot.
+FAILED_UNITS=()
+for unit in \
+    fr-firewall \
+    fr-apply-helper.socket \
+    fr-webui \
+    fr-ai-ids \
+    fr-iot-scan.timer \
+    fr-xdp-sni-logger \
+    fr-appid \
+    fr-schedule-check.timer \
+    fr-tls-fp \
+    fr-update-helper.socket
+do
+    systemctl enable "$unit"
+    if ! systemctl start "$unit"; then
+        FAILED_UNITS+=("$unit")
+        echo "fr-first-boot: $unit failed to start -- see 'journalctl -u $unit'" >&2
+    fi
+done
 
 mkdir -p "$CONFIG_DIR"
 touch "$MARKER"
-echo "fr-first-boot: done"
+if [[ ${#FAILED_UNITS[@]} -gt 0 ]]; then
+    echo "fr-first-boot: done, but these did not start: ${FAILED_UNITS[*]}"
+else
+    echo "fr-first-boot: done"
+fi

@@ -21,6 +21,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from frfw import svc
 from frfw.config.schema import Config, DhcpPool
 
 KEA_CONFIG_PATH = Path("/etc/kea/kea-dhcp4.conf")
@@ -150,9 +151,7 @@ def _run_kea_test(path: str) -> None:
 
 def _restart_kea_service() -> None:
     try:
-        proc = subprocess.run(
-            ["systemctl", "restart", KEA_SERVICE_NAME], capture_output=True, text=True
-        )
+        proc = svc.systemctl("restart", KEA_SERVICE_NAME)
     except FileNotFoundError as exc:
         raise KeaError("'systemctl' not found") from exc
     if proc.returncode != 0:

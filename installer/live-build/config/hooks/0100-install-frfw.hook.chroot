@@ -17,6 +17,7 @@ install -m 0755 /opt/frfw-src/scripts/install-system-integration.sh /usr/local/s
 
 for unit in \
     fr-first-boot.service \
+    fr-persistence-setup.service \
     fr-firewall.service \
     fr-apply-helper.socket \
     fr-apply-helper.service \
@@ -41,6 +42,7 @@ done
 install -d -m 0755 /opt/fr_os/releases
 
 systemctl enable fr-first-boot.service
+systemctl enable fr-persistence-setup.service
 
 echo "frfw: removing bundled source (already installed via pip)..."
 rm -rf /opt/frfw-src

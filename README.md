@@ -76,13 +76,61 @@ dd if=fr_os_hybrid.iso of=/dev/sdX bs=4M status=progress oflag=sync
 
 ### First boot
 
-A first-boot service auto-detects your NICs (`/sys/class/net/`), generates a random admin password, and enables every FR_OS service — no interactive install wizard to click through:
+1. **The first boot reboots once by itself.** FR_OS finds the free space on
+   the USB stick after the image, creates a `persistence` partition there
+   and restarts to use it -- from then on every setting, password, lease
+   and log survives reboots (Debian live-boot persistence). A stick needs
+   at least 256 MiB free after the ~330 MB image; anything from 1 GB up
+   is fine.
+2. **The second boot sets the router up**, with no wizard to click
+   through: the first NIC becomes the **WAN** (DHCP from your modem/ISP),
+   the second the **LAN** at **192.168.1.1/24** with a DHCP server for
+   .100-.199, and a random admin password is generated.
+3. **The console shows the login**: `admin` / the generated password, and
+   `https://192.168.1.1/` -- open it from a computer on the LAN port
+   (the browser warns about the self-signed certificate once).
+
+A screen, a serial console (115200 baud) or neither: the boot menu
+continues by itself after 5 seconds. Booting from something read-only (a
+CD, a VM's virtual CD) there is no room for persistence -- the System
+screen says so; use an internal disk instead:
 
 ```bash
-# Interactive or scriptable network card assignment, if you'd rather do it by hand
+sudo firewall-cli persistence status
+sudo firewall-cli persistence create /dev/sdX --yes   # erases /dev/sdX, then reboot
+```
+
+Other NIC roles, by hand:
+
+```bash
 firewall-cli detect-interfaces
 firewall-cli assign-interfaces --wan eth0 --lan eth1
 ```
+
+The whole flow is checked by `installer/qemu-boot-test.py`, which boots
+the ISO in QEMU three times (see ARCHITECTURE.md, "Booting the image for
+real").
+
+### Hardware requirements
+
+Measured and estimated, not yet validated on a range of real machines:
+
+| | Minimum (basic router/firewall) | Recommended (every feature on) |
+|---|---|---|
+| CPU | x86-64 (amd64), 2 cores | x86-64, 4 cores (e.g. Intel N100/N305) |
+| RAM | 2 GB | 4-8 GB |
+| Storage | USB stick, 1 GB+ | good USB stick or SSD, 16 GB+ |
+| NICs | 2x Ethernet, any Linux-supported | Intel i210/i211/i225/i226; 10G: Intel X710, Mellanox ConnectX-4/5 |
+| Firmware | BIOS or UEFI, Secure Boot **off** | same |
+
+- Measured footprint: the webUI ~64 MiB under use, the AI IDS / TLS
+  fingerprinting / helper daemons ~25 MiB each, on Debian 12 (kernel 6.1).
+- amd64 only for now (no ARM / Raspberry Pi image).
+- The GRUB EFI binary isn't signed, hence Secure Boot off.
+- The XDP features run in native mode on drivers that support it (igb,
+  igc, i40e, ice, mlx5, virtio_net); other NICs (e.g. Realtek) fall back
+  to generic mode automatically -- it works, slower.
+- Throughput has not been benchmarked; 10/40 Gbit is a design target.
 
 ---
 

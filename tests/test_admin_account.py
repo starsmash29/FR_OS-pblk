@@ -25,3 +25,28 @@ def test_admin_store_lifecycle(tmp_path):
     store.set_password("admin", "newpassword")
     assert not store.verify("admin", "hunter22")
     assert store.verify("admin", "newpassword")
+
+
+def test_root_hands_the_file_to_the_state_directory_owner(tmp_path, monkeypatch):
+    # firewall-cli set-admin-password runs as root; the webUI reads the
+    # file as its own unprivileged user, which owns the state directory.
+    import os
+
+    from frfw import admin_account
+
+    state_dir = tmp_path / "webui"
+    state_dir.mkdir()
+    chowns = []
+    monkeypatch.setattr(admin_account.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(admin_account.os, "chown", lambda path, uid, gid: chowns.append((uid, gid)))
+    AdminStore(state_dir / "auth.json").set_password("admin", "correct horse battery")
+    st = os.stat(state_dir)
+    assert chowns == [(st.st_uid, st.st_gid)]
+
+
+def test_non_root_does_not_chown(tmp_path, monkeypatch):
+    from frfw import admin_account
+
+    monkeypatch.setattr(admin_account.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(admin_account.os, "chown", lambda *a: (_ for _ in ()).throw(AssertionError("chown")))
+    AdminStore(tmp_path / "auth.json").set_password("admin", "correct horse battery")

@@ -19,6 +19,9 @@
     firewall-cli update rollback [--repo OWNER/REPO]
     firewall-cli xdp-status
     firewall-cli adblock-refresh [config.yaml]
+    firewall-cli persistence status
+    firewall-cli persistence auto [--reboot]
+    firewall-cli persistence create DISK [--wipe] --yes
 
 `config.yaml` defaults to the canonical /etc/fr_os/config.yaml location
 (see frfw.paths) wherever a config path is optional, so that on a real
@@ -39,12 +42,14 @@ import argparse
 import getpass
 import os
 import secrets
+import subprocess
 import sys
 from pathlib import Path
 
 import yaml
 
 from frfw import __version__, codename_for, netdetect, paths, schedule_refresh, skeleton, xdp as xdp_mod
+from frfw import persistence as persistence_mod
 from frfw import update as update_mod
 from frfw.adblock import AdblockError
 from frfw.adblock import refresh as adblock_refresh
@@ -198,6 +203,26 @@ def _build_parser() -> argparse.ArgumentParser:
         help="show the MAC addresses currently isolated by IoT isolation (needs root)",
     )
     p_iot_status.set_defaults(handler=_cmd_iot_status)
+
+    p_persist = sub.add_parser(
+        "persistence", help="keep a live-booted router's state across reboots (live-boot persistence)"
+    )
+    persist_sub = p_persist.add_subparsers(dest="persistence_command", required=True)
+    persist_sub.add_parser("status", help="show whether changes survive a reboot").set_defaults(
+        handler=_cmd_persistence_status
+    )
+    p_persist_auto = persist_sub.add_parser(
+        "auto", help="boot-time step: create a persistence partition on the boot medium if there is room (root)"
+    )
+    p_persist_auto.add_argument("--reboot", action="store_true", help="reboot when one was created, to start using it")
+    p_persist_auto.set_defaults(handler=_cmd_persistence_auto)
+    p_persist_create = persist_sub.add_parser(
+        "create", help="turn a whole disk (e.g. an internal SSD) into the persistence disk (root, destructive)"
+    )
+    p_persist_create.add_argument("disk", help="whole disk, e.g. /dev/sdb or /dev/nvme0n1")
+    p_persist_create.add_argument("--wipe", action="store_true", help="allowed to erase a disk that has partitions")
+    p_persist_create.add_argument("--yes", action="store_true", help="confirm: everything on DISK is erased")
+    p_persist_create.set_defaults(handler=_cmd_persistence_create)
 
     p_mtoken = sub.add_parser(
         "metrics-token",
@@ -401,6 +426,40 @@ def _cmd_iot_status(args: argparse.Namespace) -> int:
     print("IoT isolation: currently isolated devices:")
     for mac in sorted(isolated):
         print(f"  {mac}")
+    return 0
+
+
+def _cmd_persistence_status(args: argparse.Namespace) -> int:
+    state = persistence_mod.status()
+    print(f"Persistence: {state.summary}")
+    if state.live:
+        print(f"  boot medium: {state.boot_device or '-'}")
+        print(f"  'persistence' boot option: {'yes' if state.requested else 'no'}")
+    return 0
+
+
+def _cmd_persistence_auto(args: argparse.Namespace) -> int:
+    outcome, device = persistence_mod.auto()
+    print(f"fr-persistence: {outcome}{f' ({device})' if device else ''}")
+    if outcome == "created":
+        print("fr-persistence: rebooting once to start using it -- nothing has been configured yet, so nothing is lost")
+        if args.reboot:
+            subprocess.run(["systemctl", "reboot"], check=False)
+    return 0
+
+
+def _cmd_persistence_create(args: argparse.Namespace) -> int:
+    if not args.yes:
+        print(f"error: this erases {args.disk}; add --yes to confirm", file=sys.stderr)
+        return 1
+    try:
+        partition = persistence_mod.create_on_disk(args.disk, wipe=args.wipe)
+    except persistence_mod.PersistenceError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(f"Created the persistence filesystem on {partition}.")
+    print("Reboot: FR_OS will keep its state there from the next boot on.")
+    print("Note: what was changed during this boot is not copied over.")
     return 0
 
 

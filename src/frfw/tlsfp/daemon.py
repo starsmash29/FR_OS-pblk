@@ -35,6 +35,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
+from frfw import svc
 from frfw import paths, xdp
 from frfw.config.schema import Config
 from frfw.helper import client as helper_client
@@ -163,7 +164,7 @@ def restart_service() -> None:
     privileges, so it is restarted to pick up the current one. Best
     effort -- no systemd (tests, dev boxes) is not an error."""
     try:
-        subprocess.run(["systemctl", "try-restart", SERVICE_NAME], capture_output=True, timeout=30)
+        svc.systemctl("try-restart", SERVICE_NAME, timeout=30)
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
 

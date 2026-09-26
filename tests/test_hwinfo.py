@@ -14,7 +14,7 @@ import shutil
 
 import pytest
 
-from frfw.hwinfo import RamModule, _parse_dmidecode_memory, read_ram_modules
+from frfw.hwinfo import HwInfoError, RamModule, _parse_dmidecode_memory, read_ram_modules
 
 requires_dmidecode = pytest.mark.skipif(
     shutil.which("dmidecode") is None, reason="dmidecode binary not installed"
@@ -131,7 +131,6 @@ def test_read_ram_modules_returns_empty_list_when_dmidecode_missing(monkeypatch)
 def test_read_ram_modules_raises_on_nonzero_exit(monkeypatch):
     import subprocess
 
-    from frfw.hwinfo import HwInfoError
 
     monkeypatch.setattr(
         subprocess,
@@ -147,5 +146,12 @@ def test_real_dmidecode_does_not_raise():
     """Only runs on a host that actually has dmidecode installed (not
     this sandbox) -- confirms real output parses without crashing,
     whatever the local hardware's actual RAM configuration is."""
-    modules = read_ram_modules()
+    try:
+        modules = read_ram_modules()
+    except HwInfoError as exc:
+        # dmidecode is installed but the host gives it no DMI data (a
+        # container without /dev/mem or /sys/firmware/dmi): nothing to parse.
+        if "/dev/mem" in str(exc) or "SMBIOS" in str(exc):
+            pytest.skip(f"no DMI access here: {exc}")
+        raise
     assert isinstance(modules, list)

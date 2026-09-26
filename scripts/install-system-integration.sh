@@ -48,7 +48,12 @@ from frfw.pqc import write_openssl_pqc_conf
 write_openssl_pqc_conf(Path('$CONFIG_DIR/webui_pqc_openssl.cnf'), hybrid=False)
 "
 
-if [[ ! -f "$CONFIG_PATH" ]]; then
+if [[ ! -f "$CONFIG_PATH" && ! -f "$REPO_ROOT/examples/config.yaml" ]]; then
+    # The live image: this script runs from /usr/local/sbin with no repo
+    # checkout around it. fr-first-boot writes the config right after
+    # (firewall-cli assign-interfaces), so there is nothing to copy.
+    echo "==> No config at $CONFIG_PATH and no example to copy; fr-first-boot / 'firewall-cli assign-interfaces' writes it"
+elif [[ ! -f "$CONFIG_PATH" ]]; then
     echo "==> No config found at $CONFIG_PATH, installing the example config as a starting point"
     install -m 0640 -o root -g "$WEBUI_USER" "$REPO_ROOT/examples/config.yaml" "$CONFIG_PATH"
     echo "    Review/edit it (or re-run 'firewall-cli assign-interfaces') before relying on it."
@@ -59,23 +64,27 @@ else
 fi
 
 echo "==> Installing systemd units"
-install -m 0644 "$REPO_ROOT/systemd/fr-firewall.service" "$SYSTEMD_DIR/"
-install -m 0644 "$REPO_ROOT/systemd/fr-apply-helper.socket" "$SYSTEMD_DIR/"
-install -m 0644 "$REPO_ROOT/systemd/fr-apply-helper.service" "$SYSTEMD_DIR/"
-install -m 0644 "$REPO_ROOT/systemd/fr-webui.service" "$SYSTEMD_DIR/"
-install -m 0644 "$REPO_ROOT/systemd/fr-ai-ids.service" "$SYSTEMD_DIR/"
-install -m 0644 "$REPO_ROOT/systemd/fr-iot-scan.service" "$SYSTEMD_DIR/"
-install -m 0644 "$REPO_ROOT/systemd/fr-iot-scan.timer" "$SYSTEMD_DIR/"
-install -m 0644 "$REPO_ROOT/systemd/fr-update-helper.socket" "$SYSTEMD_DIR/"
-install -m 0644 "$REPO_ROOT/systemd/fr-update-helper.service" "$SYSTEMD_DIR/"
-install -m 0644 "$REPO_ROOT/systemd/fr-adblock-refresh.service" "$SYSTEMD_DIR/"
-install -m 0644 "$REPO_ROOT/systemd/fr-adblock-refresh.timer" "$SYSTEMD_DIR/"
-install -m 0644 "$REPO_ROOT/systemd/fr-adblock-dns.service" "$SYSTEMD_DIR/"
-install -m 0644 "$REPO_ROOT/systemd/fr-xdp-sni-logger.service" "$SYSTEMD_DIR/"
-install -m 0644 "$REPO_ROOT/systemd/fr-appid.service" "$SYSTEMD_DIR/"
-install -m 0644 "$REPO_ROOT/systemd/fr-schedule-check.service" "$SYSTEMD_DIR/"
-install -m 0644 "$REPO_ROOT/systemd/fr-schedule-check.timer" "$SYSTEMD_DIR/"
-install -m 0644 "$REPO_ROOT/systemd/fr-tls-fp.service" "$SYSTEMD_DIR/"
+if [[ -d "$REPO_ROOT/systemd" ]]; then
+    install -m 0644 "$REPO_ROOT/systemd/fr-firewall.service" "$SYSTEMD_DIR/"
+    install -m 0644 "$REPO_ROOT/systemd/fr-apply-helper.socket" "$SYSTEMD_DIR/"
+    install -m 0644 "$REPO_ROOT/systemd/fr-apply-helper.service" "$SYSTEMD_DIR/"
+    install -m 0644 "$REPO_ROOT/systemd/fr-webui.service" "$SYSTEMD_DIR/"
+    install -m 0644 "$REPO_ROOT/systemd/fr-ai-ids.service" "$SYSTEMD_DIR/"
+    install -m 0644 "$REPO_ROOT/systemd/fr-iot-scan.service" "$SYSTEMD_DIR/"
+    install -m 0644 "$REPO_ROOT/systemd/fr-iot-scan.timer" "$SYSTEMD_DIR/"
+    install -m 0644 "$REPO_ROOT/systemd/fr-update-helper.socket" "$SYSTEMD_DIR/"
+    install -m 0644 "$REPO_ROOT/systemd/fr-update-helper.service" "$SYSTEMD_DIR/"
+    install -m 0644 "$REPO_ROOT/systemd/fr-adblock-refresh.service" "$SYSTEMD_DIR/"
+    install -m 0644 "$REPO_ROOT/systemd/fr-adblock-refresh.timer" "$SYSTEMD_DIR/"
+    install -m 0644 "$REPO_ROOT/systemd/fr-adblock-dns.service" "$SYSTEMD_DIR/"
+    install -m 0644 "$REPO_ROOT/systemd/fr-xdp-sni-logger.service" "$SYSTEMD_DIR/"
+    install -m 0644 "$REPO_ROOT/systemd/fr-appid.service" "$SYSTEMD_DIR/"
+    install -m 0644 "$REPO_ROOT/systemd/fr-schedule-check.service" "$SYSTEMD_DIR/"
+    install -m 0644 "$REPO_ROOT/systemd/fr-schedule-check.timer" "$SYSTEMD_DIR/"
+    install -m 0644 "$REPO_ROOT/systemd/fr-tls-fp.service" "$SYSTEMD_DIR/"
+else
+    echo "==> No systemd/ directory next to this script (live image): the units were installed when the image was built"
+fi
 
 echo "==> Reloading systemd"
 systemctl daemon-reload

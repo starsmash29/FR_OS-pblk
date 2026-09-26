@@ -121,6 +121,8 @@ lb config noauto \
     --binary-images iso-hybrid \
     --bootloader syslinux \
     --syslinux-theme live-build \
+    --initsystem systemd \
+    --bootappend-live "persistence live-config.nocomponents=user-setup,sudo live-config.noautologin console=tty0 console=ttyS0,115200n8" \
     --debian-installer false \
     --debian-installer-gui false \
     --iso-application "FR_OS" \
