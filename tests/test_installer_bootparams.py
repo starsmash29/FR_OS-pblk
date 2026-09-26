@@ -13,7 +13,9 @@ ISOLINUX = LB / "config" / "bootloaders" / "isolinux"
 
 
 def _auto_config_option(name: str) -> str:
-    text = (LB / "auto" / "config").read_text()
+    text = "\n".join(
+        line for line in (LB / "auto" / "config").read_text().splitlines() if not line.lstrip().startswith("#")
+    )
     match = re.search(rf'--{name} ("[^"]*"|\S+)', text)
     assert match, f"--{name} missing from auto/config"
     return shlex.split(match.group(1))[0]
