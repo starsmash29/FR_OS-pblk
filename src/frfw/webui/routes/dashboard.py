@@ -5,6 +5,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, Request
 
 from frfw import netdetect, sysinfo
+from frfw import persistence as persistence_mod
 from frfw import pqc as pqc_mod
 from frfw.adblock import count_blocked_domains
 from frfw.ai_ids import is_daemon_active
@@ -128,6 +129,7 @@ def dashboard(
             "links_up": links_up,
             "links_known": links_known,
             "system": system,
+            "persistence": persistence_mod.status(labelled=[]),
             "format_bytes": sysinfo.format_bytes,
             "format_duration": sysinfo.format_duration,
             "ai_ids_quarantined_count": ai_ids_quarantined_count,

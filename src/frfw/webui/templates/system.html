@@ -79,6 +79,22 @@
   </p>
 </div>
 <div class="card">
+  <h3>Storage &amp; persistence</h3>
+  {% if not persistence.live %}
+  <p><span class="badge badge-green">installed</span> This router runs from its own disk; every change is kept.</p>
+  {% elif persistence.active %}
+  <p><span class="badge badge-green">persistent</span> Live system with persistence on <code>{{ persistence.devices | join(", ") }}</code>: settings, passwords and leases survive reboots.</p>
+  {% else %}
+  <div class="flash-error">Live system without persistence: every change made since boot -- config, passwords, enabled services -- is lost at the next reboot.</div>
+  <p class="muted">
+    {% if not persistence.requested %}This boot did not use the <code>persistence</code> option.{% endif %}
+    FR_OS creates a persistence partition by itself on the first boot when the USB stick it was written to has at least 256 MiB free after the image.
+    To use an internal disk instead (a read-only medium, a VM's virtual CD): <code>sudo firewall-cli persistence create /dev/sdX --yes</code>, then reboot.
+  </p>
+  {% endif %}
+  {% if persistence.live %}<p class="muted">Boot medium: <code>{{ persistence.boot_device or "-" }}</code></p>{% endif %}
+</div>
+<div class="card">
   <h3>Multi-site monitoring</h3>
   {% if new_token %}
   <div class="flash-success">

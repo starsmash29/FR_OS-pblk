@@ -31,6 +31,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from frfw import svc
 from frfw import paths
 from frfw.adblock import (
     FIREFOX_DOH_CANARY,
@@ -203,11 +204,7 @@ def _test_dnsmasq_config(conf_path: Path, *, dnsmasq_binary: str = "dnsmasq") ->
 
 def _restart_dns_service() -> None:
     try:
-        proc = subprocess.run(
-            ["systemctl", "restart", paths.ADBLOCK_DNS_SERVICE_NAME],
-            capture_output=True,
-            text=True,
-        )
+        proc = svc.systemctl("restart", paths.ADBLOCK_DNS_SERVICE_NAME)
     except FileNotFoundError as exc:
         raise DnsServiceError("'systemctl' not found") from exc
     if proc.returncode != 0:
@@ -218,9 +215,7 @@ def _restart_dns_service() -> None:
 
 def _stop_dns_service() -> None:
     try:
-        proc = subprocess.run(
-            ["systemctl", "stop", paths.ADBLOCK_DNS_SERVICE_NAME], capture_output=True, text=True
-        )
+        proc = svc.systemctl("stop", paths.ADBLOCK_DNS_SERVICE_NAME)
     except FileNotFoundError as exc:
         raise DnsServiceError("'systemctl' not found") from exc
     if proc.returncode != 0:

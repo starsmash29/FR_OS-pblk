@@ -262,7 +262,7 @@ this part remains open, for lack of real 10G/40GbE hardware (see above).
 Functional correctness (the filter actually, provably safely, and per
 spec works), on the other hand, has been proven in this phase.
 
-## Phase 5 – Automated installer
+## Phase 5 – Automated installer — **done in a VM; physical hardware still to try**
 
 - [x] A live-build-based hybrid live ISO (`installer/live-build/`,
       `installer/build-live-image.sh`) -- the full frfw stack (nftables,
@@ -286,11 +286,29 @@ spec works), on the other hand, has been proven in this phase.
       directory correctly removed. The first-boot hook's logic (pip
       install + service enable) was also run manually, separately,
       inside the chroot, with the same result.
-- [ ] **Not yet verified**: actually booting the ISO on a virtual or real
-      machine (BIOS boot, a real run of the first-boot script on a fresh
-      system, reaching the webUI on first boot) -- the verification
-      above statically validated the build's output (the squashfs's
-      contents), not a live boot.
+- [x] **Booted for real, in QEMU** (BIOS, virtio disk and NICs) -- and
+      that boot found fourteen problems the static checks couldn't: the
+      BIOS boot stopped at a missing `ldlinux.c32`, the menu never timed
+      out and picked the fail-safe entry, PID 1 was sysvinit, live-config
+      would have created a `user`/`live` sudo account, nothing survived a
+      reboot, first boot always failed, the first apply couldn't write
+      Kea's config, a fresh router's webUI was unreachable and then a 500,
+      the power button did nothing, and the first boot with a config in
+      place deadlocked (a blocking Kea restart inside the early-boot apply). All fixed, each with a
+      regression test; see ARCHITECTURE.md, "Booting the image for real".
+- [x] **Persistence**: created automatically on the USB stick at the
+      first boot (Debian live-boot persistence, whole root), or on an
+      internal disk with `firewall-cli persistence create`; status on the
+      System screen and dashboard.
+- [x] **Out-of-the-box network**: WAN by DHCP, LAN 192.168.1.1/24 with a
+      DHCP pool, webUI reachable from the LAN; password and URL on the
+      console (screen and serial).
+- [x] `installer/qemu-boot-test.py`: boots the ISO three times and checks
+      persistence, first boot, the webUI, the power button, that the
+      password and a webUI change survive a reboot.
+- [x] UEFI (OVMF, Secure Boot off): the GRUB menu boots with the same
+      options, persistence is created and the reboot happens.
+- [ ] Not yet: physical hardware.
 
 **Known limitations** (limitations of this one specific, very old,
 Ubuntu-patched live-build snapshot (`3.0~a57`) -- see the header comments
@@ -314,11 +332,11 @@ rationale on every point):
   (the `config/hooks/live/` subdirectory is silently ignored here).
 
 **Acceptance criterion**: installed from USB, the user gets a working
-webUI with no manual package installation/terminal work. The build side
-(the squashfs's contents) has been verified, ✅. Actually booting from
-USB + the first-boot experience on a real/virtual machine hasn't been
-tried yet -- this is the last step, requiring hardware/VM access, before
-this phase can be closed.
+webUI with no manual package installation/terminal work. ✅ In a VM:
+written to a disk, booted, the webUI answered on https://192.168.1.1/
+from the LAN with the password shown on the console, and settings survived
+reboots (`installer/qemu-boot-test.py`, all 19 checks); UEFI first boot
+checked too. Physical hardware still to try.
 
 ## Phase 6 – Update mechanism — **done**
 

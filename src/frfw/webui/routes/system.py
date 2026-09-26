@@ -28,6 +28,7 @@ from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import Response
 
 from frfw import pqc as pqc_mod
+from frfw import persistence as persistence_mod
 from frfw.config import ConfigError, parse_config
 from frfw.metrics import generate_metrics_token
 from frfw.webui.actions import try_save
@@ -64,6 +65,8 @@ def _render_system(request: Request, username: str, raw: dict, cert_path: Path, 
 
     status = pqc_mod.get_status(config)
     metrics_raw = raw.get("metrics") or {}
+    # Unprivileged: no blkid probing, only /proc (which is all the webUI needs).
+    persistence = persistence_mod.status(labelled=[])
 
     return templates.TemplateResponse(
         request,
@@ -71,6 +74,7 @@ def _render_system(request: Request, username: str, raw: dict, cert_path: Path, 
         {
             "username": username,
             "status": status,
+            "persistence": persistence,
             "metrics_site": metrics_raw.get("site") or "",
             "metrics_hostname": raw.get("hostname") or "",
             "metrics_token_set": bool(metrics_raw.get("token_sha256")),

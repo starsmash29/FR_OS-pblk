@@ -73,6 +73,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from frfw import svc
 from frfw import paths
 from frfw.config.schema import Config
 
@@ -334,7 +335,7 @@ def _test_sshd_config(sshd_binary: str) -> None:
 
 def _reload_ssh_service() -> None:
     try:
-        proc = subprocess.run(["systemctl", "reload", "ssh"], capture_output=True, text=True)
+        proc = svc.systemctl("reload", "ssh")
     except FileNotFoundError as exc:
         raise PqcError("'systemctl' not found") from exc
     if proc.returncode != 0:

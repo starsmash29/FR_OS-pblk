@@ -39,6 +39,9 @@
   </div>
 </section>
 
+{% if persistence.live and not persistence.active %}
+<div class="flash-mock">This live system has no persistence: changes are lost at the next reboot. See <a href="/system">System</a>.</div>
+{% endif %}
 {% if not config_valid %}
 <div class="flash-error">The saved config does not currently pass validation -- fix it on the relevant screen before applying.</div>
 {% endif %}

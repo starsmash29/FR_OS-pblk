@@ -13,7 +13,11 @@ RemainAfterExit=yes
 StandardInput=null
 ProtectSystem=full
 ProtectHome=true
-ReadWritePaths=/etc/fr_os
+# An apply also writes Kea's config (frfw.kea), and, when enabled, the
+# sshd PQC drop-in (frfw.pqc) and the compiled XDP object (frfw.xdp);
+# "-" = fine if that directory doesn't exist. Without /etc/kea here
+# the very first apply on a booted image failed (read-only /etc).
+ReadWritePaths=/etc/fr_os /etc/kea -/etc/ssh/sshd_config.d -/usr/local/share/fr_os
 ExecStart=firewall-cli apply /etc/fr_os/config.yaml
 ExecReload=firewall-cli apply /etc/fr_os/config.yaml
 ExecStop=/usr/sbin/nft flush ruleset

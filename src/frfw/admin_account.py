@@ -31,6 +31,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import os
 import re
 import secrets
 from dataclasses import dataclass
@@ -156,6 +157,13 @@ class AdminStore:
         tmp_path = self.path.with_suffix(".tmp")
         tmp_path.write_text(json.dumps(data, indent=1))
         tmp_path.chmod(0o640)
+        if os.geteuid() == 0:
+            # Written by root (`firewall-cli set-admin-password`, first
+            # boot): hand the file to whoever owns the state directory --
+            # the webUI's own account -- or the webUI can't read it and
+            # every page is a 500 (found booting the image for real).
+            parent = self.path.parent.stat()
+            os.chown(tmp_path, parent.st_uid, parent.st_gid)
         tmp_path.replace(self.path)
 
     def set_password(self, username: str, password: str, role: str | None = None) -> None:

@@ -2750,6 +2750,123 @@ DESIGN.md format.
   Chrome, Edge, Firefox and Safari; an older browser shows the forms
   stacked, which still works.
 
+## Booting the image for real: persistence and first-boot fixes
+
+Until this point the ISO had only been checked statically (its squashfs
+contents, the unit symlinks). Booting it in QEMU -- the way a user would:
+written to a disk, two NICs, no keyboard -- showed that it could not have
+worked, for reasons no static check caught. Each is now fixed and has a
+regression test (`tests/test_installer_bootparams.py`), and the whole flow
+is checked end to end by `installer/qemu-boot-test.py`.
+
+### What the first real boots found
+
+1. **BIOS boot stopped at "Failed to load ldlinux.c32".** syslinux 6's
+   `isolinux.bin` loads `ldlinux.c32` first and `vesamenu.c32` needs
+   `libcom32.c32`/`libutil.c32`; the bootloader directory only had
+   `isolinux.bin` and `vesamenu.c32`. Added as symlinks to the build
+   host's syslinux 6.04 modules, like the two existing ones.
+2. **The menu waited forever** (`timeout 0` means no timeout in syslinux)
+   -- a headless router never booted. Now 5 s.
+3. **It booted the fail-safe entry**: `live.cfg.in` marked both entries
+   `menu default` and vesamenu took the last -- one CPU (`nosmp`), no APIC,
+   and a reboot that hung in QEMU. Only the normal entry is default now.
+4. **PID 1 was sysvinit**, not systemd: this live-build snapshot defaults
+   `LB_INITSYSTEM` to sysvinit, so every FR_OS unit was dead weight.
+   `auto/config` now passes `--initsystem systemd`.
+5. **live-config would have created a `user` account with the password
+   `live` and sudo** -- on a router running sshd. The boot options now
+   include `live-config.nocomponents=user-setup,sudo`; there is no
+   console login at all (root is locked), which is what an appliance
+   wants.
+6. **Nothing survived a reboot** (no persistence -- see below).
+7. **First boot always failed**: `install-system-integration.sh` copied
+   `examples/config.yaml` from a repo checkout that doesn't exist on the
+   image, and `set -e` stopped everything. It now works without one (the
+   units are already installed by the image hook, and first boot writes
+   the config itself).
+8. **The first apply failed**: `fr-firewall`/`fr-apply-helper` run with
+   `ProtectSystem=full`, which makes `/etc` read-only except the
+   `ReadWritePaths`; Kea's config is in `/etc/kea`. Added (plus the
+   optional sshd PQC drop-in and XDP object directories).
+9. **A fresh router was unreachable**: the generated config gave the LAN
+   no address and the input policy (drop) had no rule for the webUI; and
+   live-boot configures every NIC for DHCP, the LAN included. The first
+   boot now puts the LAN at 192.168.1.1/24 with a DHCP pool (.100-.199)
+   and a `webui-from-lan` rule, and switches the LAN's DHCP client off;
+   the WAN keeps DHCP from upstream.
+10. **The power button did nothing**: without D-Bus there is no
+    systemd-logind to handle it. `dbus` is in the package list now.
+11. `dnsmasq` was missing although DNS filtering needs it:
+    `dnsmasq-base` (the binary only -- no second dnsmasq.service to fight
+    over port 53).
+12. **Every webUI page was a 500**: `firewall-cli set-admin-password`
+    runs as root and wrote `auth.json` as root:root 0640, which the webUI's
+    own account can't read. A root write now hands the file to the owner
+    of the state directory (the webUI's account) -- the same fix covers
+    a hand install following the README.
+13. **tty1 looped on an autologin into the `user` account** that no
+    longer exists (live-config's getty generator), until systemd gave up
+    and the screen had no login prompt: `live-config.noautologin`.
+14. **The third boot hung forever** -- the first one with a config
+    already in place. `fr-firewall.service` applies it in sysinit, before
+    network-pre.target, and an apply ran a blocking `systemctl restart
+    kea-dhcp4-server`: a job systemd had ordered after fr-firewall, so
+    each waited for the other ("Job fr-firewall.service/start running
+    (8min / no limit)"). The same trap was in the sshd reload, the
+    DNS-filter restart/stop and the TLS-fingerprinting restart. They all
+    go through `frfw.svc` now: while the system is still booting the job
+    is only queued (`--no-block`, the config it loads was validated
+    before); once it's up -- an Apply from the webUI -- the call waits,
+    so a failure is still reported.
+
+Items 1-11 showed up over the first boots, 12-14 only once the router got
+as far as serving its webUI and rebooting with a config -- which is why
+the test boots three times.
+
+First boot also no longer aborts when one service fails to start: it
+reports it, keeps going, and still marks itself done -- otherwise it would
+rerun, with a new admin password, at every boot.
+
+### Persistence: live-boot's own mechanism, set up automatically
+
+The image stays a live system (no installer), and keeps its state with
+Debian live-boot's standard persistence: with `persistence` on the kernel
+command line, a filesystem labelled `persistence` holding a
+`persistence.conf` is overlaid on the running system.
+
+- **What persists: the whole root** (`/ union`). First boot touches much
+  more than `/etc/fr_os` -- enabled units under `/etc/systemd`, SSH host
+  keys, `/etc/issue`, Kea leases, the journal, update releases under
+  `/opt` and `/usr/local` -- and a router should behave like an installed
+  system. Writing a new image to the stick is a factory reset.
+- **Where: created automatically on the boot medium.** A stick written
+  with `dd` has everything after the image unallocated.
+  `fr-persistence-setup.service` (before `fr-first-boot`) appends a
+  partition there, formats it ext4 with the label, writes
+  `persistence.conf`, and reboots once -- before anything was configured,
+  so nothing is lost. It never modifies an existing partition: it only
+  appends in free space after the last one (the hybrid ISO's MBR has the
+  image as partition 1 from sector 0 and the EFI image inside it; the new
+  one is 3), refuses CD/loop/read-only devices, needs 256 MiB, and does
+  nothing if a `persistence` filesystem already exists anywhere. On the
+  real image only the 16-byte partition entry in the MBR changes.
+- **Other media**: `firewall-cli persistence create DISK --yes` makes a
+  whole internal disk the persistence disk (refuses disks with partitions
+  unless `--wipe`, and anything mounted); `persistence status` reports.
+  The webUI's System screen and the dashboard warn when changes would be
+  lost at reboot.
+
+### Honest limits
+
+- Verified in QEMU: the full three-boot test on BIOS (virtio disk and
+  NICs, TCG -- all 19 checks pass), and the first boot on UEFI (OVMF,
+  Secure Boot off: GRUB menu with the same options, persistence created,
+  reboot). Not yet on physical hardware.
+- The first NIC found is the WAN, the second the LAN -- on a machine
+  where that order is wrong, reassign with `firewall-cli
+  assign-interfaces` (the console shows which is which).
+
 ## Open decisions
 
 The points below get settled during their respective phase, once the
