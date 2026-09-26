@@ -1278,23 +1278,135 @@ still passes. ✅
 
 The Stitch project also designs screens for features that aren't built.
 They are **not** in the product (no mock-ups with sample data); they are
-candidates for later releases:
+collected, with what each would give an organisation, in
+[Planned: enterprise and advanced features](#planned-enterprise-and-advanced-features)
+below.
 
-- **Networking**: VLAN provisioning and a port matrix, LACP link
-  aggregation, policy-based routing and multi-WAN failover, BGP/OSPF
-  peering, WireGuard VPN (peers with QR provisioning), Dynamic DNS,
-  DNS static overrides, encrypted DoH/DoT upstreams, DHCP lease inventory
-  with static-lease pinning, ARP/NDP neighbour table.
-- **Traffic shaping**: CAKE/fq_codel smart queue management, HTB tree
-  editor, `tc qdisc` inspector, bufferbloat benchmark.
-- **Diagnostics**: path analyzer, MTR/packet loss, iPerf3 speed test, DNS
-  leak test, live packet capture (PCAP), live sessions explorer, client
-  deep-dive inspector, geo-IP lookup and a Geo-IP country filter.
-- **Security and identity**: FIDO2/WebAuthn sign-in, hardware HSM /
-  security-token keystore and key rotation, time-limited privilege
-  elevation, signed compliance/attestation reports, threat-intel feeds.
-- **Operations**: first-run setup wizard, configuration backup with git
-  history and rollback, alert rules and an incident dispatcher, syslog /
-  SIEM forwarding, a live system log console, command palette (Cmd+K),
-  rescue shell.
+## Planned: enterprise and advanced features
+
+What FR_OS doesn't do yet but is designed or asked for -- listed here so
+an organisation evaluating FR_OS can see whether what it needs is on the
+way, and so contributors can pick something up. **None of this is built.**
+Nothing here is scheduled to a release yet; the order will follow demand
+and dependencies (release codenames: see the top of this file).
+
+Each row: the capability, what it gives an organisation, what FR_OS
+already has that it would build on, and the Stitch design. The Stitch
+project designs these screens (128 screens: 94 new features, 19 that
+extend existing ones); a screen-by-screen inventory with every field and
+table is in [docs/stitch-screens.md](docs/stitch-screens.md). Some Stitch
+screens show sample data and certification claims (FIPS 140-3, CAVP): those
+are design placeholders -- FR_OS will not claim a certification it hasn't
+got.
+
+Status: **Planned** -- nothing exists yet. **Extends** -- the core exists;
+the capability adds to it.
+
+### Foundations every organisation will ask about first
+
+Not Stitch screens, but prerequisites for most of what follows.
+
+| Capability | What it gives an organisation | Status |
+|---|---|---|
+| IPv6 (rules, NAT66/NPTv6 where needed, DHCPv6/RA, XDP) | Dual-stack networks; today FR_OS is IPv4-only | Planned |
+| Validation on physical hardware (reference boxes) | A tested hardware list to buy from | Planned (VM-verified today) |
+| Signed Secure Boot chain (shim + signed GRUB/kernel) | Boots with Secure Boot on, as corporate policy requires | Planned |
+| Non-free NIC firmware in the image | Realtek and other NICs that need firmware work out of the box | Planned |
+| Install to disk (besides live + persistence) | A conventional installed system on an internal SSD | Planned (persistence on an internal disk exists) |
+
+### Connectivity and routing
+
+| Capability | What it gives an organisation | Today in FR_OS | Stitch design |
+|---|---|---|---|
+| Multi-WAN with gateway monitoring and failover | Stays online when one ISP link fails; load sharing | One WAN | PBR & Multi-WAN Manager; Gateway Watchdog & Failover |
+| Policy-based routing | Send chosen traffic (by source, app, destination) over a chosen link or tunnel | -- | Create PBR Rule |
+| BGP and OSPF (dynamic routing) | Fits into multi-site and provider networks; route exchange with core routers | -- | BGP Routing Table & Peering Explorer; BGP & OSPF Peering Configuration |
+| WireGuard VPN: site-to-site and remote access | Branch offices and remote staff on the internal network, peers added by QR code | ZTNA gate (per-source-IP access) | VPN & WireGuard Tunnels; Add Peer & QR Provisioning |
+| VLAN provisioning and 802.1Q port matrix | Segment departments, guests and IoT on one switch uplink from the UI | VLAN sub-interfaces usable in the config (e.g. `enp2s0.30`) | Interfaces & VLAN Port Matrix (extends); Create & Provision VLAN Interface |
+| LACP link aggregation | Redundant, faster uplinks to the core switch | -- | Create & Provision LACP Link Aggregation |
+| Reverse proxy with Let's Encrypt | Publish internal web services safely with valid certificates | Port forwarding (DNAT) | Reverse Proxy & Let's Encrypt; Add Ingress Proxy Host |
+| Captive portal and guest vouchers | Guest Wi-Fi with terms, time-limited vouchers, printable cards | Guest zone and rules | Captive Portal & Guest Voucher Engine; Splash Portal Customizer; Voucher Batch Print |
+| mDNS repeater and IGMP proxy | AirPlay/printers/Chromecast across VLANs; IPTV multicast | -- | mDNS Repeater & Multicast Router; Add Repeating Rule |
+| Dynamic DNS client | Reach a site on a changing public IP by name | -- | Dynamic DNS Client & Multi-Provider Sync; Create DDNS Profile |
+
+### DNS
+
+| Capability | What it gives an organisation | Today in FR_OS | Stitch design |
+|---|---|---|---|
+| Local DNS records and overrides | Internal names (`nas.office.lan`) and split-horizon without a separate DNS server | Filtering resolver (dnsmasq) | DNS Static Override & Host Record |
+| Encrypted upstream DNS (DoH/DoT) | Queries to the upstream resolver can't be read or altered on the way | Plain upstream; DoH bypass *blocking* exists | Configure Encrypted DoH/DoT Upstream DNS |
+| DNS leak and hijack test | Proof that clients really use the company resolver | Forced-DNS option | DNS Leak Test & Resolver Telemetry |
+
+### Traffic shaping (QoS)
+
+| Capability | What it gives an organisation | Today in FR_OS | Stitch design |
+|---|---|---|---|
+| Smart queue management (CAKE, fq_codel) | Calls and video stay smooth while the link is saturated (no bufferbloat) | -- | Traffic Control & Smart Queue Management; FQ_CoDel Tuning |
+| Hierarchical bandwidth classes (HTB) | Guaranteed and capped bandwidth per department, app or VLAN | -- | HTB Tree Editor |
+| Bufferbloat benchmark, `tc` inspector | Measure the result; expert access to the kernel's queues | -- | Bufferbloat Saturation Benchmark; tc qdisc Inspector |
+
+### Visibility and diagnostics
+
+| Capability | What it gives an organisation | Today in FR_OS | Stitch design |
+|---|---|---|---|
+| Live traffic graphs, top talkers, rule hit counters | See at a glance what uses the link and which rules fire | Dashboard with service states and resources; Prometheus/Grafana history | Node Dashboard (extends); Read-Only Viewer Profile (extends) |
+| Live sessions explorer | Find and cut a specific connection | Conntrack sampling for the AI IDS | Live Sessions Explorer |
+| Client deep-dive | One page per device: traffic, apps, fingerprints, DHCP/DNS, isolation | IoT inventory, apps, TLS fingerprints (separate screens) | Client Deep-Dive Device Inspector |
+| ARP/NDP neighbour table | Troubleshoot address conflicts and stale entries | -- | ARP & NDP Neighbor Discovery Table |
+| Diagnostics toolbox (ping, traceroute/MTR, TCP probe, iPerf3) | Troubleshoot from the router itself, without a laptop on site | -- | Network Diagnostics & Path Analyzer; MTR; iPerf3 Speedtest |
+| Packet capture (PCAP, live to Wireshark) | Hand evidence to a vendor or investigate an incident | -- | Live Packet Capture |
+| "Which rule would match?" simulator with IP geo lookup | Check a policy change before it hits production | -- | IP Geo-Lookup & Packet Trajectory Simulator |
+| DHCP lease inventory | Every lease with its device, in one table | Reservations per zone | DHCP Leases & Client Inventory (extends) |
+
+### Threat protection
+
+| Capability | What it gives an organisation | Today in FR_OS | Stitch design |
+|---|---|---|---|
+| Signature-based IDS/IPS (Suricata or Snort rules) | Known-attack detection with maintained rule sets, next to the anomaly engine | AI IDS/IPS (behavioural, per-host baselines) with kernel quarantine | AI IDS/IPS (extends) |
+| Geo-IP country filtering | Block or allow whole countries at the perimeter | -- | Geo-IP Country Filter & Perimeter Policy |
+| Threat-intel feeds (IP/domain reputation) | Drop known-bad infrastructure automatically | DNS malware/phishing categories, DGA heuristics | Threat Intel & DNS Sinkhole (extends) |
+| Deeper application control (L7 DPI) | Per-app policy beyond name-based identification | App-ID lite (DNS names, TLS SNI) with blocking | Applications & L7 DPI (extends) |
+| ZTNA with device posture | Access depends on who *and* what device | ZTNA gate (identity, per source IP) | ZTNA Gate (extends) |
+
+### Identity and access
+
+| Capability | What it gives an organisation | Today in FR_OS | Stitch design |
+|---|---|---|---|
+| FIDO2 / WebAuthn sign-in (security keys, passkeys) | Phishing-resistant admin login | Password + brute-force protection | Login & FIDO2 WebAuthn Authentication Gate (extends) |
+| Directory sign-in (LDAP / Active Directory) | Admins and ZTNA users from the company directory; leavers lose access at once | Local accounts | Centralized Directory & RADIUS Gate; Add Authentication Server |
+| RADIUS server and 802.1X with dynamic VLANs | Wired/Wi-Fi port authentication; a user's group decides their VLAN | -- | NAS Client matrix; Group-to-VLAN Mapping; 802.1X Policy Simulator |
+| Internal certificate authority (PKI) | EAP-TLS device certificates, internal TLS, SCEP/EST enrolment | Self-signed webUI certificate | 802.1X EAP & PKI Certificate Manager; Issue Certificate & Sign CSR; Certificate Export |
+| Fine-grained roles | Per-area permissions (e.g. network team vs. security team) | `admin` and read-only `viewer` roles, audit log | User Management & Access Control; Add New User & RBAC Provisioning (extend) |
+| Just-in-time privilege elevation | Admins work read-only by default and request time-limited write access; every elevation is audited | -- | Request / Extend / Revoke Elevated Privileges; Active Operator View; Privilege Lease Expired |
+
+### Operations and compliance
+
+| Capability | What it gives an organisation | Today in FR_OS | Stitch design |
+|---|---|---|---|
+| Configuration history with diff and rollback (git-backed) | Who changed what and when; one-click return to a known-good config | Ruleset backup + rollback of the last apply; audit log | Configuration Backup & Git Rollback; Create Manual Snapshot |
+| Syslog / SIEM forwarding (TLS) | Logs in Splunk, Elastic, Graylog, Sentinel... | Journal on the box; Prometheus metrics | Syslog & Remote SIEM Forwarder; Add Target Forwarder |
+| Alert rules and notification channels | E-mail/webhook/chat alerts on link loss, attacks, failed services | Metrics for external alerting | Alert Rules & Incident Dispatcher; Create Alert Rule |
+| SNMP | Fits existing NMS tools | Prometheus `/metrics` with token | Telemetry, SNMP & Prometheus Exporter (extends) |
+| Compliance reports (signed PDF) | Evidence for auditors: privileged sessions, changes, attestation | Audit log (JSON lines) | Cryptographic Audit Receipt; PDF Compliance Certificate |
+| First-run setup wizard | Guided setup of WAN, admin account, security baseline | Automatic first boot with safe defaults | Out-of-Box First-Run Setup Wizard (steps 1-5) |
+| Live log console | All services' logs in one place in the webUI | Live XDP drop log | Live System Log & XDP Kernel Console |
+| Command palette (Cmd+K) | Fast navigation and search for any IP, MAC or rule | -- | Command Palette & Quick Action Engine; Entity Deep Search |
+| Rescue console and recovery runbooks | Recover a misconfigured router from the browser | Serial console; CLI rollback | Emergency Rescue Shell & Fail-Safe Console; Post-Recovery Re-Attestation; Incident Post-Mortem |
+| Update management with A/B boot | Safe upgrades with automatic fallback | Update + rollback mechanism | Firmware & eBPF Bytecode Updates (extends) |
+
+### High availability and scale
+
+| Capability | What it gives an organisation | Today in FR_OS | Stitch design |
+|---|---|---|---|
+| Two-node HA cluster (VRRP-style failover with state sync) | No single point of failure: the standby takes over with open connections intact | -- | Multi-Node Cluster & HA Failover Manager |
+| Central management of many routers | Push policy to every site from one place | Read-only multi-site monitoring (Prometheus + Grafana fleet dashboard) | -- |
+
+### Key management and platform integrity
+
+| Capability | What it gives an organisation | Today in FR_OS | Stitch design |
+|---|---|---|---|
+| Hardware keystore (HSM / security tokens, PKCS#11) | Router keys that can't be copied off the box | Keys on disk | Hardware HSM & Cryptographic Keystore (several states); Enroll Security Token; Generate Keypair; Sign Test & Benchmark |
+| Key rotation and zeroization with audit receipts | Planned rotation and emergency destruction of keys, with evidence | -- | Ephemeral Root Key Rotation (+ dry run, receipt); Force Zeroize; Zeroization Attestation |
+| Disaster-recovery key escrow (M-of-N Shamir shares) | No single person can restore -- or lose -- the recovery key | -- | DR Key Export (Shamir); Shard Handover Manifest; M-of-N Reassembly; Recovery Attestation |
+| Measured boot with TPM 2.0 and Secure Boot attestation | Proof the router booted unmodified software | -- (and see signed Secure Boot above) | Platform Integrity, TPM 2.0 & Secure Boot Attestation |
 

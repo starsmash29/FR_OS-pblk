@@ -10,6 +10,7 @@ Design decisions and the phase-by-phase development plan:
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) — technical decisions and rationale
 - [ROADMAP.md](ROADMAP.md) — phase-by-phase plan and acceptance criteria
+  - [Planned: enterprise and advanced features](ROADMAP.md#planned-enterprise-and-advanced-features) — what isn't built yet (multi-WAN, BGP/OSPF, WireGuard, QoS, IDS signatures, SSO/FIDO2, SIEM, HA, HSM...) and what each would give an organisation
 - [docs/CONFIG_SCHEMA.md](docs/CONFIG_SCHEMA.md) — full YAML config schema reference
 
 **Current release: v0.1.0 "Ice Breaker" 🧊.** Releases follow thematic
