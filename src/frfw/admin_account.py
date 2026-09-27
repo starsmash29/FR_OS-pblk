@@ -34,7 +34,7 @@ import json
 import os
 import re
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from frfw import paths
@@ -123,6 +123,14 @@ class AdminAccount:
     #: Set on the account first boot generates: the first sign-in goes to
     #: the setup step (own username, own password) before anything else.
     must_change: bool = False
+    #: Second factors (security-lessons G5): {"totp": {"secret",
+    #: "last_step"}, "webauthn": [{"id", "public_key", "sign_count",
+    #: "rp_id", "name", "added"}]}. Secrets -- never shown after enrolment.
+    mfa: dict = field(default_factory=dict, compare=False, repr=False)
+
+    @property
+    def has_mfa(self) -> bool:
+        return bool(self.mfa.get("totp")) or bool(self.mfa.get("webauthn"))
 
     @property
     def is_admin(self) -> bool:
@@ -168,9 +176,15 @@ class AdminStore:
             return {data["username"]: AdminAccount(data["username"], data["password_hash"], ROLE_ADMIN)}
         return {
             name: AdminAccount(name, entry["password_hash"], entry.get("role", ROLE_ADMIN),
-                               bool(entry.get("must_change", False)))
+                               bool(entry.get("must_change", False)), dict(entry.get("mfa") or {}))
             for name, entry in data["users"].items()
         }
+
+    def policy(self) -> dict:
+        """Account-wide rules: {"require_mfa_for_admins": bool}."""
+        if not self.path.is_file():
+            return {}
+        return dict(json.loads(self.path.read_text()).get("policy") or {})
 
     def get(self, username: str) -> AdminAccount | None:
         return self.users().get(username)
@@ -189,22 +203,25 @@ class AdminStore:
             return None
         if needs_rehash(account.password_hash):
             users = self.users()
-            users[username] = AdminAccount(username, hash_password(password), account.role, account.must_change)
+            users[username] = replace(account, password_hash=hash_password(password))
             self._write(users)
             account = users[username]
         return account
 
     # -- writing -----------------------------------------------------------
 
-    def _write(self, users: dict[str, AdminAccount]) -> None:
+    def _write(self, users: dict[str, AdminAccount], policy: dict | None = None) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        policy = self.policy() if policy is None else policy
         data = {
             "version": 2,
             "users": {
                 name: {"password_hash": a.password_hash, "role": a.role,
-                       **({"must_change": True} if a.must_change else {})}
+                       **({"must_change": True} if a.must_change else {}),
+                       **({"mfa": a.mfa} if a.mfa else {})}
                 for name, a in sorted(users.items())
             },
+            **({"policy": policy} if policy else {}),
         }
         tmp_path = self.path.with_suffix(".tmp")
         tmp_path.unlink(missing_ok=True)
@@ -235,7 +252,9 @@ class AdminStore:
         if new_role not in ROLES:
             raise AccountError(f"Unknown role {new_role!r}")
         self._check_keeps_an_admin(users, username, new_role)
-        users[username] = AdminAccount(username, hash_password(password), new_role, must_change)
+        # A password change keeps the account's second factors.
+        users[username] = AdminAccount(username, hash_password(password), new_role, must_change,
+                                       dict(existing.mfa) if existing else {})
         self._write(users)
 
     def complete_setup(self, current: str, new_username: str, password: str) -> AdminAccount:
@@ -275,7 +294,7 @@ class AdminStore:
         if username not in users:
             raise AccountError(f"No such user {username!r}")
         self._check_keeps_an_admin(users, username, role)
-        users[username] = AdminAccount(username, users[username].password_hash, role)
+        users[username] = replace(users[username], role=role)
         self._write(users)
 
     def delete_user(self, username: str) -> None:
@@ -285,6 +304,24 @@ class AdminStore:
         self._check_keeps_an_admin(users, username, None)
         del users[username]
         self._write(users)
+
+    def set_mfa(self, username: str, mfa: dict) -> AdminAccount:
+        users = self.users()
+        if username not in users:
+            raise AccountError(f"No such user {username!r}")
+        users[username] = replace(users[username], mfa=mfa)
+        self._write(users)
+        return users[username]
+
+    def reset_mfa(self, username: str) -> None:
+        """Remove every second factor (recovery: `firewall-cli mfa-reset`,
+        or an admin on the Users screen)."""
+        self.set_mfa(username, {})
+
+    def set_policy(self, *, require_mfa_for_admins: bool) -> None:
+        policy = self.policy()
+        policy["require_mfa_for_admins"] = bool(require_mfa_for_admins)
+        self._write(self.users(), policy)
 
     @staticmethod
     def _check_keeps_an_admin(users: dict[str, AdminAccount], username: str, new_role: str | None) -> None:

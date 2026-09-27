@@ -290,6 +290,9 @@ legend { padding: 0 0.4rem; font-size: 11px; font-weight: 600; letter-spacing: 0
 .badge-blue { color: var(--primary); background: rgba(6, 182, 212, 0.12); border-color: rgba(76, 215, 246, 0.35); }
 
 /* ---------------------------------------------------------------- notices */
+/* The hidden attribute wins over any display rule (JS-filled messages start hidden). */
+[hidden] { display: none !important; }
+
 .flash-error, .flash-success, .flash-mock, .readonly-banner, .notice {
   display: flex; align-items: flex-start; gap: 0.6rem; padding: 0.7rem 0.95rem; margin-bottom: 1.1rem;
   border-radius: var(--radius); border: 1px solid; font-size: 12px;

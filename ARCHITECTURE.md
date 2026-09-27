@@ -715,6 +715,38 @@ change removes all of them (the browser that made the change gets a new
 one), and so do an admin's password reset and deleting the account.
 Role changes need no revocation: every request re-reads the account.
 
+### Second factor (security-lessons G5)
+
+Every account (viewers too) can add **security keys / passkeys**
+(FIDO2/WebAuthn, verified with `py_webauthn`) and an **authenticator
+app** (TOTP, `pyotp`) under *Account -> Second factor*; adding or removing
+one asks for the current password again. With a factor on the account,
+`POST /login` with the right password sets no session, only a login
+ticket (`fr_os_mfa` cookie, path `/login`): a random 256-bit id the
+server keeps in memory for 5 minutes, bound to the account and its
+password version, used up by the first successful second step (a lock
+makes that single-use under parallel requests) and dropped after 5 wrong
+codes, each of which also counts toward the brute-force guard; 10 wrong
+second factors for one account within 15 minutes (over any tickets and
+addresses) refuse its second step for that long. A TOTP
+code is accepted once (the last used time step is stored; checking and
+recording it is one locked step); a security key's signature counter
+must grow, so a cloned key shows up.
+
+WebAuthn binds a key to the name the router was opened by (the RP id),
+and browsers refuse IP addresses there: keys can be added and used only
+at a name such as `https://fr-router.lan/` (with a certificate for it).
+Opened by IP, the page says so and TOTP still works. This is the
+phishing resistance: a look-alike site gets a signature for its own
+origin, which the router refuses.
+
+*Users -> Second-factor policy* can require a factor for admins: an admin
+without one can then reach only `/account/mfa` (and logout) until they
+add one. Recovery: another admin's *Reset* on the Users screen, or
+`firewall-cli mfa-reset USER` on the console; both end the user's
+sessions. The TOTP secret and key public keys live only in `auth.json`
+(0600) and never appear in a page after enrolment.
+
 ### Secrets stay on the box (security-lessons G3)
 
 `auth.json` (webUI accounts) is created 0600, `config.yaml` stays 0640

@@ -1180,6 +1180,11 @@ rationale:
 - [x] **WebUI** `/users` and `/account`, read-only banner for viewers;
       `firewall-cli users`; `set-admin-password` always grants admin.
 - [x] Tests: 18 new. Full suite: 868 passed, 1 skipped.
+- [x] **Second factor** (security-lessons G5, pulled forward from the
+      enterprise roadmap's MFA phase): security keys / passkeys
+      (WebAuthn) and authenticator apps (TOTP), optional policy
+      "require for admins", recovery by an admin or `firewall-cli
+      mfa-reset`. WebAuthn needs the router opened by name, not IP.
 
 **Acceptance criterion**: several people can have their own login, some
 read-only; a read-only account cannot change anything through any

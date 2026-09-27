@@ -29,6 +29,7 @@ Inari (3.x), Ingemar (4.x); see "Release cycle & codenames" in [ROADMAP.md](ROAD
 - **📱 App identification and blocking.** Shows which apps (Netflix, TikTok, Steam, Zoom and ~40 others) each client used in the last 24 hours, from the names it looks up and, optionally, the TLS server names the XDP program sees — nothing is decrypted. Any app can be blocked with one checkbox: the resolver refuses all of its names, and optionally the XDP filter drops its TLS connections too.
 - **⏰ Time-based rules.** Any firewall rule can apply only on chosen days and times — "no internet for the kids' tablets on school nights", "SSH only during office hours" — per device by MAC address, optionally cutting connections that were already open. Rendered correctly for the kernel's UTC clocks and kept right across daylight-saving changes.
 - **🔏 TLS client fingerprinting (JA4/JA3), no decryption.** The XDP program hands every ClientHello — including today's two-packet post-quantum ones — to an unprivileged daemon that fingerprints which TLS software each device runs, flags fingerprints never seen before, and can block and quarantine unwanted ones. Validated against the JA4 reference outputs.
+- **🔑 Second factor for every account.** Security keys / passkeys (FIDO2/WebAuthn, phishing-resistant) and authenticator-app codes (TOTP); a stolen password alone no longer signs in, and admins can be required to use one. Security keys need the router opened by name (e.g. `https://fr-router.lan/`), not IP.
 - **👥 Multiple admins with roles and an audit log.** Any number of webUI accounts, each `admin` or read-only `viewer`, enforced in one place for every change endpoint; role changes and password resets end open sessions at once; every change and login is recorded (who, when, from where, result — never form contents).
 - **🧩 Real privilege separation, not just a warning label.** The FastAPI + Jinja2 WebUI runs unprivileged, full stop. Every root-level action — nftables reload, interface addressing, DHCP config, package updates, hardware queries — goes through one locked-down, protocol-validated JSON Unix socket to `fr-apply-helper`. The WebUI process cannot escalate even if fully compromised; it simply has no path to root.
 - **📊 Built-in, dependency-free Prometheus exporter.** `GET /metrics` in real Prometheus text format, written with plain string formatting against `/proc`, `/sys`, and `os.statvfs` — no `prometheus_client`, no `psutil`, no extra runtime weight. A ready-to-import Grafana dashboard ships in [`telemetry/grafana-dashboard.json`](telemetry/grafana-dashboard.json).
@@ -230,6 +231,7 @@ accounts and the required permissions; after that:
 ```bash
 sudo firewall-cli set-admin-password   # set the admin password (interactive)
 sudo firewall-cli users                # list webUI accounts; add more (admin/viewer) on the /users screen
+sudo firewall-cli mfa-reset USER       # a lost security key or phone: remove USER's second factors
 sudo systemctl enable --now fr-webui
 ```
 

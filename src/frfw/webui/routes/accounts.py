@@ -53,6 +53,7 @@ def list_users(
             "username": username,
             "users": sorted(admin_store.users().values(), key=lambda a: a.username),
             "roles": ROLES,
+            "require_mfa": bool(admin_store.policy().get("require_mfa_for_admins")),
             "audit": entries,
             "error": request.query_params.get("error"),
             "success": request.query_params.get("success"),
@@ -134,6 +135,7 @@ def show_account(request: Request, username: str = Depends(require_login)):
         {
             "username": username,
             "role": request.state.user.role,
+            "has_mfa": request.state.user.has_mfa,
             "error": request.query_params.get("error"),
             "success": request.query_params.get("success"),
         },

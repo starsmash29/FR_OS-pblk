@@ -17,6 +17,16 @@
   </form>
 </div>
 <div class="card allow-viewer">
+  <h3>Second factor</h3>
+  {% if has_mfa %}
+  <p><span class="badge badge-green">on</span> Signing in needs a security key or an authenticator-app code
+    as well as the password.</p>
+  {% else %}
+  <p class="muted">Off: the password alone signs this account in. Add a security key or an authenticator app.</p>
+  {% endif %}
+  <form method="get" action="/account/mfa" class="allow-viewer"><button type="submit" class="secondary">Manage second factor</button></form>
+</div>
+<div class="card allow-viewer">
   <h3>Sessions</h3>
   <p class="muted">End every session of this account, on every device -- this one too. Use it after signing in
     on a shared computer or if a device went missing.</p>

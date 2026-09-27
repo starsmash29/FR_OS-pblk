@@ -21,6 +21,10 @@ webui = [
     "jinja2>=3.1",
     "python-multipart>=0.0.9",
     "itsdangerous>=2.1",
+    # Second factors (security-lessons G5): TOTP, WebAuthn, the QR code.
+    "pyotp>=2.9",
+    "webauthn>=2.0",
+    "segno>=1.5",
 ]
 
 [project.scripts]

@@ -12,11 +12,19 @@
 <div class="card">
   <h3>Accounts</h3>
   <table>
-    <tr><th>User</th><th>Role</th><th>Change role</th><th>Reset password</th><th></th></tr>
+    <tr><th>User</th><th>Role</th><th>Second factor</th><th>Change role</th><th>Reset password</th><th></th></tr>
     {% for u in users %}
     <tr>
       <td>{{ u.username }}{% if u.username == username %} <span class="muted">(you)</span>{% endif %}</td>
       <td>{% if u.is_admin %}<span class="badge badge-yellow">admin</span>{% else %}<span class="badge">viewer</span>{% endif %}</td>
+      <td>
+        {% if u.has_mfa %}
+        <span class="badge badge-green">on</span>
+        <form class="inline" method="post" action="/users/{{ u.username }}/mfa-reset" onsubmit="return confirm('Remove every second factor of {{ u.username }} and end their sessions?')">
+          <button type="submit" class="secondary">Reset</button>
+        </form>
+        {% else %}<span class="badge">off</span>{% endif %}
+      </td>
       <td>
         <form class="inline" method="post" action="/users/{{ u.username }}/role">
           <select name="role" aria-label="Role of {{ u.username }}">
@@ -39,6 +47,16 @@
     </tr>
     {% endfor %}
   </table>
+</div>
+
+<div class="card">
+  <h3>Second-factor policy</h3>
+  <p class="muted">When required, an admin without a security key or authenticator app can do nothing but add one
+    after signing in. Reset a lost factor above (or with <code>firewall-cli mfa-reset USER</code> on the console).</p>
+  <form method="post" action="/users/mfa-policy">
+    <label><input type="checkbox" name="require" value="true" {{ "checked" if require_mfa }}> Require a second factor for admins</label>
+    <button type="submit">Save</button>
+  </form>
 </div>
 
 <div class="card">
