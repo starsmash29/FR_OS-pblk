@@ -54,6 +54,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable
 
 from frfw import __version__, paths, release_signing
 
@@ -443,9 +444,18 @@ def _installed_version() -> str:
 
 
 def _install_and_activate(
-    target_version: str, repo: str, releases_dir: Path, timeout: float
+    target_version: str,
+    repo: str,
+    releases_dir: Path,
+    timeout: float,
+    *,
+    before_changes: Callable[[], None] = lambda: None,
 ) -> None:
+    """Download + verify (changes nothing), then `before_changes()`, then
+    install and restart -- the part that can leave the system half
+    updated."""
     release_dir = _fetch_release(repo, target_version, releases_dir, timeout)
+    before_changes()
     _install_release_dir(release_dir)
     _restart_services(SERVICES_TO_RESTART)
     _restart_webui_delayed()
@@ -461,13 +471,16 @@ def apply_update(
 ) -> str:
     """Download, install and activate `target_version` from `repo`.
 
-    Must run as root. Records the currently-installed version as
-    `previous_version` *before* switching, so `rollback_update` can undo
-    a bad update. On any failure, the attempt (and its error message) is
-    recorded in the state file's `last_update` and re-raised as
-    `UpdateError` -- the caller (the update-helper daemon, or the CLI)
-    decides how to surface that; this function never leaves a partial
-    failure silent.
+    Must run as root. Once the release is downloaded and verified --
+    before `pip install` touches anything -- it records the running
+    version as `previous_version` and the attempt as "in_progress", so
+    `rollback_update` can undo it however far it got: a `pip install`
+    that succeeded followed by a failed restart used to leave new code
+    installed with no `previous_version`, and rollback refused (review
+    triage C1). A failure before that point (download, verification)
+    changed nothing and keeps the previous `previous_version`. On any
+    failure the attempt and its error are recorded in `last_update` and
+    re-raised as `UpdateError`.
     """
     parse_version(target_version)  # validate shape before touching anything
     current_version = _installed_version()
@@ -476,20 +489,36 @@ def apply_update(
     if target_version == current_version:
         raise UpdateError(f"already running version {target_version}")
 
+    changes_started = False
+
+    def record_start() -> None:
+        nonlocal changes_started
+        state.previous_version = current_version
+        state.last_update = {
+            "action": "apply",
+            "version": target_version,
+            "applied_at": _now(),
+            "status": "in_progress",
+            "message": "",
+        }
+        save_state(state, state_path)
+        changes_started = True
+
     try:
-        _install_and_activate(target_version, repo, releases_dir, timeout)
+        _install_and_activate(target_version, repo, releases_dir, timeout, before_changes=record_start)
     except Exception as exc:
+        hint = (f" -- the system may be partly updated; roll back to {current_version} "
+                "(webUI Update screen, or `firewall-cli update rollback`)") if changes_started else ""
         state.last_update = {
             "action": "apply",
             "version": target_version,
             "applied_at": _now(),
             "status": "failed",
-            "message": str(exc),
+            "message": f"{exc}{hint}",
         }
         save_state(state, state_path)
-        raise UpdateError(f"update to {target_version} failed: {exc}") from exc
+        raise UpdateError(f"update to {target_version} failed: {exc}{hint}") from exc
 
-    state.previous_version = current_version
     state.current_version = target_version
     state.last_update = {
         "action": "apply",

@@ -100,11 +100,12 @@ UPDATE_SOCKET_PATH = RUNTIME_DIR / "update.sock"
 #: testing used, and is a reasonable fallback for a from-source install.
 XDP_BPF_OBJ_PATH = Path("/usr/local/share/fr_os/bpf/xdp_sni_filter.o")
 
-#: Persisted "which interfaces currently have the XDP program attached,
-#: in which mode" state, so frfw.xdp can detach cleanly from exactly the
-#: interfaces/modes it (or the last process that ran it) actually
-#: attached to, and so the webUI can show live attach-mode status without
-#: re-probing every interface via `ip link` on every page load.
+#: Which interfaces frfw.xdp attached the SNI filter to -- only a list of
+#: devices to look at. Whether the filter is attached *now* always comes
+#: from the kernel (frfw.xdp.live_attachment, `ip -j link`): attachments
+#: don't survive a reboot, this file does, and trusting it left the
+#: filter off after every reboot while the UI said "attached" (review
+#: triage B1).
 XDP_STATE_PATH = Path("/etc/fr_os/xdp_state.json")
 
 #: Small display-only record of which username most recently authorized

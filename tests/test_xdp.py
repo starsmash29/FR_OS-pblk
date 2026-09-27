@@ -12,12 +12,15 @@ this sandbox's normal test environment.
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import socket
 import struct
 import subprocess
 
 import pytest
 
+from frfw import paths
 from frfw import xdp as xdp_mod
 from frfw.config.schema import Config, Interface, NatConfig, XdpSniFilterConfig, Zone
 
@@ -322,6 +325,7 @@ def test_sync_disable_detaches_and_unloads_previously_attached(monkeypatch, tmp_
 
     monkeypatch.setattr(xdp_mod, "detach", lambda device, mode: calls.append(("detach", device, mode)))
     monkeypatch.setattr(xdp_mod, "unload", lambda: calls.append(("unload",)))
+    monkeypatch.setattr(xdp_mod, "live_attachment", lambda device: (xdp_mod.AttachMode.GENERIC, 7))
 
     result = xdp_mod.sync_sni_filter(_config(enabled=False), state_path=state_path)
 
@@ -344,6 +348,9 @@ def test_sync_leaves_already_attached_interface_alone(monkeypatch, tmp_path):
     monkeypatch.setattr(xdp_mod, "attach", lambda device: calls.append(("attach", device)))
     monkeypatch.setattr(xdp_mod, "detach", lambda device, mode: calls.append(("detach", device, mode)))
     monkeypatch.setattr(xdp_mod, "sync_blocklist", lambda hosts: None)
+    # The kernel really has the pinned program on eth0.
+    monkeypatch.setattr(xdp_mod, "live_attachment", lambda device: (xdp_mod.AttachMode.NATIVE, 7))
+    monkeypatch.setattr(xdp_mod, "pinned_prog_id", lambda: 7)
 
     xdp_mod.sync_sni_filter(
         _config(enabled=True, interfaces=["wan"], blocklist=[]), state_path=state_path
@@ -351,3 +358,88 @@ def test_sync_leaves_already_attached_interface_alone(monkeypatch, tmp_path):
 
     assert ("attach", "eth0") not in calls
     assert not [c for c in calls if c[0] == "detach"]
+
+
+def _sync_after_reboot(monkeypatch, tmp_path, live):
+    state_path = tmp_path / "xdp_state.json"
+    state_path.write_text(json.dumps({"attached": {"eth0": "xdpdrv"}}))  # survived the reboot
+    calls = []
+    monkeypatch.setattr(xdp_mod, "ensure_compiled", lambda: tmp_path / "xdp_sni_filter.o")
+    monkeypatch.setattr(xdp_mod, "load_and_pin", lambda obj_path: None)
+    monkeypatch.setattr(xdp_mod, "attach", lambda device: (calls.append(("attach", device)), xdp_mod.AttachMode.NATIVE)[1])
+    monkeypatch.setattr(xdp_mod, "detach", lambda device, mode: calls.append(("detach", device, mode)))
+    monkeypatch.setattr(xdp_mod, "sync_blocklist", lambda hosts: None)
+    monkeypatch.setattr(xdp_mod, "live_attachment", lambda device: live)
+    monkeypatch.setattr(xdp_mod, "pinned_prog_id", lambda: 42)
+    xdp_mod.sync_sni_filter(_config(enabled=True, interfaces=["wan"], blocklist=[]), state_path=state_path)
+    return calls, state_path
+
+
+def test_sync_reattaches_after_a_reboot(monkeypatch, tmp_path):
+    """B1 (review triage): the state file survives a reboot, the kernel
+    attachment doesn't. The boot apply used to skip every device the
+    file listed, so the filter stayed off for good."""
+    calls, state_path = _sync_after_reboot(monkeypatch, tmp_path, live=None)
+    assert calls == [("attach", "eth0")]
+    assert json.loads(state_path.read_text())["attached"] == {"eth0": "xdpdrv"}
+
+
+def test_sync_replaces_an_attachment_of_an_older_program(monkeypatch, tmp_path):
+    calls, _ = _sync_after_reboot(monkeypatch, tmp_path, live=(xdp_mod.AttachMode.GENERIC, 13))
+    assert calls == [("detach", "eth0", xdp_mod.AttachMode.GENERIC), ("attach", "eth0")]
+
+
+def test_status_reports_what_the_kernel_has_not_the_state_file(monkeypatch, tmp_path):
+    state_path = tmp_path / "xdp_state.json"
+    state_path.write_text(json.dumps({"attached": {"eth0": "xdpdrv", "eth1": "xdpdrv"}}))
+    live = {"eth1": (xdp_mod.AttachMode.GENERIC, 5)}
+    monkeypatch.setattr(xdp_mod, "live_attachment", lambda device: live.get(device))
+    assert xdp_mod.get_attached(state_path=state_path) == {"eth1": "xdpgeneric"}
+
+
+IP_JSON_ATTACHED = json.dumps([{
+    "ifindex": 66, "ifname": "frv0", "mtu": 1500,
+    "xdp": {"mode": 2, "prog": {"id": 17, "name": "xdp_sni_filter", "tag": "9b415647d68643a9", "jited": 1},
+            "attached": [{"mode": 2, "prog": {"id": 17, "name": "xdp_sni_filter", "tag": "9b415647d68643a9", "jited": 1}}]},
+    "operstate": "UP",
+}])  # real `ip -j link show` output (iproute2 6.x) with the filter in generic mode
+
+
+@pytest.mark.parametrize("stdout, rc, expected", [
+    (IP_JSON_ATTACHED, 0, (xdp_mod.AttachMode.GENERIC, 17)),
+    (IP_JSON_ATTACHED.replace('"mode": 2', '"mode": 1'), 0, (xdp_mod.AttachMode.NATIVE, 17)),
+    (IP_JSON_ATTACHED.replace("xdp_sni_filter", "someone_else"), 0, None),
+    (json.dumps([{"ifname": "frv0", "mtu": 1500}]), 0, None),
+    ("", 1, None),
+])
+def test_live_attachment_parses_ip_json(monkeypatch, stdout, rc, expected):
+    import subprocess as sp
+    monkeypatch.setattr(xdp_mod, "_run_ip", lambda args: sp.CompletedProcess(args, rc, stdout=stdout, stderr=""))
+    assert xdp_mod.live_attachment("frv0") == expected
+
+
+@pytest.mark.skipif(
+    os.geteuid() != 0 or not shutil.which("ip") or not paths.XDP_BPF_OBJ_PATH.is_file(),
+    reason="needs root, iproute2 and the compiled XDP object",
+)
+def test_live_attachment_and_status_against_a_real_kernel(tmp_path):
+    """B1 with the real kernel: what `get_attached` reports follows the
+    attachment, not the state file -- the state after a reboot is exactly
+    "file says attached, kernel has nothing"."""
+    import subprocess as sp
+
+    dev = "frb1test0"
+    sp.run(["ip", "link", "add", dev, "type", "veth", "peer", "name", dev[:-1] + "1"], check=True)
+    try:
+        state_path = tmp_path / "xdp_state.json"
+        state_path.write_text(json.dumps({"attached": {dev: "xdpgeneric"}}))
+        assert xdp_mod.live_attachment(dev) is None
+        assert xdp_mod.get_attached(state_path=state_path) == {}  # "after the reboot"
+
+        sp.run(["ip", "link", "set", "dev", dev, "xdpgeneric", "obj", str(paths.XDP_BPF_OBJ_PATH), "sec", "xdp"],
+               check=True, capture_output=True)
+        mode, prog_id = xdp_mod.live_attachment(dev)
+        assert mode is xdp_mod.AttachMode.GENERIC and prog_id > 0
+        assert xdp_mod.get_attached(state_path=state_path) == {dev: "xdpgeneric"}
+    finally:
+        sp.run(["ip", "link", "del", dev], check=False)

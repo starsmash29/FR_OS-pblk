@@ -550,8 +550,14 @@ Goes back exactly one level: `apply_update` saves the version from
 *before* the update as `previous_version` into persisted state
 (`paths.UPDATE_STATE_PATH`, `root:fr_os-webui`, 0640 -- the same pattern
 as `config.yaml`: only the privileged side writes it, the webUI only
-reads it), BEFORE switching; `rollback_update` reinstalls that and clears
-it -- a rollback can't itself be rolled back. If the previous version's
+reads it), once the release is downloaded and verified and before `pip
+install` changes anything, with the attempt marked `in_progress`;
+`rollback_update` reinstalls that and clears it -- a rollback can't
+itself be rolled back. (The code used to record it only after a fully
+successful install, so an update whose `pip install` worked but whose
+service restart failed left new code installed and rollback refusing --
+review triage C1. A failure before anything changed, e.g. a download or
+signature failure, keeps the earlier rollback target.) If the previous version's
 unpacked source is still present under `RELEASES_DIR`
 (`/opt/fr_os/releases`) (a successful update never deletes old version
 directories), rollback works again without a download, even without
