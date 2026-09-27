@@ -10,15 +10,19 @@ from __future__ import annotations
 
 import argparse
 import ipaddress
+import socket
 import sys
 from pathlib import Path
 
 import uvicorn
 
-from frfw import paths, pqc
+from frfw import management, paths, pqc
 from frfw.config import ConfigError, load_config
 from frfw.webui.app import create_app
 from frfw.webui.tls import ensure_self_signed_cert
+
+#: linux/in.h; not exported by Python's socket module.
+_IP_FREEBIND = getattr(socket, "IP_FREEBIND", 15)
 
 
 def _pqc_enabled(config_path: Path) -> bool:
@@ -46,9 +50,40 @@ def _certificate_names(config_path: Path) -> tuple[list[str], list[str]]:
     return [config.hostname], ips
 
 
+def listen_addresses(config_path: Path) -> list[str]:
+    """Security-lessons F2/G4: loopback and the management zones'
+    addresses (frfw.management), never 0.0.0.0 unless management.allow_wan
+    says so. Without a readable config: loopback only -- the console is
+    the way in then, not the network."""
+    try:
+        config = load_config(config_path)
+    except (OSError, ConfigError):
+        return [management.LOOPBACK]
+    if config.management.allow_wan:
+        print(f"fr-webui: WARNING: {management.WAN_WARNING}", file=sys.stderr, flush=True)
+    return management.listen_addresses(config)
+
+
+def bind_sockets(addresses: list[str], port: int) -> list[socket.socket]:
+    """One listening socket per address. IP_FREEBIND lets it bind an
+    address that isn't on an interface yet (a LAN port still coming up)
+    instead of failing."""
+    sockets = []
+    for address in addresses:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.setsockopt(socket.IPPROTO_IP, _IP_FREEBIND, 1)
+        sock.bind((address, port))
+        sock.listen(2048)
+        sock.set_inheritable(True)
+        sockets.append(sock)
+    return sockets
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="fr-webui")
-    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--host", action="append",
+                        help="listen on this address (repeatable); default: the management addresses from the config")
     parser.add_argument("--port", type=int, default=443)
     parser.add_argument("--cert", default=str(paths.WEBUI_CERT_PATH))
     parser.add_argument("--key", default=str(paths.WEBUI_KEY_PATH))
@@ -70,14 +105,16 @@ def main(argv: list[str] | None = None) -> int:
     # ssl.SSLContext setting: restricting the listener to TLS 1.3-only.
     ssl_context_factory = pqc.tls_ssl_context_factory if _pqc_enabled(config_path) else None
 
-    uvicorn.run(
+    addresses = args.host or listen_addresses(config_path)
+    print(f"fr-webui: listening on {', '.join(addresses)} port {args.port}", file=sys.stderr, flush=True)
+    server = uvicorn.Server(uvicorn.Config(
         app,
-        host=args.host,
         port=args.port,
         ssl_certfile=str(cert_path),
         ssl_keyfile=str(key_path),
         ssl_context_factory=ssl_context_factory,
-    )
+    ))
+    server.run(sockets=bind_sockets(addresses, args.port))
     return 0
 
 

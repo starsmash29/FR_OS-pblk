@@ -30,6 +30,7 @@ from frfw.config.schema import (
     Interface,
     IotConfig,
     IotIsolationMode,
+    ManagementConfig,
     Masquerade,
     MetricsConfig,
     NatConfig,
@@ -128,6 +129,7 @@ def parse_config(raw: Any) -> Config:
     )
     tls_fingerprint = _parse_tls_fingerprint(raw.get("tls_fingerprint", {}) or {}, xdp_sni_filter)
     metrics = _parse_metrics(raw.get("metrics", {}) or {})
+    management = _parse_management(raw.get("management", {}) or {}, zones, nat)
 
     return Config(
         version=version,
@@ -147,6 +149,7 @@ def parse_config(raw: Any) -> Config:
         app_control=app_control,
         tls_fingerprint=tls_fingerprint,
         metrics=metrics,
+        management=management,
         timezone=tz_name,
     )
 
@@ -595,6 +598,36 @@ def _parse_update(raw: Any) -> UpdateConfig:
         raise ConfigError("update.repo must be a string")
 
     return UpdateConfig(repo=repo)
+
+
+def internet_facing_zones(zones: dict[str, Zone], nat: NatConfig) -> set[str]:
+    """Zones that face the internet: every nat.masquerade out_zone, and a
+    zone called "wan" even without NAT."""
+    return {m.out_zone for m in nat.masquerade} | ({"wan"} & set(zones))
+
+
+def _parse_management(raw: Any, zones: dict[str, Zone], nat: NatConfig) -> ManagementConfig:
+    if not isinstance(raw, dict):
+        raise ConfigError("'management' must be a mapping")
+    allow_wan = raw.get("allow_wan", False)
+    if not isinstance(allow_wan, bool):
+        raise ConfigError("management.allow_wan must be a boolean")
+    zones_raw = raw.get("zones", []) or []
+    if not isinstance(zones_raw, list):
+        raise ConfigError("management.zones must be a list of zone names")
+    internet = internet_facing_zones(zones, nat)
+    chosen: list[str] = []
+    for zone in zones_raw:
+        if not isinstance(zone, str) or zone not in zones:
+            raise ConfigError(f"management.zones: undefined zone {zone!r}")
+        if zone in internet and not allow_wan:
+            raise ConfigError(
+                f"management.zones: {zone!r} faces the internet; managing the router from there "
+                "needs management.allow_wan: true (not recommended -- use a VPN instead)"
+            )
+        if zone not in chosen:
+            chosen.append(zone)
+    return ManagementConfig(zones=tuple(chosen), allow_wan=allow_wan)
 
 
 def _parse_pqc(raw: Any) -> PqcConfig:

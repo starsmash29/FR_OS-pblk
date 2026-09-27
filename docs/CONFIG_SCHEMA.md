@@ -368,6 +368,27 @@ metrics:
   `telemetry/grafana-fleet-dashboard.json` and the `Site` selector of
   `telemetry/grafana-dashboard.json`.
 
+## `management`
+
+Where the router can be managed from: the webUI (:443) and SSH (:22).
+Security-lessons F2/G4 -- never from the internet unless you say so.
+
+```yaml
+management:
+  zones: [lan]        # optional; default: every zone that isn't internet-facing
+  allow_wan: false    # explicit opt-in to manage from the internet (not recommended)
+```
+
+- Internet-facing zones are the `nat.masquerade` `out_zone`s plus a zone
+  called `wan`. Listing one in `zones` is refused unless `allow_wan: true`.
+- The input chain drops :22/:443 from every non-management zone ahead of
+  your own rules, so a rule that allows 443 from the WAN doesn't open the
+  webUI; `allow_wan` is the only way.
+- The webUI and sshd listen only on loopback and the static addresses of
+  the management zones' interfaces (an sshd `ListenAddress` drop-in,
+  `/etc/ssh/sshd_config.d/40-fr_os-management.conf`). With `allow_wan`
+  they listen on every address; `apply` and the System screen warn.
+
 ## Known limitations
 
 - Only IPv4 addresses/networks are supported in `src_address`/

@@ -462,6 +462,22 @@ class MetricsConfig:
 
 
 @dataclass(frozen=True)
+class ManagementConfig:
+    """Where the router can be managed from (webUI :443, SSH :22) --
+    security-lessons F2/G4: never from the internet unless the admin
+    explicitly says so.
+
+    `zones`: the zones management is reachable from; empty means every
+    zone that isn't internet-facing (see frfw.management.internet_zones).
+    `allow_wan`: the explicit opt-in to also allow the internet-facing
+    zones. Off by default; the webUI warns while it is on (a VPN such as
+    WireGuard is the better way to manage a router remotely)."""
+
+    zones: tuple[str, ...] = ()
+    allow_wan: bool = False
+
+
+@dataclass(frozen=True)
 class Config:
     version: int
     hostname: str
@@ -480,6 +496,7 @@ class Config:
     app_control: AppControlConfig = field(default_factory=AppControlConfig)
     tls_fingerprint: TlsFingerprintConfig = field(default_factory=TlsFingerprintConfig)
     metrics: MetricsConfig = field(default_factory=MetricsConfig)
+    management: ManagementConfig = field(default_factory=ManagementConfig)
     #: IANA time zone rule schedules are written in (phase 17); None =
     #: the router's own local zone.
     timezone: str | None = None

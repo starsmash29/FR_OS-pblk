@@ -689,6 +689,19 @@ creates the accounts, so an update that brings these units also brings
 the account they need. The update-helper's socket is 0600 and owned by
 `fr_os-webui`, and that helper accepts only root and the webUI.
 
+### Management plane off the WAN (security-lessons F2/G4)
+
+The webUI and sshd are reachable only from the management zones -- by
+default every zone that doesn't face the internet (`frfw.management`).
+Three layers: the input chain drops :22/:443 from every other zone
+ahead of the admin's rules; the webUI binds loopback and the management
+interfaces' static addresses instead of 0.0.0.0 (one socket each, with
+`IP_FREEBIND` so a LAN address that isn't up yet doesn't stop it); sshd
+gets a `ListenAddress` drop-in (validated with `sshd -t`, reloaded, never
+restarted). When the addresses change, `apply` restarts the webUI a few
+seconds later. `management.allow_wan` is the explicit opt-in, confirmed
+and warned on the System screen and in every `apply`.
+
 The protocol is deliberately minimal: one JSON object per line, four
 commands:
 

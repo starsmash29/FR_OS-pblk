@@ -31,6 +31,7 @@ from frfw import pqc as pqc_mod
 from frfw import persistence as persistence_mod
 from frfw.config import ConfigError, parse_config
 from frfw.metrics import generate_metrics_token
+from frfw import management
 from frfw.webui.actions import try_save
 from frfw.webui.deps import get_helper, get_raw_config, get_webui_cert_path, require_login
 from frfw.webui.helper_client import HelperClient
@@ -64,6 +65,13 @@ def _render_system(request: Request, username: str, raw: dict, cert_path: Path, 
         config = _minimal_config(pqc_enabled=enabled)
 
     status = pqc_mod.get_status(config)
+    management_view = {
+        "allow_wan": config.management.allow_wan,
+        "zones": management.management_zones(config),
+        "blocked": management.blocked_zones(config),
+        "addresses": management.listen_addresses(config),
+        "warning": management.WAN_WARNING,
+    }
     metrics_raw = raw.get("metrics") or {}
     # Unprivileged: no blkid probing, only /proc (which is all the webUI needs).
     persistence = persistence_mod.status(labelled=[])
@@ -75,6 +83,7 @@ def _render_system(request: Request, username: str, raw: dict, cert_path: Path, 
             "username": username,
             "status": status,
             "persistence": persistence,
+            "management": management_view,
             "metrics_site": metrics_raw.get("site") or "",
             "metrics_hostname": raw.get("hostname") or "",
             "metrics_token_set": bool(metrics_raw.get("token_sha256")),
@@ -117,6 +126,26 @@ def save_pqc_settings(
             "restart fr-webui, to load them",
         )
     return redirect_with("/system", error=message)
+
+
+@router.post("/system/management")
+def save_management(
+    allow_wan: bool = Form(False),
+    username: str = Depends(require_login),
+    raw: dict = Depends(get_raw_config),
+    helper: HelperClient = Depends(get_helper),
+):
+    """Security-lessons F2/G4: the explicit, warned opt-in to manage the
+    router from the internet (off by default)."""
+    section = dict(raw.get("management") or {})
+    section["allow_wan"] = allow_wan
+    raw["management"] = section
+    ok, message = try_save(raw, helper)
+    if not ok:
+        return redirect_with("/system", error=message)
+    if allow_wan:
+        return redirect_with("/system", error="Saved. " + management.WAN_WARNING + " Click Apply to load it.")
+    return redirect_with("/system", success="Management is LAN-only again -- click Apply to load it")
 
 
 # --- phase 20: multi-site monitoring --------------------------------------

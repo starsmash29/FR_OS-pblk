@@ -16,6 +16,7 @@ not here.
 
 from __future__ import annotations
 
+from frfw import management
 from frfw.config.schema import (
     SELF_ZONE,
     Config,
@@ -182,6 +183,17 @@ def build_ruleset(config: Config, *, clock: ScheduleClock | None = None) -> str:
         for proto in ("udp", "tcp"):
             lines.append(
                 f"\t\tiifname @{_iface_set_name(zone)} {proto} dport 53 accept {_comment('dns-resolver')}"
+            )
+    # Security-lessons F2/G4: the webUI and SSH only from the management
+    # zones, ahead of every admin-written rule, so "allow 443 from wan"
+    # can't open the management plane to the internet by accident --
+    # management.allow_wan is the one way to do that.
+    ports = ", ".join(str(p) for p in management.MANAGEMENT_PORTS)
+    for zone in management.blocked_zones(config):
+        if zone_devices.get(zone):
+            lines.append(
+                f"\t\tiifname @{_iface_set_name(zone)} tcp dport {{ {ports} }} drop "
+                f"{_comment(f'no-management-from-{zone}')}"
             )
     if input_rules:
         lines.append("")

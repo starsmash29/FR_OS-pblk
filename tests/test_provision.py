@@ -32,7 +32,7 @@ def _fake_nft(monkeypatch):
     monkeypatch.setattr(apply_mod, "capture_running_ruleset", lambda: "")
 
 
-def test_apply_all_runs_all_eleven_steps_in_order(minimal_config_dict, tmp_path):
+def test_apply_all_runs_every_step_in_order(minimal_config_dict, tmp_path):
     config = parse_config(minimal_config_dict)  # no address, no dhcp, no xdp, no ztna, no pqc
     result = apply_all(
         config,
@@ -45,7 +45,7 @@ def test_apply_all_runs_all_eleven_steps_in_order(minimal_config_dict, tmp_path)
         adblock_dnsmasq_conf_path=tmp_path / "dnsmasq_adblock.conf",
     )
 
-    assert len(result.messages) == 11
+    assert len(result.messages) == 13
     assert "Ruleset applied" in result.messages[0]
     assert "No interface addresses" in result.messages[1]
     assert "No DHCP zones" in result.messages[2]
@@ -62,6 +62,8 @@ def test_apply_all_runs_all_eleven_steps_in_order(minimal_config_dict, tmp_path)
     # correctly-detected state (see frfw.pqc.sync_ssh_kex) rather than a
     # mock -- there is nothing to fake here.
     assert "sshd not installed" in result.messages[10] or "PQC hybrid SSH KEX disabled" in result.messages[10]
+    assert "sshd not installed" in result.messages[11] or "sshd listens on" in result.messages[11]
+    assert result.messages[12].startswith("webUI listens on")
 
 
 def _iot_config_dict(base: dict) -> dict:

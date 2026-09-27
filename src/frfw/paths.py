@@ -138,6 +138,11 @@ PQC_OPENSSL_CONF_PATH = Path("/etc/fr_os/webui_pqc_openssl.cnf")
 #: /etc/fr_os -- it is sshd's file, not frfw's own state.
 SSHD_PQC_DROPIN_PATH = Path("/etc/ssh/sshd_config.d/50-fr_os-pqc-kex.conf")
 
+#: sshd drop-in with the management listen addresses (frfw.management;
+#: security-lessons F2). sshd uses the first value it reads for most
+#: options, and reads sshd_config.d/*.conf in order.
+SSHD_MANAGEMENT_DROPIN_PATH = Path("/etc/ssh/sshd_config.d/40-fr_os-management.conf")
+
 #: Deduped, hosts-format ad/tracker blocklist (phase 9, see
 #: frfw.adblock) -- `0.0.0.0 <domain>` per line, one entry per unique
 #: domain across every configured `adblocker.source_urls` list. This is

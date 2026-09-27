@@ -39,6 +39,9 @@ filtered:
 7. Hybrid PQC management-layer key exchange: refresh the webUI's
    OpenSSL config fragment and, if sshd is installed, its KexAlgorithms
    drop-in (`frfw.pqc`)
+8. Management plane: sshd's ListenAddress drop-in and, when its
+   addresses changed, a delayed webUI restart (`frfw.management`) --
+   the webUI and SSH listen only on the management zones' addresses
 """
 
 from __future__ import annotations
@@ -53,6 +56,7 @@ from frfw import (
     ifaddr,
     iot_isolation,
     kea,
+    management,
     paths,
     pqc,
     schedule_refresh,
@@ -85,6 +89,7 @@ def apply_all(
     adblock_dnsmasq_conf_path: Path = paths.ADBLOCK_DNSMASQ_CONF_PATH,
     adblock_category_dir: Path = paths.ADBLOCK_CATEGORY_DIR,
     schedule_state_path: Path = paths.SCHEDULE_STATE_PATH,
+    ssh_management_dropin_path: Path = paths.SSHD_MANAGEMENT_DROPIN_PATH,
 ) -> ProvisionResult:
     messages = []
 
@@ -250,5 +255,13 @@ def apply_all(
         config, dry_run=dry_run, dropin_path=ssh_kex_dropin_path
     )
     messages.append(ssh_pqc_result.message)
+
+    # Security-lessons F2/G4: the webUI and sshd listen on the management
+    # zones' addresses only (the input chain above already drops them
+    # from everywhere else).
+    messages.append(management.sync_sshd(config, dry_run=dry_run, dropin_path=ssh_management_dropin_path).message)
+    messages.append(management.sync_webui(config, dry_run=dry_run).message)
+    if config.management.allow_wan:
+        messages.append("WARNING: " + management.WAN_WARNING)
 
     return ProvisionResult(messages=messages)
