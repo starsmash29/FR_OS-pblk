@@ -61,20 +61,21 @@ else
     echo "  skipping auto-assignment -- run 'firewall-cli assign-interfaces' manually" >&2
 fi
 
-PASSWORD="$(firewall-cli set-admin-password --generate)"
+# The password goes on the console's login screen through a root-only
+# /etc/issue.d file (agetty reads it as root), never into the
+# world-readable /etc/issue or this unit's journal, and it disappears
+# once it has been changed (frfw.initial_password).
+firewall-cli set-admin-password --generate --show-on-console
 
-# Written before /etc/issue's own content so it survives a getty
-# restart and is visible on the physical/serial console without
-# logging in -- the only realistic way to hand over a generated
-# credential on a headless appliance with no prior admin session.
-{
-    echo "FR_OS: initial webUI admin login is 'admin' / '$PASSWORD'"
-    [[ -n "$WEBUI_HINT" ]] && echo "$WEBUI_HINT"
-    echo "Change it after logging in, then this line stays until you edit /etc/issue."
-    echo
-    cat /etc/issue 2>/dev/null || true
-} > /etc/issue.new
-mv /etc/issue.new /etc/issue
+# Where to find the webUI is not a secret: that stays in /etc/issue.
+if [[ -n "$WEBUI_HINT" ]]; then
+    {
+        echo "FR_OS $WEBUI_HINT"
+        echo
+        cat /etc/issue 2>/dev/null || true
+    } > /etc/issue.new
+    mv /etc/issue.new /etc/issue
+fi
 
 # Each unit on its own: one that fails to start is reported and stays
 # enabled (systemd retries it every boot), but doesn't stop the others --
@@ -94,7 +95,9 @@ for unit in \
     fr-update-helper.socket
 do
     systemctl enable "$unit"
-    if ! systemctl start "$unit"; then
+    # restart, not start: fr-firewall is already active with the
+    # fail-closed baseline (no config existed when it ran at boot).
+    if ! systemctl restart "$unit"; then
         FAILED_UNITS+=("$unit")
         echo "fr-first-boot: $unit failed to start -- see 'journalctl -u $unit'" >&2
     fi

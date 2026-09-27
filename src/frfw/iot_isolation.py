@@ -16,7 +16,7 @@ separate instead of sharing a base class), with two real differences:
   scan -- or an admin marking it trusted -- says it should.
 
 The *decision* is made in the unprivileged scanner (frfw.iot.scanner,
-running as fr_os-webui, which is also the process that parses untrusted
+running as fr_os-sensor, which is also the process that parses untrusted
 mDNS/DHCP data); this module is only reached through the privileged
 apply-helper's `iot_sync_isolation` command, which additionally drops
 any MAC the current config lists as trusted before calling in here.

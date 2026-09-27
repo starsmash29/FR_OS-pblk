@@ -42,14 +42,17 @@ jobs:
       - name: Build hybrid live/installer ISO
         run: sudo ./installer/build-live-image.sh
 
-      - name: Name the ISO
+      - name: Name the ISO, package the source
         id: iso
         run: |
           version=$(python3 -c "import re;print(re.search(r'__version__ = \"([^\"]+)\"', open('src/frfw/__init__.py').read()).group(1))")
           name="FR_OS-${version}-amd64.iso"
           sudo mv installer/live-build/binary.hybrid.iso "$name"
           sudo chown "$(id -u):$(id -g)" "$name"
-          sha256sum "$name" > SHA256SUMS
+          # What the router's updater installs (frfw.release_signing).
+          source="frfw-${version}.tar.gz"
+          git archive --format=tar.gz --prefix="frfw-${version}/" -o "$source" HEAD
+          sha256sum "$name" "$source" > SHA256SUMS
           {
             echo
             echo "# FR_OS ${version} -- hybrid BIOS/UEFI live image, amd64."
@@ -57,7 +60,41 @@ jobs:
             echo "# Verify: sha256sum -c SHA256SUMS"
           } >> SHA256SUMS
           echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "source=$source" >> "$GITHUB_OUTPUT"
           cat SHA256SUMS
+
+      - name: Sign SHA256SUMS
+        # A release must be signed: routers refuse an update whose
+        # SHA256SUMS.sig doesn't verify (see docs/RELEASING.md).
+        env:
+          SIGNING_KEY: ${{ secrets.FROS_RELEASE_SIGNING_KEY }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          if [ -z "$SIGNING_KEY" ]; then
+            if [ -n "$RELEASE_TAG" ]; then
+              echo "::error::release_tag is set but the FROS_RELEASE_SIGNING_KEY secret is not -- refusing to publish an unsigned release (docs/RELEASING.md)"
+              exit 1
+            fi
+            echo "::notice::no FROS_RELEASE_SIGNING_KEY secret: this test build is unsigned (fine for an artifact, not for a release)"
+            exit 0
+          fi
+          umask 077
+          printf '%s\n' "$SIGNING_KEY" > "$RUNNER_TEMP/release.key"
+          openssl pkeyutl -sign -rawin -inkey "$RUNNER_TEMP/release.key" -in SHA256SUMS -out SHA256SUMS.sig
+          openssl pkey -in "$RUNNER_TEMP/release.key" -pubout > "$RUNNER_TEMP/release.pub"
+          rm -f "$RUNNER_TEMP/release.key"
+          # Only publish what a router will accept: the key must be one
+          # this very commit ships.
+          python3 - "$RUNNER_TEMP/release.pub" <<'PY'
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, "src")
+          from frfw.release_signing import trusted_keys, verify_signature
+          pub = Path(sys.argv[1]).read_text()
+          if not any(k.read_text() == pub for k in trusted_keys()):
+              sys.exit("::error::the signing key's public half is not in src/frfw/release_keys/")
+          print("signed by", verify_signature(Path("SHA256SUMS"), Path("SHA256SUMS.sig"), trusted_keys()).name)
+          PY
 
       - name: Boot test in QEMU (three boots, persistence, first boot, webUI)
         if: ${{ inputs.boot_test }}
@@ -79,11 +116,15 @@ jobs:
           name: fr-os-installer
           path: |
             ${{ steps.iso.outputs.name }}
+            ${{ steps.iso.outputs.source }}
             SHA256SUMS
-          if-no-files-found: error
+            SHA256SUMS.sig
+          if-no-files-found: warn
 
       - name: Attach to the release
         if: ${{ inputs.release_tag != '' }}
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ inputs.release_tag }}" "${{ steps.iso.outputs.name }}" SHA256SUMS --clobber
+        run: >-
+          gh release upload "${{ inputs.release_tag }}" "${{ steps.iso.outputs.name }}"
+          "${{ steps.iso.outputs.source }}" SHA256SUMS SHA256SUMS.sig --clobber

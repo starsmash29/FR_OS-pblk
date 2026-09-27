@@ -1,7 +1,7 @@
 """Tests for frfw.update.
 
 Every network call and every subprocess call goes through a small,
-monkeypatchable seam (`_fetch_json`, `_download_tarball`, `_run`,
+monkeypatchable seam (`_fetch_json`, `_download_release_assets`, `_run`,
 `_restart_webui_delayed`) -- these tests never touch a real socket or
 spawn a real `pip`/`systemctl`, mirroring the pattern already used for
 `frfw.apply._run_nft` in test_apply_backup.py / test_helper.py.

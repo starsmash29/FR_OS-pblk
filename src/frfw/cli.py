@@ -2,11 +2,13 @@
 
     firewall-cli validate [config.yaml]
     firewall-cli render   [config.yaml]
-    firewall-cli apply    [config.yaml] [--dry-run]
+    firewall-cli apply    [config.yaml] [--dry-run] [--fail-closed]
     firewall-cli rollback [--list]
     firewall-cli detect-interfaces [--include-virtual]
     firewall-cli assign-interfaces --wan DEV --lan DEV [--opt NAME:DEV ...] [--out PATH]
-    firewall-cli set-admin-password [--username admin] [--generate]
+    firewall-cli set-admin-password [--username admin] [--generate [--show-on-console]]
+    firewall-cli initial-password
+    firewall-cli ensure-accounts
     firewall-cli users
     firewall-cli ids-status
     firewall-cli iot-status
@@ -49,6 +51,8 @@ from pathlib import Path
 import yaml
 
 from frfw import __version__, codename_for, netdetect, paths, schedule_refresh, skeleton, xdp as xdp_mod
+from frfw import accounts as accounts_mod
+from frfw import initial_password
 from frfw import persistence as persistence_mod
 from frfw import update as update_mod
 from frfw.adblock import AdblockError
@@ -56,6 +60,7 @@ from frfw.adblock import refresh as adblock_refresh
 from frfw.admin_account import ROLE_ADMIN, AdminStore
 from frfw.appid import load_catalog
 from frfw.appid.daemon import load_usage
+from frfw import apply as apply_mod
 from frfw.apply import NftError, list_backups, rollback_last
 from frfw.tlsfp.daemon import load_state as load_tlsfp_state
 from frfw.config import ConfigError, load_config, parse_config
@@ -132,6 +137,12 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="check syntax and print what would happen, but don't load it",
     )
+    p_apply.add_argument(
+        "--fail-closed",
+        action="store_true",
+        help="if there is no config, or the apply fails with no FR_OS ruleset loaded, "
+        "load the drop-everything baseline (fr-firewall.service uses this)",
+    )
     p_apply.set_defaults(handler=_cmd_apply)
 
     p_rollback = sub.add_parser(
@@ -187,7 +198,26 @@ def _build_parser() -> argparse.ArgumentParser:
         help="generate a random password instead of prompting, and print only "
         "the password to stdout (for non-interactive first-boot use)",
     )
+    p_admin.add_argument(
+        "--show-on-console",
+        action="store_true",
+        help="with --generate: don't print it, put it on the console's login screen "
+        "instead (a root-only /etc/issue.d file, removed once the password is changed)",
+    )
     p_admin.set_defaults(handler=_cmd_set_admin_password)
+
+    p_initial = sub.add_parser(
+        "initial-password",
+        help="remove the generated password from the console once it was changed (root; "
+        "fr-initial-password.service runs this)",
+    )
+    p_initial.set_defaults(handler=_cmd_initial_password)
+
+    p_accounts = sub.add_parser(
+        "ensure-accounts",
+        help="create the fr_os-webui/fr_os-sensor system users and their state directories (root)",
+    )
+    p_accounts.set_defaults(handler=_cmd_ensure_accounts)
 
     p_users = sub.add_parser("users", help="list the webUI accounts and their roles")
     p_users.set_defaults(handler=_cmd_users)
@@ -306,8 +336,24 @@ def _cmd_render(args: argparse.Namespace) -> int:
 
 
 def _cmd_apply(args: argparse.Namespace) -> int:
-    config = load_config(args.config)
-    result = apply_all(config, dry_run=args.dry_run)
+    fail_closed = args.fail_closed and not args.dry_run
+    if fail_closed and not Path(args.config).is_file():
+        # Expected on a live image before first boot writes the config.
+        apply_mod.load_baseline()
+        print(f"No config at {args.config}: fail-closed baseline loaded "
+              "(only loopback and replies to the router's own connections get in; nothing is forwarded)")
+        return 0
+    try:
+        config = load_config(args.config)
+        result = apply_all(config, dry_run=args.dry_run)
+    except Exception:
+        # Never leave the box unfiltered because of a bad config or a
+        # missing NIC -- but never replace a working ruleset either
+        # (nft -f is atomic, so a failed reload keeps the previous one).
+        if fail_closed and not apply_mod.fr_os_table_loaded():
+            apply_mod.load_baseline()
+            print("apply failed with no FR_OS ruleset loaded: fail-closed baseline loaded", file=sys.stderr)
+        raise
     for message in result.messages:
         print(message)
     return 0
@@ -379,8 +425,16 @@ def _cmd_set_admin_password(args: argparse.Namespace) -> int:
         # set-admin-password --generate)`) without scraping other output.
         password = secrets.token_urlsafe(18)
         AdminStore().set_password(args.username, password, ROLE_ADMIN)
-        print(password)
+        if args.show_on_console:
+            initial_password.write(args.username, password)
+            print(f"Generated a password for {args.username!r}; it is shown on the console "
+                  f"({initial_password.ISSUE_PATH}, root-only) until it is changed")
+        else:
+            print(password)
         return 0
+    if args.show_on_console:
+        print("error: --show-on-console only goes with --generate", file=sys.stderr)
+        return 1
 
     password = getpass.getpass("New password: ")
     confirm = getpass.getpass("Confirm password: ")
@@ -396,10 +450,30 @@ def _cmd_set_admin_password(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_initial_password(args: argparse.Namespace) -> int:
+    if initial_password.migrate_legacy():
+        print(f"fr-initial-password: moved the password line out of {initial_password.LEGACY_ISSUE_PATH}")
+    if initial_password.clear_if_changed():
+        print("fr-initial-password: the initial password was changed; removed it from the console")
+    return 0
+
+
+def _cmd_ensure_accounts(args: argparse.Namespace) -> int:
+    try:
+        done = accounts_mod.ensure()
+    except (accounts_mod.AccountsError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    for line in done:
+        print(f"fr-accounts: {line}")
+    print("fr-accounts: accounts and state directories in place")
+    return 0
+
+
 def _cmd_users(args: argparse.Namespace) -> int:
     accounts = AdminStore().users()
     if not accounts:
-        print("No webUI accounts yet (the first login creates one, or run set-admin-password)")
+        print("No webUI accounts yet: run 'firewall-cli set-admin-password'")
         return 0
     for name in sorted(accounts):
         print(f"{name:<32} {accounts[name].role}")

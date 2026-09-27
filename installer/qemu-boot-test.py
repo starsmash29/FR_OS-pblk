@@ -15,7 +15,8 @@ second one where the host reaches 192.168.1.1:443 through a port forward.
    webUI answers on the LAN. Then an ACPI power-off (the power button).
 3. Third boot: first boot does not run again, the admin password from the
    second boot still works, a setting changed through the webUI is on the
-   persistence partition afterwards.
+   persistence partition afterwards, and once the admin changes the
+   password it is gone from the console.
 
 Between boots the persistence partition is mounted on the host to read the
 journal and files, so a failure says what went wrong. Needs root (losetup,
@@ -41,6 +42,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 WEBUI_PORT = 8443
+NEW_PASSWORD = "changed-in-boot-3"
 DISK_SIZE = 2 * 2**30
 ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
@@ -205,10 +207,15 @@ def main() -> int:
               + ("" if "did not start" not in first_boot else " (some units did not start)"))
         failed = sorted(set(re.findall(r"Failed to start (\S+)", journal(upper))))
         check(not failed, f"no unit failed to start{': ' + ', '.join(failed) if failed else ''}")
-        issue = (upper / "etc" / "issue").read_text() if (upper / "etc" / "issue").exists() else ""
-        match = re.search(r"login is 'admin' / '([^']+)'", issue)
-        check(match is not None, "admin password shown on the console (/etc/issue)")
+        console = upper / "etc" / "issue.d" / "fr_os-initial-admin.issue"
+        shown = console.read_text() if console.exists() else ""
+        match = re.search(r"login is 'admin' / '([^']+)'", shown)
+        check(match is not None, "admin password shown on the console (/etc/issue.d)")
         password = match.group(1) if match else ""
+        check(console.exists() and console.stat().st_mode & 0o077 == 0 and console.stat().st_uid == 0,
+              "...in a root-only file")
+        check(bool(password) and password not in (upper / "etc" / "issue").read_text(),
+              "...and not in the world-readable /etc/issue")
         check((upper / "etc" / "fr_os" / "config.yaml").exists(), "config.yaml is on the persistence partition")
 
     print("boot 3: everything still there")
@@ -220,14 +227,17 @@ def main() -> int:
     check(landed.endswith("/"), "the admin password from boot 2 still works")
     if landed.endswith("/"):
         post(opener, "/rules/timezone", {"timezone": "Europe/Budapest"})
+        post(opener, "/account/password", {"current_password": password, "new_password": NEW_PASSWORD,
+                                           "new_password_confirm": NEW_PASSWORD})
+        time.sleep(5)  # fr-initial-password.path reacts to the account file
     check(vm.power_off(), "powered off")
     vm.kill()
     with persistence_partition(disk) as upper:
         this_boot = journal(upper, "-b", "-u", "fr-first-boot.service")
         check("running initial setup" not in this_boot, "fr-first-boot did not run again")
-        issue_now = (upper / "etc" / "issue").read_text()
-        check(password and f"'{password}'" in issue_now and issue_now.count("initial webUI admin login") == 1,
-              "no second password was generated")
+        check(not (upper / "etc" / "issue.d" / "fr_os-initial-admin.issue").exists()
+              and password not in (upper / "etc" / "issue").read_text(),
+              "once changed in the webUI, the initial password is gone from the console")
         config = (upper / "etc" / "fr_os" / "config.yaml").read_text()
         check("Europe/Budapest" in config, "a change made in the webUI was saved to the persistence partition")
 

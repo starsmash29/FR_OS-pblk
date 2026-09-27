@@ -15,7 +15,7 @@ several segments, computes JA4 and JA3 per client, keeps an inventory
 
 Privileges: opening a pinned BPF map needs CAP_BPF, which an unprivileged
 account doesn't have. So the process starts as root, opens the ring
-buffer, and then permanently drops to the fr_os-webui account
+buffer, and then permanently drops to the fr_os-sensor account
 (`drop_privileges`) *before* reading a single byte of packet data -- the
 parsing of untrusted input never runs with privileges. The open ring
 buffer keeps working after the drop (checked by hand, and by
@@ -26,6 +26,7 @@ the XDP program is reloaded the daemon exits and systemd restarts it
 
 from __future__ import annotations
 
+import grp
 import json
 import os
 import pwd
@@ -46,7 +47,7 @@ from frfw.tlsfp.inventory import FingerprintInventory
 from frfw.tlsfp.reassembly import Reassembler
 
 SERVICE_NAME = "fr-tls-fp.service"
-RUN_AS_USER = "fr_os-webui"
+RUN_AS_USER = paths.SENSOR_USER
 FLUSH_SECONDS = 30.0
 CONFIG_POLL_SECONDS = 30.0
 
@@ -146,12 +147,19 @@ def load_state(path: Path = paths.TLSFP_STATE_PATH) -> dict:
 
 def drop_privileges(user: str = RUN_AS_USER) -> None:
     """Permanently become `user` (falling back to nobody on a dev box that
-    lacks it). Must succeed before any packet data is read."""
+    lacks it), keeping only the fr_os-webui group -- which lets it read
+    config.yaml and reach the apply-helper, where frfw.helper.peer limits
+    it to the sensor commands. Must succeed before any packet data is
+    read."""
     try:
         account = pwd.getpwnam(user)
     except KeyError:
         account = pwd.getpwnam("nobody")
-    os.setgroups([])
+    try:
+        extra = [grp.getgrnam(paths.WEBUI_USER).gr_gid]
+    except KeyError:
+        extra = []
+    os.setgroups(extra)
     os.setgid(account.pw_gid)
     os.setuid(account.pw_uid)
     if os.getuid() == 0 or os.geteuid() == 0:

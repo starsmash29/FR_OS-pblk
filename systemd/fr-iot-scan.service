@@ -1,8 +1,8 @@
 [Unit]
 Description=FR_OS IoT device discovery and isolation scan (phase 14, see frfw.iot)
 Documentation=https://github.com/starsmash29/FR_OS-pblk
-After=fr-apply-helper.socket network.target
-Wants=fr-apply-helper.socket
+After=fr-accounts.service fr-apply-helper.socket network.target
+Wants=fr-accounts.service fr-apply-helper.socket
 
 [Service]
 Type=oneshot
@@ -11,10 +11,15 @@ Type=oneshot
 # privileged steps -- reading Kea's lease file and replacing the kernel
 # iot_isolated set -- go through fr-apply-helper's Unix socket, the same
 # split fr-ai-ids.service uses. Exits immediately if iot.enabled is false.
-User=fr_os-webui
-Group=fr_os-webui
+# Parses untrusted network input, so it runs as fr_os-sensor, not as the
+# webUI: it can read config.yaml (group fr_os-webui), may send the
+# apply-helper only frfw.helper.peer.SENSOR_COMMANDS, and writes to
+# /etc/fr_os/sensors -- never to the webUI's own state (see frfw.accounts).
+User=fr_os-sensor
+Group=fr_os-sensor
+SupplementaryGroups=fr_os-webui
 NoNewPrivileges=yes
 ProtectSystem=full
 ProtectHome=true
-ReadWritePaths=/etc/fr_os/webui
+ReadWritePaths=-/etc/fr_os/sensors
 ExecStart=fr-iot-scan

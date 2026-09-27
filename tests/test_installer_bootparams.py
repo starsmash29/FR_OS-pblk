@@ -100,7 +100,7 @@ def test_units_that_apply_can_write_what_an_apply_writes():
     for unit in ("fr-firewall", "fr-apply-helper", "fr-schedule-check"):
         text = (REPO / "systemd" / f"{unit}.service").read_text()
         paths = next(line for line in text.splitlines() if line.startswith("ReadWritePaths=")).split("=", 1)[1].split()
-        assert {"/etc/fr_os", "/etc/kea"} <= set(paths), unit
+        assert {"/etc/fr_os", "/etc/kea"} <= {p.lstrip("-") for p in paths}, unit
 
 
 def test_a_fresh_checkout_builds_the_tested_image():

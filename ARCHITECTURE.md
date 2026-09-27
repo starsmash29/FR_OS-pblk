@@ -416,8 +416,16 @@ first-boot script turns on the rest, see below).
 once, after a real (not live-demo) install/boot:
 
 1. Generate the admin password (`firewall-cli set-admin-password
-   --generate` -- non-interactive, cryptographically random password,
-   via the `secrets` module)
+   --generate --show-on-console` -- non-interactive, cryptographically
+   random, via the `secrets` module). It is shown on the console through
+   `/etc/issue.d/fr_os-initial-admin.issue`, which is root-only (0600):
+   agetty runs as root and prints `/etc/issue.d/*.issue` before every
+   login prompt, no other account can read it, and it never passes
+   through the shell or the journal. `fr-initial-password.path` watches
+   the account file and removes it once the password no longer works
+   (`frfw.initial_password`). It used to be prepended to the
+   world-readable `/etc/issue` and stayed there (review triage A5); a box
+   updated from v0.1.0 has that line moved out when the webUI starts.
 2. Auto-detect network interfaces
 3. Enable and start every `fr-*.service`/`.timer` unit
 4. Create a marker file so it never runs again
@@ -495,9 +503,10 @@ error, it's "no update available" -- the GitHub API simply returns a 404
 in that case, which the module handles explicitly.
 
 **Applying** (`apply_update`, `rollback_update`) requires real root
-privileges: it downloads and unpacks a release tarball
-(`https://github.com/<repo>/archive/refs/tags/<tag>.tar.gz`), `pip
-install`s it, updates the systemd unit files, and restarts the affected
+privileges: it downloads the release's signed source tarball
+(`https://github.com/<repo>/releases/download/<tag>/frfw-<version>.tar.gz`
+plus `SHA256SUMS` and `SHA256SUMS.sig`, see "Signed releases" below),
+verifies and unpacks it, `pip install`s it, updates the systemd unit files, and restarts the affected
 services. This half can only be invoked from the privileged
 `fr-update-helper` daemon (see below), or directly via a `firewall-cli
 update apply/rollback` command run as root over SSH -- the webUI process
@@ -554,13 +563,24 @@ the attempt and the error message get recorded in the state file's
 `last_update` field, and the call raises `UpdateError` -- neither the CLI
 nor the webUI page stays silent on a failed update.
 
-### Known limitation: no cryptographic signature verification
+### Signed releases
 
-There's no cryptographic signature check at all on the downloaded release
-tarball, beyond the HTTPS connection to GitHub -- the same trust model as
-a plain `git clone`/`pip install` from an unpinned index. Release signing
-(`cosign` or a GPG-signed checksum file) is a reasonable next step, once
-there are real, tagged releases to sign.
+An update is installed only if it verifies (`frfw.release_signing`,
+review triage A4). A release carries the source tarball
+(`frfw-<version>.tar.gz`), a `SHA256SUMS` over it and the ISO, and an
+Ed25519 signature over that file (`SHA256SUMS.sig`), made in CI with the
+`FROS_RELEASE_SIGNING_KEY` secret. The updater checks the signature
+against the public keys shipped in the *installed* package
+(`src/frfw/release_keys/*.pem`, with the `openssl` CLI — no new Python
+dependency) and the tarball against the signed checksum, before anything
+is extracted. A cached copy is re-verified on every use, so a rollback
+can't be fed a swapped cache either. With no trusted key in the build,
+every update is refused. Key setup and the release procedure:
+[docs/RELEASING.md](docs/RELEASING.md).
+
+Still not verified: the Python dependencies `pip` resolves from PyPI for
+the release (`>=` floors), and releases older than this mechanism
+(v0.1.0 is unsigned, so a router won't update or roll back to it).
 
 ### Verification
 
@@ -583,7 +603,8 @@ Canonical paths (`frfw.paths`):
 |---|---|
 | Configuration | `/etc/fr_os/config.yaml` (root:fr_os-webui, 0640 — the webUI only reads it) |
 | Ruleset backups | `/etc/fr_os/backups/ruleset-<timestamp>.nft` (10 kept by default, root-only) |
-| WebUI's own state | `/etc/fr_os/webui/` (TLS keypair, admin account, session secret, AI IDS recent-events log — owned by fr_os-webui, see below) |
+| WebUI's own state | `/etc/fr_os/webui/` (TLS keypair, admin accounts, session secret, audit log — fr_os-webui, 0700, see below) |
+| Network-parsing daemons' output | `/etc/fr_os/sensors/` (AI IDS events, IoT inventory, App-ID usage, TLS fingerprints — fr_os-sensor:fr_os-webui, 0750) |
 | Apply-helper socket | `/run/fr_os/apply.sock` |
 | ZTNA session state (display purposes only, see below) | `/etc/fr_os/ztna_state.json` |
 
@@ -592,7 +613,15 @@ systemd units (`systemd/`):
 - `fr-firewall.service` — applies the canonical config at boot, ordered
   after Debian's own `nftables.service` (early boot, before
   `network-pre.target`, so the rules are already in effect before
-  networking comes up).
+  networking comes up). It fails closed (`firewall-cli apply
+  --fail-closed`): with no `config.yaml`, or when an apply fails while no
+  FR_OS ruleset is loaded, it loads a baseline that lets in only
+  loopback, replies to the router's own connections and IPv6 neighbour
+  discovery, and forwards nothing (`frfw.apply.BASELINE_RULESET`). A
+  failed reload never replaces a working ruleset, and stopping or
+  restarting the unit leaves the ruleset loaded (no `ExecStop`). The
+  live image enables it from the very first boot, so the WAN that
+  live-boot brings up by DHCP is never unfiltered.
 - `fr-apply-helper.socket` + `fr-apply-helper.service` — the privileged
   apply-helper, with socket activation (see Security model below).
 - `fr-webui.service` — the actual FastAPI app (`fr-webui` binary), runs
@@ -602,17 +631,22 @@ systemd units (`systemd/`):
   `NoNewPrivileges=yes` — the same pattern Kea's own
   (`kea-dhcp4-server.service`) unit uses with the `_kea` user.
 - `fr-ai-ids.service` — the real-time AI IDS/IPS anomaly detection
-  daemon (phase 11), running continuously as the `fr_os-webui` user (no
+  daemon (phase 11), running continuously as the `fr_os-sensor` user (no
   root needed -- see the "Real-time, kernel-assisted AI IDS/IPS" section
   below).
 
 `scripts/install-system-integration.sh` handles system integration on a
 fresh machine: creating `/etc/fr_os`, installing a base config (if there
-isn't one yet), creating the `fr_os-webui` system user and group, making
-`config.yaml` group-readable, creating `/etc/fr_os/webui` owned by
-`fr_os-webui`, and installing the systemd units. The admin password has
+isn't one yet), creating the `fr_os-webui` and `fr_os-sensor` system
+accounts and their state directories (`firewall-cli ensure-accounts`,
+`frfw.accounts`), making `config.yaml` group-readable, and installing the
+systemd units. The admin password has
 to be set separately, interactively (`firewall-cli
 set-admin-password`) — the installer deliberately doesn't automate this.
+The webUI never creates an account itself: with none on disk its sign-in
+page only says to run that command on the console. (It used to let the
+first visitor create the admin account over the network, unthrottled, on
+every interface — review triage A3.)
 
 ## Security model
 
@@ -622,21 +656,45 @@ above). Every root-level operation (loading nftables, applying interface
 addresses, writing+restarting the Kea config) is requested by the webUI
 over a Unix socket (`/run/fr_os/apply.sock`, `frfw.helper`) from a
 root-running "apply-helper" systemd service (`fr-apply-helper.service`,
-started via socket activation by `fr-apply-helper.socket`). The socket
-file's group owner is a dedicated `fr_os-webui` group (`SocketGroup=` in
-the `.socket` unit) — this is the access control, not the protocol
-itself.
+started via socket activation by `fr-apply-helper.socket`).
+
+Access control has two layers. The socket file (0660, group
+`fr_os-webui`) decides who can connect at all. Then the helper asks the
+kernel who is on the other end (`SO_PEERCRED`, which the peer can't
+forge) and allows each account only its own commands
+(`frfw.helper.peer`):
+
+| Peer | May send |
+|---|---|
+| root, the webUI (`fr_os-webui`) | everything |
+| the network-parsing daemons (`fr_os-sensor`) | `ping`, `quarantine_ip`, `conntrack_sample`, `dhcp_leases`, `iot_sync_isolation` |
+| anyone else | nothing |
+
+The daemons that parse attacker-controlled input — `fr-ai-ids`,
+`fr-appid`, `fr-iot-scan`, `fr-tls-fp` (after it drops root) — run as
+`fr_os-sensor`, not as the webUI, and write to `/etc/fr_os/sensors`. They
+can't read the webUI's session secret, TLS key or accounts
+(`/etc/fr_os/webui`, 0700), and a bug in one of them can quarantine a
+host but can't rewrite the config, apply it, or install an update. The
+webUI's "Scan now" on the IoT screen asks the helper (`iot_scan`) to run
+`fr-iot-scan.service` instead of scanning in the webUI process.
+`fr-accounts.service` (pulled in by every unit running as either account)
+creates the accounts, so an update that brings these units also brings
+the account they need. The update-helper's socket is 0600 and owned by
+`fr_os-webui`, and that helper accepts only root and the webUI.
 
 The protocol is deliberately minimal: one JSON object per line, four
 commands:
 
 - `ping` — health check
 - `apply` (with a `dry_run` option) — applies the canonical config
-  (`frfw.provision.apply_all`: addresses → nftables → DHCP)
+  (`frfw.provision.apply_all`: nftables → addresses → DHCP; the ruleset
+  goes first so a missing NIC can't keep it from loading)
 - `rollback` — restores the most recent ruleset backup
 - `save_config` — takes a YAML string, validates it with
   `frfw.config.parse_config`, and only overwrites the canonical config
-  with it on successful validation (atomically, via a tmp file + rename)
+  with it on successful validation (atomically, via a tmp file + rename,
+  keeping the file's root:fr_os-webui 0640 owner and mode — review triage A6)
 
 None of the commands accept a *file path* from the caller — the helper
 always uses the canonical config/backup/Kea-config paths it was given at
@@ -1951,7 +2009,8 @@ The decision (`frfw.iot.scanner.decide_isolation`) is `isolated_macs`,
 plus -- only with `auto_isolate` -- every device classified "iot", minus
 `trusted_macs`. It is made in the unprivileged scanner, which is also
 the process parsing untrusted network input; that is why it runs as
-`fr_os-webui` (from `fr-iot-scan.timer` or the webUI) and never as root.
+`fr_os-sensor` in `fr-iot-scan.service` (from its timer, or from the
+webUI's "Scan now" through the helper) and never as root or in the webUI.
 The kernel side (`frfw.iot_isolation`, a structural mirror of
 `frfw.ids_quarantine`) is reached only through the helper's
 `iot_sync_isolation` command, which drops any MAC the current config
@@ -2254,7 +2313,7 @@ walk from the longest suffix down, so the most specific entry wins.
 
 ### Observation: `fr-appid`
 
-An unprivileged daemon (user `fr_os-webui`, journal read access only, like
+An unprivileged daemon (user `fr_os-sensor`, journal read access only, like
 `fr-ai-ids`) follows `fr-adblock-dns`'s query log (the real dnsmasq 2.91
 line is `2 10.0.0.5/46381 query[A] www.netflix.com from 10.0.0.5`) and,
 with `observe_sni`, `fr-xdp-sni-logger`'s events. Each attributed name is
@@ -2472,9 +2531,9 @@ touch -- and it is visible afterwards who changed what.
 ### Honest boundaries
 
 - Roles are enforced in the webUI process. The privileged apply-helper
-  still trusts whatever the `fr_os-webui` account sends over its socket,
-  exactly as before: a compromised webUI process is not stopped by
-  roles. What roles add is separation *between people using the webUI*.
+  trusts whatever the `fr_os-webui` account sends over its socket (it
+  only narrows what the network-parsing daemons may send): a compromised
+  webUI process is not stopped by roles. What roles add is separation *between people using the webUI*.
 - "Read-only" still means seeing everything the screens show, including
   per-client data: which apps each device used (phase 16), the live XDP
   SNI log, DHCP leases and the IoT inventory. Give the viewer role only
@@ -2564,7 +2623,7 @@ such ALPN values. JA3 matches the JA3 README's worked example.
 
 Opening the pinned ring buffer needs CAP_BPF (this kernel has
 `unprivileged_bpf_disabled=2`). The daemon therefore starts as root,
-opens the buffer, and **drops to fr_os-webui for good before reading any
+opens the buffer, and **drops to fr_os-sensor for good before reading any
 packet data** -- untrusted bytes are never parsed with privileges.
 Checked by hand: the open ring buffer keeps delivering after `setuid`,
 and CAP_BPF + CAP_SETUID + CAP_SETGID are the only capabilities needed

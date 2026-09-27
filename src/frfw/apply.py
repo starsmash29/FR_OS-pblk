@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from frfw import paths
+from frfw.nft.builder import FILTER_TABLE
 
 
 def _nft_env() -> dict[str, str]:
@@ -92,6 +93,48 @@ def apply_ruleset(
     if backup_path is not None:
         message += f" (previous ruleset backed up to {backup_path})"
     return ApplyResult(applied=True, message=message, backup_path=backup_path)
+
+
+#: What the box enforces when there is no usable config: nothing gets in
+#: but loopback and replies to connections the router itself opened
+#: (plus IPv6 neighbour discovery, which those replies need), nothing is
+#: forwarded. Loaded by `firewall-cli apply --fail-closed`
+#: (fr-firewall.service) when config.yaml is missing, or when an apply
+#: fails and no FR_OS ruleset is loaded yet -- never over a working one.
+BASELINE_RULESET = f"""flush ruleset
+
+table inet {FILTER_TABLE} {{
+    chain input {{
+        type filter hook input priority filter; policy drop;
+        iif "lo" accept
+        ct state established,related accept
+        icmpv6 type {{ nd-neighbor-solicit, nd-neighbor-advert, nd-router-advert }} accept
+    }}
+    chain forward {{
+        type filter hook forward priority filter; policy drop;
+    }}
+    chain output {{
+        type filter hook output priority filter; policy accept;
+    }}
+}}
+"""
+
+
+def fr_os_table_loaded() -> bool:
+    """Whether an FR_OS ruleset (the real one or the baseline) is in the
+    kernel right now."""
+    try:
+        proc = subprocess.run(["nft", "list", "table", "inet", FILTER_TABLE],
+                              capture_output=True, text=True, env=_nft_env())
+    except FileNotFoundError:
+        return False
+    return proc.returncode == 0
+
+
+def load_baseline() -> None:
+    """Load BASELINE_RULESET, replacing whatever is loaded."""
+    _require_root()
+    _run_nft(["-f", "-"], BASELINE_RULESET)
 
 
 def list_backups(backup_dir: Path = paths.BACKUP_DIR) -> list[Path]:

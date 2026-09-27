@@ -88,7 +88,10 @@ dd if=fr_os_hybrid.iso of=/dev/sdX bs=4M status=progress oflag=sync
    .100-.199, and a random admin password is generated.
 3. **The console shows the login**: `admin` / the generated password, and
    `https://192.168.1.1/` -- open it from a computer on the LAN port
-   (the browser warns about the self-signed certificate once).
+   (the browser warns about the self-signed certificate once). Change the
+   password in the webUI (*Account*); the console stops showing it then.
+   Only the console's login screen shows it: it is in a root-only file,
+   not in the world-readable `/etc/issue`.
 
 A screen, a serial console (115200 baud) or neither: the boot menu
 continues by itself after 5 seconds. Booting from something read-only (a
@@ -214,8 +217,8 @@ privileges, so the unprivileged webUI never needs root itself. Details:
 
 ## WebUI (phase 3)
 
-The install script already sets up the `fr_os-webui` user and the
-required permissions; after that:
+The install script already sets up the `fr_os-webui` and `fr_os-sensor`
+accounts and the required permissions; after that:
 
 ```bash
 sudo firewall-cli set-admin-password   # set the admin password (interactive)
@@ -300,7 +303,7 @@ Needs the XDP SNI filter on the LAN-side interfaces; then enable it on the
 `/tls` screen or with `tls_fingerprint: {enabled: true}` and apply:
 
 ```bash
-sudo systemctl enable --now fr-tls-fp   # starts as root, drops to fr_os-webui before parsing
+sudo systemctl enable --now fr-tls-fp   # starts as root, drops to fr_os-sensor before parsing
 firewall-cli tls-fingerprints           # JA4 fingerprints seen per device
 ```
 

@@ -7,16 +7,20 @@ different order or forgetting a step.
 
 Steps run in order and stop at the first failure (no cross-subsystem
 rollback is attempted -- if step 2 fails, step 1's effects stand, and the
-error says which step failed and that later steps were not attempted):
+error says which step failed and that later steps were not attempted).
+The ruleset goes first, so a failure anywhere else still leaves the box
+filtered:
 
-1. Interface static addresses (`frfw.ifaddr`)
-2. nftables ruleset, backing up the previous one first (`frfw.apply`),
+1. nftables ruleset, backing up the previous one first (`frfw.apply`),
    with scheduled rules rendered for the current UTC offset and that
    offset recorded for the hourly DST check (`frfw.schedule_refresh`) --
    bracketed by a brute-force jail snapshot/restore, an AI IDS
    quarantine snapshot/restore, and a ZTNA session snapshot/restore (see
    step 5's comment and `frfw.bruteforce`/`frfw.ids_quarantine`/
    `frfw.ztna`'s module docstrings for why)
+2. Interface static addresses (`frfw.ifaddr`) -- after the ruleset, so a
+   device the config names but this machine lacks can't stop the
+   firewall from loading
 3. Kea DHCP config, if any zone has a DHCP pool (`frfw.kea`)
 4. Ad-block DNS resolver: (re)start/stop the dedicated dnsmasq instance
    to match `config.adblocker.enabled`, serving whatever
@@ -83,9 +87,6 @@ def apply_all(
     schedule_state_path: Path = paths.SCHEDULE_STATE_PATH,
 ) -> ProvisionResult:
     messages = []
-
-    addr_result = ifaddr.sync_addresses(config, dry_run=dry_run)
-    messages.append(addr_result.message)
 
     # Phase 17: scheduled rules are rendered for the offset in effect now;
     # the same clock is recorded below so the hourly schedule-check can
@@ -163,6 +164,14 @@ def apply_all(
     if preserve_iot and iot_snapshot:
         iot_isolation.restore_after_reload(iot_snapshot)
         iot_preserved = len(iot_snapshot)
+
+    # Addresses only after the ruleset is in: a device name in the config
+    # that doesn't exist on this machine fails here, and must not leave
+    # the box without a firewall (nft matches interfaces by name, so the
+    # ruleset loads fine without them). It also means no address is
+    # brought up before the rules that filter it.
+    addr_result = ifaddr.sync_addresses(config, dry_run=dry_run)
+    messages.append(addr_result.message)
 
     dhcp_result = kea.apply_dhcp_config(config, dry_run=dry_run, config_path=kea_config_path)
     messages.append(dhcp_result.message)

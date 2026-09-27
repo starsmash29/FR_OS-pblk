@@ -5,7 +5,9 @@ Wants=network-pre.target
 Before=network-pre.target shutdown.target
 Conflicts=shutdown.target
 DefaultDependencies=no
-ConditionPathExists=/etc/fr_os/config.yaml
+# No ConditionPathExists=/etc/fr_os/config.yaml: without a config (or when
+# the apply fails with nothing loaded) --fail-closed loads a baseline that
+# drops everything inbound but loopback and replies, and all forwarding.
 
 [Service]
 Type=oneshot
@@ -16,11 +18,14 @@ ProtectHome=true
 # An apply also writes Kea's config (frfw.kea), and, when enabled, the
 # sshd PQC drop-in (frfw.pqc) and the compiled XDP object (frfw.xdp);
 # "-" = fine if that directory doesn't exist. Without /etc/kea here
-# the very first apply on a booted image failed (read-only /etc).
-ReadWritePaths=/etc/fr_os /etc/kea -/etc/ssh/sshd_config.d -/usr/local/share/fr_os
-ExecStart=firewall-cli apply /etc/fr_os/config.yaml
-ExecReload=firewall-cli apply /etc/fr_os/config.yaml
-ExecStop=/usr/sbin/nft flush ruleset
+# the very first apply on a booted image failed (read-only /etc). All
+# optional: a missing directory must not keep even the baseline from
+# loading.
+ReadWritePaths=-/etc/fr_os -/etc/kea -/etc/ssh/sshd_config.d -/usr/local/share/fr_os
+ExecStart=firewall-cli apply --fail-closed /etc/fr_os/config.yaml
+ExecReload=firewall-cli apply --fail-closed /etc/fr_os/config.yaml
+# No ExecStop: stopping or restarting the unit (an update restarts it)
+# keeps the ruleset loaded. To really open the box: `nft flush ruleset`.
 
 [Install]
 WantedBy=sysinit.target
