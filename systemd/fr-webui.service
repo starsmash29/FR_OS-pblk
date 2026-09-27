@@ -2,7 +2,10 @@
 Description=FR_OS webUI
 Documentation=https://github.com/starsmash29/FR_OS-pblk
 After=fr-accounts.service fr-apply-helper.socket network.target
-Wants=fr-accounts.service fr-apply-helper.socket
+# fr-initial-password: takes the generated password off the console once
+# it has been changed (also on a box updated from a version that wrote
+# it to /etc/issue).
+Wants=fr-accounts.service fr-apply-helper.socket fr-initial-password.path fr-initial-password.service
 
 [Service]
 Type=simple

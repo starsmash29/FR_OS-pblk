@@ -88,7 +88,10 @@ dd if=fr_os_hybrid.iso of=/dev/sdX bs=4M status=progress oflag=sync
    .100-.199, and a random admin password is generated.
 3. **The console shows the login**: `admin` / the generated password, and
    `https://192.168.1.1/` -- open it from a computer on the LAN port
-   (the browser warns about the self-signed certificate once).
+   (the browser warns about the self-signed certificate once). Change the
+   password in the webUI (*Account*); the console stops showing it then.
+   Only the console's login screen shows it: it is in a root-only file,
+   not in the world-readable `/etc/issue`.
 
 A screen, a serial console (115200 baud) or neither: the boot menu
 continues by itself after 5 seconds. Booting from something read-only (a

@@ -23,6 +23,8 @@ for unit in \
     fr-apply-helper.socket \
     fr-apply-helper.service \
     fr-webui.service \
+    fr-initial-password.path \
+    fr-initial-password.service \
     fr-ai-ids.service \
     fr-iot-scan.service \
     fr-iot-scan.timer \

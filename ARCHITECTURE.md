@@ -416,8 +416,16 @@ first-boot script turns on the rest, see below).
 once, after a real (not live-demo) install/boot:
 
 1. Generate the admin password (`firewall-cli set-admin-password
-   --generate` -- non-interactive, cryptographically random password,
-   via the `secrets` module)
+   --generate --show-on-console` -- non-interactive, cryptographically
+   random, via the `secrets` module). It is shown on the console through
+   `/etc/issue.d/fr_os-initial-admin.issue`, which is root-only (0600):
+   agetty runs as root and prints `/etc/issue.d/*.issue` before every
+   login prompt, no other account can read it, and it never passes
+   through the shell or the journal. `fr-initial-password.path` watches
+   the account file and removes it once the password no longer works
+   (`frfw.initial_password`). It used to be prepended to the
+   world-readable `/etc/issue` and stayed there (review triage A5); a box
+   updated from v0.1.0 has that line moved out when the webUI starts.
 2. Auto-detect network interfaces
 3. Enable and start every `fr-*.service`/`.timer` unit
 4. Create a marker file so it never runs again

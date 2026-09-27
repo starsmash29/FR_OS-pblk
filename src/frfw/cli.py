@@ -6,7 +6,8 @@
     firewall-cli rollback [--list]
     firewall-cli detect-interfaces [--include-virtual]
     firewall-cli assign-interfaces --wan DEV --lan DEV [--opt NAME:DEV ...] [--out PATH]
-    firewall-cli set-admin-password [--username admin] [--generate]
+    firewall-cli set-admin-password [--username admin] [--generate [--show-on-console]]
+    firewall-cli initial-password
     firewall-cli ensure-accounts
     firewall-cli users
     firewall-cli ids-status
@@ -51,6 +52,7 @@ import yaml
 
 from frfw import __version__, codename_for, netdetect, paths, schedule_refresh, skeleton, xdp as xdp_mod
 from frfw import accounts as accounts_mod
+from frfw import initial_password
 from frfw import persistence as persistence_mod
 from frfw import update as update_mod
 from frfw.adblock import AdblockError
@@ -196,7 +198,20 @@ def _build_parser() -> argparse.ArgumentParser:
         help="generate a random password instead of prompting, and print only "
         "the password to stdout (for non-interactive first-boot use)",
     )
+    p_admin.add_argument(
+        "--show-on-console",
+        action="store_true",
+        help="with --generate: don't print it, put it on the console's login screen "
+        "instead (a root-only /etc/issue.d file, removed once the password is changed)",
+    )
     p_admin.set_defaults(handler=_cmd_set_admin_password)
+
+    p_initial = sub.add_parser(
+        "initial-password",
+        help="remove the generated password from the console once it was changed (root; "
+        "fr-initial-password.service runs this)",
+    )
+    p_initial.set_defaults(handler=_cmd_initial_password)
 
     p_accounts = sub.add_parser(
         "ensure-accounts",
@@ -410,8 +425,16 @@ def _cmd_set_admin_password(args: argparse.Namespace) -> int:
         # set-admin-password --generate)`) without scraping other output.
         password = secrets.token_urlsafe(18)
         AdminStore().set_password(args.username, password, ROLE_ADMIN)
-        print(password)
+        if args.show_on_console:
+            initial_password.write(args.username, password)
+            print(f"Generated a password for {args.username!r}; it is shown on the console "
+                  f"({initial_password.ISSUE_PATH}, root-only) until it is changed")
+        else:
+            print(password)
         return 0
+    if args.show_on_console:
+        print("error: --show-on-console only goes with --generate", file=sys.stderr)
+        return 1
 
     password = getpass.getpass("New password: ")
     confirm = getpass.getpass("Confirm password: ")
@@ -424,6 +447,14 @@ def _cmd_set_admin_password(args: argparse.Namespace) -> int:
 
     AdminStore().set_password(args.username, password, ROLE_ADMIN)
     print(f"Admin account {args.username!r} set")
+    return 0
+
+
+def _cmd_initial_password(args: argparse.Namespace) -> int:
+    if initial_password.migrate_legacy():
+        print(f"fr-initial-password: moved the password line out of {initial_password.LEGACY_ISSUE_PATH}")
+    if initial_password.clear_if_changed():
+        print("fr-initial-password: the initial password was changed; removed it from the console")
     return 0
 
 
