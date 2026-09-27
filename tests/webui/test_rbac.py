@@ -122,7 +122,7 @@ def test_viewer_sees_pages_but_not_account_management(env):
 
 def test_admin_manages_accounts_and_the_audit_log_records_it(env):
     admin = _client(env, "boss", "adminpass1")
-    assert admin.post("/users/add", data={"new_username": "tech", "new_password": "techpass12", "role": "viewer"}).status_code == 303
+    assert admin.post("/users/add", data={"new_username": "tech", "new_password": "violet-anchor-9", "role": "viewer"}).status_code == 303
     assert env["admin_store"].get("tech").role == "viewer"
     admin.post("/users/tech/role", data={"role": "admin"})
     assert env["admin_store"].get("tech").is_admin
@@ -137,7 +137,7 @@ def test_admin_manages_accounts_and_the_audit_log_records_it(env):
     assert ("boss", "login", None) in events
     assert ("boss", "POST /users/add", 303) in events
     assert ("boss", "POST /users/boss/delete", 303) in events
-    assert "techpass12" not in env["audit_log_path"].read_text()
+    assert "violet-anchor-9" not in env["audit_log_path"].read_text()
 
 
 def test_viewer_attempts_are_audited_as_denied(env):

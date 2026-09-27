@@ -106,7 +106,7 @@ def reset_password(
     def action():
         if admin_store.get(target) is None:
             raise AccountError(f"No such user {target!r}")
-        validate_password(new_password)
+        validate_password(new_password, target)
         admin_store.set_password(target, new_password)
         session_manager.revoke_user(target)  # G7
 
@@ -157,7 +157,7 @@ def change_own_password(
     if new_password != new_password_confirm:
         return redirect_with("/account", error="New passwords do not match")
     try:
-        validate_password(new_password)
+        validate_password(new_password, username)
     except AccountError as exc:
         return redirect_with("/account", error=str(exc))
     admin_store.set_password(username, new_password)

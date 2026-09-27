@@ -704,6 +704,25 @@ this (PBKDF2-SHA256, 200 000 iterations) still verifies at that floor and
 is replaced in place on the next successful sign-in; the old hash is not
 kept anywhere.
 
+### Brute force and credential stuffing (security-lessons G6)
+
+Two counters guard both sign-ins (`/login`, `/ztna/login`): per source
+address (5 failures in 5 minutes jail it at the firewall for an hour)
+and per account (10 failures in 15 minutes, from any number of
+addresses, refuse that account's sign-in for the rest of the window --
+what a botnet spreading one guess per address runs into). An address
+the account signed in from in the last 90 days is a *known source* and
+is never locked out, so the lock can't be turned against the owner;
+unknown usernames lock like real ones, so the message tells nothing.
+Both counters and the known sources live in `login_guard.json` (0600,
+the webUI's state directory) and survive a restart.
+
+New passwords -- webUI accounts, first-run setup, resets, `firewall-cli
+set-admin-password`, ZTNA users -- must be 8+ characters, not among the
+10,000 most common passwords (a local list, also matched with trailing
+digits and punctuation removed: "Password123!" is "password"), not
+repetitive, and must not contain the username (`frfw.passwords`).
+
 ### Sessions end on the server (security-lessons G7)
 
 A session is a signed cookie *and* an entry in `sessions.json` next to

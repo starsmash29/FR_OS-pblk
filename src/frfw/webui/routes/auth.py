@@ -5,10 +5,10 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import RedirectResponse
 
-from frfw.admin_account import AccountError
+from frfw.admin_account import AccountError, hash_password
 from frfw.webui import audit
 from frfw.webui.auth import COOKIE_NAME, AdminStore, SessionManager
-from frfw.webui.auth_rate_limiter import BruteforceGuard, reject_failed_login
+from frfw.webui.auth_rate_limiter import BruteforceGuard, locked_message, reject_failed_login
 from frfw.webui.client_ip import client_ip
 from frfw.webui.deps import (
     get_admin_store,
@@ -55,10 +55,19 @@ def login_submit(
     mfa_tickets: TicketStore = Depends(get_mfa_tickets),
 ):
     ip = client_ip(request)
+    locked = guard.account_locked(username, ip)
+    if locked:
+        # Security-lessons G6: too many failures for this account lately.
+        # The password isn't even checked (but hashed, for the same timing).
+        hash_password(password)
+        audit.append(audit_log_path, {"user": username, "client": ip, "event": "login refused: account locked"})
+        return redirect_with("/login", error=locked_message(locked))
     account = admin_store.verify(username, password)
     if account is None:
         audit.append(audit_log_path, {"user": username, "client": ip, "event": "login failed"})
-        return reject_failed_login(ip, guard, helper, redirect_path="/login")
+        # Counted for any name, existing or not: a lockout mustn't tell
+        # which usernames exist.
+        return reject_failed_login(ip, guard, helper, redirect_path="/login", account=username)
 
     if account.has_mfa and mfa_tickets.account_locked(account.username):
         audit.append(audit_log_path, {"user": username, "client": ip, "event": "second factor locked"})
@@ -73,8 +82,9 @@ def login_submit(
                             httponly=True, samesite="strict", secure=request.url.scheme == "https")
         return response
 
-    guard.record_success(ip)
-    audit.append(audit_log_path, {"user": username, "role": account.role, "client": ip, "event": "login"})
+    new_source = guard.record_success(ip, account.username)
+    audit.append(audit_log_path, {"user": username, "role": account.role, "client": ip, "event": "login",
+                                  **({"new_source": True} if new_source else {})})
     return issue_session(request, RedirectResponse("/", status_code=303), account, session_manager)
 
 

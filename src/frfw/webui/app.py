@@ -83,7 +83,7 @@ def create_app(
     app.state.xdp_state_path = xdp_state_path
     app.state.adblock_hosts_path = adblock_hosts_path
     app.state.adblock_category_dir = adblock_category_dir
-    app.state.bruteforce_guard = bruteforce_guard or BruteforceGuard()
+    app.state.bruteforce_guard = bruteforce_guard or BruteforceGuard(state_path=paths.LOGIN_GUARD_STATE_PATH)
     # Security-lessons G5: second-factor login tickets and enrolment challenges.
     app.state.mfa_tickets = TicketStore()
     app.state.mfa_enrolments = TicketStore(lifetime=600)

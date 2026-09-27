@@ -45,7 +45,7 @@ def secrets_everywhere(webui_env, tmp_path):
     store.add_user("guest", "viewerpass1", "viewer")
     # An account with second factors (security-lessons G5): its TOTP secret
     # and security-key public key are secrets too.
-    store.add_user("carol", "carolpass1", "admin")
+    store.add_user("carol", "mint-ribbon-5", "admin")
     store.set_mfa("carol", {"totp": {"secret": "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP", "last_step": 1},
                             "webauthn": [{"id": "Y3JlZC1pZA", "public_key": "pQECAyYgASFYIGNhcm9sLXB1YmxpYy1rZXk",
                                           "sign_count": 3, "rp_id": "fr-router.lan", "name": "yubi", "added": 0}]})

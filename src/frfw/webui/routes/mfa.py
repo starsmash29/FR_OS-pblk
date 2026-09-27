@@ -62,9 +62,9 @@ def _finish_login(request, tid, account, tickets, store, session_manager, guard,
     if not tickets.consume(tid):  # used up in a parallel request
         return redirect_with("/login", error="This sign-in was already completed or has expired")
     ip = client_ip(request)
-    guard.record_success(ip)
+    new_source = guard.record_success(ip, account.username)
     audit.append(audit_log_path, {"user": account.username, "role": account.role, "client": ip,
-                                  "event": f"login ({how})"})
+                                  "event": f"login ({how})", **({"new_source": True} if new_source else {})})
     response = RedirectResponse("/", status_code=303)
     response.delete_cookie(mfa.TICKET_COOKIE, path="/login")
     return issue_session(request, response, store.get(account.username), session_manager)

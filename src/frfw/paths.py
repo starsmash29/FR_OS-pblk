@@ -55,6 +55,9 @@ WEBUI_CERT_PATH = WEBUI_STATE_DIR / "cert.pem"
 WEBUI_KEY_PATH = WEBUI_STATE_DIR / "key.pem"
 WEBUI_AUTH_PATH = WEBUI_STATE_DIR / "auth.json"
 WEBUI_SECRET_KEY_PATH = WEBUI_STATE_DIR / "secret.key"
+#: Failed-login counters and each account's known sign-in sources,
+#: persisted so a webUI restart doesn't reset them (security-lessons G6).
+LOGIN_GUARD_STATE_PATH = WEBUI_STATE_DIR / "login_guard.json"
 
 #: AI IDS engine's display-only recent-events log (phase 11, see
 #: frfw.ai_ids.daemon.load_recent_events) -- the last several

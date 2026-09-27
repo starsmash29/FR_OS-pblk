@@ -49,7 +49,7 @@ where = ["src"]
 "frfw.webui" = ["templates/*.html", "static/*", "static/fonts/*"]
 "frfw.appid" = ["signatures.json"]
 # Release signing public keys (frfw.release_signing).
-"frfw" = ["release_keys/*.pem", "release_keys/README.md"]
+"frfw" = ["release_keys/*.pem", "release_keys/README.md", "data/*.txt"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

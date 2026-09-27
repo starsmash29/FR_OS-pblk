@@ -55,7 +55,7 @@ import yaml
 
 from frfw import __version__, codename_for, netdetect, paths, schedule_refresh, skeleton, xdp as xdp_mod
 from frfw import accounts as accounts_mod
-from frfw import initial_password
+from frfw import initial_password, passwords
 from frfw import persistence as persistence_mod
 from frfw import update as update_mod
 from frfw.adblock import AdblockError
@@ -474,8 +474,9 @@ def _cmd_set_admin_password(args: argparse.Namespace) -> int:
     if password != confirm:
         print("error: passwords do not match", file=sys.stderr)
         return 1
-    if len(password) < 8:
-        print("error: password must be at least 8 characters", file=sys.stderr)
+    weak = passwords.problem(password, args.username)  # security-lessons G6
+    if weak:
+        print(f"error: {weak}", file=sys.stderr)
         return 1
 
     AdminStore().set_password(args.username, password, ROLE_ADMIN)
