@@ -89,6 +89,8 @@ def change_role(
     username: str = Depends(require_admin),
     admin_store: AdminStore = Depends(get_admin_store),
 ):
+    # No revocation needed: every request re-reads the account, so the new
+    # role applies to open sessions at once.
     return _account_action(lambda: admin_store.set_role(target, role), f"{target!r} is now {role}")
 
 
@@ -98,12 +100,14 @@ def reset_password(
     new_password: str = Form(...),
     username: str = Depends(require_admin),
     admin_store: AdminStore = Depends(get_admin_store),
+    session_manager: SessionManager = Depends(get_session_manager),
 ):
     def action():
         if admin_store.get(target) is None:
             raise AccountError(f"No such user {target!r}")
         validate_password(new_password)
         admin_store.set_password(target, new_password)
+        session_manager.revoke_user(target)  # G7
 
     return _account_action(action, f"Password of {target!r} reset; their open sessions have ended")
 
@@ -113,8 +117,13 @@ def delete_user(
     target: str,
     username: str = Depends(require_admin),
     admin_store: AdminStore = Depends(get_admin_store),
+    session_manager: SessionManager = Depends(get_session_manager),
 ):
-    return _account_action(lambda: admin_store.delete_user(target), f"User {target!r} deleted")
+    def action():
+        admin_store.delete_user(target)
+        session_manager.revoke_user(target)  # G7
+
+    return _account_action(action, f"User {target!r} deleted")
 
 
 @router.get("/account")
@@ -150,9 +159,10 @@ def change_own_password(
     except AccountError as exc:
         return redirect_with("/account", error=str(exc))
     admin_store.set_password(username, new_password)
+    # Security-lessons G7: every session of this account ends, this one
+    # included; this browser gets a fresh one below.
+    session_manager.revoke_user(username)
 
-    # This session survives (with a fresh cookie); every other session of
-    # this account used the old password and has now ended.
     response = RedirectResponse("/account?success=Password+changed", status_code=303)
     response.set_cookie(
         COOKIE_NAME,
@@ -161,4 +171,19 @@ def change_own_password(
         samesite="lax",
         secure=request.url.scheme == "https",
     )
+    return response
+
+
+@router.post("/account/logout-everywhere")
+def logout_everywhere(
+    username: str = Depends(require_login),
+    session_manager: SessionManager = Depends(get_session_manager),
+    audit_log_path: Path = Depends(get_audit_log_path),
+):
+    """Security-lessons G7: end every session of this account, on every
+    device -- e.g. after using a shared computer or losing a laptop."""
+    ended = session_manager.revoke_user(username)
+    audit.append(audit_log_path, {"user": username, "event": f"logged out everywhere ({ended} session(s))"})
+    response = RedirectResponse("/login", status_code=303)
+    response.delete_cookie(COOKIE_NAME)
     return response

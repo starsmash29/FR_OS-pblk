@@ -87,7 +87,7 @@ def get_raw_config(config_path: Path = Depends(get_config_path)) -> dict:
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 #: The only changes a viewer may make (phase 18).
-VIEWER_ALLOWED_PATHS = frozenset({"/logout", "/account/password"})
+VIEWER_ALLOWED_PATHS = frozenset({"/logout", "/account/password", "/account/logout-everywhere"})
 
 #: All an account with a generated password can reach (security-lessons G1).
 SETUP_PATHS = frozenset({"/setup", "/logout"})

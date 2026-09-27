@@ -704,6 +704,17 @@ this (PBKDF2-SHA256, 200 000 iterations) still verifies at that floor and
 is replaced in place on the next successful sign-in; the old hash is not
 kept anywhere.
 
+### Sessions end on the server (security-lessons G7)
+
+A session is a signed cookie *and* an entry in `sessions.json` next to
+the session key (0600; only SHA-256s of the session ids, so the file
+holds nothing a browser could present). A request needs both. Logout
+removes the entry, so a copied cookie stops working at once; *Account ->
+Log out everywhere* removes every entry of the account; a password
+change removes all of them (the browser that made the change gets a new
+one), and so do an admin's password reset and deleting the account.
+Role changes need no revocation: every request re-reads the account.
+
 ### Secrets stay on the box (security-lessons G3)
 
 `auth.json` (webUI accounts) is created 0600, `config.yaml` stays 0640

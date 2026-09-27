@@ -5,7 +5,7 @@
 <p>Signed in as <strong>{{ username }}</strong> ({{ role }}).</p>
 <div class="card allow-viewer">
   <h3>Change password</h3>
-  <p class="muted">Other sessions of this account end when the password changes.</p>
+  <p class="muted">Every session of this account ends when the password changes (this browser stays signed in).</p>
   <form method="post" action="/account/password" class="allow-viewer">
     <label>Current password</label>
     <input type="password" name="current_password" required>
@@ -14,6 +14,14 @@
     <label>Confirm new password</label>
     <input type="password" name="new_password_confirm" minlength="8" required>
     <button type="submit">Change password</button>
+  </form>
+</div>
+<div class="card allow-viewer">
+  <h3>Sessions</h3>
+  <p class="muted">End every session of this account, on every device -- this one too. Use it after signing in
+    on a shared computer or if a device went missing.</p>
+  <form method="post" action="/account/logout-everywhere" class="allow-viewer">
+    <button type="submit" class="danger">Log out everywhere</button>
   </form>
 </div>
 {% endblock %}
