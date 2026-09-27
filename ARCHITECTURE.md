@@ -649,6 +649,10 @@ accounts and their state directories (`firewall-cli ensure-accounts`,
 systemd units. The admin password has
 to be set separately, interactively (`firewall-cli
 set-admin-password`) — the installer deliberately doesn't automate this.
+The account first boot generates is flagged `must_change`: its first
+sign-in reaches nothing but `/setup`, which turns it into the admin's own
+account -- a username that isn't `admin`/`root`/... and a new password
+(security-lessons G1); the generated login stops working at once.
 The webUI never creates an account itself: with none on disk its sign-in
 page only says to run that command on the console. (It used to let the
 first visitor create the admin account over the network, unthrottled, on
@@ -688,6 +692,19 @@ webUI's "Scan now" on the IoT screen asks the helper (`iot_scan`) to run
 creates the accounts, so an update that brings these units also brings
 the account they need. The update-helper's socket is 0600 and owned by
 `fr_os-webui`, and that helper accepts only root and the webUI.
+
+### Management plane off the WAN (security-lessons F2/G4)
+
+The webUI and sshd are reachable only from the management zones -- by
+default every zone that doesn't face the internet (`frfw.management`).
+Three layers: the input chain drops :22/:443 from every other zone
+ahead of the admin's rules; the webUI binds loopback and the management
+interfaces' static addresses instead of 0.0.0.0 (one socket each, with
+`IP_FREEBIND` so a LAN address that isn't up yet doesn't stop it); sshd
+gets a `ListenAddress` drop-in (validated with `sshd -t`, reloaded, never
+restarted). When the addresses change, `apply` restarts the webUI a few
+seconds later. `management.allow_wan` is the explicit opt-in, confirmed
+and warned on the System screen and in every `apply`.
 
 The protocol is deliberately minimal: one JSON object per line, four
 commands:

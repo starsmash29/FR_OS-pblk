@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Finish setup - FR_OS{% endblock %}
+{% block page %}
+<main class="auth-page">
+  <div class="auth-shell">
+    <section class="auth-brand">
+      <div class="auth-title">
+        <span class="brand-mark"><svg class="icon"><use href="/static/icons.svg#shield"/></svg></span>
+        <div>
+          <h1>FR_OS <span class="badge badge-blue plain">v{{ FROS_VERSION }}</span></h1>
+          <p>Firewall &amp; router control plane</p>
+        </div>
+      </div>
+      <dl class="auth-facts">
+        <div><dt>Router</dt><dd>{{ shell_hostname(request) }}</dd></div>
+        <div><dt>Step</dt><dd>first sign-in</dd></div>
+      </dl>
+    </section>
+
+    <section class="auth-card">
+      <h2>Finish setup</h2>
+      <p class="muted">You signed in with the password generated at first boot. Choose your own username and password
+        before anything else: <code>{{ current }}</code> and the generated password stop working, and the password
+        disappears from the console.</p>
+      {% if error %}<div class="flash-error">{{ error }}</div>{% endif %}
+      <form method="post" action="/setup">
+        <label for="username">New username</label>
+        <input type="text" id="username" name="username" autocomplete="username" autofocus required
+               pattern="[a-z_][a-z0-9_.\-]{0,31}" placeholder="not admin or root">
+        <label for="password">New password</label>
+        <input type="password" id="password" name="password" autocomplete="new-password" minlength="8" required>
+        <label for="password_confirm">Confirm password</label>
+        <input type="password" id="password_confirm" name="password_confirm" autocomplete="new-password" minlength="8" required>
+        <button type="submit"><svg class="icon icon-sm"><use href="/static/icons.svg#lock"/></svg>Save and continue</button>
+      </form>
+      <form method="post" action="/logout"><button type="submit" class="secondary">Sign out</button></form>
+    </section>
+  </div>
+</main>
+{% endblock %}

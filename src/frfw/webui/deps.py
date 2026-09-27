@@ -89,6 +89,9 @@ _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 #: The only changes a viewer may make (phase 18).
 VIEWER_ALLOWED_PATHS = frozenset({"/logout", "/account/password"})
 
+#: All an account with a generated password can reach (security-lessons G1).
+SETUP_PATHS = frozenset({"/setup", "/logout"})
+
 
 def require_login(
     request: Request,
@@ -109,6 +112,12 @@ def require_login(
             status_code=status.HTTP_303_SEE_OTHER, headers={"Location": "/login"}
         )
     request.state.user = account
+    if account.must_change and request.url.path not in SETUP_PATHS:
+        # The generated first-boot account: nothing but the setup step
+        # until the admin has chosen their own username and password.
+        raise HTTPException(
+            status_code=status.HTTP_303_SEE_OTHER, headers={"Location": "/setup"}
+        )
     if (
         not account.is_admin
         and request.method not in _SAFE_METHODS

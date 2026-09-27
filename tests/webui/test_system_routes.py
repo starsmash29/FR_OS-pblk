@@ -71,3 +71,23 @@ def test_dashboard_shows_pqc_badge(logged_in_client):
     response = logged_in_client.get("/")
     assert "Management session" in response.text
     assert "Classical only" in response.text
+
+
+def test_management_is_lan_only_until_the_admin_opts_in(logged_in_client, webui_env):
+    """Security-lessons F2/G4: WAN management is an explicit, warned
+    opt-in on the System screen."""
+    from frfw.skeleton import build_skeleton_config
+
+    webui_env["config_path"].write_text(build_skeleton_config("eth0", "eth1"))
+    page = logged_in_client.get("/system").text
+    assert "Management access" in page
+    assert "127.0.0.1, 192.168.1.1" in page
+    assert "drops them from <strong>wan</strong>" in page
+
+    response = logged_in_client.post("/system/management", data={"allow_wan": "true"})
+    assert "reachable+from+the+internet" in response.headers["location"]
+    assert load_config(webui_env["config_path"]).management.allow_wan is True
+    assert "flash-error" in logged_in_client.get("/system").text
+
+    logged_in_client.post("/system/management", data={})
+    assert load_config(webui_env["config_path"]).management.allow_wan is False

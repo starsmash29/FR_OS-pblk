@@ -88,8 +88,9 @@ dd if=fr_os_hybrid.iso of=/dev/sdX bs=4M status=progress oflag=sync
    .100-.199, and a random admin password is generated.
 3. **The console shows the login**: `admin` / the generated password, and
    `https://192.168.1.1/` -- open it from a computer on the LAN port
-   (the browser warns about the self-signed certificate once). Change the
-   password in the webUI (*Account*); the console stops showing it then.
+   (the browser warns about the self-signed certificate once). The first
+   sign-in asks for your own username (not `admin`) and password; the
+   console stops showing the generated one then.
    Only the console's login screen shows it: it is in a root-only file,
    not in the world-readable `/etc/issue`.
 
