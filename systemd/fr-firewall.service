@@ -26,6 +26,11 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=-/etc/fr_os -/etc/kea -/etc/ssh/sshd_config.d -/usr/local/share/fr_os -/sys/fs/bpf
 ProtectHome=yes
+# No PrivateTmp here (it would order this early unit after the /tmp and
+# /var/tmp mounts), and /tmp is read-only under ProtectSystem=strict: an
+# apply writes its temporary files (the Kea config check) here instead.
+RuntimeDirectory=fr-firewall
+Environment=TMPDIR=/run/fr-firewall
 PrivateDevices=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes

@@ -219,3 +219,16 @@ def test_exposure_score_is_within_budget(name):
     match = re.search(r"Overall exposure level for \S+: ([0-9.]+)", proc.stdout)
     assert match, proc.stdout[-500:] + proc.stderr
     assert float(match.group(1)) <= EXPOSURE_BUDGET[name], f"{name}: {match.group(1)}"
+
+
+@pytest.mark.parametrize("name", SERVICES)
+def test_every_service_has_a_writable_temp_dir(name):
+    """Found booting the image: with ProtectSystem=strict and no
+    PrivateTmp, /tmp is read-only and the Kea config check in an apply
+    ("No usable temporary directory") failed fr-firewall."""
+    settings = service_section(name)
+    if one(settings, "ProtectSystem") != "strict" or one(settings, "PrivateTmp") == "yes":
+        return
+    runtime = one(settings, "RuntimeDirectory")
+    assert runtime, f"{name}: read-only /tmp and no RuntimeDirectory"
+    assert f"TMPDIR=/run/{runtime}" in settings.get("Environment", []), name

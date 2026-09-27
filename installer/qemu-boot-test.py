@@ -137,7 +137,8 @@ def journal(upper: Path, *args: str) -> str:
 
 #: FR_OS services that must be running after a boot, each in its systemd
 #: sandbox (security-lessons I1).
-LONG_RUNNING = ("fr-webui", "fr-apply-helper", "fr-ai-ids", "fr-appid", "fr-tls-fp", "fr-xdp-sni-logger")
+#: (fr-apply-helper is socket-activated: it starts on first use.)
+LONG_RUNNING = ("fr-webui", "fr-ai-ids", "fr-appid", "fr-tls-fp", "fr-xdp-sni-logger")
 
 
 def check_sandboxed_services(check, upper: Path, *boot: str) -> None:
@@ -232,6 +233,10 @@ def main() -> int:
               + ("" if "did not start" not in first_boot else " (some units did not start)"))
         failed = sorted(set(re.findall(r"Failed to start (\S+)", journal(upper))))
         check(not failed, f"no unit failed to start{': ' + ', '.join(failed) if failed else ''}")
+        for unit in failed:  # say why, right here in the CI log
+            print(f"    --- journal of {unit} ---")
+            for line in journal(upper, "-u", unit).splitlines()[-25:]:
+                print(f"    {line}")
         check_sandboxed_services(check, upper)
         console = upper / "etc" / "issue.d" / "fr_os-initial-admin.issue"
         shown = console.read_text() if console.exists() else ""
