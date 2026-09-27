@@ -293,8 +293,14 @@ def sshd_supported_kex_methods(sshd_binary: str = "sshd") -> set[str]:
     sshd = shutil.which(sshd_binary)
     if sshd is None:
         return set()
+    # `sshd` has no -Q (it exits "Extra argument kex."), so this always
+    # came back empty and the hybrid method was never used. The client
+    # from the same OpenSSH build answers the query.
+    ssh = shutil.which("ssh")
+    if ssh is None:
+        return set()
     try:
-        proc = subprocess.run([sshd, "-Q", "kex"], capture_output=True, text=True)
+        proc = subprocess.run([ssh, "-Q", "kex"], capture_output=True, text=True)
     except OSError:
         return set()
     if proc.returncode != 0:

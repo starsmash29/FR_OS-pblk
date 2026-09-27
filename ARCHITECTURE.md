@@ -720,7 +720,12 @@ publickey`, `PermitRootLogin no`, `AllowGroups fr_os-ssh` (a group
 `ensure-accounts` creates empty -- no SSH login until the admin adds
 someone with a key), `MaxAuthTries 3`, `LoginGraceTime 30`. It sorts
 before distribution drop-ins (e.g. cloud-init's 50-), and sshd keeps the
-first value it reads, so these win; `apply` says who can log in. When the addresses change, `apply` restarts the webUI a few
+first value it reads, so these win; `apply` says who can log in. It
+also allows only strong crypto (security-lessons H3): KexAlgorithms
+sntrup761x25519/curve25519/DH group 16-18 with SHA-512 (left to the PQC
+drop-in, ML-KEM hybrid first, when PQC is on), Ciphers ChaCha20-Poly1305,
+AES-GCM and AES-CTR, and only encrypt-then-MAC MACs -- a client asking
+for SHA-1, CBC or MD5 can't negotiate. When the addresses change, `apply` restarts the webUI a few
 seconds later. `management.allow_wan` is the explicit opt-in, confirmed
 and warned on the System screen and in every `apply`.
 

@@ -123,10 +123,43 @@ SSHD_HARDENING = (
 )
 
 
+#: Security-lessons H3: no downgrade in negotiated crypto -- only strong
+#: key exchange, ciphers and MACs (all in OpenSSH >= 8.5, so Debian
+#: bookworm's 9.2 knows every name). No SHA-1, no CBC, no MD5, no
+#: encrypt-and-MAC; the DH groups are there for older clients only.
+SSHD_KEX = (
+    "sntrup761x25519-sha512@openssh.com",
+    "curve25519-sha256",
+    "curve25519-sha256@libssh.org",
+    "diffie-hellman-group18-sha512",
+    "diffie-hellman-group16-sha512",
+)
+SSHD_CIPHERS = (
+    "chacha20-poly1305@openssh.com",
+    "aes256-gcm@openssh.com",
+    "aes128-gcm@openssh.com",
+    "aes256-ctr",
+    "aes192-ctr",
+    "aes128-ctr",
+)
+SSHD_MACS = (
+    "hmac-sha2-512-etm@openssh.com",
+    "hmac-sha2-256-etm@openssh.com",
+    "umac-128-etm@openssh.com",
+)
+
+
 def sshd_dropin(config: Config) -> str:
     lines = [_SSHD_DROPIN_HEADER.rstrip("\n")]
     lines += [f"ListenAddress {address}" for address in listen_addresses(config)]
     lines += list(SSHD_HARDENING)
+    if not config.pqc.enabled:
+        # With PQC on, frfw.pqc's drop-in owns KexAlgorithms (ML-KEM hybrid
+        # first); sshd keeps the first value it reads, so ours must not
+        # set it then.
+        lines.append("KexAlgorithms " + ",".join(SSHD_KEX))
+    lines.append("Ciphers " + ",".join(SSHD_CIPHERS))
+    lines.append("MACs " + ",".join(SSHD_MACS))
     return "\n".join(lines) + "\n"
 
 
