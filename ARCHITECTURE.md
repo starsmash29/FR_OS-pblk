@@ -693,7 +693,8 @@ commands:
 - `rollback` — restores the most recent ruleset backup
 - `save_config` — takes a YAML string, validates it with
   `frfw.config.parse_config`, and only overwrites the canonical config
-  with it on successful validation (atomically, via a tmp file + rename)
+  with it on successful validation (atomically, via a tmp file + rename,
+  keeping the file's root:fr_os-webui 0640 owner and mode — review triage A6)
 
 None of the commands accept a *file path* from the caller — the helper
 always uses the canonical config/backup/Kea-config paths it was given at

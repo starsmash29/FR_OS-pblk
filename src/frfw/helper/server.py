@@ -23,6 +23,7 @@ import json
 import os
 import socket
 import socketserver
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -38,7 +39,7 @@ from frfw.apply import NftError, rollback_last
 from frfw.bruteforce import BruteforceError
 from frfw.config import ConfigError, load_config, parse_config
 from frfw.conntrack import ConntrackError
-from frfw.helper.peer import PeerPolicy, peer_credentials
+from frfw.helper.peer import PeerPolicy, gid_of, peer_credentials
 from frfw.helper.protocol import MAX_LINE_BYTES
 from frfw.hwinfo import HwInfoError
 from frfw.ids_quarantine import IdsQuarantineError
@@ -319,10 +320,35 @@ def _handle_iot_scan() -> dict:
 
 
 def _write_atomic(path: Path, text: str) -> None:
+    """Replace `path` atomically, keeping its owner and mode.
+
+    config.yaml is root:fr_os-webui 0640 (it holds ZTNA password hashes
+    and the metrics token digest). A plain write_text + rename used to
+    leave it root:root 0644 -- world-readable -- after the first save from
+    the webUI. The temp file is created 0600 (never briefly readable),
+    given the old file's owner and mode, then renamed over it; a new file
+    gets root:fr_os-webui 0640.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        old = path.stat()
+        uid, gid, mode = old.st_uid, old.st_gid, stat.S_IMODE(old.st_mode)
+    except FileNotFoundError:
+        webui_gid = gid_of(paths.WEBUI_USER)
+        uid, gid, mode = os.geteuid(), (os.getegid() if webui_gid is None else webui_gid), 0o640
     tmp_path = path.with_suffix(path.suffix + ".tmp")
-    tmp_path.write_text(text)
-    tmp_path.replace(path)
+    tmp_path.unlink(missing_ok=True)
+    fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(text)
+        if os.geteuid() == 0:
+            os.chown(tmp_path, uid, gid)
+        os.chmod(tmp_path, mode)
+        tmp_path.replace(path)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
 
 
 class _Handler(socketserver.StreamRequestHandler):
