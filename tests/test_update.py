@@ -255,8 +255,67 @@ def test_apply_update_failure_is_recorded_and_reraised(tmp_path, monkeypatch, fa
     state = update_mod.load_state(current_version="0.1.0", path=state_path)
     assert state.last_update["status"] == "failed"
     assert "pip exploded" in state.last_update["message"]
-    # a failed apply must never advance current_version or previous_version
-    assert state.previous_version is None
+    # C1: pip may have got part-way, so the way back must be recorded.
+    assert state.previous_version == "0.1.0"
+
+
+def test_a_failed_restart_after_install_can_be_rolled_back(
+    tmp_path, monkeypatch, fake_release, no_op_privileged_steps
+):
+    """C1 (review triage): pip install succeeded, a service restart failed.
+    The new code is on disk; the state used to record no previous_version,
+    so rollback refused ("no previous version recorded")."""
+    monkeypatch.setattr(update_mod, "_installed_version", lambda: "0.1.0")
+
+    def restart_fails(services):
+        raise update_mod.UpdateError("systemctl try-restart fr-apply-helper.service failed")
+
+    monkeypatch.setattr(update_mod, "_restart_services", restart_fails)
+    state_path = tmp_path / "state.json"
+    with pytest.raises(update_mod.UpdateError, match="roll back to 0.1.0"):
+        update_mod.apply_update("0.2.0", state_path=state_path, releases_dir=tmp_path / "releases")
+    assert len(no_op_privileged_steps["installed"]) == 1  # the new code was installed
+
+    monkeypatch.setattr(update_mod, "_restart_services",
+                        lambda services: no_op_privileged_steps["restarted"].append(services))
+    monkeypatch.setattr(update_mod, "_installed_version", lambda: "0.2.0")  # after a reboot
+    assert update_mod.rollback_update(state_path=state_path, releases_dir=tmp_path / "releases") == "0.1.0"
+    assert len(no_op_privileged_steps["installed"]) == 2
+
+
+def test_the_attempt_is_recorded_before_anything_is_installed(tmp_path, monkeypatch, fake_release):
+    monkeypatch.setattr(update_mod, "_installed_version", lambda: "0.1.0")
+    state_path = tmp_path / "state.json"
+    seen = []
+
+    def install(release_dir):
+        seen.append(update_mod.load_state(current_version="0.1.0", path=state_path))
+
+    monkeypatch.setattr(update_mod, "_install_release_dir", install)
+    monkeypatch.setattr(update_mod, "_restart_services", lambda services: None)
+    monkeypatch.setattr(update_mod, "_restart_webui_delayed", lambda: None)
+    update_mod.apply_update("0.2.0", state_path=state_path, releases_dir=tmp_path / "releases")
+    [during] = seen
+    assert during.previous_version == "0.1.0"
+    assert during.last_update["status"] == "in_progress"
+
+
+def test_a_failed_download_keeps_the_earlier_rollback_target(tmp_path, monkeypatch):
+    """Nothing was changed, so the rollback target from the last good
+    update (0.1.0) must not be replaced by the running version."""
+    monkeypatch.setattr(update_mod, "_installed_version", lambda: "0.2.0")
+    state_path = tmp_path / "state.json"
+    update_mod.save_state(update_mod.UpdateState(current_version="0.2.0", previous_version="0.1.0"), state_path)
+
+    def no_network(repo, version, releases_dir, timeout):
+        raise update_mod.UpdateError("could not download")
+
+    monkeypatch.setattr(update_mod, "_fetch_release", no_network)
+    with pytest.raises(update_mod.UpdateError):
+        update_mod.apply_update("0.3.0", state_path=state_path, releases_dir=tmp_path / "releases")
+    state = update_mod.load_state(current_version="0.2.0", path=state_path)
+    assert state.previous_version == "0.1.0"
+    assert "roll back" not in state.last_update["message"]
 
 
 def test_rollback_update_without_previous_version_raises(tmp_path):
