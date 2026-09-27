@@ -35,6 +35,7 @@ class HelperClient(Protocol):
     def iot_sync_isolation(self, macs: list[str]) -> dict: ...
     def iot_isolation_status(self) -> dict: ...
     def iot_scan(self) -> dict: ...
+    def listening_sockets(self) -> dict: ...
 
 
 class SocketHelperClient:
@@ -88,6 +89,9 @@ class SocketHelperClient:
 
     def iot_scan(self) -> dict:
         return helper_client.iot_scan(self.socket_path)
+
+    def listening_sockets(self) -> dict:
+        return helper_client.listening_sockets(self.socket_path)
 
 
 class UpdateHelperClient(Protocol):

@@ -59,6 +59,9 @@ from __future__ import annotations
 #: MAC the current config marks as trusted (defense in depth: a
 #: misbehaving scanner still can't isolate a device the admin trusted).
 #: "iot_isolation_status" is its read-only counterpart.
+#: "listening_sockets" (see frfw.surface, security-lessons I3) lists every
+#: listening socket with `ss -p` -- root, so it can name the processes --
+#: and the interfaces' addresses, for the webUI's attack-surface view.
 COMMANDS = (
     "ping",
     "apply",
@@ -77,6 +80,8 @@ COMMANDS = (
     "dhcp_leases",
     "iot_sync_isolation",
     "iot_isolation_status",
+    "iot_scan",
+    "listening_sockets",
 )
 
 #: Maximum accepted request/response line length, to bound memory use from

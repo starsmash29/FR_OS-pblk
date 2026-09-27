@@ -41,6 +41,7 @@ from frfw.webui.routes import (
     mfa,
     nat,
     rules,
+    surface,
     system,
     tls,
     update,
@@ -124,6 +125,7 @@ def create_app(
     app.include_router(xdp.router)
     app.include_router(ztna.router)
     app.include_router(system.router)
+    app.include_router(surface.router)
     app.include_router(adblock.router)
     app.include_router(iot.router)
     app.include_router(apps.router)

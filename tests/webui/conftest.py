@@ -155,6 +155,13 @@ class FakeHelper:
         )
         return {"ok": True, "message": "fr-iot-scan.service finished"}
 
+    #: What `listening_sockets` reports (security-lessons I3); tests set it.
+    listeners: list[dict] = []
+    interface_addresses: dict[str, list[str]] = {}
+
+    def listening_sockets(self) -> dict:
+        return {"ok": True, "listeners": list(self.listeners), "addresses": dict(self.interface_addresses)}
+
 
 class FakeUpdateHelper:
     """An in-memory stand-in for the real Unix-socket update-helper.

@@ -813,6 +813,26 @@ for SHA-1, CBC or MD5 can't negotiate. When the addresses change, `apply` restar
 seconds later. `management.allow_wan` is the explicit opt-in, confirmed
 and warned on the System screen and in every `apply`.
 
+### Attack-surface view (security-lessons I3)
+
+*System -> Attack surface* (`frfw.surface`, `firewall-cli surface`) puts
+two facts from the running box together: every listening socket (`ss
+-Hlntup`, run by the apply-helper as root so it can name the processes
+it may -- the helper has no `CAP_SYS_PTRACE`, so others' are named by
+their well-known port) with the interface addresses, and what the input
+chain does with a new connection from each zone to that port, evaluated
+from the saved config in the same order the ruleset builder emits it
+(isolated-IoT and scheduled cut rules, the DNS-filter accept, the
+management drop, the admin's rules to `self`, `policy drop`). A socket
+bound to loopback is reachable from no zone, one bound to an address from
+the zones whose interfaces carry it, a wildcard one from all; conditional
+accepts (source address or MAC, ZTNA, schedule) show as *restricted*, and
+`ip saddr` rules count for IPv4 only. Anything open or restricted from an
+internet-facing zone is flagged first; `firewall-cli surface` exits 2
+then. What it can't see is said on the page: upstream NAT or the ISP,
+and port forwards to other hosts -- for those it suggests an `nmap` of
+the WAN address from outside (there is no built-in outside scanner).
+
 ### Every service in a sandbox (security-lessons I1)
 
 Every FR_OS unit runs in a systemd sandbox; `tests/test_systemd_sandbox.py`
