@@ -15,8 +15,9 @@ second one where the host reaches 192.168.1.1:443 through a port forward.
    webUI answers on the LAN. Then an ACPI power-off (the power button).
 3. Third boot: first boot does not run again, the admin password from the
    second boot still works, a setting changed through the webUI is on the
-   persistence partition afterwards, and once the admin changes the
-   password it is gone from the console.
+   persistence partition afterwards. The first sign-in goes through
+   first-run setup (own username and password), after which the generated
+   password is gone from the console.
 
 Between boots the persistence partition is mounted on the host to read the
 journal and files, so a failure says what went wrong. Needs root (losetup,
@@ -43,6 +44,7 @@ from pathlib import Path
 
 WEBUI_PORT = 8443
 NEW_PASSWORD = "changed-in-boot-3"
+NEW_USERNAME = "netadmin"
 DISK_SIZE = 2 * 2**30
 ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
@@ -224,11 +226,12 @@ def main() -> int:
     page = wait_for_webui(opener, boot_timeout)
     check(page is not None, "webUI up again")
     landed = post(opener, "/login", {"username": "admin", "password": password}) if page else ""
-    check(landed.endswith("/"), "the admin password from boot 2 still works")
-    if landed.endswith("/"):
+    check(landed.endswith("/setup"), "the admin password from boot 2 still works, and leads to first-run setup")
+    done = post(opener, "/setup", {"username": NEW_USERNAME, "password": NEW_PASSWORD,
+                                   "password_confirm": NEW_PASSWORD}) if landed else ""
+    check(done.endswith("/"), f"setup renamed the account to {NEW_USERNAME!r} with a new password")
+    if done.endswith("/"):
         post(opener, "/rules/timezone", {"timezone": "Europe/Budapest"})
-        post(opener, "/account/password", {"current_password": password, "new_password": NEW_PASSWORD,
-                                           "new_password_confirm": NEW_PASSWORD})
         time.sleep(5)  # fr-initial-password.path reacts to the account file
     check(vm.power_off(), "powered off")
     vm.kill()

@@ -77,11 +77,19 @@ def verify_password(password: str, stored: str) -> bool:
     return hmac.compare_digest(actual, expected)
 
 
+#: Names a first-run setup won't accept for the admin account: the ones
+#: every credential-stuffing list tries first (security-lessons G1).
+RESERVED_USERNAMES = frozenset({"admin", "administrator", "root", "user", "fr_os", "fros"})
+
+
 @dataclass(frozen=True)
 class AdminAccount:
     username: str
     password_hash: str
     role: str = ROLE_ADMIN
+    #: Set on the account first boot generates: the first sign-in goes to
+    #: the setup step (own username, own password) before anything else.
+    must_change: bool = False
 
     @property
     def is_admin(self) -> bool:
@@ -126,7 +134,8 @@ class AdminStore:
         if "users" not in data:  # pre-phase-18 single-account file
             return {data["username"]: AdminAccount(data["username"], data["password_hash"], ROLE_ADMIN)}
         return {
-            name: AdminAccount(name, entry["password_hash"], entry.get("role", ROLE_ADMIN))
+            name: AdminAccount(name, entry["password_hash"], entry.get("role", ROLE_ADMIN),
+                               bool(entry.get("must_change", False)))
             for name, entry in data["users"].items()
         }
 
@@ -150,7 +159,8 @@ class AdminStore:
         data = {
             "version": 2,
             "users": {
-                name: {"password_hash": a.password_hash, "role": a.role}
+                name: {"password_hash": a.password_hash, "role": a.role,
+                       **({"must_change": True} if a.must_change else {})}
                 for name, a in sorted(users.items())
             },
         }
@@ -166,18 +176,42 @@ class AdminStore:
             os.chown(tmp_path, parent.st_uid, parent.st_gid)
         tmp_path.replace(self.path)
 
-    def set_password(self, username: str, password: str, role: str | None = None) -> None:
+    def set_password(self, username: str, password: str, role: str | None = None, *,
+                     must_change: bool = False) -> None:
         """Create the account or change its password. A new account gets
         `role` (default admin -- this is also the CLI's recovery path); an
-        existing one keeps its role unless `role` is given."""
+        existing one keeps its role unless `role` is given. `must_change`
+        marks a generated password (first boot): the first sign-in then
+        has to finish setup."""
         users = self.users()
         existing = users.get(username)
         new_role = role or (existing.role if existing else ROLE_ADMIN)
         if new_role not in ROLES:
             raise AccountError(f"Unknown role {new_role!r}")
         self._check_keeps_an_admin(users, username, new_role)
-        users[username] = AdminAccount(username, hash_password(password), new_role)
+        users[username] = AdminAccount(username, hash_password(password), new_role, must_change)
         self._write(users)
+
+    def complete_setup(self, current: str, new_username: str, password: str) -> AdminAccount:
+        """First-run setup (security-lessons G1): the generated account
+        becomes `new_username` with the admin's own password; the
+        generated name and password stop working at once."""
+        validate_username(new_username)
+        if new_username in RESERVED_USERNAMES:
+            raise AccountError(f"Choose a username other than {new_username!r} -- it's the first one attackers try")
+        validate_password(password)
+        users = self.users()
+        account = users.get(current)
+        if account is None or not account.must_change:
+            raise AccountError("This account has already been set up")
+        if new_username != current and new_username in users:
+            raise AccountError(f"User {new_username!r} already exists")
+        if verify_password(password, account.password_hash):
+            raise AccountError("Choose a new password, not the generated one")
+        del users[current]
+        users[new_username] = AdminAccount(new_username, hash_password(password), account.role)
+        self._write(users)
+        return users[new_username]
 
     def add_user(self, username: str, password: str, role: str) -> None:
         validate_username(username)

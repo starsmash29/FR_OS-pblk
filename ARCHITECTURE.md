@@ -649,6 +649,10 @@ accounts and their state directories (`firewall-cli ensure-accounts`,
 systemd units. The admin password has
 to be set separately, interactively (`firewall-cli
 set-admin-password`) — the installer deliberately doesn't automate this.
+The account first boot generates is flagged `must_change`: its first
+sign-in reaches nothing but `/setup`, which turns it into the admin's own
+account -- a username that isn't `admin`/`root`/... and a new password
+(security-lessons G1); the generated login stops working at once.
 The webUI never creates an account itself: with none on disk its sign-in
 page only says to run that command on the console. (It used to let the
 first visitor create the admin account over the network, unthrottled, on

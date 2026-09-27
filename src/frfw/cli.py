@@ -424,7 +424,9 @@ def _cmd_set_admin_password(args: argparse.Namespace) -> int:
         # caller can safely capture it (e.g. `pw=$(firewall-cli
         # set-admin-password --generate)`) without scraping other output.
         password = secrets.token_urlsafe(18)
-        AdminStore().set_password(args.username, password, ROLE_ADMIN)
+        # The first sign-in then asks for the admin's own username and
+        # password (security-lessons G1).
+        AdminStore().set_password(args.username, password, ROLE_ADMIN, must_change=True)
         if args.show_on_console:
             initial_password.write(args.username, password)
             print(f"Generated a password for {args.username!r}; it is shown on the console "
