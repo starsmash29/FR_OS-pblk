@@ -593,7 +593,15 @@ systemd units (`systemd/`):
 - `fr-firewall.service` — applies the canonical config at boot, ordered
   after Debian's own `nftables.service` (early boot, before
   `network-pre.target`, so the rules are already in effect before
-  networking comes up).
+  networking comes up). It fails closed (`firewall-cli apply
+  --fail-closed`): with no `config.yaml`, or when an apply fails while no
+  FR_OS ruleset is loaded, it loads a baseline that lets in only
+  loopback, replies to the router's own connections and IPv6 neighbour
+  discovery, and forwards nothing (`frfw.apply.BASELINE_RULESET`). A
+  failed reload never replaces a working ruleset, and stopping or
+  restarting the unit leaves the ruleset loaded (no `ExecStop`). The
+  live image enables it from the very first boot, so the WAN that
+  live-boot brings up by DHCP is never unfiltered.
 - `fr-apply-helper.socket` + `fr-apply-helper.service` — the privileged
   apply-helper, with socket activation (see Security model below).
 - `fr-webui.service` — the actual FastAPI app (`fr-webui` binary), runs
@@ -656,7 +664,8 @@ commands:
 
 - `ping` — health check
 - `apply` (with a `dry_run` option) — applies the canonical config
-  (`frfw.provision.apply_all`: addresses → nftables → DHCP)
+  (`frfw.provision.apply_all`: nftables → addresses → DHCP; the ruleset
+  goes first so a missing NIC can't keep it from loading)
 - `rollback` — restores the most recent ruleset backup
 - `save_config` — takes a YAML string, validates it with
   `frfw.config.parse_config`, and only overwrites the canonical config

@@ -1,4 +1,4 @@
-"""Tests that frfw.provision.apply_all runs ifaddr -> nft -> kea in order
+"""Tests that frfw.provision.apply_all runs nft -> ifaddr -> kea in order
 and aggregates their messages. The nft/ip subprocess calls are
 monkeypatched (each is unit-tested against the real binaries elsewhere:
 test_builder.py, test_kea.py, test_ifaddr.py) so this stays focused on
@@ -46,8 +46,8 @@ def test_apply_all_runs_all_eleven_steps_in_order(minimal_config_dict, tmp_path)
     )
 
     assert len(result.messages) == 11
-    assert "No interface addresses" in result.messages[0]
-    assert "Ruleset applied" in result.messages[1]
+    assert "Ruleset applied" in result.messages[0]
+    assert "No interface addresses" in result.messages[1]
     assert "No DHCP zones" in result.messages[2]
     assert "Ad-block DNS resolver disabled" in result.messages[3]
     assert "XDP SNI filter disabled" in result.messages[4]
@@ -439,3 +439,24 @@ def test_apply_all_does_not_touch_xdp_blocklist_when_critical_limit_is_zero(
     )
 
     assert captured["config"].xdp_sni_filter.blocklist == ["manual.example.com"]
+
+
+def test_a_missing_interface_does_not_stop_the_ruleset_from_loading(minimal_config_dict, tmp_path, monkeypatch):
+    """A2 (review triage): addresses used to be synced first, so a device
+    name the machine doesn't have (e.g. the example config's eth0 on a box
+    with enp1s0) aborted the apply before any ruleset was loaded."""
+    loaded = []
+    monkeypatch.setattr(apply_mod, "_run_nft", lambda args, stdin: loaded.append(args))
+
+    def missing_device(config, dry_run=False):
+        raise ifaddr_mod.IfaddrError("Cannot find device \"eth9\"")
+
+    monkeypatch.setattr(ifaddr_mod, "sync_addresses", missing_device)
+    with pytest.raises(ifaddr_mod.IfaddrError):
+        apply_all(
+            parse_config(minimal_config_dict),
+            backup_dir=tmp_path / "backups",
+            kea_config_path=tmp_path / "kea.json",
+            xdp_state_path=tmp_path / "xdp_state.json",
+        )
+    assert ["-f", "-"] in loaded

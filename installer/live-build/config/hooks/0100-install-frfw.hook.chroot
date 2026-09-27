@@ -3,9 +3,9 @@
 # are in place. Installs frfw itself (bundled source, staged into
 # /opt/frfw-src by installer/build-live-image.sh before `lb build`
 # runs -- see that script), stages the systemd units and scripts, and
-# enables the one service the image actually auto-starts on first real
-# boot (fr-first-boot.service; it enables everything else itself, see
-# scripts/fr-first-boot.sh).
+# enables what the image starts on its first real boot: fr-first-boot
+# (which enables everything else, see scripts/fr-first-boot.sh),
+# fr-persistence-setup and fr-firewall (the fail-closed baseline).
 set -e
 
 echo "frfw: installing from bundled source (/opt/frfw-src)..."
@@ -44,6 +44,10 @@ install -d -m 0755 /opt/fr_os/releases
 
 systemctl enable fr-first-boot.service
 systemctl enable fr-persistence-setup.service
+# From the very first boot: until fr-first-boot has written a config this
+# loads the fail-closed baseline, so the WAN (DHCP'd by live-boot) is
+# never up unfiltered.
+systemctl enable fr-firewall.service
 
 echo "frfw: removing bundled source (already installed via pip)..."
 rm -rf /opt/frfw-src

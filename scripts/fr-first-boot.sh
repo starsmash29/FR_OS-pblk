@@ -94,7 +94,9 @@ for unit in \
     fr-update-helper.socket
 do
     systemctl enable "$unit"
-    if ! systemctl start "$unit"; then
+    # restart, not start: fr-firewall is already active with the
+    # fail-closed baseline (no config existed when it ran at boot).
+    if ! systemctl restart "$unit"; then
         FAILED_UNITS+=("$unit")
         echo "fr-first-boot: $unit failed to start -- see 'journalctl -u $unit'" >&2
     fi

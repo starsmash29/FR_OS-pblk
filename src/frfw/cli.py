@@ -2,7 +2,7 @@
 
     firewall-cli validate [config.yaml]
     firewall-cli render   [config.yaml]
-    firewall-cli apply    [config.yaml] [--dry-run]
+    firewall-cli apply    [config.yaml] [--dry-run] [--fail-closed]
     firewall-cli rollback [--list]
     firewall-cli detect-interfaces [--include-virtual]
     firewall-cli assign-interfaces --wan DEV --lan DEV [--opt NAME:DEV ...] [--out PATH]
@@ -58,6 +58,7 @@ from frfw.adblock import refresh as adblock_refresh
 from frfw.admin_account import ROLE_ADMIN, AdminStore
 from frfw.appid import load_catalog
 from frfw.appid.daemon import load_usage
+from frfw import apply as apply_mod
 from frfw.apply import NftError, list_backups, rollback_last
 from frfw.tlsfp.daemon import load_state as load_tlsfp_state
 from frfw.config import ConfigError, load_config, parse_config
@@ -133,6 +134,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--dry-run",
         action="store_true",
         help="check syntax and print what would happen, but don't load it",
+    )
+    p_apply.add_argument(
+        "--fail-closed",
+        action="store_true",
+        help="if there is no config, or the apply fails with no FR_OS ruleset loaded, "
+        "load the drop-everything baseline (fr-firewall.service uses this)",
     )
     p_apply.set_defaults(handler=_cmd_apply)
 
@@ -314,8 +321,24 @@ def _cmd_render(args: argparse.Namespace) -> int:
 
 
 def _cmd_apply(args: argparse.Namespace) -> int:
-    config = load_config(args.config)
-    result = apply_all(config, dry_run=args.dry_run)
+    fail_closed = args.fail_closed and not args.dry_run
+    if fail_closed and not Path(args.config).is_file():
+        # Expected on a live image before first boot writes the config.
+        apply_mod.load_baseline()
+        print(f"No config at {args.config}: fail-closed baseline loaded "
+              "(only loopback and replies to the router's own connections get in; nothing is forwarded)")
+        return 0
+    try:
+        config = load_config(args.config)
+        result = apply_all(config, dry_run=args.dry_run)
+    except Exception:
+        # Never leave the box unfiltered because of a bad config or a
+        # missing NIC -- but never replace a working ruleset either
+        # (nft -f is atomic, so a failed reload keeps the previous one).
+        if fail_closed and not apply_mod.fr_os_table_loaded():
+            apply_mod.load_baseline()
+            print("apply failed with no FR_OS ruleset loaded: fail-closed baseline loaded", file=sys.stderr)
+        raise
     for message in result.messages:
         print(message)
     return 0

@@ -96,7 +96,8 @@ cat <<EOF
 
 Done. Next steps:
   firewall-cli set-admin-password        # set the webUI's admin password
-  systemctl enable --now fr-firewall
+  systemctl enable --now fr-firewall     # fails closed: without a working config only
+                                        # loopback and established connections get in
   systemctl enable --now fr-apply-helper.socket
   systemctl enable --now fr-webui        # https://<router-ip>/
   systemctl enable --now fr-ai-ids                 # real-time AI IDS/IPS anomaly detection
