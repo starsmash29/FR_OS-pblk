@@ -58,3 +58,15 @@ def _never_touch_the_hosts_sshd(tmp_path, monkeypatch):
 
     monkeypatch.setattr(paths, "SSHD_MANAGEMENT_DROPIN_PATH", tmp_path / "sshd_config.d" / "40-fr_os-management.conf")
     monkeypatch.setattr(management, "SSHD_BINARY", "fr-os-tests-have-no-sshd")
+
+
+@pytest.fixture(autouse=True)
+def _never_touch_the_hosts_ip_forwarding(tmp_path_factory, monkeypatch):
+    """An apply turns IPv4 forwarding on (frfw.forwarding); in tests that
+    switch is a file of its own (not in tmp_path, which some tests list),
+    never the machine's /proc/sys."""
+    from frfw import forwarding
+
+    switch = tmp_path_factory.mktemp("proc_sys") / "ip_forward"
+    switch.write_text("0\n")
+    monkeypatch.setattr(forwarding, "IP_FORWARD_PATH", switch)

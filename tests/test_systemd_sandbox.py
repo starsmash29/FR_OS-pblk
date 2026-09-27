@@ -232,3 +232,10 @@ def test_every_service_has_a_writable_temp_dir(name):
     runtime = one(settings, "RuntimeDirectory")
     assert runtime, f"{name}: read-only /tmp and no RuntimeDirectory"
     assert f"TMPDIR=/run/{runtime}" in settings.get("Environment", []), name
+
+
+@pytest.mark.parametrize("name", ["fr-firewall.service", "fr-apply-helper.service", "fr-schedule-check.service"])
+def test_the_units_that_apply_can_turn_routing_on(name):
+    """An apply writes /proc/sys/net/ipv4/ip_forward (frfw.forwarding):
+    ProtectKernelTunables would make that read-only."""
+    assert one(service_section(name), "ProtectKernelTunables") != "yes"
