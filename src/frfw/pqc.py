@@ -329,6 +329,11 @@ def _require_root() -> None:
 
 
 def _test_sshd_config(sshd_binary: str) -> None:
+    if not paths.SSHD_PRIVSEP_DIR.is_dir():
+        # sshd isn't running (frfw.management keeps it off while nobody can
+        # log in), and `sshd -t` can't run without its privsep directory:
+        # ssh.service's own ExecStartPre=sshd -t checks it when it starts.
+        return
     try:
         proc = subprocess.run([sshd_binary, "-t"], capture_output=True, text=True)
     except FileNotFoundError as exc:
@@ -341,7 +346,8 @@ def _test_sshd_config(sshd_binary: str) -> None:
 
 def _reload_ssh_service() -> None:
     try:
-        proc = svc.systemctl("reload", "ssh")
+        # try-: a stopped sshd (nobody can log in) stays stopped.
+        proc = svc.systemctl("try-reload-or-restart", "ssh")
     except FileNotFoundError as exc:
         raise PqcError("'systemctl' not found") from exc
     if proc.returncode != 0:

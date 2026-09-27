@@ -26,10 +26,8 @@ the XDP program is reloaded the daemon exits and systemd restarts it
 
 from __future__ import annotations
 
-import grp
 import json
 import os
-import pwd
 import subprocess
 import sys
 import time
@@ -37,6 +35,7 @@ from pathlib import Path
 from typing import Callable
 
 from frfw import svc
+from frfw.privdrop import drop_privileges  # noqa: F401 -- re-exported for callers and tests
 from frfw import paths, xdp
 from frfw.config.schema import Config
 from frfw.helper import client as helper_client
@@ -47,7 +46,6 @@ from frfw.tlsfp.inventory import FingerprintInventory
 from frfw.tlsfp.reassembly import Reassembler
 
 SERVICE_NAME = "fr-tls-fp.service"
-RUN_AS_USER = paths.SENSOR_USER
 FLUSH_SECONDS = 30.0
 CONFIG_POLL_SECONDS = 30.0
 
@@ -143,27 +141,6 @@ def load_state(path: Path = paths.TLSFP_STATE_PATH) -> dict:
     if not isinstance(data, dict):
         return {"generated": None, "clients": {}, "events": [], "learning": True}
     return data
-
-
-def drop_privileges(user: str = RUN_AS_USER) -> None:
-    """Permanently become `user` (falling back to nobody on a dev box that
-    lacks it), keeping only the fr_os-webui group -- which lets it read
-    config.yaml and reach the apply-helper, where frfw.helper.peer limits
-    it to the sensor commands. Must succeed before any packet data is
-    read."""
-    try:
-        account = pwd.getpwnam(user)
-    except KeyError:
-        account = pwd.getpwnam("nobody")
-    try:
-        extra = [grp.getgrnam(paths.WEBUI_USER).gr_gid]
-    except KeyError:
-        extra = []
-    os.setgroups(extra)
-    os.setgid(account.pw_gid)
-    os.setuid(account.pw_uid)
-    if os.getuid() == 0 or os.geteuid() == 0:
-        raise RuntimeError("fr-tls-fp: failed to drop root privileges")
 
 
 def restart_service() -> None:

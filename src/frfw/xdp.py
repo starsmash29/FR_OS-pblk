@@ -777,10 +777,10 @@ def run_event_logger(*, poll_timeout_ms: int = 500) -> None:
     to exist (created only once `sync_sni_filter` has run with
     `enabled: true`, which may not have happened yet on first boot, or
     ever, if the feature is off), then logs every match to stdout
-    (captured by journald under that unit) forever. Runs as an
-    unprivileged, read-only consumer of a map it did not create --
-    reading a ring buffer needs no special privilege beyond being able
-    to open the pinned path."""
+    (captured by journald under that unit) forever. Opening the pinned
+    map needs CAP_BPF, so the unit starts as root with only that (and
+    what it takes to switch user); right after opening it the process
+    becomes fr_os-sensor for good (frfw.privdrop)."""
     while not PIN_EVENTS_PATH.exists():
         time.sleep(2)
 
@@ -788,6 +788,12 @@ def run_event_logger(*, poll_timeout_ms: int = 500) -> None:
         print(format_event_json(event), flush=True)
 
     with RingBufferReader(_log) as reader:
+        # Opening the pinned map needed root (CAP_BPF); reading it doesn't.
+        # Security-lessons I1: become fr_os-sensor before the first event.
+        if os.geteuid() == 0:
+            from frfw.privdrop import drop_privileges
+
+            drop_privileges()
         while True:
             reader.poll(poll_timeout_ms)
 

@@ -429,3 +429,24 @@ def _bare_dict() -> dict:
         "interfaces": {"wan": {"device": "eth0", "zone": "wan"}},
         "rules": [],
     }
+
+
+def test_sshd_check_is_left_to_ssh_service_while_sshd_is_stopped(tmp_path, monkeypatch):
+    """With SSH off (nobody can log in, security-lessons I1) there is no
+    /run/sshd and `sshd -t` can't run; ssh.service's own start check then
+    decides, and the drop-in is simply written."""
+    ran = []
+    monkeypatch.setattr(pqc.paths, "SSHD_PRIVSEP_DIR", tmp_path / "missing")
+    monkeypatch.setattr(pqc.subprocess, "run", lambda *a, **k: ran.append(a))
+    pqc._test_sshd_config("sshd")
+    assert ran == []
+
+
+def test_a_stopped_sshd_is_not_started_by_a_kex_change(monkeypatch):
+    import subprocess
+
+    calls = []
+    monkeypatch.setattr(pqc.svc, "systemctl", lambda action, unit, timeout=None: calls.append((action, unit))
+                        or subprocess.CompletedProcess([], 0, "", ""))
+    pqc._reload_ssh_service()
+    assert calls == [("try-reload-or-restart", "ssh")]

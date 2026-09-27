@@ -10,14 +10,35 @@ Type=simple
 # (needs CAP_BPF), then drops to fr_os-sensor for good before reading any
 # packet data (frfw.tlsfp.daemon.drop_privileges). The capability bounding
 # set is exactly what those two steps need -- checked by hand with setpriv.
-CapabilityBoundingSet=CAP_BPF CAP_SETUID CAP_SETGID
-NoNewPrivileges=yes
 ExecStart=fr-tls-fp
 Restart=always
 RestartSec=5
-ProtectSystem=full
-ProtectHome=true
+# Sandbox (security-lessons I1; checked by tests/test_systemd_sandbox.py).
+# Root only long enough to open a pinned BPF map: nothing but CAP_BPF and
+# what switching to fr_os-sensor takes (frfw.privdrop). /sys stays writable
+# (no ProtectKernelTunables): the pinned maps live on bpffs under it.
+NoNewPrivileges=yes
+ProtectSystem=strict
 ReadWritePaths=-/etc/fr_os/sensors
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+SystemCallFilter=@system-service bpf
+SystemCallErrorNumber=EPERM
+RestrictAddressFamilies=AF_UNIX
+CapabilityBoundingSet=CAP_BPF CAP_SETUID CAP_SETGID
 
 [Install]
 WantedBy=multi-user.target

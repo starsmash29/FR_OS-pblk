@@ -95,3 +95,26 @@ def test_webui_pulls_in_the_cleanup():
     assert {"fr-initial-password.path", "fr-initial-password.service"} <= set(wants)
     path_unit = (REPO_ROOT / "systemd" / "fr-initial-password.path").read_text()
     assert "PathChanged=/etc/fr_os/webui/auth.json" in path_unit
+
+
+def test_checking_never_writes_the_account_file(tmp_path, store):
+    """fr-initial-password's sandbox can't write the webUI's account file
+    (security-lessons I1), so the check must not upgrade an old hash in
+    place the way a sign-in does."""
+    import hashlib
+    import json
+    import os
+
+    salt = os.urandom(16)
+    digest = hashlib.pbkdf2_hmac("sha256", b"pw-123456", salt, 200_000)
+    store.path.write_text(json.dumps({"version": 2, "users": {"admin": {
+        "password_hash": f"pbkdf2_sha256$200000${salt.hex()}${digest.hex()}", "role": ROLE_ADMIN}}}))
+    before = store.path.read_text()
+    path = tmp_path / "fr_os-initial-admin.issue"
+    initial_password.write("admin", "pw-123456", path=path)
+    store.path.parent.chmod(0o555)  # as read-only as in the unit
+    try:
+        assert initial_password.clear_if_changed(store, path=path) is False
+    finally:
+        store.path.parent.chmod(0o755)
+    assert store.path.read_text() == before

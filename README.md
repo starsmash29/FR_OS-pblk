@@ -95,11 +95,13 @@ dd if=fr_os_hybrid.iso of=/dev/sdX bs=4M status=progress oflag=sync
    Only the console's login screen shows it: it is in a root-only file,
    not in the world-readable `/etc/issue`.
 
-**SSH** (if you install it) is keys-only and closed by default: it
-listens on the LAN only, refuses root and passwords, and admits only
-members of the `fr_os-ssh` group. To allow yourself in:
-`sudo usermod -aG fr_os-ssh YOU` and put your public key in
-`~YOU/.ssh/authorized_keys` (`apply` tells you when nobody can log in).
+**SSH** is keys-only and **off** until someone can use it: sshd is
+stopped while nobody has a key, and once running it listens on the LAN
+only, refuses root and passwords, and admits only members of the
+`fr_os-ssh` group. To allow yourself in, on the console:
+`sudo usermod -aG fr_os-ssh YOU`, put your public key in
+`~YOU/.ssh/authorized_keys`, then `sudo firewall-cli apply` -- that
+starts sshd.
 
 A screen, a serial console (115200 baud) or neither: the boot menu
 continues by itself after 5 seconds. Booting from something read-only (a

@@ -145,6 +145,12 @@ SSHD_PQC_DROPIN_PATH = Path("/etc/ssh/sshd_config.d/50-fr_os-pqc-kex.conf")
 #: options, and reads sshd_config.d/*.conf in order.
 SSHD_MANAGEMENT_DROPIN_PATH = Path("/etc/ssh/sshd_config.d/40-fr_os-management.conf")
 
+#: sshd's privilege-separation directory: `sshd -t` refuses to run
+#: without it, and only a running ssh.service creates it
+#: (RuntimeDirectory=sshd). SSH is off while nobody can log in
+#: (frfw.management.sync_sshd), so checks must cope with it missing.
+SSHD_PRIVSEP_DIR = Path("/run/sshd")
+
 #: Deduped, hosts-format ad/tracker blocklist (phase 9, see
 #: frfw.adblock) -- `0.0.0.0 <domain>` per line, one entry per unique
 #: domain across every configured `adblocker.source_urls` list. This is

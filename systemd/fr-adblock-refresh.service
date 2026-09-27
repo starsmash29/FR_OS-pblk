@@ -8,7 +8,32 @@ Type=oneshot
 # display-only state, and asks the privileged apply-helper for anything
 # else), this writes to /etc/fr_os/adblock.hosts -- root, the same way
 # fr-firewall.service itself runs.
-ProtectSystem=full
-ProtectHome=true
-ReadWritePaths=/etc/fr_os
 ExecStart=firewall-cli adblock-refresh /etc/fr_os/config.yaml
+# Sandbox (security-lessons I1; checked by tests/test_systemd_sandbox.py).
+# Downloads block lists into /etc/fr_os and restarts fr-adblock-dns (over
+# D-Bus, as uid 0). Needs no capability at all.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/etc/fr_os
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+SystemCallErrorNumber=EPERM
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
