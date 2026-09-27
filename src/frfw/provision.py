@@ -89,7 +89,7 @@ def apply_all(
     adblock_dnsmasq_conf_path: Path = paths.ADBLOCK_DNSMASQ_CONF_PATH,
     adblock_category_dir: Path = paths.ADBLOCK_CATEGORY_DIR,
     schedule_state_path: Path = paths.SCHEDULE_STATE_PATH,
-    ssh_management_dropin_path: Path = paths.SSHD_MANAGEMENT_DROPIN_PATH,
+    ssh_management_dropin_path: Path | None = None,
 ) -> ProvisionResult:
     messages = []
 

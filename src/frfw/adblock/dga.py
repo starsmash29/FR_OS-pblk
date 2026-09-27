@@ -58,7 +58,7 @@ MIN_LENGTH = 10
 MIN_ENTROPY = 3.0
 MAX_COMMON_BIGRAM_RATIO = 0.40
 
-_LABEL_RE = re.compile(r"^[a-z0-9-]+$")
+_LABEL_RE = re.compile(r"^[a-z0-9-]+\Z")
 
 
 def registered_label(name: str) -> str | None:

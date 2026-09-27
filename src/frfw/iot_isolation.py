@@ -31,9 +31,10 @@ import json
 import re
 import subprocess
 
+from frfw import validate
 from frfw.nft.builder import FILTER_TABLE, IOT_ISOLATED_SET_NAME
 
-_MAC_RE = re.compile(r"^([0-9a-f]{2}:){5}[0-9a-f]{2}$")
+_MAC_RE = re.compile(r"^([0-9a-f]{2}:){5}[0-9a-f]{2}\Z")
 
 #: Upper bound on one sync request -- far above any real home/small-office
 #: network, low enough that a bogus request can't build a huge nft script.
@@ -147,6 +148,6 @@ def _nft_script(script: str) -> None:
 
 def _run_nft(args: list[str]) -> subprocess.CompletedProcess:
     try:
-        return subprocess.run(["nft", *args], capture_output=True, text=True)
+        return subprocess.run(validate.nft_argv(args), capture_output=True, text=True)
     except FileNotFoundError as exc:
         raise IotIsolationError("'nft' binary not found; install the nftables package") from exc

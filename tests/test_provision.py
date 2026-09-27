@@ -171,6 +171,7 @@ def test_apply_all_dry_run_touches_nothing(dhcp_config_dict, tmp_path, monkeypat
         "IoT isolation disabled",
         "PQC hybrid TLS disabled",
         "sshd not installed",
+        "PQC hybrid SSH KEX disabled",  # sshd installed, PQC never enabled
         "Ad-block DNS resolver disabled",
     )
     for message in result.messages:
@@ -195,7 +196,7 @@ def test_apply_all_applies_addresses_and_dhcp_together(dhcp_config_dict, tmp_pat
 
     assert ip_calls == [
         ["addr", "replace", "10.0.0.1/24", "dev", "lo"],
-        ["link", "set", "lo", "up"],
+        ["link", "set", "dev", "lo", "up"],
     ]
     assert kea_path.exists()
     assert "Kea DHCP config applied" in result.messages[2]

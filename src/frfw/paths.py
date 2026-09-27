@@ -33,6 +33,8 @@ APPLY_SOCKET_PATH = RUNTIME_DIR / "apply.sock"
 #: helper commands frfw.helper.peer.SENSOR_COMMANDS allows.
 WEBUI_USER = "fr_os-webui"
 SENSOR_USER = "fr_os-sensor"
+#: Who may log in over SSH (sshd AllowGroups, security-lessons F3).
+SSH_GROUP = "fr_os-ssh"
 
 #: The parser daemons' display-only output (AI IDS events, IoT inventory,
 #: App-ID usage, TLS fingerprints): fr_os-sensor:fr_os-webui 0750, written

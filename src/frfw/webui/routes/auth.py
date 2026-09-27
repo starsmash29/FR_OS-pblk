@@ -71,7 +71,10 @@ def login_submit(
 
 
 @router.post("/logout")
-def logout():
+def logout(request: Request, session_manager: SessionManager = Depends(get_session_manager)):
+    # Security-lessons G7: the session ends on the server, not only in
+    # this browser -- a copied cookie stops working too.
+    session_manager.revoke_cookie(request.cookies.get(COOKIE_NAME))
     response = RedirectResponse("/login", status_code=303)
     response.delete_cookie(COOKIE_NAME)
     return response
@@ -108,6 +111,7 @@ def setup_submit(
         account = admin_store.complete_setup(username, new_username, password)
     except AccountError as exc:
         return redirect_with("/setup", error=str(exc))
+    session_manager.revoke_user(username)  # the generated account's sessions end
     audit.append(audit_log_path, {"user": account.username, "client": client_ip(request),
                                   "event": f"first-run setup: renamed {username!r}"})
     response = RedirectResponse("/", status_code=303)

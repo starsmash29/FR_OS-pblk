@@ -76,7 +76,7 @@ _IGNORED_HOSTNAMES = frozenset(
 #: on frfw.config (a malformed line here should be dropped, not raise a
 #: ConfigError; a blocklist download is untrusted third-party data, not
 #: this router's own configuration).
-_HOSTNAME_RE = re.compile(r"^(?!-)[a-zA-Z0-9-]{1,63}(?<!-)(\.(?!-)[a-zA-Z0-9-]{1,63}(?<!-))*$")
+_HOSTNAME_RE = re.compile(r"^(?!-)[a-zA-Z0-9-]{1,63}(?<!-)(\.(?!-)[a-zA-Z0-9-]{1,63}(?<!-))*\Z")
 
 #: Default per-URL fetch timeout and concurrency, mirroring
 #: frfw.update's explicit-timeout convention.

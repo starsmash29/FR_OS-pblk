@@ -2,6 +2,7 @@
 
     firewall-cli validate [config.yaml]
     firewall-cli render   [config.yaml]
+    firewall-cli config-export [config.yaml]
     firewall-cli apply    [config.yaml] [--dry-run] [--fail-closed]
     firewall-cli rollback [--list]
     firewall-cli detect-interfaces [--include-virtual]
@@ -127,6 +128,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p_render = sub.add_parser("render", help="print the generated nftables ruleset")
     add_config_arg(p_render)
     p_render.set_defaults(handler=_cmd_render)
+
+    p_export = sub.add_parser(
+        "config-export", help="print the config without its secrets (ZTNA hashes, metrics token), safe to share"
+    )
+    add_config_arg(p_export)
+    p_export.set_defaults(handler=_cmd_config_export)
 
     p_apply = sub.add_parser(
         "apply", help="apply interface addresses, the nftables ruleset, and DHCP"
@@ -332,6 +339,14 @@ def _cmd_validate(args: argparse.Namespace) -> int:
 def _cmd_render(args: argparse.Namespace) -> int:
     config = load_config(args.config)
     print(build_ruleset(config), end="")
+    return 0
+
+
+def _cmd_config_export(args: argparse.Namespace) -> int:
+    from frfw.config.export import export_text
+
+    raw = yaml.safe_load(Path(args.config).read_text()) or {}
+    sys.stdout.write(export_text(raw))
     return 0
 
 

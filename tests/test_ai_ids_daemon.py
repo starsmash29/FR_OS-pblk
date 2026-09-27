@@ -278,7 +278,7 @@ def test_is_daemon_active_reflects_systemctl_output(monkeypatch):
     def fake_run(args, capture_output, text):
         import subprocess
 
-        assert args == ["systemctl", "is-active", "fr-ai-ids.service"]
+        assert args == ["systemctl", "is-active", "--", "fr-ai-ids.service"]
         return subprocess.CompletedProcess(args, 0, stdout="active\n", stderr="")
 
     monkeypatch.setattr(daemon_mod.subprocess, "run", fake_run)

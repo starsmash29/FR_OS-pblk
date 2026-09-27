@@ -44,7 +44,7 @@ _MAX_RECORDS = 256
 _MAX_PACKET = 9000
 _MAX_SERVICES_PER_HOST = 64
 
-_SERVICE_TYPE_RE = re.compile(r"^_[a-z0-9][a-z0-9-]{0,62}\._(tcp|udp)$")
+_SERVICE_TYPE_RE = re.compile(r"^_[a-z0-9][a-z0-9-]{0,62}\._(tcp|udp)\Z")
 
 
 class MdnsError(Exception):

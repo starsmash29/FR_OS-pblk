@@ -17,6 +17,7 @@ import os
 import subprocess
 from dataclasses import dataclass
 
+from frfw import validate
 from frfw.config.schema import Config, Interface
 
 
@@ -49,8 +50,16 @@ def sync_addresses(config: Config, *, dry_run: bool = False) -> SyncResult:
 
 
 def _apply_one(iface: Interface) -> None:
-    _run_ip(["addr", "replace", iface.address, "dev", iface.device])
-    _run_ip(["link", "set", iface.device, "up"])
+    # Security-lessons F1: validated again here, and always after the
+    # `dev` keyword -- iproute2 has no `--`, but takes whatever follows
+    # `dev` as the name, never as an option.
+    try:
+        device = validate.ifname(iface.device)
+        address = validate.ipv4_interface(iface.address)
+    except validate.ArgumentError as exc:
+        raise IfaddrError(str(exc)) from exc
+    _run_ip(["addr", "replace", address, "dev", device])
+    _run_ip(["link", "set", "dev", device, "up"])
 
 
 def _require_root() -> None:

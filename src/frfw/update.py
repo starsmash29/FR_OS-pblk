@@ -56,7 +56,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-from frfw import __version__, paths, release_signing
+from frfw import __version__, paths, release_signing, validate
 
 #: This project's own repo; checked/installed from unless config.yaml's
 #: `update.repo` overrides it (see frfw.config.schema.UpdateConfig).
@@ -90,7 +90,7 @@ _WEBUI_RESTART_DELAY_SECONDS = 3
 #: restarted).
 _UNIT_FILES_NOT_RESTARTED = frozenset({"fr-first-boot.service"})
 
-_VERSION_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
+_VERSION_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)\Z")
 
 
 class UpdateError(Exception):
@@ -146,7 +146,9 @@ def parse_version(text: str) -> tuple[int, int, int]:
     Raises `UpdateError` (not `ValueError`) so callers already catching
     the module's own exception type don't need a second `except`.
     """
-    match = _VERSION_RE.match(text.strip())
+    # No .strip(): a version with whitespace or a newline in it is not one
+    # (security-lessons F1) -- it names directories removed and installed as root.
+    match = _VERSION_RE.match(text) if isinstance(text, str) else None
     if not match:
         raise UpdateError(f"not a recognized vMAJOR.MINOR.PATCH version: {text!r}")
     return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
@@ -218,7 +220,7 @@ def list_releases(
     """Most recent releases (newest first), for a changelog display."""
     try:
         raw = _fetch_json(
-            f"https://api.github.com/repos/{repo}/releases?per_page={limit}", timeout
+            f"https://api.github.com/repos/{_checked_repo(repo)}/releases?per_page={int(limit)}", timeout
         )
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
@@ -240,7 +242,7 @@ def check_latest(
     """
     checked_at = _now()
     try:
-        raw = _fetch_json(f"https://api.github.com/repos/{repo}/releases/latest", timeout)
+        raw = _fetch_json(f"https://api.github.com/repos/{_checked_repo(repo)}/releases/latest", timeout)
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
             return UpdateCheckResult(
@@ -290,9 +292,18 @@ def _download(url: str, dest: Path, timeout: float) -> None:
         raise UpdateError(f"could not download {url}: {exc}") from exc
 
 
+def _checked_repo(repo: str) -> str:
+    """Security-lessons F1: `update.repo` goes into URLs the root updater
+    fetches code from -- only a plain OWNER/NAME."""
+    try:
+        return validate.github_repo(repo)
+    except validate.ArgumentError as exc:
+        raise UpdateError(str(exc)) from exc
+
+
 def _download_release_assets(repo: str, tag: str, version: str, dest: Path, timeout: float) -> None:
     """The source tarball and the signed checksums, from the release."""
-    base = f"https://github.com/{repo}/releases/download/{tag}"
+    base = f"https://github.com/{_checked_repo(repo)}/releases/download/{tag}"
     for name in (release_signing.source_tarball_name(version), release_signing.SUMS_NAME,
                  release_signing.SIGNATURE_NAME):
         _download(f"{base}/{name}", dest / name, timeout)
@@ -400,6 +411,7 @@ def _install_release_dir(release_dir: Path) -> None:
             "install",
             "--break-system-packages",
             "--no-cache-dir",
+            "--",
             f"{release_dir}[webui]",
         ]
     )
@@ -414,7 +426,7 @@ def _restart_services(services: tuple[str, ...]) -> None:
         # try-restart (not restart): a no-op, successfully, for a unit
         # the admin never enabled -- e.g. fr-firewall isn't necessarily
         # running in a webUI-only test setup.
-        _run(["systemctl", "try-restart", unit])
+        _run(["systemctl", "try-restart", "--", validate.systemd_unit(unit)])
 
 
 def _restart_webui_delayed(delay_seconds: int = _WEBUI_RESTART_DELAY_SECONDS) -> None:
@@ -434,6 +446,7 @@ def _restart_webui_delayed(delay_seconds: int = _WEBUI_RESTART_DELAY_SECONDS) ->
             "--unit=fr-webui-restart",
             "systemctl",
             "try-restart",
+            "--",
             WEBUI_SERVICE,
         ]
     )
@@ -552,6 +565,9 @@ def rollback_update(
     if not state.previous_version:
         raise UpdateError("no previous version recorded to roll back to")
     target = state.previous_version
+    # Security-lessons F1 / review triage C2: the state file names a
+    # directory rmtree'd and pip-installed as root -- only a real version.
+    parse_version(target)
 
     try:
         _install_and_activate(target, repo, releases_dir, timeout)

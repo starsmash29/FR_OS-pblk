@@ -693,6 +693,63 @@ creates the accounts, so an update that brings these units also brings
 the account they need. The update-helper's socket is 0600 and owned by
 `fr_os-webui`, and that helper accepts only root and the webUI.
 
+### Password hashing (security-lessons G2)
+
+Passwords (webUI accounts, ZTNA users) are hashed with `hashlib.scrypt`
+(OpenSSL through the standard library -- no compiled dependency, the
+reason argon2 was avoided), N=2^15, r=8, p=3: OWASP's equivalent of
+N=2^17 at a quarter of the memory, 32 MiB per check. The hash string
+carries its parameters (`scrypt$N$r$p$salt$digest`). A hash from before
+this (PBKDF2-SHA256, 200 000 iterations) still verifies at that floor and
+is replaced in place on the next successful sign-in; the old hash is not
+kept anywhere.
+
+### Sessions end on the server (security-lessons G7)
+
+A session is a signed cookie *and* an entry in `sessions.json` next to
+the session key (0600; only SHA-256s of the session ids, so the file
+holds nothing a browser could present). A request needs both. Logout
+removes the entry, so a copied cookie stops working at once; *Account ->
+Log out everywhere* removes every entry of the account; a password
+change removes all of them (the browser that made the change gets a new
+one), and so do an admin's password reset and deleting the account.
+Role changes need no revocation: every request re-reads the account.
+
+### Secrets stay on the box (security-lessons G3)
+
+`auth.json` (webUI accounts) is created 0600, `config.yaml` stays 0640
+root:fr_os-webui through every save (A6), the session key and TLS key
+never leave `/etc/fr_os/webui` (0700). No webUI page or API response
+carries a hash, salt, digest, token, or key -- a test renders every GET
+route to prove it. Every export goes through
+`frfw.config.export.redacted()` (`firewall-cli config-export`), which
+leaves ZTNA password hashes and the metrics digest out.
+
+### Review checklist for anything that authenticates (security-lessons H1)
+
+- The client never chooses how strictly it is checked: no request field,
+  header, cookie or negotiated option may skip or weaken a check.
+- Every auth path fails closed and has negative tests -- forged, missing,
+  replayed, expired and downgraded credentials -- next to
+  `tests/webui/test_auth_negative.py`.
+- Identity comes from the server side: the session signature and the
+  account file, the TCP peer address (never `X-Forwarded-For`), the
+  kernel's `SO_PEERCRED` -- never from what a request says about itself.
+- Stored secrets can't downgrade the check either (a hash naming a weak
+  algorithm or too few iterations never verifies).
+
+### No argument injection (security-lessons F1)
+
+No shell anywhere (`shell=True`, `os.system`). Every value that reaches
+a command line -- interface names, addresses, MACs, unit names, versions,
+repos, disk paths, host names -- passes a strict allow-list in
+`frfw.validate` (anchored with `\Z`, never `$`, which lets a trailing
+newline through), both where the config is parsed and at the call site.
+Tools that support it get `--` before positional values; `ip` doesn't,
+so the name always follows `dev`. `tests/test_argv_injection.py` throws
+values starting with `-`, containing spaces, newlines, `;`, quotes and
+nft/shell metacharacters at all of it.
+
 ### Management plane off the WAN (security-lessons F2/G4)
 
 The webUI and sshd are reachable only from the management zones -- by
@@ -702,7 +759,18 @@ ahead of the admin's rules; the webUI binds loopback and the management
 interfaces' static addresses instead of 0.0.0.0 (one socket each, with
 `IP_FREEBIND` so a LAN address that isn't up yet doesn't stop it); sshd
 gets a `ListenAddress` drop-in (validated with `sshd -t`, reloaded, never
-restarted). When the addresses change, `apply` restarts the webUI a few
+restarted). The same drop-in hardens sshd's authentication
+(security-lessons F3): `PasswordAuthentication no`, `AuthenticationMethods
+publickey`, `PermitRootLogin no`, `AllowGroups fr_os-ssh` (a group
+`ensure-accounts` creates empty -- no SSH login until the admin adds
+someone with a key), `MaxAuthTries 3`, `LoginGraceTime 30`. It sorts
+before distribution drop-ins (e.g. cloud-init's 50-), and sshd keeps the
+first value it reads, so these win; `apply` says who can log in. It
+also allows only strong crypto (security-lessons H3): KexAlgorithms
+sntrup761x25519/curve25519/DH group 16-18 with SHA-512 (left to the PQC
+drop-in, ML-KEM hybrid first, when PQC is on), Ciphers ChaCha20-Poly1305,
+AES-GCM and AES-CTR, and only encrypt-then-MAC MACs -- a client asking
+for SHA-1, CBC or MD5 can't negotiate. When the addresses change, `apply` restarts the webUI a few
 seconds later. `management.allow_wan` is the explicit opt-in, confirmed
 and warned on the System screen and in every `apply`.
 

@@ -175,7 +175,7 @@ def is_daemon_active() -> bool:
     user may run, same as frfw.ai_ids.daemon.is_daemon_active."""
     try:
         proc = subprocess.run(
-            ["systemctl", "is-active", APPID_SERVICE_NAME], capture_output=True, text=True
+            ["systemctl", "is-active", "--", APPID_SERVICE_NAME], capture_output=True, text=True
         )
     except FileNotFoundError:
         return False

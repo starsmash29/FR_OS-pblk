@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from frfw import paths
+from frfw import paths, validate
 from frfw.nft.builder import FILTER_TABLE
 
 
@@ -57,7 +57,7 @@ def capture_running_ruleset() -> str:
     """Return the ruleset currently loaded in the kernel (`nft list ruleset`)."""
     try:
         proc = subprocess.run(
-            ["nft", "list", "ruleset"], capture_output=True, text=True, env=_nft_env()
+            validate.nft_argv(["list", "ruleset"]), capture_output=True, text=True, env=_nft_env()
         )
     except FileNotFoundError as exc:
         raise NftError("'nft' binary not found; install the nftables package") from exc
@@ -124,7 +124,7 @@ def fr_os_table_loaded() -> bool:
     """Whether an FR_OS ruleset (the real one or the baseline) is in the
     kernel right now."""
     try:
-        proc = subprocess.run(["nft", "list", "table", "inet", FILTER_TABLE],
+        proc = subprocess.run(validate.nft_argv(["list", "table", "inet", FILTER_TABLE]),
                               capture_output=True, text=True, env=_nft_env())
     except FileNotFoundError:
         return False
@@ -192,7 +192,7 @@ def _prune_backups(backup_dir: Path, retention: int) -> None:
 def _run_nft(args: list[str], stdin_text: str) -> None:
     try:
         proc = subprocess.run(
-            ["nft", *args],
+            validate.nft_argv(args),
             input=stdin_text,
             capture_output=True,
             text=True,

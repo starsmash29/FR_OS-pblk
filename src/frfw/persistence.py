@@ -39,6 +39,8 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from frfw import validate
+
 LABEL = "persistence"
 CONF_NAME = "persistence.conf"
 #: Persist the whole root filesystem (live-boot's "full persistence").
@@ -202,6 +204,7 @@ def free_space_after_last_partition(sfdisk_json: str, disk_bytes: int) -> FreeSp
 
 
 def _disk_bytes(disk: str) -> int:
+    # blockdev has no `--`; `disk` was validated by the caller.
     return int(_run(["blockdev", "--getsize64", disk]).strip())
 
 
@@ -210,14 +213,24 @@ def _partition_path(disk: str, number: int) -> str:
     return f"{disk}p{number}" if disk[-1].isdigit() else f"{disk}{number}"
 
 
+def _check_device_path(device: str) -> None:
+    """Security-lessons F1: a plain /dev node, never an option or a path
+    trick, before it reaches sfdisk/wipefs/mkfs (which also get `--`)."""
+    try:
+        validate.block_device(device)
+    except validate.ArgumentError as exc:
+        raise PersistenceError(str(exc)) from exc
+
+
 def _make_filesystem(partition: str) -> None:
-    _run(["mkfs.ext4", "-q", "-F", "-L", LABEL, partition])
+    _check_device_path(partition)
+    _run(["mkfs.ext4", "-q", "-F", "-L", LABEL, "--", partition])
     with tempfile.TemporaryDirectory(prefix="fros-persistence-") as mountpoint:
-        _run(["mount", partition, mountpoint])
+        _run(["mount", "--", partition, mountpoint])
         try:
             Path(mountpoint, CONF_NAME).write_text(CONF_CONTENT)
         finally:
-            _run(["umount", mountpoint], check=False)
+            _run(["umount", "--", mountpoint], check=False)
 
 
 # -- creating it -------------------------------------------------------------------
@@ -228,10 +241,11 @@ def create_on_boot_medium(disk: str, *, check_device: bool = True) -> str:
     of `disk` (the medium FR_OS booted from). Returns the new partition.
     `check_device=False` skips the CD/loop/read-only refusal -- for tests
     on a loop device only."""
+    _check_device_path(disk)
     reason = disk_is_suitable(disk) if check_device else None
     if reason:
         raise PersistenceError(reason)
-    space = free_space_after_last_partition(_run(["sfdisk", "--json", disk]), _disk_bytes(disk))
+    space = free_space_after_last_partition(_run(["sfdisk", "--json", "--", disk]), _disk_bytes(disk))
     if space.size < MIN_BYTES:
         raise PersistenceError(
             f"only {space.size // 2**20} MiB free after the last partition on {disk} "
@@ -239,13 +253,13 @@ def create_on_boot_medium(disk: str, *, check_device: bool = True) -> str:
         )
     part_type = "L" if space.table == "gpt" else "83"
     start_sector = space.start // space.sector_size
-    _run(["sfdisk", "--append", "--no-reread", "--no-tell-kernel", disk],
+    _run(["sfdisk", "--append", "--no-reread", "--no-tell-kernel", "--", disk],
          input_text=f"start={start_sector}, type={part_type}\n")
     number = space.last_partition + 1
     partition = _partition_path(disk, number)
     # Tell the kernel about the new partition without re-reading the whole
     # (busy) table.
-    _run(["partx", "--add", "--nr", str(number), disk], check=False)
+    _run(["partx", "--add", "--nr", str(number), "--", disk], check=False)
     if not Path(partition).exists():
         _run(["udevadm", "settle"], check=False)
     if not Path(partition).exists():
@@ -258,6 +272,7 @@ def create_on_disk(disk: str, *, wipe: bool = False) -> str:
     """Make `disk` (a whole disk, e.g. an internal SSD) a persistence disk:
     one partition spanning it. Refuses a disk with partitions or mounted
     filesystems unless `wipe` is set (mounted ones are always refused)."""
+    _check_device_path(disk)
     if parent_disk(disk) != disk:
         raise PersistenceError(f"{disk} is a partition; name the whole disk")
     reason = disk_is_suitable(disk)
@@ -267,12 +282,12 @@ def create_on_disk(disk: str, *, wipe: bool = False) -> str:
                if src == disk or parent_disk(src) == disk]
     if mounted:
         raise PersistenceError(f"{disk} is in use ({', '.join(sorted(set(mounted)))} mounted)")
-    existing = _run(["sfdisk", "--json", disk], check=False)
+    existing = _run(["sfdisk", "--json", "--", disk], check=False)
     if existing.strip() and json.loads(existing).get("partitiontable", {}).get("partitions") and not wipe:
         raise PersistenceError(f"{disk} already has partitions -- pass --wipe to erase everything on it")
-    _run(["wipefs", "--all", "--quiet", disk])
-    _run(["sfdisk", "--quiet", disk], input_text="label: gpt\n,,L\n")
-    _run(["partx", "--update", disk], check=False)
+    _run(["wipefs", "--all", "--quiet", "--", disk])
+    _run(["sfdisk", "--quiet", "--", disk], input_text="label: gpt\n,,L\n")
+    _run(["partx", "--update", "--", disk], check=False)
     _run(["udevadm", "settle"], check=False)
     partition = _partition_path(disk, 1)
     if not Path(partition).exists():

@@ -16,7 +16,7 @@ from pathlib import Path
 
 OUI_CSV_PATH = Path("/usr/share/ieee-data/oui.csv")
 
-_MAC_RE = re.compile(r"^([0-9a-f]{2}:){5}[0-9a-f]{2}$")
+_MAC_RE = re.compile(r"^([0-9a-f]{2}:){5}[0-9a-f]{2}\Z")
 
 
 def normalize_mac(mac: str) -> str | None:

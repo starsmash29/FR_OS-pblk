@@ -179,7 +179,7 @@ def restart_service() -> None:
 
 def is_daemon_active() -> bool:
     try:
-        proc = subprocess.run(["systemctl", "is-active", SERVICE_NAME], capture_output=True, text=True)
+        proc = subprocess.run(["systemctl", "is-active", "--", SERVICE_NAME], capture_output=True, text=True)
     except FileNotFoundError:
         return False
     return proc.stdout.strip() == "active"
