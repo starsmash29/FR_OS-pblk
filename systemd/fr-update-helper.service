@@ -9,16 +9,33 @@ Wants=network-online.target
 Type=simple
 ExecStart=firewall-update-helper
 Restart=on-failure
+# Sandbox (security-lessons I1; checked by tests/test_systemd_sandbox.py).
+# Installs a verified release: pip into /usr/local, units into
+# /etc/systemd/system, the release cache in /opt/fr_os, then restarts
+# services. ProtectSystem=full rather than strict: pip writes wherever
+# /usr/local's Python lives.
 NoNewPrivileges=yes
-ProtectHome=true
 ProtectSystem=full
-# Deliberately broader than fr-apply-helper's ReadWritePaths=/etc/fr_os:
-# this daemon's whole job is pip-installing a new release, rewriting
-# systemd units, and staging scripts -- see frfw.update and
-# frfw.helper.update_protocol's module docstrings for why that scope
-# difference is a separate daemon rather than widening the firewall
-# apply-helper.
 ReadWritePaths=/etc/fr_os /etc/systemd/system /opt/fr_os /usr/local
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+MemoryDenyWriteExecute=yes
+SystemCallFilter=~@clock @cpu-emulation @debug @module @mount @obsolete @raw-io @reboot @swap
+SystemCallErrorNumber=EPERM
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
+CapabilityBoundingSet=CAP_CHOWN CAP_FOWNER CAP_FSETID CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_KILL
 
 [Install]
 Also=fr-update-helper.socket

@@ -102,22 +102,43 @@ def test_sshd_listens_on_the_management_addresses_only(tmp_path, fake_sshd, monk
                         lambda action, unit, timeout=None: reloads.append((action, unit))
                         or subprocess.CompletedProcess([], 0, "", ""))
     monkeypatch.setattr("os.geteuid", lambda: 0)
+    monkeypatch.setattr(management, "ssh_login_users", lambda: ["netadmin"])
     dropin = tmp_path / "40-fr_os-management.conf"
     management.sync_sshd(_config(zones=["lan"]), dropin_path=dropin, sshd_binary=str(sshd))
     listen = [line for line in dropin.read_text().splitlines() if line.startswith("ListenAddress")]
     assert listen == ["ListenAddress 127.0.0.1", "ListenAddress 192.168.1.1"]
-    assert reloads == [("try-reload-or-restart", "ssh")]
+    assert reloads == [("enable", "ssh.service"), ("reload-or-restart", "ssh.service")]
 
 
 def test_a_dropin_sshd_rejects_is_rolled_back(tmp_path, fake_sshd, monkeypatch):
     sshd, verdict = fake_sshd
     monkeypatch.setattr("os.geteuid", lambda: 0)
+    monkeypatch.setattr(management.paths, "SSHD_PRIVSEP_DIR", tmp_path)  # sshd is running
     monkeypatch.setattr(management.svc, "systemctl",
                         lambda *a, **k: subprocess.CompletedProcess([], 0, "", ""))
     dropin = tmp_path / "40-fr_os-management.conf"
     dropin.write_text("# the previous one\n")
     verdict.write_text("1")
     with pytest.raises(management.ManagementError):
+        management.sync_sshd(_config(), dropin_path=dropin, sshd_binary=str(sshd))
+    assert dropin.read_text() == "# the previous one\n"
+
+
+def test_while_sshd_is_stopped_its_own_start_check_decides(tmp_path, fake_sshd, monkeypatch):
+    """`sshd -t` can't run without /run/sshd (only there while ssh.service
+    runs); then ssh.service's own ExecStartPre=sshd -t is the check, and a
+    failed start rolls the drop-in back too."""
+    sshd, verdict = fake_sshd
+    verdict.write_text("1")  # would fail -- but must not even be asked
+    monkeypatch.setattr("os.geteuid", lambda: 0)
+    monkeypatch.setattr(management.paths, "SSHD_PRIVSEP_DIR", tmp_path / "missing")
+    monkeypatch.setattr(management, "ssh_login_users", lambda: ["netadmin"])
+    monkeypatch.setattr(management.svc, "systemctl",
+                        lambda action, unit, timeout=None: subprocess.CompletedProcess(
+                            [], 1 if action == "reload-or-restart" else 0, "", "sshd -t failed"))
+    dropin = tmp_path / "40-fr_os-management.conf"
+    dropin.write_text("# the previous one\n")
+    with pytest.raises(management.ManagementError, match="sshd -t failed"):
         management.sync_sshd(_config(), dropin_path=dropin, sshd_binary=str(sshd))
     assert dropin.read_text() == "# the previous one\n"
 

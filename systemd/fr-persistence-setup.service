@@ -16,6 +16,19 @@ Type=oneshot
 RemainAfterExit=yes
 ExecStart=firewall-cli persistence auto --reboot
 StandardOutput=journal+console
+# Sandbox (security-lessons I1; checked by tests/test_systemd_sandbox.py).
+# Partitions the boot medium and formats the persistence partition: it
+# needs the raw block devices and mount, so only what it never needs is shut.
+NoNewPrivileges=yes
+ProtectHome=read-only
+ProtectKernelLogs=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
 
 [Install]
 WantedBy=multi-user.target

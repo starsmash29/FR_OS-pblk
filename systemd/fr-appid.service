@@ -19,13 +19,35 @@ Group=fr_os-sensor
 # its display-only usage summary under /etc/fr_os/sensors. While
 # app_control is off it idles, re-reading config.yaml periodically.
 SupplementaryGroups=fr_os-webui systemd-journal
-NoNewPrivileges=yes
 ExecStart=fr-appid
 Restart=on-failure
 RestartSec=5
-ProtectSystem=full
-ProtectHome=true
+# Sandbox (security-lessons I1; checked by tests/test_systemd_sandbox.py).
+NoNewPrivileges=yes
+ProtectSystem=strict
 ReadWritePaths=-/etc/fr_os/sensors
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+SystemCallErrorNumber=EPERM
+RestrictAddressFamilies=AF_UNIX
+CapabilityBoundingSet=
 
 [Install]
 WantedBy=multi-user.target

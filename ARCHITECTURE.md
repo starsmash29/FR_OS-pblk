@@ -813,6 +813,69 @@ for SHA-1, CBC or MD5 can't negotiate. When the addresses change, `apply` restar
 seconds later. `management.allow_wan` is the explicit opt-in, confirmed
 and warned on the System screen and in every `apply`.
 
+### Attack-surface view (security-lessons I3)
+
+*System -> Attack surface* (`frfw.surface`, `firewall-cli surface`) puts
+two facts from the running box together: every listening socket (`ss
+-Hlntup`, run by the apply-helper as root so it can name the processes
+it may -- the helper has no `CAP_SYS_PTRACE`, so others' are named by
+their well-known port) with the interface addresses, and what the input
+chain does with a new connection from each zone to that port, evaluated
+from the saved config in the same order the ruleset builder emits it
+(isolated-IoT and scheduled cut rules, the DNS-filter accept, the
+management drop, the admin's rules to `self`, `policy drop`). A socket
+bound to loopback is reachable from no zone, one bound to an address from
+the zones whose interfaces carry it, a wildcard one from all; conditional
+accepts (source address or MAC, ZTNA, schedule) show as *restricted*, and
+`ip saddr` rules count for IPv4 only. Anything open or restricted from an
+internet-facing zone is flagged first; `firewall-cli surface` exits 2
+then. What it can't see is said on the page: upstream NAT or the ISP,
+and port forwards to other hosts -- for those it suggests an `nmap` of
+the WAN address from outside (there is no built-in outside scanner).
+
+### Every service in a sandbox (security-lessons I1)
+
+Every FR_OS unit runs in a systemd sandbox; `tests/test_systemd_sandbox.py`
+checks each one (a new unit without one fails) and keeps its
+`systemd-analyze security` exposure within a budget -- from 9-9.4
+("UNSAFE") before to 1.1-2.6 for the daemons and 3.8-4.0 for the root
+network helpers now.
+
+- **Own unprivileged account** for everything that can do without root:
+  the webUI (`fr_os-webui`, only `CAP_NET_BIND_SERVICE`), and the
+  daemons that parse network input (`fr_os-sensor`, no capability at
+  all). The two that read packet data out of BPF maps (TLS
+  fingerprinting, the SNI event logger) start as root with nothing but
+  `CAP_BPF` and what switching user takes, open their map and become
+  `fr_os-sensor` before reading a byte (`frfw.privdrop`).
+- **Common sandbox**: `NoNewPrivileges`, `ProtectSystem=strict` with
+  only the paths a service writes, `ProtectHome`, `PrivateTmp`,
+  `PrivateDevices`, the kernel tunables/modules/logs/clock/hostname
+  protected, no namespaces, no realtime, no set-uid files, W^X memory
+  (`MemoryDenyWriteExecute`; the whole test suite -- the real webUI,
+  dnsmasq and XDP tests included -- also passes under `PR_SET_MDWE`), a
+  seccomp filter (`@system-service`, without `@privileged` for the
+  unprivileged ones), native syscalls only, and only the socket families
+  used (`AF_UNIX`/`AF_INET(6)`, plus `AF_NETLINK` where `ip`/`nft` run).
+- **Root where it must be**: the apply-helper, `fr-firewall` and the
+  schedule check change the network, so they keep a reduced capability
+  set (no module loading, ptrace, raw I/O, clock, reboot...) and write
+  only `/etc/fr_os`, `/etc/kea`, `sshd_config.d`, the XDP object and
+  bpffs. `fr-first-boot` and `fr-persistence-setup` (partitions the boot
+  medium) are too broad for the strict set and get the baseline only.
+- **Off unless used**: the DNS filter only exists when it is configured
+  and binds only the DHCP zones' interfaces; sshd is stopped and
+  disabled while nobody can log in (no `fr_os-ssh` member with
+  `authorized_keys`), and `apply` starts it once someone can. `sshd -t`
+  can't run without sshd's `/run/sshd`, so while sshd is stopped the
+  check is ssh.service's own `ExecStartPre=sshd -t` as it starts, and a
+  failed start rolls the drop-in back.
+
+Not ours to sandbox: Kea and OpenSSH run under Debian's own units (Kea
+as `_kea`). The QEMU boot test checks that no FR_OS service crashed, was
+killed or hit a read-only path in its sandbox, and that sshd never
+listened on a box without keys.
+
 The protocol is deliberately minimal: one JSON object per line, four
 commands:
 

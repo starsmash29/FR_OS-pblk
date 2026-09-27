@@ -105,6 +105,10 @@ bind-interfaces
 {server_lines}
 {extra_lines}user=nobody
 group=nogroup
+# No PID file: systemd tracks the process, and /run is read-only in the
+# unit's sandbox (security-lessons I1). Without this dnsmasq writes
+# /run/dnsmasq.pid even in the foreground.
+pid-file=
 """
 
 # FIREFOX_DOH_CANARY (see frfw.adblock): `address=/<name>/` with no address

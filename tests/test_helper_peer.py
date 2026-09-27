@@ -168,9 +168,9 @@ def test_parser_daemons_run_as_the_sensor_account(unit):
 
 
 def test_tls_fingerprinting_drops_to_the_sensor_account():
-    from frfw.tlsfp import daemon
+    from frfw import privdrop
 
-    assert daemon.RUN_AS_USER == paths.SENSOR_USER
+    assert privdrop.RUN_AS_USER == paths.SENSOR_USER
     assert "/etc/fr_os/webui" not in _unit("fr-tls-fp.service")["Service"]["ReadWritePaths"]
 
 

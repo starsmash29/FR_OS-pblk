@@ -190,42 +190,67 @@ def sync_sshd(
 ) -> SyncResult:
     """Write the ListenAddress drop-in, check it with `sshd -t` (restoring
     the previous one if sshd rejects it) and reload sshd -- a reload keeps
-    open sessions. A no-op without sshd."""
+    open sessions. sshd runs only while someone can log in (a member of
+    the SSH group with authorized_keys); otherwise it is stopped and
+    disabled (security-lessons I1). A no-op without sshd."""
     dropin_path = paths.SSHD_MANAGEMENT_DROPIN_PATH if dropin_path is None else dropin_path
     sshd_binary = SSHD_BINARY if sshd_binary is None else sshd_binary
     if shutil.which(sshd_binary) is None:
         return SyncResult("sshd not installed; nothing to bind")
     content = sshd_dropin(config)
     where = ", ".join(listen_addresses(config))
+    users = ssh_login_users()
     if dry_run:
+        if not users:
+            return SyncResult(f"Would turn SSH off: {NOBODY_CAN_LOG_IN} (dry-run)")
         return SyncResult(f"Would make sshd listen on {where} (dry-run)")
     previous = dropin_path.read_text() if dropin_path.exists() else None
-    if previous == content:
-        return SyncResult(f"sshd listens on {where}; {_who_can_log_in()}")
-    if os.geteuid() != 0:
-        raise ManagementError("writing the sshd drop-in needs root")
-    dropin_path.parent.mkdir(parents=True, exist_ok=True)
-    dropin_path.write_text(content)
-    proc = subprocess.run([sshd_binary, "-t"], capture_output=True, text=True)
-    if proc.returncode != 0:
+
+    def restore() -> None:
         if previous is None:
             dropin_path.unlink(missing_ok=True)
         else:
             dropin_path.write_text(previous)
-        raise ManagementError(proc.stderr.strip() or "sshd -t rejected the ListenAddress drop-in")
-    # try-: never start an sshd the admin has stopped or disabled.
-    reload = svc.systemctl("try-reload-or-restart", "ssh", timeout=60)
+
+    if previous != content:
+        if os.geteuid() != 0:
+            raise ManagementError("writing the sshd drop-in needs root")
+        dropin_path.parent.mkdir(parents=True, exist_ok=True)
+        dropin_path.write_text(content)
+        # `sshd -t` needs the privilege-separation directory, which exists
+        # only while ssh.service runs. When it doesn't, Debian's unit runs
+        # the same check (ExecStartPre=sshd -t) as it starts, below.
+        if paths.SSHD_PRIVSEP_DIR.is_dir():
+            proc = subprocess.run([sshd_binary, "-t"], capture_output=True, text=True)
+            if proc.returncode != 0:
+                restore()
+                raise ManagementError(proc.stderr.strip() or "sshd -t rejected the ListenAddress drop-in")
+    if not users:
+        # Security-lessons I1: a listening service is attack surface; one
+        # nobody can log in to is nothing else. Off until someone can.
+        for unit in SSH_UNITS:
+            svc.systemctl("disable", unit, timeout=60)
+            svc.systemctl("stop", unit, timeout=60)
+        return SyncResult(f"SSH is off: {NOBODY_CAN_LOG_IN}")
+    svc.systemctl("enable", SSH_UNITS[0], timeout=60)
+    if previous != content:
+        reload = svc.systemctl("reload-or-restart", SSH_UNITS[0], timeout=60)
+    else:
+        reload = svc.systemctl("start", SSH_UNITS[0], timeout=60)
     if reload.returncode != 0:
-        raise ManagementError(reload.stderr.strip() or "failed to reload the ssh service")
-    return SyncResult(f"sshd listens on {where}; {_who_can_log_in()}")
+        if previous != content:
+            restore()
+        raise ManagementError(reload.stderr.strip() or "failed to start or reload the ssh service")
+    return SyncResult(f"sshd listens on {where}; key login for {', '.join(users)}")
 
 
-def _who_can_log_in() -> str:
-    users = ssh_login_users()
-    if users:
-        return f"key login for {', '.join(users)}"
-    return (f"nobody can log in over SSH yet (keys only): add a user to the {paths.SSH_GROUP} "
-            "group and give them ~/.ssh/authorized_keys")
+#: Debian's OpenSSH units (the socket one exists but is off by default).
+SSH_UNITS = ("ssh.service", "ssh.socket")
+
+NOBODY_CAN_LOG_IN = (
+    f"nobody can log in with a key yet. Add a user to the {paths.SSH_GROUP} group, give them "
+    "~/.ssh/authorized_keys, then apply -- SSH starts once someone can use it"
+)
 
 
 # -- the webUI ---------------------------------------------------------------------

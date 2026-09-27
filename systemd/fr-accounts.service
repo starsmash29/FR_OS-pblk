@@ -12,3 +12,28 @@ Before=sysinit.target
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=firewall-cli ensure-accounts
+# Sandbox (security-lessons I1; checked by tests/test_systemd_sandbox.py).
+# useradd/groupadd/usermod write /etc (so ProtectSystem=yes: /usr and
+# /boot read-only, not /etc) and chown the state directories. Runs before
+# local-fs.target, so no PrivateTmp.
+NoNewPrivileges=yes
+ProtectSystem=yes
+ProtectHome=read-only
+PrivateDevices=yes
+PrivateNetwork=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+MemoryDenyWriteExecute=yes
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_FSETID CAP_AUDIT_WRITE

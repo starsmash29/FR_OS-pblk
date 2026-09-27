@@ -30,7 +30,7 @@ from pathlib import Path
 
 import yaml
 
-from frfw import bruteforce, conntrack, hwinfo, ids_quarantine, iot_isolation, kea, paths, svc, ztna
+from frfw import bruteforce, conntrack, hwinfo, ids_quarantine, iot_isolation, kea, paths, surface, svc, ztna
 from frfw.adblock import AdblockError
 from frfw.iot import leases as iot_leases
 from frfw.iot_isolation import IotIsolationError
@@ -47,6 +47,7 @@ from frfw.ifaddr import IfaddrError
 from frfw.kea import KeaError
 from frfw.pqc import PqcError
 from frfw.provision import apply_all
+from frfw.surface import SurfaceError
 from frfw.ztna import ZtnaError
 
 _SD_LISTEN_FDS_START = 3
@@ -136,11 +137,14 @@ def _handle_request(request: dict, server: "ApplyHelperServer") -> dict:
         if cmd == "iot_scan":
             return _handle_iot_scan()
 
+        if cmd == "listening_sockets":
+            return _handle_listening_sockets()
+
         return {"ok": False, "message": f"unknown command {cmd!r}"}
     except (
         ConfigError, NftError, IfaddrError, KeaError, ZtnaError, PqcError, AdblockError,
         BruteforceError, IdsQuarantineError, ConntrackError, HwInfoError, IotIsolationError,
-        FileNotFoundError, yaml.YAMLError,
+        SurfaceError, FileNotFoundError, yaml.YAMLError,
     ) as exc:
         return {"ok": False, "message": str(exc)}
 
@@ -303,6 +307,18 @@ def _handle_iot_sync_isolation(request: dict, server: "ApplyHelperServer") -> di
 def _handle_iot_isolation_status() -> dict:
     isolated = iot_isolation.list_isolated()
     return {"ok": True, "isolated": isolated, "count": len(isolated)}
+
+
+def _handle_listening_sockets() -> dict:
+    """Security-lessons I3: every listening socket and the interfaces'
+    addresses, read as root so `ss` can name the processes it may."""
+    listeners, addresses = surface.collect()
+    return {
+        "ok": True,
+        "listeners": [{"proto": l.proto, "address": l.address, "port": l.port, "device": l.device,
+                       "process": l.process} for l in listeners],
+        "addresses": addresses,
+    }
 
 
 def _handle_iot_scan() -> dict:

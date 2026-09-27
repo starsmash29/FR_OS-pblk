@@ -11,6 +11,7 @@
     firewall-cli initial-password
     firewall-cli ensure-accounts
     firewall-cli users
+    firewall-cli surface [config.yaml]
     firewall-cli mfa-reset USER
     firewall-cli ids-status
     firewall-cli iot-status
@@ -236,6 +237,13 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_users = sub.add_parser("users", help="list the webUI accounts and their roles")
     p_users.set_defaults(handler=_cmd_users)
+
+    p_surface = sub.add_parser(
+        "surface",
+        help="list every listening service and which zones can reach it (run as root to see process names)",
+    )
+    p_surface.add_argument("config", nargs="?", type=Path, default=paths.CONFIG_PATH)
+    p_surface.set_defaults(handler=_cmd_surface)
 
     p_ids_status = sub.add_parser(
         "ids-status",
@@ -508,6 +516,30 @@ def _cmd_ensure_accounts(args: argparse.Namespace) -> int:
     for line in done:
         print(f"fr-accounts: {line}")
     print("fr-accounts: accounts and state directories in place")
+    return 0
+
+
+def _cmd_surface(args: argparse.Namespace) -> int:
+    from frfw import management, surface
+
+    try:
+        config = load_config(args.config)
+        listeners, addresses = surface.collect()
+    except (ConfigError, OSError, surface.SurfaceError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    internet = management.internet_zones(config)
+    rows = surface.surface(config, listeners, addresses)
+    for row in rows:
+        l = row.listener
+        where = f"{l.address}%{l.device}" if l.device else l.address
+        reach = ", ".join(f"{zone}: {v.state}" for zone, v in row.zones.items()) or "no zone (loopback/unbound)"
+        flag = "  <-- reachable from the internet side" if row.internet else ""
+        print(f"{l.proto}/{l.port:<6} {l.label:<24} {where:<22} {reach}{flag}")
+    exposed = [r for r in rows if r.internet]
+    if exposed:
+        print(f"\nWARNING: {len(exposed)} service(s) reachable from {', '.join(sorted(internet))}", file=sys.stderr)
+        return 2
     return 0
 
 

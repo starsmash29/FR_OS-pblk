@@ -29,6 +29,7 @@ Inari (3.x), Ingemar (4.x); see "Release cycle & codenames" in [ROADMAP.md](ROAD
 - **📱 App identification and blocking.** Shows which apps (Netflix, TikTok, Steam, Zoom and ~40 others) each client used in the last 24 hours, from the names it looks up and, optionally, the TLS server names the XDP program sees — nothing is decrypted. Any app can be blocked with one checkbox: the resolver refuses all of its names, and optionally the XDP filter drops its TLS connections too.
 - **⏰ Time-based rules.** Any firewall rule can apply only on chosen days and times — "no internet for the kids' tablets on school nights", "SSH only during office hours" — per device by MAC address, optionally cutting connections that were already open. Rendered correctly for the kernel's UTC clocks and kept right across daylight-saving changes.
 - **🔏 TLS client fingerprinting (JA4/JA3), no decryption.** The XDP program hands every ClientHello — including today's two-packet post-quantum ones — to an unprivileged daemon that fingerprints which TLS software each device runs, flags fingerprints never seen before, and can block and quarantine unwanted ones. Validated against the JA4 reference outputs.
+- **🎯 Attack-surface view.** *System → Attack surface* (and `firewall-cli surface`) lists every listening port, what it is, and from which zone the firewall lets a connection reach it and why; anything reachable from the internet side is flagged at the top, with the command to check it from the outside.
 - **🔑 Second factor for every account.** Security keys / passkeys (FIDO2/WebAuthn, phishing-resistant) and authenticator-app codes (TOTP); a stolen password alone no longer signs in, and admins can be required to use one. Security keys need the router opened by name (e.g. `https://fr-router.lan/`), not IP.
 - **👥 Multiple admins with roles and an audit log.** Any number of webUI accounts, each `admin` or read-only `viewer`, enforced in one place for every change endpoint; role changes and password resets end open sessions at once; every change and login is recorded (who, when, from where, result — never form contents).
 - **🧩 Real privilege separation, not just a warning label.** The FastAPI + Jinja2 WebUI runs unprivileged, full stop. Every root-level action — nftables reload, interface addressing, DHCP config, package updates, hardware queries — goes through one locked-down, protocol-validated JSON Unix socket to `fr-apply-helper`. The WebUI process cannot escalate even if fully compromised; it simply has no path to root.
@@ -95,11 +96,13 @@ dd if=fr_os_hybrid.iso of=/dev/sdX bs=4M status=progress oflag=sync
    Only the console's login screen shows it: it is in a root-only file,
    not in the world-readable `/etc/issue`.
 
-**SSH** (if you install it) is keys-only and closed by default: it
-listens on the LAN only, refuses root and passwords, and admits only
-members of the `fr_os-ssh` group. To allow yourself in:
-`sudo usermod -aG fr_os-ssh YOU` and put your public key in
-`~YOU/.ssh/authorized_keys` (`apply` tells you when nobody can log in).
+**SSH** is keys-only and **off** until someone can use it: sshd is
+stopped while nobody has a key, and once running it listens on the LAN
+only, refuses root and passwords, and admits only members of the
+`fr_os-ssh` group. To allow yourself in, on the console:
+`sudo usermod -aG fr_os-ssh YOU`, put your public key in
+`~YOU/.ssh/authorized_keys`, then `sudo firewall-cli apply` -- that
+starts sshd.
 
 A screen, a serial console (115200 baud) or neither: the boot menu
 continues by itself after 5 seconds. Booting from something read-only (a
@@ -252,6 +255,8 @@ itself -- nothing is loaded from the internet. Screenshots (demo data):
 | ![Dashboard](docs/screenshots/dashboard.png) | ![Firewall rules](docs/screenshots/rules.png) |
 | **IoT devices** | **Sign in** |
 | ![IoT devices](docs/screenshots/iot.png) | ![Sign in](docs/screenshots/login.png) |
+| **Attack surface** | |
+| ![Attack surface](docs/screenshots/attack-surface.png) | |
 
 ## IoT devices (phase 14)
 

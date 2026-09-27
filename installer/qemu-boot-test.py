@@ -135,6 +135,30 @@ def journal(upper: Path, *args: str) -> str:
     ).stdout
 
 
+#: FR_OS services that must be running after a boot, each in its systemd
+#: sandbox (security-lessons I1).
+#: (fr-apply-helper is socket-activated: it starts on first use.)
+LONG_RUNNING = ("fr-webui", "fr-ai-ids", "fr-appid", "fr-tls-fp", "fr-xdp-sni-logger")
+
+
+def check_sandboxed_services(check, upper: Path, *boot: str) -> None:
+    """No FR_OS service was killed by its sandbox or crashed, and the
+    long-running ones started (security-lessons I1). A syscall the
+    filter doesn't allow fails with EPERM; a service that can't live with
+    that exits, and systemd says so."""
+    text = journal(upper, *boot, "-u", "fr-*")
+    bad = sorted(set(re.findall(r"(fr-[\w-]+)\.service: (?:Main process exited, code=killed|Failed with result)",
+                                text)))
+    check(not bad, "no FR_OS service crashed or was killed in its sandbox"
+          + (f": {', '.join(bad)}" if bad else ""))
+    check("status=31/SYS" not in text, "no seccomp kill")
+    for unit in LONG_RUNNING:
+        check("Started" in journal(upper, *boot, "-u", f"{unit}.service"), f"{unit} started")
+    firewall = journal(upper, *boot, "-u", "fr-firewall.service") + journal(upper, *boot, "-u", "fr-apply-helper.service")
+    check("Permission denied" not in firewall and "Read-only file system" not in firewall,
+          "applying the config hit no sandbox wall (EPERM/EROFS)")
+
+
 def webui_opener() -> urllib.request.OpenerDirector:
     context = ssl.create_default_context()
     context.check_hostname = False
@@ -209,6 +233,11 @@ def main() -> int:
               + ("" if "did not start" not in first_boot else " (some units did not start)"))
         failed = sorted(set(re.findall(r"Failed to start (\S+)", journal(upper))))
         check(not failed, f"no unit failed to start{': ' + ', '.join(failed) if failed else ''}")
+        for unit in failed:  # say why, right here in the CI log
+            print(f"    --- journal of {unit} ---")
+            for line in journal(upper, "-u", unit).splitlines()[-25:]:
+                print(f"    {line}")
+        check_sandboxed_services(check, upper)
         console = upper / "etc" / "issue.d" / "fr_os-initial-admin.issue"
         shown = console.read_text() if console.exists() else ""
         match = re.search(r"login is 'admin' / '([^']+)'", shown)
@@ -243,6 +272,9 @@ def main() -> int:
               "once changed in the webUI, the initial password is gone from the console")
         config = (upper / "etc" / "fr_os" / "config.yaml").read_text()
         check("Europe/Budapest" in config, "a change made in the webUI was saved to the persistence partition")
+        check_sandboxed_services(check, upper, "-b")
+        check("Server listening" not in journal(upper, "-b", "-u", "ssh.service"),
+              "sshd did not listen at all this boot (off while nobody has a key)")
 
     print()
     if check.failures:

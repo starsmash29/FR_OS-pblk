@@ -23,7 +23,7 @@ import os
 import re
 from pathlib import Path
 
-from frfw.admin_account import AdminStore
+from frfw.admin_account import AdminStore, verify_password
 
 ISSUE_PATH = Path("/etc/issue.d/fr_os-initial-admin.issue")
 LEGACY_ISSUE_PATH = Path("/etc/issue")
@@ -89,7 +89,10 @@ def clear_if_changed(store: AdminStore | None = None, *, path: Path | None = Non
     if shown is None:
         return False
     username, password = shown
-    if (store or AdminStore()).verify(username, password) is not None:
+    # Only a check, never AdminStore.verify: that may upgrade an old hash in
+    # place, and this unit's sandbox can't (and shouldn't) write auth.json.
+    account = (store or AdminStore()).get(username)
+    if account is not None and verify_password(password, account.password_hash):
         return False
     path.unlink(missing_ok=True)
     return True

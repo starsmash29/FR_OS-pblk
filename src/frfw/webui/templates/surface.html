@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}Attack surface - FR_OS{% endblock %}
+{% block content %}
+<h1>Attack surface</h1>
+<p class="muted">
+  Every port something on this router listens on, and from which zone the firewall lets a new connection
+  reach it -- worked out from what is running now and the saved config. Anything reachable from an
+  internet-facing zone is listed first. Loopback-only services are not reachable from any zone.
+</p>
+
+{% if error %}<div class="flash-error">{{ error }}</div>{% endif %}
+
+{% if not error %}
+{% if exposed %}
+<div class="flash-error">
+  {{ exposed|length }} service{{ "s" if exposed|length != 1 }} reachable from the internet side
+  ({{ internet|sort|join(", ") }}):
+  {% for r in exposed %}{{ r.listener.proto }}/{{ r.listener.port }} {{ r.listener.label }}{{ ", " if not loop.last }}{% endfor %}.
+  {% if allow_wan %}Management is open to the WAN (management.allow_wan) -- see System.{% endif %}
+  Close what you don't need there, or reach it over a VPN instead.
+</div>
+{% else %}
+<div class="flash-success">Nothing is reachable from an internet-facing zone ({{ internet|sort|join(", ") or "none" }}).</div>
+{% endif %}
+
+<div class="card">
+  <h3>Listening services</h3>
+  <div class="scroll-table">
+  <table>
+    <tr>
+      <th>Port</th><th>Service</th><th>Bound to</th>
+      {% for zone in zones %}<th>{{ zone }}{% if zone in internet %} <span class="badge badge-red">internet</span>{% endif %}</th>{% endfor %}
+    </tr>
+    {% for r in rows %}
+    <tr>
+      <td><code>{{ r.listener.proto }}/{{ r.listener.port }}</code></td>
+      <td>{{ r.listener.label }}</td>
+      <td><code>{{ r.listener.address }}{% if r.listener.device %}%{{ r.listener.device }}{% endif %}</code>
+        {% if r.listener.loopback %}<span class="muted">(loopback)</span>{% elif r.listener.wildcard and not r.listener.device %}<span class="muted">(every address)</span>{% endif %}</td>
+      {% for zone in zones %}
+      {% set v = r.zones.get(zone) %}
+      <td>
+        {% if v is none %}<span class="muted">-</span>
+        {% elif v.state == "open" %}<span class="badge {{ 'badge-red' if zone in internet else 'badge-yellow' }}" title="{{ v.why }}">open</span>
+        {% elif v.state == "restricted" %}<span class="badge badge-yellow" title="{{ v.why }}">restricted</span>
+        {% else %}<span class="badge badge-green" title="{{ v.why }}">closed</span>{% endif %}
+        {% if v is not none and v.state != "closed" %}<div class="muted" style="font-size:11px;">{{ v.why }}</div>{% endif %}
+      </td>
+      {% endfor %}
+    </tr>
+    {% else %}
+    <tr><td colspan="{{ 3 + zones|length }}" class="muted">Nothing is listening.</td></tr>
+    {% endfor %}
+  </table>
+  </div>
+  <p class="muted">
+    <strong>open</strong>: any host in that zone can connect. <strong>restricted</strong>: only some
+    (by source address, device, ZTNA sign-in or time of day -- hover for the rule).
+    <strong>closed</strong>: the input chain drops it. "-": the service isn't bound to an address in that zone.
+  </p>
+</div>
+
+<div class="card">
+  <h3>Check it from the outside</h3>
+  <p class="muted">
+    This view reads the router's own configuration; it can't see what your ISP or an upstream router does,
+    and port forwards to other hosts aren't listed here (they are on the NAT screen). To see what the
+    internet really sees, scan the WAN address from a machine <em>outside</em> your network, for example:
+  </p>
+  {% for a in wan_addresses %}
+  <pre><code>nmap -Pn -sS -sU --top-ports 1000 {{ a }}</code></pre>
+  {% else %}
+  <p class="muted">No WAN address is up right now.</p>
+  {% endfor %}
+</div>
+{% endif %}
+{% endblock %}
