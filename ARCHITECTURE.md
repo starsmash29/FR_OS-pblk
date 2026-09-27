@@ -769,6 +769,13 @@ leaves ZTNA password hashes and the metrics digest out.
   kernel's `SO_PEERCRED` -- never from what a request says about itself.
 - Stored secrets can't downgrade the check either (a hash naming a weak
   algorithm or too few iterations never verifies).
+- Every flow is tested as a state machine (security-lessons J1, next to
+  `tests/webui/test_auth_flows.py`): steps skipped, requests reordered,
+  tokens and codes replayed, requests raced. A token is used up
+  atomically (one caller wins), and state shared between requests -- the
+  account file, tickets, used TOTP steps -- changes only under a lock;
+  `auth.json` under an `flock` on its directory, which also covers
+  `firewall-cli` running at the same time.
 
 ### No argument injection (security-lessons F1)
 
