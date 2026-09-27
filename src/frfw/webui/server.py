@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import ipaddress
 import socket
+import ssl
 import sys
 from pathlib import Path
 
@@ -48,6 +49,15 @@ def _certificate_names(config_path: Path) -> tuple[list[str], list[str]]:
         return [], []
     ips = [str(ipaddress.IPv4Interface(i.address).ip) for i in config.interfaces.values() if i.address]
     return [config.hostname], ips
+
+
+def tls_minimum_1_2_context_factory(uvicorn_config: object, default_factory) -> ssl.SSLContext:
+    """Security-lessons H2: TLS 1.2 is the floor, stated explicitly rather
+    than left to whatever the Python/OpenSSL build defaults to. (With PQC
+    on, frfw.pqc's factory makes it TLS 1.3-only instead.)"""
+    ctx = default_factory()
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    return ctx
 
 
 def listen_addresses(config_path: Path) -> list[str]:
@@ -103,7 +113,9 @@ def main(argv: list[str] | None = None) -> int:
     # here, is the only mechanism that actually works) -- this only
     # covers the part of PQC hardening that *is* a supported
     # ssl.SSLContext setting: restricting the listener to TLS 1.3-only.
-    ssl_context_factory = pqc.tls_ssl_context_factory if _pqc_enabled(config_path) else None
+    ssl_context_factory = (
+        pqc.tls_ssl_context_factory if _pqc_enabled(config_path) else tls_minimum_1_2_context_factory
+    )
 
     addresses = args.host or listen_addresses(config_path)
     print(f"fr-webui: listening on {', '.join(addresses)} port {args.port}", file=sys.stderr, flush=True)
