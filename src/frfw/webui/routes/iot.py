@@ -6,9 +6,10 @@
 - "Currently isolated" is a live kernel-state query through the
   apply-helper (`iot_isolation_status`), the authority on who is
   actually cut off right now.
-- "Scan now" runs the scanner in this (unprivileged) process -- it is
-  the same fr_os-webui account the timer-driven `fr-iot-scan.service`
-  uses, and its two privileged steps go through the helper either way.
+- "Scan now" asks the apply-helper to run `fr-iot-scan.service` and
+  shows that scan's messages: the scan parses untrusted LAN traffic
+  (mDNS, DHCP hostnames), so it runs as fr_os-sensor, never in the
+  webUI process (see frfw.helper.peer).
 - Trust / isolate / clear edit `iot.trusted_macs`/`iot.isolated_macs`
   through the normal validated `save_config` path, then immediately
   re-apply the isolation decision to the last scan's classifications
@@ -25,12 +26,11 @@ from fastapi import APIRouter, Depends, Form, Request
 
 from frfw.config import ConfigError, parse_config
 from frfw.helper.client import HelperError
-from frfw.iot.scanner import load_inventory, resync_from_inventory, run_scan
+from frfw.iot.scanner import load_inventory, resync_from_inventory
 from frfw.webui.actions import try_save
 from frfw.webui.deps import (
     get_helper,
     get_iot_inventory_path,
-    get_iot_scan_options,
     get_raw_config,
     require_login,
 )
@@ -144,7 +144,6 @@ def scan_now(
     raw: dict = Depends(get_raw_config),
     helper: HelperClient = Depends(get_helper),
     inventory_path: Path = Depends(get_iot_inventory_path),
-    scan_options: dict = Depends(get_iot_scan_options),
 ):
     try:
         config = parse_config(raw)
@@ -153,15 +152,15 @@ def scan_now(
     if not config.iot.enabled:
         return redirect_with("/iot", error="IoT discovery is disabled -- enable it and save first")
 
-    result = run_scan(
-        config,
-        leases_fn=helper.dhcp_leases,
-        sync_fn=helper.iot_sync_isolation,
-        state_path=inventory_path,
-        **scan_options,
-    )
-    summary = "; ".join(result.messages)
-    if any(m.startswith("error:") for m in result.messages):
+    try:
+        response = helper.iot_scan()
+    except HelperError as exc:
+        return redirect_with("/iot", error=f"Scan failed: {exc}")
+    if not response.get("ok"):
+        return redirect_with("/iot", error=f"Scan failed: {response.get('message')}")
+    messages = (load_inventory(inventory_path) or {}).get("messages") or [response.get("message", "")]
+    summary = "; ".join(messages)
+    if any(m.startswith("error:") for m in messages):
         return redirect_with("/iot", error=summary)
     return redirect_with("/iot", success=summary)
 

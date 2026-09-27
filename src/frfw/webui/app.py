@@ -63,7 +63,6 @@ def create_app(
     adblock_hosts_path: Path = paths.ADBLOCK_HOSTS_PATH,
     bruteforce_guard: BruteforceGuard | None = None,
     iot_inventory_path: Path = paths.IOT_INVENTORY_PATH,
-    iot_scan_options: dict | None = None,
     adblock_category_dir: Path = paths.ADBLOCK_CATEGORY_DIR,
     appid_usage_path: Path = paths.APPID_USAGE_PATH,
     audit_log_path: Path = paths.WEBUI_AUDIT_LOG_PATH,
@@ -83,9 +82,6 @@ def create_app(
     app.state.adblock_category_dir = adblock_category_dir
     app.state.bruteforce_guard = bruteforce_guard or BruteforceGuard()
     app.state.iot_inventory_path = iot_inventory_path
-    # Extra keyword arguments for frfw.iot.scanner.run_scan (mdns_fn,
-    # arp_path, oui_path) -- empty in production, overridden by tests.
-    app.state.iot_scan_options = iot_scan_options or {}
     app.state.appid_usage_path = appid_usage_path
     app.state.audit_log_path = audit_log_path
     app.state.tlsfp_state_path = tlsfp_state_path

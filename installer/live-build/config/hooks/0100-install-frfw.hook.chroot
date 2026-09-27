@@ -18,6 +18,7 @@ install -m 0755 /opt/frfw-src/scripts/install-system-integration.sh /usr/local/s
 for unit in \
     fr-first-boot.service \
     fr-persistence-setup.service \
+    fr-accounts.service \
     fr-firewall.service \
     fr-apply-helper.socket \
     fr-apply-helper.service \

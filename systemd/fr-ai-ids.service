@@ -1,13 +1,17 @@
 [Unit]
 Description=FR_OS AI IDS/IPS anomaly detection daemon (phase 11, see frfw.ai_ids)
 Documentation=https://github.com/starsmash29/FR_OS-pblk
-After=fr-apply-helper.socket network.target
-Wants=fr-apply-helper.socket
+After=fr-accounts.service fr-apply-helper.socket network.target
+Wants=fr-accounts.service fr-apply-helper.socket
 
 [Service]
 Type=simple
-User=fr_os-webui
-Group=fr_os-webui
+# Parses untrusted network input, so it runs as fr_os-sensor, not as the
+# webUI: it can read config.yaml (group fr_os-webui), may send the
+# apply-helper only frfw.helper.peer.SENSOR_COMMANDS, and writes to
+# /etc/fr_os/sensors -- never to the webUI's own state (see frfw.accounts).
+User=fr_os-sensor
+Group=fr_os-sensor
 # Read-only journal access to tail fr-xdp-sni-logger.service's output
 # for the SNI-blocklist-hit feature -- the identical, minimal-privilege
 # mechanism fr-webui.service already uses for its own live log stream
@@ -16,14 +20,14 @@ Group=fr_os-webui
 # action) goes through fr-apply-helper's Unix socket -- this process
 # never touches `nft` or /proc/net/nf_conntrack itself, and never gains
 # any capability beyond journal read.
-SupplementaryGroups=systemd-journal
+SupplementaryGroups=fr_os-webui systemd-journal
 NoNewPrivileges=yes
 ExecStart=fr-ai-ids
 Restart=on-failure
 RestartSec=5
 ProtectSystem=full
 ProtectHome=true
-ReadWritePaths=/etc/fr_os/webui
+ReadWritePaths=-/etc/fr_os/sensors
 
 [Install]
 WantedBy=multi-user.target

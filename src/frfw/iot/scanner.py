@@ -1,7 +1,8 @@
 """The IoT scan: inventory -> classify -> decide -> enforce -> record.
 
-Runs unprivileged (as fr_os-webui, from `fr-iot-scan.timer` or the
-webUI's "Scan now" button). It is the process that parses untrusted
+Runs unprivileged, as fr_os-sensor, in `fr-iot-scan.service` (from its
+timer, or from the webUI's "Scan now" button through the apply-helper's
+`iot_scan` command). It is the process that parses untrusted
 network data (mDNS responses, DHCP-supplied hostnames), which is exactly
 why it must not run as root; the two privileged steps go through the
 apply-helper socket:

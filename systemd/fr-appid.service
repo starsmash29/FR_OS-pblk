@@ -1,26 +1,31 @@
 [Unit]
 Description=FR_OS application identification daemon (phase 16, see frfw.appid)
 Documentation=https://github.com/starsmash29/FR_OS-pblk
-After=network.target
+After=fr-accounts.service network.target
+Wants=fr-accounts.service
 
 [Service]
 Type=simple
-User=fr_os-webui
-Group=fr_os-webui
+# Parses untrusted network input, so it runs as fr_os-sensor, not as the
+# webUI: it can read config.yaml (group fr_os-webui), may send the
+# apply-helper only frfw.helper.peer.SENSOR_COMMANDS, and writes to
+# /etc/fr_os/sensors -- never to the webUI's own state (see frfw.accounts).
+User=fr_os-sensor
+Group=fr_os-sensor
 # Read-only journal access to follow fr-adblock-dns.service's query log
 # and fr-xdp-sni-logger.service's SNI events -- the same minimal
 # privilege fr-ai-ids.service uses. This daemon never talks to the
 # apply-helper and never changes any enforcement state: it only writes
-# its display-only usage summary under /etc/fr_os/webui. While
+# its display-only usage summary under /etc/fr_os/sensors. While
 # app_control is off it idles, re-reading config.yaml periodically.
-SupplementaryGroups=systemd-journal
+SupplementaryGroups=fr_os-webui systemd-journal
 NoNewPrivileges=yes
 ExecStart=fr-appid
 Restart=on-failure
 RestartSec=5
 ProtectSystem=full
 ProtectHome=true
-ReadWritePaths=/etc/fr_os/webui
+ReadWritePaths=-/etc/fr_os/sensors
 
 [Install]
 WantedBy=multi-user.target

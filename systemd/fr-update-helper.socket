@@ -1,12 +1,17 @@
 [Unit]
 Description=FR_OS privileged update-helper socket
+# SocketUser= needs the account to exist.
+Wants=fr-accounts.service
+After=fr-accounts.service
 
 [Socket]
 ExecStartPre=/bin/mkdir -p /run/fr_os
 ListenStream=/run/fr_os/update.sock
-SocketMode=0660
-SocketUser=root
-SocketGroup=fr_os-webui
+# Only the webUI's account (and root) can connect: installing a release
+# runs code as root. frfw.helper.update_server checks the peer uid again.
+SocketMode=0600
+SocketUser=fr_os-webui
+SocketGroup=root
 RemoveOnStop=yes
 
 [Install]

@@ -34,6 +34,7 @@ class HelperClient(Protocol):
     def dhcp_leases(self) -> dict: ...
     def iot_sync_isolation(self, macs: list[str]) -> dict: ...
     def iot_isolation_status(self) -> dict: ...
+    def iot_scan(self) -> dict: ...
 
 
 class SocketHelperClient:
@@ -84,6 +85,9 @@ class SocketHelperClient:
 
     def iot_isolation_status(self) -> dict:
         return helper_client.iot_isolation_status(self.socket_path)
+
+    def iot_scan(self) -> dict:
+        return helper_client.iot_scan(self.socket_path)
 
 
 class UpdateHelperClient(Protocol):

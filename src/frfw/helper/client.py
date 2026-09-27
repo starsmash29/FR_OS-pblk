@@ -135,3 +135,9 @@ def iot_sync_isolation(macs: list[str], socket_path: Path = paths.APPLY_SOCKET_P
 
 def iot_isolation_status(socket_path: Path = paths.APPLY_SOCKET_PATH) -> dict:
     return send_command({"cmd": "iot_isolation_status"}, socket_path)
+
+
+def iot_scan(socket_path: Path = paths.APPLY_SOCKET_PATH) -> dict:
+    """Run fr-iot-scan.service now and wait for it (mDNS discovery takes a
+    few seconds)."""
+    return send_command({"cmd": "iot_scan"}, socket_path, timeout=150.0)

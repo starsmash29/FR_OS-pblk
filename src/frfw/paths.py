@@ -26,11 +26,26 @@ RUNTIME_DIR = Path("/run/fr_os")
 #: ask the root-run apply-helper to apply/rollback the firewall config.
 APPLY_SOCKET_PATH = RUNTIME_DIR / "apply.sock"
 
+#: The unprivileged accounts (created by frfw.accounts). The webUI runs as
+#: WEBUI_USER; the daemons that parse untrusted network input (AI IDS,
+#: App-ID, IoT scan, TLS fingerprinting) run as SENSOR_USER, so a bug in a
+#: parser reaches neither the webUI's secrets nor anything but the few
+#: helper commands frfw.helper.peer.SENSOR_COMMANDS allows.
+WEBUI_USER = "fr_os-webui"
+SENSOR_USER = "fr_os-sensor"
+
+#: The parser daemons' display-only output (AI IDS events, IoT inventory,
+#: App-ID usage, TLS fingerprints): fr_os-sensor:fr_os-webui 0750, written
+#: by the daemons, read by the webUI and the metrics exporter. Separate
+#: from WEBUI_STATE_DIR, which holds the webUI's session secret, TLS key
+#: and accounts and is private to fr_os-webui (0700).
+SENSOR_STATE_DIR = Path("/etc/fr_os/sensors")
+
 #: The webUI's own state: self-signed TLS keypair (generated on first run
 #: if missing, see frfw.webui.tls), the local admin account
 #: (frfw.admin_account) and the session-signing secret key
-#: (frfw.webui.auth). Kept in one directory, owned and read/write for the
-#: unprivileged fr_os-webui user/group, distinct from /etc/fr_os/config.yaml
+#: (frfw.webui.auth). Kept in one directory, private to the unprivileged
+#: fr_os-webui user (0700), distinct from /etc/fr_os/config.yaml
 #: itself (root-owned, written only through the apply-helper) -- so the
 #: systemd unit can grant exactly one ReadWritePaths= for all of it.
 WEBUI_STATE_DIR = Path("/etc/fr_os/webui")
@@ -44,14 +59,14 @@ WEBUI_SECRET_KEY_PATH = WEBUI_STATE_DIR / "secret.key"
 #: flagged/quarantined IPs with their anomaly score/reasons, for the
 #: webUI's AI IDS screen. Written directly by the unprivileged
 #: `fr-ai-ids` daemon itself (its own decisions, not privileged data),
-#: needs no root, so it lives alongside the webUI's other unprivileged
-#: state rather than under root-owned /etc/fr_os directly. Never the
+#: needs no root, so it lives in SENSOR_STATE_DIR rather than under
+#: root-owned /etc/fr_os directly. Never the
 #: source of truth for "is this IP currently quarantined" -- that is
 #: always a live kernel-state query via the privileged helper's
 #: "ids_quarantine_status" command (frfw.ids_quarantine.list_quarantined),
 #: the same "display file vs. live kernel query" split frfw.ztna's own
 #: ZTNA_STATE_PATH documents.
-AI_IDS_STATE_PATH = WEBUI_STATE_DIR / "ai_ids_state.json"
+AI_IDS_STATE_PATH = SENSOR_STATE_DIR / "ai_ids_state.json"
 
 #: Update mechanism's (phase 6, see frfw.update) persisted apply/rollback
 #: history -- installed/previous version, last update's outcome. Written
@@ -159,17 +174,17 @@ ADBLOCK_DNS_SERVICE_NAME = "fr-adblock-dns"
 #: IoT device inventory (phase 14, see frfw.iot.scanner): the last
 #: scan's discovered devices, their classification and the reasons for
 #: it. Display-only state written by the unprivileged scanner (running
-#: as fr_os-webui, like AI_IDS_STATE_PATH) and read back by the webUI and
+#: as fr_os-sensor, like AI_IDS_STATE_PATH) and read back by the webUI and
 #: the metrics exporter -- the enforcement state itself lives in the
 #: kernel's nftables set, never here.
-IOT_INVENTORY_PATH = WEBUI_STATE_DIR / "iot_inventory.json"
+IOT_INVENTORY_PATH = SENSOR_STATE_DIR / "iot_inventory.json"
 
 #: App identification usage summary (phase 16, see frfw.appid.daemon):
 #: which apps each client used recently, written by the unprivileged
 #: fr-appid daemon and read by the webUI and the metrics exporter.
 #: Display-only, like IOT_INVENTORY_PATH -- blocking an app is enforced
 #: by the resolver and (optionally) the XDP blocklist, never from here.
-APPID_USAGE_PATH = WEBUI_STATE_DIR / "appid_usage.json"
+APPID_USAGE_PATH = SENSOR_STATE_DIR / "appid_usage.json"
 
 #: Time-based rules (phase 17, see frfw.schedule_refresh): the UTC offset
 #: and kernel time zone the currently loaded ruleset's scheduled rules
@@ -187,5 +202,5 @@ WEBUI_AUDIT_LOG_PATH = WEBUI_STATE_DIR / "audit.log"
 #: TLS client fingerprint inventory (phase 19, see frfw.tlsfp.daemon):
 #: which JA4/JA3 fingerprints each client presented, and recent events
 #: (new fingerprints, blocklist matches). Written by fr-tls-fp after it
-#: has dropped to the fr_os-webui account; display-only.
-TLSFP_STATE_PATH = WEBUI_STATE_DIR / "tls_fingerprints.json"
+#: has dropped to the fr_os-sensor account; display-only.
+TLSFP_STATE_PATH = SENSOR_STATE_DIR / "tls_fingerprints.json"

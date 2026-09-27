@@ -8,6 +8,11 @@ docstring for why. Structurally this mirrors that module closely
 per connection); the duplication is small and keeping the two daemons
 fully independent (no shared base class) means a change to one's
 request handling can never accidentally affect the other's.
+
+Only root and the webUI's account may use it: the socket file belongs to
+fr_os-webui with mode 0600 (systemd/fr-update-helper.socket), and every
+connection's kernel-reported peer uid is checked again here
+(frfw.helper.peer) -- installing a release runs code as root.
 """
 
 from __future__ import annotations
@@ -22,6 +27,7 @@ from pathlib import Path
 
 from frfw import paths
 from frfw import update as update_mod
+from frfw.helper.peer import FULL, PeerPolicy, peer_credentials
 from frfw.helper.update_protocol import MAX_LINE_BYTES
 
 _SD_LISTEN_FDS_START = 3
@@ -80,7 +86,13 @@ class _Handler(socketserver.StreamRequestHandler):
             request = json.loads(line)
             if not isinstance(request, dict):
                 raise ValueError("request must be a JSON object")
-            response = _handle_request(request, self.server)
+            pid, uid, _gid = peer_credentials(self.connection)
+            if self.server.peer_policy.role(uid) == FULL:
+                response = _handle_request(request, self.server)
+            else:
+                print(f"firewall-update-helper: refused {request.get('cmd')!r} from pid {pid} uid {uid}",
+                      file=sys.stderr, flush=True)
+                response = {"ok": False, "message": f"uid {uid} may not use the update-helper"}
         except (ValueError, TypeError) as exc:
             response = {"ok": False, "message": f"invalid request: {exc}"}
         self.wfile.write(json.dumps(response).encode() + b"\n")
@@ -97,7 +109,9 @@ class UpdateHelperServer(socketserver.UnixStreamServer):
         state_path: Path = paths.UPDATE_STATE_PATH,
         releases_dir: Path = paths.RELEASES_DIR,
         systemd_socket: socket.socket | None = None,
+        peer_policy: PeerPolicy | None = None,
     ) -> None:
+        self._peer_policy = peer_policy
         self.repo = repo
         self.state_path = state_path
         self.releases_dir = releases_dir
@@ -112,6 +126,13 @@ class UpdateHelperServer(socketserver.UnixStreamServer):
             socket_path.parent.mkdir(parents=True, exist_ok=True)
             socket_path.unlink(missing_ok=True)
             super().__init__(str(socket_path), _Handler)
+
+    @property
+    def peer_policy(self) -> PeerPolicy:
+        # Looked up per connection, not once at start: fr-accounts.service
+        # may create fr_os-sensor after this daemon is already running
+        # (the first boot after an update).
+        return self._peer_policy or PeerPolicy.from_system()
 
     def server_close(self) -> None:
         super().server_close()

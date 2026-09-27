@@ -1,0 +1,14 @@
+[Unit]
+Description=FR_OS unprivileged accounts and state directories (see frfw.accounts)
+Documentation=https://github.com/starsmash29/FR_OS-pblk
+# Pulled in (Wants=/After=) by every unit that runs as fr_os-webui or
+# fr_os-sensor, so the account exists before systemd resolves User= --
+# also on a box updated from a version that didn't have fr_os-sensor.
+DefaultDependencies=no
+After=local-fs.target systemd-sysusers.service
+Before=sysinit.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=firewall-cli ensure-accounts

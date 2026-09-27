@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 import pytest
 
 from frfw.config import parse_config
+from frfw.iot.scanner import run_scan
 from frfw.webui.app import create_app
 from frfw.webui.auth import AdminStore, SessionManager
 from frfw.webui.auth_rate_limiter import BruteforceGuard
@@ -44,6 +45,7 @@ class FakeHelper:
         self.leases: list[dict] = []  # dhcp_leases() payload, set by tests directly
         self.iot_isolated: list[str] = []  # stands in for the kernel iot_isolated set
         self.iot_sync_calls: list[list[str]] = []
+        self.iot_scan_calls = 0
 
     def ping(self):
         return {"ok": True, "message": "pong"}
@@ -130,6 +132,29 @@ class FakeHelper:
     def iot_isolation_status(self) -> dict:
         return {"ok": True, "isolated": list(self.iot_isolated), "count": len(self.iot_isolated)}
 
+    def iot_scan(self) -> dict:
+        """What fr-iot-scan.service does when the real helper starts it:
+        a scan (no real multicast/ARP/IEEE registry here: an empty ARP
+        table, a one-line OUI file and a canned mDNS answer) that writes
+        the inventory next to the config."""
+        self.iot_scan_calls += 1
+        tmp = self.config_path.parent
+        arp = tmp / "arp"
+        arp.write_text("IP address HW type Flags HW address Mask Device\n")
+        oui = tmp / "oui.csv"
+        oui.write_text("Registry,Assignment,Organization Name,Organization Address\nMA-L,240AC4,Espressif Inc.,x\n")
+        config = parse_config(yaml.safe_load(self.config_path.read_text()))
+        run_scan(
+            config,
+            leases_fn=self.dhcp_leases,
+            sync_fn=self.iot_sync_isolation,
+            mdns_fn=lambda addrs: {"10.0.1.50": {"_esphomelib._tcp"}},
+            arp_path=arp,
+            oui_path=oui,
+            state_path=tmp / "iot_inventory.json",
+        )
+        return {"ok": True, "message": "fr-iot-scan.service finished"}
+
 
 class FakeUpdateHelper:
     """An in-memory stand-in for the real Unix-socket update-helper.
@@ -179,23 +204,6 @@ def webui_env(tmp_path):
         "audit_log_path": tmp_path / "audit.log",
         "tlsfp_state_path": tmp_path / "tls_fingerprints.json",
         "webui_cert_path": tmp_path / "cert.pem",
-        # No real multicast/ARP/IEEE registry in route tests: an empty
-        # ARP table, an empty OUI file and a canned mDNS answer.
-        "iot_scan_options": _iot_scan_options(tmp_path),
-    }
-
-
-def _iot_scan_options(tmp_path):
-    arp = tmp_path / "arp"
-    arp.write_text("IP address HW type Flags HW address Mask Device\n")
-    oui = tmp_path / "oui.csv"
-    oui.write_text(
-        "Registry,Assignment,Organization Name,Organization Address\nMA-L,240AC4,Espressif Inc.,x\n"
-    )
-    return {
-        "arp_path": arp,
-        "oui_path": oui,
-        "mdns_fn": lambda addrs: {"10.0.1.50": {"_esphomelib._tcp"}},
     }
 
 

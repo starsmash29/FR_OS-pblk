@@ -214,8 +214,8 @@ privileges, so the unprivileged webUI never needs root itself. Details:
 
 ## WebUI (phase 3)
 
-The install script already sets up the `fr_os-webui` user and the
-required permissions; after that:
+The install script already sets up the `fr_os-webui` and `fr_os-sensor`
+accounts and the required permissions; after that:
 
 ```bash
 sudo firewall-cli set-admin-password   # set the admin password (interactive)
@@ -300,7 +300,7 @@ Needs the XDP SNI filter on the LAN-side interfaces; then enable it on the
 `/tls` screen or with `tls_fingerprint: {enabled: true}` and apply:
 
 ```bash
-sudo systemctl enable --now fr-tls-fp   # starts as root, drops to fr_os-webui before parsing
+sudo systemctl enable --now fr-tls-fp   # starts as root, drops to fr_os-sensor before parsing
 firewall-cli tls-fingerprints           # JA4 fingerprints seen per device
 ```
 

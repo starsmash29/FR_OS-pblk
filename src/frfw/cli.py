@@ -7,6 +7,7 @@
     firewall-cli detect-interfaces [--include-virtual]
     firewall-cli assign-interfaces --wan DEV --lan DEV [--opt NAME:DEV ...] [--out PATH]
     firewall-cli set-admin-password [--username admin] [--generate]
+    firewall-cli ensure-accounts
     firewall-cli users
     firewall-cli ids-status
     firewall-cli iot-status
@@ -49,6 +50,7 @@ from pathlib import Path
 import yaml
 
 from frfw import __version__, codename_for, netdetect, paths, schedule_refresh, skeleton, xdp as xdp_mod
+from frfw import accounts as accounts_mod
 from frfw import persistence as persistence_mod
 from frfw import update as update_mod
 from frfw.adblock import AdblockError
@@ -188,6 +190,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "the password to stdout (for non-interactive first-boot use)",
     )
     p_admin.set_defaults(handler=_cmd_set_admin_password)
+
+    p_accounts = sub.add_parser(
+        "ensure-accounts",
+        help="create the fr_os-webui/fr_os-sensor system users and their state directories (root)",
+    )
+    p_accounts.set_defaults(handler=_cmd_ensure_accounts)
 
     p_users = sub.add_parser("users", help="list the webUI accounts and their roles")
     p_users.set_defaults(handler=_cmd_users)
@@ -393,6 +401,18 @@ def _cmd_set_admin_password(args: argparse.Namespace) -> int:
 
     AdminStore().set_password(args.username, password, ROLE_ADMIN)
     print(f"Admin account {args.username!r} set")
+    return 0
+
+
+def _cmd_ensure_accounts(args: argparse.Namespace) -> int:
+    try:
+        done = accounts_mod.ensure()
+    except (accounts_mod.AccountsError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    for line in done:
+        print(f"fr-accounts: {line}")
+    print("fr-accounts: accounts and state directories in place")
     return 0
 
 

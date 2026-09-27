@@ -2,8 +2,9 @@
 # System integration installer for FR_OS.
 #
 # Sets up /etc/fr_os, a default config (if none exists yet), the
-# fr_os-webui system user/group that the webUI runs as and that gates
-# access to the apply-helper socket, and installs the systemd units. Run
+# fr_os-webui and fr_os-sensor system accounts (the webUI, and the daemons
+# that parse network input -- see frfw.accounts), and installs the
+# systemd units. Run
 # as root on a Debian box that already has `frfw` (with the `webui`
 # extra) installed (see README.md) and the nftables/kea-dhcp4-server
 # packages present.
@@ -26,13 +27,14 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
-echo "==> Ensuring user/group '$WEBUI_USER' exists (the webUI runs as this unprivileged user)"
-id -u "$WEBUI_USER" >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin "$WEBUI_USER"
-
 echo "==> Creating $CONFIG_DIR"
 install -d -m 0755 -o root -g root "$CONFIG_DIR"
 install -d -m 0750 -o root -g root "$CONFIG_DIR/backups"
-install -d -m 0750 -o "$WEBUI_USER" -g "$WEBUI_USER" "$WEBUI_STATE_DIR"
+
+echo "==> Ensuring the unprivileged accounts and their state directories exist"
+# fr_os-webui (the webUI; $WEBUI_STATE_DIR, 0700) and fr_os-sensor (the
+# network-parsing daemons; $CONFIG_DIR/sensors) -- frfw.accounts.
+firewall-cli ensure-accounts
 
 echo "==> Creating /opt/fr_os/releases (update mechanism's extracted release cache)"
 install -d -m 0755 -o root -g root /opt/fr_os
@@ -65,6 +67,7 @@ fi
 
 echo "==> Installing systemd units"
 if [[ -d "$REPO_ROOT/systemd" ]]; then
+    install -m 0644 "$REPO_ROOT/systemd/fr-accounts.service" "$SYSTEMD_DIR/"
     install -m 0644 "$REPO_ROOT/systemd/fr-firewall.service" "$SYSTEMD_DIR/"
     install -m 0644 "$REPO_ROOT/systemd/fr-apply-helper.socket" "$SYSTEMD_DIR/"
     install -m 0644 "$REPO_ROOT/systemd/fr-apply-helper.service" "$SYSTEMD_DIR/"

@@ -3,12 +3,12 @@ Unix-socket interface (see ARCHITECTURE.md's security model).
 
 The webUI (phase 3) will run unprivileged and never touch nftables or
 /etc/fr_os directly; instead it sends a one-line JSON request here and
-gets a one-line JSON response back. Access control is left to the
-socket's filesystem permissions (see systemd/fr-apply-helper.socket,
-which sets SocketGroup= so only a dedicated group can connect) rather
-than anything in this protocol -- deliberately, since Unix socket
-permissions are a well-understood primitive and this daemon has no
-concept of "users" of its own.
+gets a one-line JSON response back. Two layers of access control: the
+socket file's permissions (systemd/fr-apply-helper.socket: 0660
+root:fr_os-webui) decide who can connect at all, and the kernel-reported
+peer uid (SO_PEERCRED) decides which commands that connection may send
+-- everything for the webUI, a short list for the network-parsing
+daemons, nothing for anyone else (see frfw.helper.peer).
 
 Supports systemd socket activation (LISTEN_FDS/LISTEN_PID) so systemd can
 own the socket file's permissions; falls back to binding the socket
@@ -23,12 +23,13 @@ import json
 import os
 import socket
 import socketserver
+import subprocess
 import sys
 from pathlib import Path
 
 import yaml
 
-from frfw import bruteforce, conntrack, hwinfo, ids_quarantine, iot_isolation, kea, paths, ztna
+from frfw import bruteforce, conntrack, hwinfo, ids_quarantine, iot_isolation, kea, paths, svc, ztna
 from frfw.adblock import AdblockError
 from frfw.iot import leases as iot_leases
 from frfw.iot_isolation import IotIsolationError
@@ -37,6 +38,7 @@ from frfw.apply import NftError, rollback_last
 from frfw.bruteforce import BruteforceError
 from frfw.config import ConfigError, load_config, parse_config
 from frfw.conntrack import ConntrackError
+from frfw.helper.peer import PeerPolicy, peer_credentials
 from frfw.helper.protocol import MAX_LINE_BYTES
 from frfw.hwinfo import HwInfoError
 from frfw.ids_quarantine import IdsQuarantineError
@@ -47,6 +49,9 @@ from frfw.provision import apply_all
 from frfw.ztna import ZtnaError
 
 _SD_LISTEN_FDS_START = 3
+
+#: The IoT scan, run on demand by the "iot_scan" command.
+IOT_SCAN_SERVICE = "fr-iot-scan.service"
 
 
 def _systemd_provided_socket() -> socket.socket | None:
@@ -126,6 +131,9 @@ def _handle_request(request: dict, server: "ApplyHelperServer") -> dict:
 
         if cmd == "iot_isolation_status":
             return _handle_iot_isolation_status()
+
+        if cmd == "iot_scan":
+            return _handle_iot_scan()
 
         return {"ok": False, "message": f"unknown command {cmd!r}"}
     except (
@@ -296,6 +304,20 @@ def _handle_iot_isolation_status() -> dict:
     return {"ok": True, "isolated": isolated, "count": len(isolated)}
 
 
+def _handle_iot_scan() -> dict:
+    """The webUI's "Scan now": run the scan in fr-iot-scan.service (as
+    fr_os-sensor) rather than in the webUI process, which must never
+    parse LAN traffic itself."""
+    try:
+        proc = svc.systemctl("start", IOT_SCAN_SERVICE, timeout=120)
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        return {"ok": False, "message": f"could not run {IOT_SCAN_SERVICE}: {exc}"}
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout).strip()
+        return {"ok": False, "message": f"{IOT_SCAN_SERVICE} failed: {detail} (see journalctl -u {IOT_SCAN_SERVICE})"}
+    return {"ok": True, "message": f"{IOT_SCAN_SERVICE} finished"}
+
+
 def _write_atomic(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_suffix(path.suffix + ".tmp")
@@ -314,7 +336,13 @@ class _Handler(socketserver.StreamRequestHandler):
             request = json.loads(line)
             if not isinstance(request, dict):
                 raise ValueError("request must be a JSON object")
-            response = _handle_request(request, self.server)
+            pid, uid, _gid = peer_credentials(self.connection)
+            if self.server.peer_policy.allows(uid, request.get("cmd")):
+                response = _handle_request(request, self.server)
+            else:
+                print(f"firewall-helper: refused {request.get('cmd')!r} from pid {pid} uid {uid}",
+                      file=sys.stderr, flush=True)
+                response = {"ok": False, "message": f"command {request.get('cmd')!r} is not allowed for uid {uid}"}
         except (ValueError, TypeError) as exc:
             response = {"ok": False, "message": f"invalid request: {exc}"}
         self.wfile.write(json.dumps(response).encode() + b"\n")
@@ -335,7 +363,9 @@ class ApplyHelperServer(socketserver.UnixStreamServer):
         kea_leases_path: Path = iot_leases.KEA_LEASES_PATH,
         adblock_category_dir: Path = paths.ADBLOCK_CATEGORY_DIR,
         systemd_socket: socket.socket | None = None,
+        peer_policy: PeerPolicy | None = None,
     ) -> None:
+        self._peer_policy = peer_policy
         self.adblock_category_dir = adblock_category_dir
         self.config_path = config_path
         self.backup_dir = backup_dir
@@ -354,6 +384,13 @@ class ApplyHelperServer(socketserver.UnixStreamServer):
             socket_path.parent.mkdir(parents=True, exist_ok=True)
             socket_path.unlink(missing_ok=True)
             super().__init__(str(socket_path), _Handler)
+
+    @property
+    def peer_policy(self) -> PeerPolicy:
+        # Looked up per connection, not once at start: fr-accounts.service
+        # may create fr_os-sensor after this daemon is already running
+        # (the first boot after an update).
+        return self._peer_policy or PeerPolicy.from_system()
 
     def server_close(self) -> None:
         super().server_close()
