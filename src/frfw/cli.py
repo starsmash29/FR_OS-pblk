@@ -11,6 +11,7 @@
     firewall-cli initial-password
     firewall-cli ensure-accounts
     firewall-cli users
+    firewall-cli mfa-reset USER
     firewall-cli ids-status
     firewall-cli iot-status
     firewall-cli apps-status [--limit N]
@@ -58,7 +59,7 @@ from frfw import persistence as persistence_mod
 from frfw import update as update_mod
 from frfw.adblock import AdblockError
 from frfw.adblock import refresh as adblock_refresh
-from frfw.admin_account import ROLE_ADMIN, AdminStore
+from frfw.admin_account import ROLE_ADMIN, AccountError, AdminStore
 from frfw.appid import load_catalog
 from frfw.appid.daemon import load_usage
 from frfw import apply as apply_mod
@@ -212,6 +213,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "instead (a root-only /etc/issue.d file, removed once the password is changed)",
     )
     p_admin.set_defaults(handler=_cmd_set_admin_password)
+
+    p_mfa_reset = sub.add_parser(
+        "mfa-reset",
+        help="remove every second factor of a webUI account (recovery when a key or phone is lost)",
+    )
+    p_mfa_reset.add_argument("username")
+    p_mfa_reset.set_defaults(handler=_cmd_mfa_reset)
 
     p_initial = sub.add_parser(
         "initial-password",
@@ -464,6 +472,22 @@ def _cmd_set_admin_password(args: argparse.Namespace) -> int:
 
     AdminStore().set_password(args.username, password, ROLE_ADMIN)
     print(f"Admin account {args.username!r} set")
+    return 0
+
+
+def _cmd_mfa_reset(args: argparse.Namespace) -> int:
+    store = AdminStore()
+    try:
+        store.reset_mfa(args.username)
+    except AccountError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    # Their open sessions end with it, as when an admin resets it in the webUI:
+    # a session secured by the lost factor shouldn't outlive it.
+    from frfw.webui.auth import SessionStore  # webUI extra, present wherever accounts are
+
+    SessionStore(paths.WEBUI_SECRET_KEY_PATH.with_name("sessions.json")).revoke_user(args.username)
+    print(f"Second factors of {args.username!r} removed; they sign in with the password alone until they add one")
     return 0
 
 

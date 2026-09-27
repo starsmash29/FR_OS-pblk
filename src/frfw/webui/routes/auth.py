@@ -15,10 +15,12 @@ from frfw.webui.deps import (
     get_audit_log_path,
     get_bruteforce_guard,
     get_helper,
+    get_mfa_tickets,
     get_session_manager,
     require_login,
 )
 from frfw.webui.helper_client import HelperClient
+from frfw.webui.mfa import TICKET_COOKIE, TICKET_SECONDS, TicketStore
 from frfw.webui.responses import redirect_with
 from frfw.webui.templating import templates
 
@@ -50,6 +52,7 @@ def login_submit(
     helper: HelperClient = Depends(get_helper),
     guard: BruteforceGuard = Depends(get_bruteforce_guard),
     audit_log_path: Path = Depends(get_audit_log_path),
+    mfa_tickets: TicketStore = Depends(get_mfa_tickets),
 ):
     ip = client_ip(request)
     account = admin_store.verify(username, password)
@@ -57,9 +60,26 @@ def login_submit(
         audit.append(audit_log_path, {"user": username, "client": ip, "event": "login failed"})
         return reject_failed_login(ip, guard, helper, redirect_path="/login")
 
+    if account.has_mfa and mfa_tickets.account_locked(account.username):
+        audit.append(audit_log_path, {"user": username, "client": ip, "event": "second factor locked"})
+        return redirect_with("/login", error="Too many wrong second-factor attempts for this account -- "
+                                             "try again in 15 minutes")
+    if account.has_mfa:
+        # Security-lessons G5: the password alone gets no session, only a
+        # single-use ticket for the second step (frfw.webui.mfa).
+        audit.append(audit_log_path, {"user": username, "client": ip, "event": "password ok, second factor pending"})
+        response = RedirectResponse("/login/mfa", status_code=303)
+        response.set_cookie(TICKET_COOKIE, mfa_tickets.create(account), max_age=TICKET_SECONDS, path="/login",
+                            httponly=True, samesite="strict", secure=request.url.scheme == "https")
+        return response
+
     guard.record_success(ip)
     audit.append(audit_log_path, {"user": username, "role": account.role, "client": ip, "event": "login"})
-    response = RedirectResponse("/", status_code=303)
+    return issue_session(request, RedirectResponse("/", status_code=303), account, session_manager)
+
+
+def issue_session(request: Request, response, account, session_manager: SessionManager):
+    """Give the browser a fresh session for `account` (on `response`)."""
     response.set_cookie(
         COOKIE_NAME,
         session_manager.create_cookie_value(account),
@@ -114,12 +134,4 @@ def setup_submit(
     session_manager.revoke_user(username)  # the generated account's sessions end
     audit.append(audit_log_path, {"user": account.username, "client": client_ip(request),
                                   "event": f"first-run setup: renamed {username!r}"})
-    response = RedirectResponse("/", status_code=303)
-    response.set_cookie(
-        COOKIE_NAME,
-        session_manager.create_cookie_value(account),
-        httponly=True,
-        samesite="lax",
-        secure=request.url.scheme == "https",
-    )
-    return response
+    return issue_session(request, RedirectResponse("/", status_code=303), account, session_manager)

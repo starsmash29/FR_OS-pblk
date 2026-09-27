@@ -30,11 +30,15 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import fcntl
+import functools
 import json
 import os
 import re
 import secrets
-from dataclasses import dataclass
+import threading
+from contextlib import contextmanager
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from frfw import paths
@@ -123,6 +127,14 @@ class AdminAccount:
     #: Set on the account first boot generates: the first sign-in goes to
     #: the setup step (own username, own password) before anything else.
     must_change: bool = False
+    #: Second factors (security-lessons G5): {"totp": {"secret",
+    #: "last_step"}, "webauthn": [{"id", "public_key", "sign_count",
+    #: "rp_id", "name", "added"}]}. Secrets -- never shown after enrolment.
+    mfa: dict = field(default_factory=dict, compare=False, repr=False)
+
+    @property
+    def has_mfa(self) -> bool:
+        return bool(self.mfa.get("totp")) or bool(self.mfa.get("webauthn"))
 
     @property
     def is_admin(self) -> bool:
@@ -148,11 +160,54 @@ def validate_password(password: str) -> None:
         raise AccountError(f"Password must be at least {MIN_PASSWORD_LENGTH} characters")
 
 
+#: Which account files this thread holds the lock of (it is re-entrant).
+_held = threading.local()
+
+
+def _serialized(method):
+    """Run a read-modify-write of the account file under its lock."""
+    @functools.wraps(method)
+    def locked(self, *args, **kwargs):
+        with self.lock():
+            return method(self, *args, **kwargs)
+    return locked
+
+
 class AdminStore:
-    """Reads/writes the webUI account file."""
+    """Reads/writes the webUI account file.
+
+    Every change is a read-modify-write of one JSON file, done under an
+    exclusive `flock` on its directory (security-lessons J1): the webUI
+    serves requests on many threads and `firewall-cli` is another
+    process, and without it two changes at the same moment lost one of
+    them -- or both finished a first-run setup. Readers need no lock:
+    the file is replaced atomically."""
 
     def __init__(self, path: Path = AUTH_FILE_PATH) -> None:
         self.path = path
+
+    @contextmanager
+    def lock(self):
+        held = getattr(_held, "paths", None)
+        if held is None:
+            held = _held.paths = set()
+        key = str(self.path.resolve())
+        if key in held:
+            yield
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        # The directory, not the file: the file is replaced on every
+        # write, a lock on it would be on the old inode.
+        fd = os.open(self.path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            held.add(key)
+            try:
+                yield
+            finally:
+                held.discard(key)
+        finally:
+            os.close(fd)
 
     # -- reading -----------------------------------------------------------
 
@@ -168,9 +223,15 @@ class AdminStore:
             return {data["username"]: AdminAccount(data["username"], data["password_hash"], ROLE_ADMIN)}
         return {
             name: AdminAccount(name, entry["password_hash"], entry.get("role", ROLE_ADMIN),
-                               bool(entry.get("must_change", False)))
+                               bool(entry.get("must_change", False)), dict(entry.get("mfa") or {}))
             for name, entry in data["users"].items()
         }
+
+    def policy(self) -> dict:
+        """Account-wide rules: {"require_mfa_for_admins": bool}."""
+        if not self.path.is_file():
+            return {}
+        return dict(json.loads(self.path.read_text()).get("policy") or {})
 
     def get(self, username: str) -> AdminAccount | None:
         return self.users().get(username)
@@ -188,23 +249,32 @@ class AdminStore:
         if not verify_password(password, account.password_hash):
             return None
         if needs_rehash(account.password_hash):
-            users = self.users()
-            users[username] = AdminAccount(username, hash_password(password), account.role, account.must_change)
-            self._write(users)
-            account = users[username]
+            with self.lock():
+                users = self.users()
+                current = users.get(username)
+                if current is None or current.password_hash != account.password_hash:
+                    # Changed meanwhile (a parallel sign-in upgraded it, or
+                    # the password was changed): check against what is there now.
+                    return current if current and verify_password(password, current.password_hash) else None
+                users[username] = replace(current, password_hash=hash_password(password))
+                self._write(users)
+                account = users[username]
         return account
 
     # -- writing -----------------------------------------------------------
 
-    def _write(self, users: dict[str, AdminAccount]) -> None:
+    def _write(self, users: dict[str, AdminAccount], policy: dict | None = None) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        policy = self.policy() if policy is None else policy
         data = {
             "version": 2,
             "users": {
                 name: {"password_hash": a.password_hash, "role": a.role,
-                       **({"must_change": True} if a.must_change else {})}
+                       **({"must_change": True} if a.must_change else {}),
+                       **({"mfa": a.mfa} if a.mfa else {})}
                 for name, a in sorted(users.items())
             },
+            **({"policy": policy} if policy else {}),
         }
         tmp_path = self.path.with_suffix(".tmp")
         tmp_path.unlink(missing_ok=True)
@@ -222,6 +292,7 @@ class AdminStore:
             os.chown(tmp_path, parent.st_uid, parent.st_gid)
         tmp_path.replace(self.path)
 
+    @_serialized
     def set_password(self, username: str, password: str, role: str | None = None, *,
                      must_change: bool = False) -> None:
         """Create the account or change its password. A new account gets
@@ -235,9 +306,12 @@ class AdminStore:
         if new_role not in ROLES:
             raise AccountError(f"Unknown role {new_role!r}")
         self._check_keeps_an_admin(users, username, new_role)
-        users[username] = AdminAccount(username, hash_password(password), new_role, must_change)
+        # A password change keeps the account's second factors.
+        users[username] = AdminAccount(username, hash_password(password), new_role, must_change,
+                                       dict(existing.mfa) if existing else {})
         self._write(users)
 
+    @_serialized
     def complete_setup(self, current: str, new_username: str, password: str) -> AdminAccount:
         """First-run setup (security-lessons G1): the generated account
         becomes `new_username` with the admin's own password; the
@@ -259,6 +333,7 @@ class AdminStore:
         self._write(users)
         return users[new_username]
 
+    @_serialized
     def add_user(self, username: str, password: str, role: str) -> None:
         validate_username(username)
         validate_password(password)
@@ -268,6 +343,7 @@ class AdminStore:
             raise AccountError(f"User {username!r} already exists")
         self.set_password(username, password, role)
 
+    @_serialized
     def set_role(self, username: str, role: str) -> None:
         if role not in ROLES:
             raise AccountError(f"Unknown role {role!r}")
@@ -275,9 +351,10 @@ class AdminStore:
         if username not in users:
             raise AccountError(f"No such user {username!r}")
         self._check_keeps_an_admin(users, username, role)
-        users[username] = AdminAccount(username, users[username].password_hash, role)
+        users[username] = replace(users[username], role=role)
         self._write(users)
 
+    @_serialized
     def delete_user(self, username: str) -> None:
         users = self.users()
         if username not in users:
@@ -285,6 +362,26 @@ class AdminStore:
         self._check_keeps_an_admin(users, username, None)
         del users[username]
         self._write(users)
+
+    @_serialized
+    def set_mfa(self, username: str, mfa: dict) -> AdminAccount:
+        users = self.users()
+        if username not in users:
+            raise AccountError(f"No such user {username!r}")
+        users[username] = replace(users[username], mfa=mfa)
+        self._write(users)
+        return users[username]
+
+    def reset_mfa(self, username: str) -> None:
+        """Remove every second factor (recovery: `firewall-cli mfa-reset`,
+        or an admin on the Users screen)."""
+        self.set_mfa(username, {})
+
+    @_serialized
+    def set_policy(self, *, require_mfa_for_admins: bool) -> None:
+        policy = self.policy()
+        policy["require_mfa_for_admins"] = bool(require_mfa_for_admins)
+        self._write(self.users(), policy)
 
     @staticmethod
     def _check_keeps_an_admin(users: dict[str, AdminAccount], username: str, new_role: str | None) -> None:

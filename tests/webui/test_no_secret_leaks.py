@@ -6,7 +6,7 @@ produce is rendered here -- as an admin and as a viewer -- against a
 router whose config and state hold every kind of secret FR_OS keeps, and
 none of them may appear: account and ZTNA password hashes (or their salts
 and digests), the /metrics token and its digest, the session-signing key,
-the TLS private key.
+the TLS private key, second-factor secrets.
 """
 
 from __future__ import annotations
@@ -43,6 +43,12 @@ def secrets_everywhere(webui_env, tmp_path):
     store = webui_env["admin_store"]
     store.set_password("boss", "adminpass1", "admin")
     store.add_user("guest", "viewerpass1", "viewer")
+    # An account with second factors (security-lessons G5): its TOTP secret
+    # and security-key public key are secrets too.
+    store.add_user("carol", "carolpass1", "admin")
+    store.set_mfa("carol", {"totp": {"secret": "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP", "last_step": 1},
+                            "webauthn": [{"id": "Y3JlZC1pZA", "public_key": "pQECAyYgASFYIGNhcm9sLXB1YmxpYy1rZXk",
+                                          "sign_count": 3, "rp_id": "fr-router.lan", "name": "yubi", "added": 0}]})
     (tmp_path / "key.pem").write_text(FAKE_TLS_KEY)
     webui_env["webui_cert_path"].write_text("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n")
 
@@ -50,6 +56,8 @@ def secrets_everywhere(webui_env, tmp_path):
     key_bytes = (tmp_path / "secret.key").read_bytes()
     forbidden = {"metrics token": token, "metrics token digest": digest, "TLS private key": "PRIVATE KEY",
                  "session key (hex)": key_bytes.hex(), "session key (base64)": base64.b64encode(key_bytes).decode()}
+    forbidden["TOTP secret"] = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
+    forbidden["security-key public key"] = "pQECAyYgASFYIGNhcm9sLXB1YmxpYy1rZXk"
     for label, stored in (("ZTNA hash", ztna_hash), ("boss hash", store.get("boss").password_hash),
                           ("guest hash", store.get("guest").password_hash)):
         algorithm, *_params, salt, digest_hex = stored.split("$")

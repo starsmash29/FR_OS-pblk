@@ -19,7 +19,11 @@ from frfw.webui.app import create_app
 from frfw.webui.deps import VIEWER_ALLOWED_PATHS
 
 #: Unsafe-method routes that are *meant* to work without an admin session.
-PUBLIC_CHANGE_ROUTES = {"/login", "/logout", "/ztna/login"}
+PUBLIC_CHANGE_ROUTES = {
+    "/login", "/logout", "/ztna/login",
+    # The second sign-in step: only a login ticket gets anywhere (security-lessons G5).
+    "/login/mfa/totp", "/login/mfa/webauthn/options", "/login/mfa/webauthn/verify",
+}
 
 _CONFIG = {
     "version": 1,

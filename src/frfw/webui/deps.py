@@ -87,10 +87,27 @@ def get_raw_config(config_path: Path = Depends(get_config_path)) -> dict:
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 #: The only changes a viewer may make (phase 18).
-VIEWER_ALLOWED_PATHS = frozenset({"/logout", "/account/password", "/account/logout-everywhere"})
+VIEWER_ALLOWED_PATHS = frozenset({
+    "/logout", "/account/password", "/account/logout-everywhere",
+    # Everyone manages their own second factors (security-lessons G5).
+    "/account/mfa/totp", "/account/mfa/webauthn/options", "/account/mfa/webauthn/register", "/account/mfa/remove",
+})
 
 #: All an account with a generated password can reach (security-lessons G1).
 SETUP_PATHS = frozenset({"/setup", "/logout"})
+
+
+def get_mfa_tickets(request: Request):
+    return request.app.state.mfa_tickets
+
+
+def get_mfa_enrolments(request: Request):
+    return request.app.state.mfa_enrolments
+
+
+#: What an admin without a second factor can reach while
+#: require_mfa_for_admins is on (security-lessons G5).
+MFA_ENROL_PREFIX = "/account/mfa"
 
 
 def require_login(
@@ -117,6 +134,16 @@ def require_login(
         # until the admin has chosen their own username and password.
         raise HTTPException(
             status_code=status.HTTP_303_SEE_OTHER, headers={"Location": "/setup"}
+        )
+    if (
+        account.is_admin
+        and not account.has_mfa
+        and not request.url.path.startswith(MFA_ENROL_PREFIX)
+        and request.url.path not in SETUP_PATHS
+        and admin_store.policy().get("require_mfa_for_admins")
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_303_SEE_OTHER, headers={"Location": MFA_ENROL_PREFIX}
         )
     if (
         not account.is_admin

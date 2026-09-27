@@ -20,6 +20,7 @@ from frfw.webui import audit
 from frfw.webui.auth import AdminStore, SessionManager
 from frfw.webui.auth_rate_limiter import BruteforceGuard
 from frfw.webui.client_ip import client_ip
+from frfw.webui.mfa import TicketStore
 from frfw.webui.helper_client import (
     HelperClient,
     SocketHelperClient,
@@ -37,6 +38,7 @@ from frfw.webui.routes import (
     interfaces,
     iot,
     metrics,
+    mfa,
     nat,
     rules,
     system,
@@ -81,6 +83,9 @@ def create_app(
     app.state.adblock_hosts_path = adblock_hosts_path
     app.state.adblock_category_dir = adblock_category_dir
     app.state.bruteforce_guard = bruteforce_guard or BruteforceGuard()
+    # Security-lessons G5: second-factor login tickets and enrolment challenges.
+    app.state.mfa_tickets = TicketStore()
+    app.state.mfa_enrolments = TicketStore(lifetime=600)
     app.state.iot_inventory_path = iot_inventory_path
     app.state.appid_usage_path = appid_usage_path
     app.state.audit_log_path = audit_log_path
@@ -108,6 +113,7 @@ def create_app(
 
     app.include_router(auth.router)
     app.include_router(accounts.router)
+    app.include_router(mfa.router)
     app.include_router(dashboard.router)
     app.include_router(interfaces.router)
     app.include_router(rules.router)
