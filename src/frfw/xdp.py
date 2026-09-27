@@ -344,6 +344,46 @@ def attach(device: str) -> AttachMode:
     )
 
 
+#: `ip -j link` reports XDP attach modes as the kernel's XDP_ATTACHED_* values.
+_KERNEL_MODES = {1: AttachMode.NATIVE, 2: AttachMode.GENERIC}
+PROG_NAME = "xdp_sni_filter"
+
+
+def live_attachment(device: str) -> tuple[AttachMode, int] | None:
+    """(mode, program id) of the SNI filter as the kernel has it on
+    `device` right now, or None. The only source of truth for "attached":
+    attachments don't survive a reboot, the state file does (review
+    triage B1). Needs no privilege (`ip -j link show`)."""
+    proc = _run_ip(["-j", "link", "show", "dev", device])
+    if proc.returncode != 0:
+        return None
+    try:
+        link = json.loads(proc.stdout)[0]
+    except (ValueError, IndexError, TypeError):
+        return None
+    xdp = link.get("xdp") or {}
+    for entry in xdp.get("attached") or ([xdp] if xdp.get("prog") else []):
+        prog = entry.get("prog") or {}
+        mode = _KERNEL_MODES.get(entry.get("mode"))
+        if mode is not None and prog.get("name") == PROG_NAME:
+            return mode, int(prog.get("id") or 0)
+    return None
+
+
+def pinned_prog_id() -> int | None:
+    """Id of the program pinned at PIN_PROG_PATH, if bpftool can tell."""
+    try:
+        proc = _bpftool(["-j", "prog", "show", "pinned", str(PIN_PROG_PATH)])
+    except XdpError:
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        return int(json.loads(proc.stdout)["id"])
+    except (ValueError, KeyError, TypeError):
+        return None
+
+
 def detach(device: str, mode: AttachMode) -> None:
     proc = _run_ip(["link", "set", "dev", device, mode.value, "off"])
     if proc.returncode != 0:
@@ -476,9 +516,16 @@ class XdpState:
 
 
 def get_attached(state_path: Path = paths.XDP_STATE_PATH) -> dict[str, str]:
-    """Public read-only view of which interfaces are currently attached
-    and in which mode, for the CLI/webUI status display."""
-    return dict(_load_state(state_path).attached)
+    """Which interfaces the filter is attached to *in the kernel* right
+    now, and in which mode, for the CLI/webUI/metrics status. The state
+    file only says which devices to look at: after a reboot it still
+    lists them, while nothing is attached."""
+    attached = {}
+    for device in _load_state(state_path).attached:
+        live = live_attachment(device)
+        if live is not None:
+            attached[device] = live[0].value
+    return attached
 
 
 def _load_state(state_path: Path) -> XdpState:
@@ -493,7 +540,9 @@ def _load_state(state_path: Path) -> XdpState:
 
 def _save_state(state: XdpState, state_path: Path) -> None:
     state_path.parent.mkdir(parents=True, exist_ok=True)
-    state_path.write_text(json.dumps({"attached": state.attached}))
+    tmp = state_path.with_name(state_path.name + ".tmp")
+    tmp.write_text(json.dumps({"attached": state.attached}))
+    tmp.replace(state_path)
 
 
 # --- top-level sync (the frfw.provision.apply_all entry point) --------------
@@ -529,8 +578,10 @@ def sync_sni_filter(
                 message=f"Would detach XDP SNI filter from: {', '.join(devices)}",
             )
         _require_root()
-        for device, mode in state.attached.items():
-            detach(device, AttachMode(mode))
+        for device in state.attached:
+            live = live_attachment(device)
+            if live is not None:
+                detach(device, live[0])
         unload()
         _save_state(XdpState(), state_path)
         return SyncResult(applied=True, message=f"Detached XDP SNI filter from: {', '.join(devices)}")
@@ -559,19 +610,30 @@ def sync_sni_filter(
     obj_path = ensure_compiled()
     load_and_pin(obj_path)
 
+    # Ask the kernel, not the state file, what is attached: after a reboot
+    # the file still lists every device while nothing is attached, and
+    # skipping those left the filter silently off while the UI said "on"
+    # (review triage B1). An attachment of an older program (a previous
+    # build's, whose pins were replaced) is swapped for the pinned one.
+    pinned_id = pinned_prog_id()
     new_attached: dict[str, str] = {}
     modes_used = []
     for device in devices:
-        if device in state.attached:
-            new_attached[device] = state.attached[device]
+        live = live_attachment(device)
+        if live is not None and (pinned_id is None or live[1] == pinned_id):
+            new_attached[device] = live[0].value
             continue
+        if live is not None:
+            detach(device, live[0])
         mode = attach(device)
         new_attached[device] = mode.value
         modes_used.append(f"{device}={mode.value}")
 
-    for device, mode in state.attached.items():
+    for device in state.attached:
         if device not in new_attached:
-            detach(device, AttachMode(mode))
+            live = live_attachment(device)
+            if live is not None:
+                detach(device, live[0])
 
     sync_blocklist(cfg.blocklist)
     _save_state(XdpState(attached=new_attached), state_path)

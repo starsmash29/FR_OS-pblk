@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+from frfw import xdp as xdp_mod
 from frfw.config import load_config
 from frfw.webui.routes import xdp as xdp_route
 
@@ -107,26 +108,28 @@ def test_remove_domain(logged_in_client, webui_env):
     assert config.xdp_sni_filter.blocklist == ["b.example.com"]
 
 
-def test_native_mode_shows_green_badge(logged_in_client, webui_env):
+def test_native_mode_shows_green_badge(logged_in_client, webui_env, monkeypatch):
     _add_wan(logged_in_client)
     logged_in_client.post(
         "/xdp/settings",
         data={"enabled": "true", "interfaces": ["wan"], "blocklist": "a.example.com"},
     )
     webui_env["xdp_state_path"].write_text(json.dumps({"attached": {"eth0": "xdpdrv"}}))
+    monkeypatch.setattr(xdp_mod, "live_attachment", lambda device: (xdp_mod.AttachMode.NATIVE, 1))
 
     page = logged_in_client.get("/xdp")
     assert "badge-green" in page.text
     assert "Native" in page.text
 
 
-def test_generic_mode_shows_yellow_badge(logged_in_client, webui_env):
+def test_generic_mode_shows_yellow_badge(logged_in_client, webui_env, monkeypatch):
     _add_wan(logged_in_client)
     logged_in_client.post(
         "/xdp/settings",
         data={"enabled": "true", "interfaces": ["wan"], "blocklist": "a.example.com"},
     )
     webui_env["xdp_state_path"].write_text(json.dumps({"attached": {"eth0": "xdpgeneric"}}))
+    monkeypatch.setattr(xdp_mod, "live_attachment", lambda device: (xdp_mod.AttachMode.GENERIC, 1))
 
     page = logged_in_client.get("/xdp")
     assert "badge-yellow" in page.text
