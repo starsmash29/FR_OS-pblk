@@ -693,6 +693,19 @@ creates the accounts, so an update that brings these units also brings
 the account they need. The update-helper's socket is 0600 and owned by
 `fr_os-webui`, and that helper accepts only root and the webUI.
 
+### Review checklist for anything that authenticates (security-lessons H1)
+
+- The client never chooses how strictly it is checked: no request field,
+  header, cookie or negotiated option may skip or weaken a check.
+- Every auth path fails closed and has negative tests -- forged, missing,
+  replayed, expired and downgraded credentials -- next to
+  `tests/webui/test_auth_negative.py`.
+- Identity comes from the server side: the session signature and the
+  account file, the TCP peer address (never `X-Forwarded-For`), the
+  kernel's `SO_PEERCRED` -- never from what a request says about itself.
+- Stored secrets can't downgrade the check either (a hash naming a weak
+  algorithm or too few iterations never verifies).
+
 ### No argument injection (security-lessons F1)
 
 No shell anywhere (`shell=True`, `os.system`). Every value that reaches

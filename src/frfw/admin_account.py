@@ -43,6 +43,9 @@ AUTH_FILE_PATH = paths.WEBUI_AUTH_PATH
 
 _PBKDF2_ALGORITHM = "pbkdf2_sha256"
 _PBKDF2_ITERATIONS = 200_000
+#: Security-lessons H1: a stored hash can't lower how hard a password is
+#: checked -- anything weaker than this never verifies, whatever it says.
+MIN_PBKDF2_ITERATIONS = 200_000
 
 ROLE_ADMIN = "admin"
 ROLE_VIEWER = "viewer"
@@ -71,6 +74,8 @@ def verify_password(password: str, stored: str) -> bool:
         salt = bytes.fromhex(salt_hex)
         expected = bytes.fromhex(digest_hex)
     except (ValueError, AttributeError):
+        return False
+    if iterations < MIN_PBKDF2_ITERATIONS or len(salt) < 16 or len(expected) != 32:
         return False
 
     actual = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, iterations)
