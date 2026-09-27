@@ -22,7 +22,7 @@ from frfw import update as update_mod
 # --- version parsing / comparison -----------------------------------------
 
 
-@pytest.mark.parametrize("text", ["1.2.3", "v1.2.3", " v1.2.3 "])
+@pytest.mark.parametrize("text", ["1.2.3", "v1.2.3"])
 def test_parse_version_accepts_with_or_without_v_prefix(text):
     assert update_mod.parse_version(text) == (1, 2, 3)
 

@@ -195,7 +195,7 @@ def test_apply_all_applies_addresses_and_dhcp_together(dhcp_config_dict, tmp_pat
 
     assert ip_calls == [
         ["addr", "replace", "10.0.0.1/24", "dev", "lo"],
-        ["link", "set", "lo", "up"],
+        ["link", "set", "dev", "lo", "up"],
     ]
     assert kea_path.exists()
     assert "Kea DHCP config applied" in result.messages[2]

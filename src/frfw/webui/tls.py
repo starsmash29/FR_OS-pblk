@@ -12,12 +12,22 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+from frfw import validate
+
 
 class TlsError(Exception):
     pass
 
 
 AUTO_CERT_CN = "fr-router"
+
+
+def _valid(check, value) -> bool:
+    try:
+        check(value)
+        return True
+    except validate.ArgumentError:
+        return False
 
 
 def _is_legacy_auto_cert(cert_path: Path) -> bool:
@@ -66,6 +76,11 @@ def ensure_self_signed_cert(
 
     cert_path.parent.mkdir(parents=True, exist_ok=True)
     key_path.parent.mkdir(parents=True, exist_ok=True)
+    # Security-lessons F1: these go into -subj/-addext; a "name" with a
+    # comma or slash would add SAN entries or subject fields of its own.
+    common_name = validate.hostname(common_name)
+    dns_names = [n for n in (dns_names or []) if _valid(validate.hostname, n)]
+    ip_addresses = [a for a in (ip_addresses or []) if _valid(validate.ipv4, a)]
 
     try:
         proc = subprocess.run(

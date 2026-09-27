@@ -56,7 +56,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from frfw import paths
+from frfw import paths, validate
 from frfw.nft.builder import FILTER_TABLE, ZTNA_SET_NAME
 
 
@@ -204,7 +204,7 @@ def _nft(args: list[str]) -> None:
 
 def _run_nft(args: list[str]) -> subprocess.CompletedProcess:
     try:
-        return subprocess.run(["nft", *args], capture_output=True, text=True)
+        return subprocess.run(validate.nft_argv(args), capture_output=True, text=True)
     except FileNotFoundError as exc:
         raise ZtnaError("'nft' binary not found; install the nftables package") from exc
 

@@ -303,7 +303,7 @@ def is_resolver_active() -> bool:
     so the webUI's status page calls this directly."""
     try:
         proc = subprocess.run(
-            ["systemctl", "is-active", paths.ADBLOCK_DNS_SERVICE_NAME],
+            ["systemctl", "is-active", "--", paths.ADBLOCK_DNS_SERVICE_NAME],
             capture_output=True,
             text=True,
         )

@@ -693,6 +693,18 @@ creates the accounts, so an update that brings these units also brings
 the account they need. The update-helper's socket is 0600 and owned by
 `fr_os-webui`, and that helper accepts only root and the webUI.
 
+### No argument injection (security-lessons F1)
+
+No shell anywhere (`shell=True`, `os.system`). Every value that reaches
+a command line -- interface names, addresses, MACs, unit names, versions,
+repos, disk paths, host names -- passes a strict allow-list in
+`frfw.validate` (anchored with `\Z`, never `$`, which lets a trailing
+newline through), both where the config is parsed and at the call site.
+Tools that support it get `--` before positional values; `ip` doesn't,
+so the name always follows `dev`. `tests/test_argv_injection.py` throws
+values starting with `-`, containing spaces, newlines, `;`, quotes and
+nft/shell metacharacters at all of it.
+
 ### Management plane off the WAN (security-lessons F2/G4)
 
 The webUI and sshd are reachable only from the management zones -- by

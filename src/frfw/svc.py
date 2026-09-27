@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import subprocess
 
+from frfw import validate
+
 #: `systemctl is-system-running` states in which systemd is still working
 #: through the boot transaction.
 BOOTING_STATES = frozenset({"initializing", "starting"})
@@ -37,7 +39,9 @@ def system_is_booting() -> bool:
 def systemctl(action: str, unit: str, *, timeout: float | None = None) -> subprocess.CompletedProcess:
     """`systemctl ACTION UNIT`, with --no-block while booting. Raises
     FileNotFoundError without systemctl, like subprocess.run."""
-    cmd = ["systemctl", action, unit]
+    # Security-lessons F1: a known verb, a valid unit name, and `--`
+    # before it so it can never be read as an option.
+    cmd = ["systemctl", validate.systemctl_action(action), "--", validate.systemd_unit(unit)]
     if system_is_booting():
         cmd.insert(1, "--no-block")
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)

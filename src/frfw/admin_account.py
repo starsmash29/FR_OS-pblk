@@ -49,7 +49,7 @@ ROLE_VIEWER = "viewer"
 ROLES = (ROLE_ADMIN, ROLE_VIEWER)
 
 MIN_PASSWORD_LENGTH = 8
-_USERNAME_RE = re.compile(r"^[a-z_][a-z0-9_.-]{0,31}$")
+_USERNAME_RE = re.compile(r"^[a-z_][a-z0-9_.-]{0,31}\Z")
 
 
 class AccountError(Exception):

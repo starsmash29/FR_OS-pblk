@@ -67,13 +67,13 @@ def ensure() -> list[str]:
     """Create what's missing; returns what was done, for the log."""
     done = []
     if not _user_exists(paths.WEBUI_USER):
-        _run(["useradd", "--system", "--user-group", "--no-create-home", "--shell", NOLOGIN, paths.WEBUI_USER])
+        _run(["useradd", "--system", "--user-group", "--no-create-home", "--shell", NOLOGIN, "--", paths.WEBUI_USER])
         done.append(f"created user {paths.WEBUI_USER}")
     if not _user_exists(paths.SENSOR_USER):
-        _run(["useradd", "--system", "--user-group", "--no-create-home", "--shell", NOLOGIN, paths.SENSOR_USER])
+        _run(["useradd", "--system", "--user-group", "--no-create-home", "--shell", NOLOGIN, "--", paths.SENSOR_USER])
         done.append(f"created user {paths.SENSOR_USER}")
     if paths.SENSOR_USER not in _group_members(paths.WEBUI_USER):
-        _run(["usermod", "--append", "--groups", paths.WEBUI_USER, paths.SENSOR_USER])
+        _run(["usermod", "--append", "--groups", paths.WEBUI_USER, "--", paths.SENSOR_USER])
         done.append(f"added {paths.SENSOR_USER} to group {paths.WEBUI_USER}")
 
     paths.CONFIG_PATH.parent.mkdir(mode=0o755, parents=True, exist_ok=True)

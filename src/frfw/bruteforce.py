@@ -45,6 +45,7 @@ import ipaddress
 import json
 import subprocess
 
+from frfw import validate
 from frfw.nft.builder import BRUTEFORCE_JAIL_SET_NAME, FILTER_TABLE
 
 
@@ -158,6 +159,6 @@ def _nft(args: list[str]) -> None:
 
 def _run_nft(args: list[str]) -> subprocess.CompletedProcess:
     try:
-        return subprocess.run(["nft", *args], capture_output=True, text=True)
+        return subprocess.run(validate.nft_argv(args), capture_output=True, text=True)
     except FileNotFoundError as exc:
         raise BruteforceError("'nft' binary not found; install the nftables package") from exc

@@ -61,7 +61,7 @@ def test_applies_replace_then_up_for_each_addressed_interface(monkeypatch):
     assert result.applied
     assert calls == [
         ["addr", "replace", "10.0.0.1/24", "dev", "eth1"],
-        ["link", "set", "eth1", "up"],
+        ["link", "set", "dev", "eth1", "up"],
     ]
 
 

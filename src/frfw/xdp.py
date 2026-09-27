@@ -75,7 +75,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Callable
 
-from frfw import __version__, paths
+from frfw import __version__, paths, validate
 from frfw.config.schema import Config
 
 # --- constants ------------------------------------------------------------
@@ -328,10 +328,19 @@ def unload() -> None:
 # --- attach / detach ---------------------------------------------------------
 
 
+def _device(device: str) -> str:
+    """Security-lessons F1: a real interface name, always after `dev`."""
+    try:
+        return validate.ifname(device)
+    except validate.ArgumentError as exc:
+        raise XdpError(str(exc)) from exc
+
+
 def attach(device: str) -> AttachMode:
     """Attach the pinned program to `device`, trying native (driver)
     mode first, falling back to generic mode. Raises XdpError if both
     fail (e.g. the interface doesn't exist)."""
+    device = _device(device)
     last_stderr = ""
     for mode in (AttachMode.NATIVE, AttachMode.GENERIC):
         proc = _run_ip(["link", "set", "dev", device, mode.value, "pinned", str(PIN_PROG_PATH)])
@@ -354,7 +363,7 @@ def live_attachment(device: str) -> tuple[AttachMode, int] | None:
     `device` right now, or None. The only source of truth for "attached":
     attachments don't survive a reboot, the state file does (review
     triage B1). Needs no privilege (`ip -j link show`)."""
-    proc = _run_ip(["-j", "link", "show", "dev", device])
+    proc = _run_ip(["-j", "link", "show", "dev", _device(device)])
     if proc.returncode != 0:
         return None
     try:
@@ -385,7 +394,7 @@ def pinned_prog_id() -> int | None:
 
 
 def detach(device: str, mode: AttachMode) -> None:
-    proc = _run_ip(["link", "set", "dev", device, mode.value, "off"])
+    proc = _run_ip(["link", "set", "dev", _device(device), mode.value, "off"])
     if proc.returncode != 0:
         raise XdpError(f"Failed to detach XDP program from {device}: {proc.stderr.strip()}")
 

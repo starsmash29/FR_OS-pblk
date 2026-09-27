@@ -13,6 +13,8 @@ import sys
 import time
 from typing import Callable
 
+from frfw import validate
+
 #: Restart backoff when the followed unit isn't running yet or the pipe
 #: closes -- retried forever, so a hiccup in one log source never takes
 #: the whole daemon down.
@@ -27,7 +29,7 @@ def tail_journal_forever(
     while True:
         try:
             proc = subprocess.Popen(
-                ["journalctl", "-u", unit, "-f", "-n", "0", "-o", "cat"],
+                ["journalctl", "-u", validate.systemd_unit(unit), "-f", "-n", "0", "-o", "cat"],
                 stdout=subprocess.PIPE,
                 text=True,
             )

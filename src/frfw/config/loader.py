@@ -15,6 +15,7 @@ from typing import Any
 
 import yaml
 
+from frfw import validate
 from frfw.appid import known_app_ids
 from frfw.config.errors import ConfigError
 from frfw.config.schema import (
@@ -48,9 +49,9 @@ from frfw.config.schema import (
     ZtnaUser,
 )
 
-_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
-_PORT_RANGE_RE = re.compile(r"^(\d{1,5})-(\d{1,5})$")
-_MAC_RE = re.compile(r"^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
+_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]*\Z")
+_PORT_RANGE_RE = re.compile(r"^(\d{1,5})-(\d{1,5})\Z")
+_MAC_RE = re.compile(r"^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}\Z")
 _HOSTNAME_RE = re.compile(
     r"^(?!-)[a-zA-Z0-9-]{1,63}(?<!-)(\.(?!-)[a-zA-Z0-9-]{1,63}(?<!-))*$"
 )
@@ -58,7 +59,7 @@ _HOSTNAME_RE = re.compile(
 #: names (_NAME_RE) since these are end-user account names, not
 #: infrastructure identifiers -- but still tight enough to be a safe nft
 #: comment string, so no whitespace/quotes/etc.
-_ZTNA_USERNAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+_ZTNA_USERNAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\Z")
 _SUPPORTED_VERSION = 1
 #: Bounds for ztna.session_ttl_seconds: 1 minute minimum (long enough to
 #: be meaningful, short enough to be useful for testing) to 30 days
@@ -106,6 +107,10 @@ def parse_config(raw: Any) -> Config:
     hostname = raw.get("hostname")
     if not isinstance(hostname, str) or not hostname:
         raise ConfigError("'hostname' is required and must be a non-empty string")
+    try:
+        validate.hostname(hostname)  # it goes into the webUI certificate request
+    except validate.ArgumentError as exc:
+        raise ConfigError(str(exc)) from exc
 
     tz_name = raw.get("timezone")
     if tz_name is not None:
@@ -192,6 +197,10 @@ def _parse_interfaces(raw: Any, zones: dict[str, Zone]) -> dict[str, Interface]:
         device = body.get("device")
         if not isinstance(device, str) or not device:
             raise ConfigError(f"Interface {name!r} is missing a 'device'")
+        try:
+            validate.ifname(device)  # security-lessons F1: it becomes an `ip`/`nft` argument
+        except validate.ArgumentError as exc:
+            raise ConfigError(f"Interface {name!r}: {exc}") from exc
         if device in seen_devices:
             raise ConfigError(
                 f"Device {device!r} is assigned to both "
@@ -596,6 +605,11 @@ def _parse_update(raw: Any) -> UpdateConfig:
     repo = raw.get("repo", "")
     if not isinstance(repo, str):
         raise ConfigError("update.repo must be a string")
+    if repo:
+        try:
+            validate.github_repo(repo)
+        except validate.ArgumentError as exc:
+            raise ConfigError(f"update.repo: {exc}") from exc
 
     return UpdateConfig(repo=repo)
 
@@ -691,7 +705,7 @@ def _parse_xdp_sni_filter(raw: Any, interfaces: dict[str, Interface]) -> XdpSniF
 #: "http"), not a full RFC 3986 validator; a genuinely malformed URL
 #: still just fails cleanly at fetch time (frfw.adblock.AdblockError),
 #: the same way a bad update.repo or ztna username only fails at use.
-_HTTP_URL_RE = re.compile(r"^https?://\S+$")
+_HTTP_URL_RE = re.compile(r"^https?://\S+\Z")
 
 
 def _parse_url_list(raw: Any, what: str) -> list[str]:
@@ -951,7 +965,7 @@ def _parse_app_control(
     )
 
 
-_HHMM_RE = re.compile(r"^([01][0-9]|2[0-3]):([0-5][0-9])$|^24:00$")
+_HHMM_RE = re.compile(r"^([01][0-9]|2[0-3]):([0-5][0-9])\Z|^24:00\Z")
 
 #: Shortcuts accepted in schedule.days besides mon..sun.
 _DAY_GROUPS = {
@@ -1012,8 +1026,8 @@ def _parse_schedule(raw: Any, what: str, action: Action) -> RuleSchedule:
     return RuleSchedule(days=tuple(sorted(days)), start=start, end=end, cut_established=cut_established)
 
 
-JA4_RE = re.compile(r"^[tqd][0-9ds][0-9d][di][0-9]{4}[0-9a-z]{2}_[0-9a-f]{12}_[0-9a-f]{12}$")
-JA3_RE = re.compile(r"^[0-9a-f]{32}$")
+JA4_RE = re.compile(r"^[tqd][0-9ds][0-9d][di][0-9]{4}[0-9a-z]{2}_[0-9a-f]{12}_[0-9a-f]{12}\Z")
+JA3_RE = re.compile(r"^[0-9a-f]{32}\Z")
 
 
 def _parse_tls_fingerprint(raw: Any, xdp_sni_filter: XdpSniFilterConfig) -> TlsFingerprintConfig:
@@ -1063,8 +1077,8 @@ def _parse_tls_fingerprint(raw: Any, xdp_sni_filter: XdpSniFilterConfig) -> TlsF
     )
 
 
-_SITE_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,62}$")
-TOKEN_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_SITE_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,62}\Z")
+TOKEN_SHA256_RE = re.compile(r"^[0-9a-f]{64}\Z")
 
 
 def _parse_metrics(raw: Any) -> MetricsConfig:
