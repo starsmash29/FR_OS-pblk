@@ -207,8 +207,12 @@ class AdminStore:
             },
         }
         tmp_path = self.path.with_suffix(".tmp")
-        tmp_path.write_text(json.dumps(data, indent=1))
-        tmp_path.chmod(0o640)
+        tmp_path.unlink(missing_ok=True)
+        # Security-lessons G3: 0600 from creation -- only the webUI account
+        # reads the hashes, and never through a moment of 0644.
+        fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            fh.write(json.dumps(data, indent=1))
         if os.geteuid() == 0:
             # Written by root (`firewall-cli set-admin-password`, first
             # boot): hand the file to whoever owns the state directory --

@@ -704,6 +704,16 @@ this (PBKDF2-SHA256, 200 000 iterations) still verifies at that floor and
 is replaced in place on the next successful sign-in; the old hash is not
 kept anywhere.
 
+### Secrets stay on the box (security-lessons G3)
+
+`auth.json` (webUI accounts) is created 0600, `config.yaml` stays 0640
+root:fr_os-webui through every save (A6), the session key and TLS key
+never leave `/etc/fr_os/webui` (0700). No webUI page or API response
+carries a hash, salt, digest, token, or key -- a test renders every GET
+route to prove it. Every export goes through
+`frfw.config.export.redacted()` (`firewall-cli config-export`), which
+leaves ZTNA password hashes and the metrics digest out.
+
 ### Review checklist for anything that authenticates (security-lessons H1)
 
 - The client never chooses how strictly it is checked: no request field,
