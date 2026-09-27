@@ -9,38 +9,25 @@ def test_unauthenticated_dashboard_redirects_to_login(client):
     assert response.headers["location"] == "/login"
 
 
-def test_login_page_shows_first_run_setup(client):
+def test_login_page_without_accounts_points_to_the_console(client):
     response = client.get("/login")
     assert response.status_code == 200
-    assert "Create admin account" in response.text
+    assert "firewall-cli set-admin-password" in response.text
+    assert 'action="/login"' not in response.text  # no form to create one
 
 
-def test_first_run_creates_admin_and_logs_in(client, webui_env):
+def test_no_account_can_be_created_over_the_network(client, webui_env):
+    """A3 (review triage): while no account existed, POST /login created
+    one -- as admin, not rate-limited, on 0.0.0.0:443 -- for whoever got
+    there first."""
     response = client.post(
         "/login",
         data={"username": "admin", "password": "hunter22", "password_confirm": "hunter22"},
     )
     assert response.status_code == 303
-    assert response.headers["location"] == "/"
-    assert response.cookies.get("fr_os_session")
-    assert webui_env["admin_store"].exists()
-
-
-def test_first_run_rejects_mismatched_passwords(client):
-    response = client.post(
-        "/login",
-        data={"username": "admin", "password": "hunter22", "password_confirm": "different"},
-    )
-    assert response.status_code == 303
-    assert "error" in response.headers["location"]
-
-
-def test_first_run_rejects_short_password(client):
-    response = client.post(
-        "/login", data={"username": "admin", "password": "short", "password_confirm": "short"}
-    )
-    assert response.status_code == 303
-    assert "error" in response.headers["location"]
+    assert response.headers["location"].startswith("/login?error=")
+    assert not response.cookies.get("fr_os_session")
+    assert not webui_env["admin_store"].exists()
 
 
 def test_login_with_correct_password_succeeds(client, webui_env):
@@ -116,13 +103,11 @@ def test_successful_login_resets_the_failure_counter(app, webui_env):
     assert webui_env["helper"].banned == []
 
 
-def test_first_run_account_creation_is_not_rate_limited(app, webui_env):
+def test_login_attempts_without_accounts_are_rate_limited(app, webui_env):
+    """What used to be the unthrottled account-creation branch is now an
+    ordinary failed login, so the brute-force guard counts it."""
     attacker = TestClient(app, client=("203.0.113.7", 12345), follow_redirects=False)
-
     for _ in range(10):
-        response = attacker.post(
-            "/login", data={"username": "admin", "password": "short", "password_confirm": "different"}
-        )
-        assert response.status_code == 303
-
-    assert webui_env["helper"].banned == []
+        attacker.post("/login", data={"username": "admin", "password": "guess"})
+    assert {ip for ip, _ in webui_env["helper"].banned} == {"203.0.113.7"}
+    assert not webui_env["admin_store"].exists()

@@ -20,23 +20,23 @@
     </section>
 
     <section class="auth-card">
-      <h2>{{ "Set up admin account" if first_run else "Sign in" }}</h2>
-      <p class="muted">
-        {% if first_run %}No admin account exists yet. Create one now.
-        {% else %}Sign in to manage this router.{% endif %}
-      </p>
+      {% if no_account %}
+      <h2>No account yet</h2>
+      <p class="muted">This router has no webUI account. For safety one can't be created from the network: on the router's console (or over SSH) run</p>
+      <pre><code>firewall-cli set-admin-password</code></pre>
+      <p class="muted">then reload this page and sign in.</p>
+      {% else %}
+      <h2>Sign in</h2>
+      <p class="muted">Sign in to manage this router.</p>
       {% if error %}<div class="flash-error">{{ error }}</div>{% endif %}
       <form method="post" action="/login">
         <label for="username">Username</label>
-        <input type="text" id="username" name="username" value="{{ 'admin' if first_run else '' }}" autocomplete="username" autofocus required>
+        <input type="text" id="username" name="username" autocomplete="username" autofocus required>
         <label for="password">Password</label>
-        <input type="password" id="password" name="password" autocomplete="{{ 'new-password' if first_run else 'current-password' }}" required>
-        {% if first_run %}
-        <label for="password_confirm">Confirm password</label>
-        <input type="password" id="password_confirm" name="password_confirm" autocomplete="new-password" required>
-        {% endif %}
-        <button type="submit"><svg class="icon icon-sm"><use href="/static/icons.svg#lock"/></svg>{{ "Create admin account" if first_run else "Sign in" }}</button>
+        <input type="password" id="password" name="password" autocomplete="current-password" required>
+        <button type="submit"><svg class="icon icon-sm"><use href="/static/icons.svg#lock"/></svg>Sign in</button>
       </form>
+      {% endif %}
       <div class="auth-foot">Read-only accounts can sign in here too; they see every screen but cannot change anything.</div>
     </section>
   </div>

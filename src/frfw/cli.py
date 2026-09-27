@@ -442,7 +442,7 @@ def _cmd_ensure_accounts(args: argparse.Namespace) -> int:
 def _cmd_users(args: argparse.Namespace) -> int:
     accounts = AdminStore().users()
     if not accounts:
-        print("No webUI accounts yet (the first login creates one, or run set-admin-password)")
+        print("No webUI accounts yet: run 'firewall-cli set-admin-password'")
         return 0
     for name in sorted(accounts):
         print(f"{name:<32} {accounts[name].role}")
