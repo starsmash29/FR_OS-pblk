@@ -36,6 +36,7 @@ class HelperClient(Protocol):
     def iot_isolation_status(self) -> dict: ...
     def iot_scan(self) -> dict: ...
     def listening_sockets(self) -> dict: ...
+    def audit_append(self, entry: dict) -> dict: ...
 
 
 class SocketHelperClient:
@@ -92,6 +93,9 @@ class SocketHelperClient:
 
     def listening_sockets(self) -> dict:
         return helper_client.listening_sockets(self.socket_path)
+
+    def audit_append(self, entry: dict) -> dict:
+        return helper_client.audit_append(entry, self.socket_path)
 
 
 class UpdateHelperClient(Protocol):

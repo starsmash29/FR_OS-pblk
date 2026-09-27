@@ -89,7 +89,7 @@
       <td>{{ e.when }}</td>
       <td>{{ e.user or "-" }}{% if e.role %} <span class="muted">({{ e.role }})</span>{% endif %}</td>
       <td>{{ e.client or "-" }}</td>
-      <td>{% if e.event %}{{ e.event }}{% else %}<code>{{ e.method }} {{ e.path }}</code>{% endif %}</td>
+      <td>{% if e.alert %}<span class="badge badge-red">alert</span> {{ e.alert }}{% elif e.event %}{{ e.event }}{% else %}<code>{{ e.method }} {{ e.path }}</code>{% endif %}</td>
       <td>{% if e.status %}{% if e.status == 403 %}<span class="badge badge-red">denied</span>{% elif e.status < 400 %}{{ e.status }}{% else %}<span class="badge badge-red">{{ e.status }}</span>{% endif %}{% else %}-{% endif %}</td>
     </tr>
     {% endfor %}

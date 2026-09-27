@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Form, Request
 
-from frfw import netdetect, sysinfo
+from frfw import integrity, netdetect, sysinfo
 from frfw import persistence as persistence_mod
 from frfw import pqc as pqc_mod
 from frfw.adblock import count_blocked_domains
@@ -12,10 +13,13 @@ from frfw.ai_ids import is_daemon_active
 from frfw.apply import list_backups
 from frfw.config import ConfigError, parse_config
 from frfw.tlsfp.daemon import is_daemon_active as tlsfp_daemon_active
+from frfw.webui import audit
 from frfw.webui.deps import (
+    get_audit_log_path,
     get_adblock_hosts_path,
     get_helper,
     get_raw_config,
+    require_admin,
     require_login,
 )
 from frfw.webui.helper_client import HelperClient
@@ -74,6 +78,7 @@ def dashboard(
     raw: dict = Depends(get_raw_config),
     helper: HelperClient = Depends(get_helper),
     adblock_hosts_path: Path = Depends(get_adblock_hosts_path),
+    audit_log_path: Path = Depends(get_audit_log_path),
 ):
     try:
         config = parse_config(raw)
@@ -103,6 +108,16 @@ def dashboard(
             interface_rows.append(
                 {"zone": iface.zone, "device": iface.device, "address": iface.address, "link": link}
             )
+
+    # Security-lessons G9: unseen security alerts (admins only) and whether
+    # the installed software still matches what was installed.
+    user = request.state.user
+    alerts_seen_path = request.app.state.alerts_seen_path
+    alerts = (audit.alerts_since(audit_log_path, audit.seen(alerts_seen_path, username))
+              if user.is_admin else [])
+    for entry in alerts:
+        entry["when"] = time.strftime("%Y-%m-%d %H:%M", time.localtime(float(entry.get("ts") or 0)))
+    integrity_report = integrity.cached_check()
 
     ai_ids_running = is_daemon_active()
     system = sysinfo.snapshot()
@@ -136,6 +151,8 @@ def dashboard(
             "pqc_status": pqc_status,
             "adblocker_enabled": adblocker_enabled,
             "adblock_domain_count": adblock_domain_count,
+            "alerts": alerts,
+            "integrity": integrity_report,
             "error": request.query_params.get("error"),
             "success": request.query_params.get("success"),
         },
@@ -165,3 +182,15 @@ def rollback_now(
     if result.get("ok"):
         return redirect_with("/", success=message or "Rolled back")
     return redirect_with("/", error=message or "Rollback failed")
+
+
+@router.post("/alerts/seen")
+def alerts_seen(
+    request: Request,
+    until: float = Form(...),
+    username: str = Depends(require_admin),
+):
+    """Security-lessons G9: an admin has seen the alerts up to `until` (the
+    newest one shown), so a new one that came in meanwhile still shows."""
+    audit.mark_seen(request.app.state.alerts_seen_path, username, until)
+    return redirect_with("/", success="Security alerts marked as seen")

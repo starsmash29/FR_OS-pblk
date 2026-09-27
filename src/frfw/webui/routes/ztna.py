@@ -38,6 +38,8 @@ is keyed on IP, not on a browser).
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, Form, Request
 
 from frfw import passwords
@@ -45,7 +47,8 @@ from frfw.admin_account import hash_password, needs_rehash, verify_password
 from frfw.webui.actions import try_save
 from frfw.webui.auth_rate_limiter import BruteforceGuard, locked_message, reject_failed_login
 from frfw.webui.client_ip import client_ip
-from frfw.webui.deps import get_bruteforce_guard, get_helper, get_raw_config, require_login
+from frfw.webui import audit
+from frfw.webui.deps import get_audit_log_path, get_bruteforce_guard, get_helper, get_raw_config, require_login
 from frfw.webui.helper_client import HelperClient
 from frfw.webui.responses import redirect_with
 from frfw.webui.templating import templates
@@ -218,11 +221,13 @@ def save_settings(
 
 @router.post("/ztna/users/add")
 def add_user(
+    request: Request,
     new_username: str = Form(...),
     new_password: str = Form(...),
     username: str = Depends(require_login),
     raw: dict = Depends(get_raw_config),
     helper: HelperClient = Depends(get_helper),
+    audit_log_path: Path = Depends(get_audit_log_path),
 ):
     weak = passwords.problem(new_password, new_username)  # security-lessons G6
     if weak:
@@ -230,11 +235,16 @@ def add_user(
 
     ztna_raw = raw.setdefault("ztna", {})
     users = ztna_raw.setdefault("users", [])
+    existed = any(u.get("username") == new_username for u in users)
     users[:] = [u for u in users if u.get("username") != new_username]
     users.append({"username": new_username, "password_hash": hash_password(new_password)})
 
     ok, message = try_save(raw, helper)
     if ok:
+        # Security-lessons G9: a way in through the ZTNA gate.
+        what = "password of ZTNA user" if existed else "new ZTNA user"
+        audit.alert(audit_log_path, f"{what} {new_username!r} set by {username!r}",
+                    user=username, client=client_ip(request))
         return redirect_with("/ztna", success=f"ZTNA user {new_username!r} saved")
     return redirect_with("/ztna", error=message)
 

@@ -216,6 +216,15 @@ SCHEDULE_STATE_PATH = Path("/etc/fr_os/schedule_state.json")
 #: webUI, size-capped with one rotated generation.
 WEBUI_AUDIT_LOG_PATH = WEBUI_STATE_DIR / "audit.log"
 
+#: The audit log since security-lessons G9/E6: root's, not the webUI's.
+#: The webUI can read it (group fr_os-webui) but only *add* to it, through
+#: the apply-helper -- a compromised webUI can't erase its tracks.
+AUDIT_LOG_DIR = Path("/var/log/fr_os")
+AUDIT_LOG_PATH = AUDIT_LOG_DIR / "audit.log"
+
+#: Per admin: the time up to which they have seen the security alerts.
+ALERTS_SEEN_PATH = WEBUI_STATE_DIR / "alerts_seen.json"
+
 #: TLS client fingerprint inventory (phase 19, see frfw.tlsfp.daemon):
 #: which JA4/JA3 fingerprints each client presented, and recent events
 #: (new fingerprints, blocklist matches). Written by fr-tls-fp after it

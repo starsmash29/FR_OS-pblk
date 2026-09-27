@@ -62,6 +62,8 @@ from __future__ import annotations
 #: "listening_sockets" (see frfw.surface, security-lessons I3) lists every
 #: listening socket with `ss -p` -- root, so it can name the processes --
 #: and the interfaces' addresses, for the webUI's attack-surface view.
+#: "audit_append" (security-lessons G9/E6) adds one entry to the root-owned
+#: audit log: the webUI can add to it, never rewrite or remove it.
 COMMANDS = (
     "ping",
     "apply",
@@ -82,6 +84,7 @@ COMMANDS = (
     "iot_isolation_status",
     "iot_scan",
     "listening_sockets",
+    "audit_append",
 )
 
 #: Maximum accepted request/response line length, to bound memory use from

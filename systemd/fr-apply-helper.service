@@ -15,7 +15,7 @@ Restart=on-failure
 # capability set. /sys stays writable for the XDP pins on bpffs.
 NoNewPrivileges=yes
 ProtectSystem=strict
-ReadWritePaths=-/etc/fr_os -/etc/kea -/etc/ssh/sshd_config.d -/usr/local/share/fr_os -/sys/fs/bpf
+ReadWritePaths=-/etc/fr_os -/etc/kea -/etc/ssh/sshd_config.d -/usr/local/share/fr_os -/sys/fs/bpf -/var/log/fr_os
 ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes

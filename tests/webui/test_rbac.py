@@ -133,8 +133,10 @@ def test_admin_manages_accounts_and_the_audit_log_records_it(env):
     assert page.status_code == 303  # boss no longer exists: the open session ended
 
     log = [json.loads(l) for l in env["audit_log_path"].read_text().splitlines()]
-    events = [(e.get("user"), e.get("event") or f"{e['method']} {e['path']}", e.get("status")) for e in log]
+    events = [(e.get("user"), e.get("event") or e.get("alert") or f"{e['method']} {e['path']}", e.get("status"))
+              for e in log]
     assert ("boss", "login", None) in events
+    assert ("boss", "'tech' made an admin by 'boss'", None) in events  # security-lessons G9
     assert ("boss", "POST /users/add", 303) in events
     assert ("boss", "POST /users/boss/delete", 303) in events
     assert "violet-anchor-9" not in env["audit_log_path"].read_text()

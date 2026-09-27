@@ -58,3 +58,14 @@ def _never_touch_the_hosts_sshd(tmp_path, monkeypatch):
 
     monkeypatch.setattr(paths, "SSHD_MANAGEMENT_DROPIN_PATH", tmp_path / "sshd_config.d" / "40-fr_os-management.conf")
     monkeypatch.setattr(management, "SSHD_BINARY", "fr-os-tests-have-no-sshd")
+
+
+@pytest.fixture(autouse=True)
+def _never_touch_the_hosts_audit_log(tmp_path_factory, monkeypatch):
+    """The root-owned audit log (/var/log/fr_os) is a directory of its own
+    per test, never the machine's."""
+    from frfw import paths
+
+    log_dir = tmp_path_factory.mktemp("var_log_fr_os")
+    monkeypatch.setattr(paths, "AUDIT_LOG_DIR", log_dir)
+    monkeypatch.setattr(paths, "AUDIT_LOG_PATH", log_dir / "audit.log")

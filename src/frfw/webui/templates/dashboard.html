@@ -39,6 +39,33 @@
   </div>
 </section>
 
+{% if alerts %}
+<section class="card" style="border-color: var(--error);">
+  <div class="card-head"><h3>{{ icon("warning") }}Security alerts ({{ alerts|length }} new)</h3>
+    <form method="post" action="/alerts/seen" class="inline">
+      <input type="hidden" name="until" value="{{ alerts[0].ts }}">
+      <button type="submit" class="secondary">Mark as seen</button>
+    </form>
+  </div>
+  <p class="muted">Changes that give someone a way in -- check each one was you or someone you trust.
+    All of them are in the audit log on the Users screen.</p>
+  <table>
+    <tr><th>When</th><th>What</th><th>From</th></tr>
+    {% for a in alerts %}
+    <tr><td>{{ a.when }}</td><td>{{ a.alert }}</td><td>{{ a.client or "-" }}</td></tr>
+    {% endfor %}
+  </table>
+</section>
+{% endif %}
+{% if integrity.verifiable and not integrity.ok %}
+<section class="card" style="border-color: var(--error);">
+  <div class="card-head"><h3>{{ icon("error") }}Installed software changed</h3></div>
+  <p>{{ integrity.summary }} -- files of FR_OS itself no longer match what was installed. If you didn't change them,
+    treat the router as compromised: reinstall from a verified image.</p>
+  <ul>{% for f in (integrity.modified + integrity.missing)[:10] %}<li><code>{{ f }}</code></li>{% endfor %}</ul>
+</section>
+{% endif %}
+
 {% if persistence.live and not persistence.active %}
 <div class="flash-mock">This live system has no persistence: changes are lost at the next reboot. See <a href="/system">System</a>.</div>
 {% endif %}

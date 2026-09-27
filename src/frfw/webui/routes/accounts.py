@@ -16,9 +16,10 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import RedirectResponse
 
-from frfw.admin_account import ROLES, AccountError, validate_password
+from frfw.admin_account import ROLE_ADMIN, ROLES, AccountError, validate_password
 from frfw.webui import audit
 from frfw.webui.auth import COOKIE_NAME, AdminStore, SessionManager
+from frfw.webui.client_ip import client_ip
 from frfw.webui.deps import (
     get_admin_store,
     get_audit_log_path,
@@ -71,44 +72,65 @@ def _account_action(action, success: str):
 
 @router.post("/users/add")
 def add_user(
+    request: Request,
     new_username: str = Form(...),
     new_password: str = Form(...),
     role: str = Form(...),
     username: str = Depends(require_admin),
     admin_store: AdminStore = Depends(get_admin_store),
+    audit_log_path: Path = Depends(get_audit_log_path),
 ):
-    return _account_action(
-        lambda: admin_store.add_user(new_username.strip(), new_password, role),
-        f"User {new_username.strip()!r} added as {role}",
-    )
+    def action():
+        admin_store.add_user(new_username.strip(), new_password, role)
+        if role == ROLE_ADMIN:
+            # Security-lessons G9: a new admin is how an intruder stays.
+            audit.alert(audit_log_path, f"new admin account {new_username.strip()!r} added by {username!r}",
+                        user=username, client=client_ip(request))
+
+    return _account_action(action, f"User {new_username.strip()!r} added as {role}")
 
 
 @router.post("/users/{target}/role")
 def change_role(
+    request: Request,
     target: str,
     role: str = Form(...),
     username: str = Depends(require_admin),
     admin_store: AdminStore = Depends(get_admin_store),
+    audit_log_path: Path = Depends(get_audit_log_path),
 ):
     # No revocation needed: every request re-reads the account, so the new
     # role applies to open sessions at once.
-    return _account_action(lambda: admin_store.set_role(target, role), f"{target!r} is now {role}")
+    def action():
+        before = admin_store.get(target)
+        admin_store.set_role(target, role)
+        if role == ROLE_ADMIN and before is not None and not before.is_admin:
+            audit.alert(audit_log_path, f"{target!r} made an admin by {username!r}",
+                        user=username, client=client_ip(request))
+
+    return _account_action(action, f"{target!r} is now {role}")
 
 
 @router.post("/users/{target}/password")
 def reset_password(
+    request: Request,
     target: str,
     new_password: str = Form(...),
     username: str = Depends(require_admin),
     admin_store: AdminStore = Depends(get_admin_store),
     session_manager: SessionManager = Depends(get_session_manager),
+    audit_log_path: Path = Depends(get_audit_log_path),
 ):
     def action():
-        if admin_store.get(target) is None:
+        account = admin_store.get(target)
+        if account is None:
             raise AccountError(f"No such user {target!r}")
         validate_password(new_password, target)
         admin_store.set_password(target, new_password)
         session_manager.revoke_user(target)  # G7
+        if account.is_admin and target != username:
+            audit.alert(audit_log_path, f"password of admin {target!r} reset by {username!r}",
+                        user=username, client=client_ip(request))
 
     return _account_action(action, f"Password of {target!r} reset; their open sessions have ended")
 

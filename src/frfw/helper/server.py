@@ -48,6 +48,7 @@ from frfw.kea import KeaError
 from frfw.pqc import PqcError
 from frfw.provision import apply_all
 from frfw.surface import SurfaceError
+from frfw.webui import audit as webui_audit
 from frfw.ztna import ZtnaError
 
 _SD_LISTEN_FDS_START = 3
@@ -139,6 +140,9 @@ def _handle_request(request: dict, server: "ApplyHelperServer") -> dict:
 
         if cmd == "listening_sockets":
             return _handle_listening_sockets()
+
+        if cmd == "audit_append":
+            return _handle_audit_append(request, server)
 
         return {"ok": False, "message": f"unknown command {cmd!r}"}
     except (
@@ -309,6 +313,35 @@ def _handle_iot_isolation_status() -> dict:
     return {"ok": True, "isolated": isolated, "count": len(isolated)}
 
 
+#: What an audit entry from the webUI may carry (security-lessons G9/E6).
+_AUDIT_MAX_FIELDS = 20
+_AUDIT_MAX_TEXT = 500
+_AUDIT_RESERVED = frozenset({"ts", "via"})
+
+
+def _handle_audit_append(request: dict, server: "ApplyHelperServer") -> dict:
+    """Append the webUI's audit entry to the root-owned log. The webUI can
+    only add: it can't write the file, so it can't rewrite or remove what
+    is already there. The time and the origin are set here, not taken
+    from the request."""
+    entry = request.get("entry")
+    if not isinstance(entry, dict) or len(entry) > _AUDIT_MAX_FIELDS:
+        return {"ok": False, "message": "'entry' must be a small mapping"}
+    clean: dict = {}
+    for key, value in entry.items():
+        if not isinstance(key, str) or not key.isidentifier() or len(key) > 40 or key in _AUDIT_RESERVED:
+            return {"ok": False, "message": f"invalid audit field {key!r}"}
+        if isinstance(value, str):
+            clean[key] = value[:_AUDIT_MAX_TEXT]
+        elif value is None or isinstance(value, (bool, int, float)):
+            clean[key] = value
+        else:
+            return {"ok": False, "message": f"invalid value for audit field {key!r}"}
+    webui_audit.prepare(server.audit_log_path)
+    webui_audit.append(server.audit_log_path, {**clean, "via": "webui"})
+    return {"ok": True}
+
+
 def _handle_listening_sockets() -> dict:
     """Security-lessons I3: every listening socket and the interfaces'
     addresses, read as root so `ss` can name the processes it may."""
@@ -404,10 +437,12 @@ class ApplyHelperServer(socketserver.UnixStreamServer):
         adblock_hosts_path: Path = paths.ADBLOCK_HOSTS_PATH,
         kea_leases_path: Path = iot_leases.KEA_LEASES_PATH,
         adblock_category_dir: Path = paths.ADBLOCK_CATEGORY_DIR,
+        audit_log_path: Path = paths.AUDIT_LOG_PATH,
         systemd_socket: socket.socket | None = None,
         peer_policy: PeerPolicy | None = None,
     ) -> None:
         self._peer_policy = peer_policy
+        self.audit_log_path = audit_log_path
         self.adblock_category_dir = adblock_category_dir
         self.config_path = config_path
         self.backup_dir = backup_dir

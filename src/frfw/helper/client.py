@@ -145,3 +145,7 @@ def iot_scan(socket_path: Path = paths.APPLY_SOCKET_PATH) -> dict:
 
 def listening_sockets(socket_path: Path = paths.APPLY_SOCKET_PATH) -> dict:
     return send_command({"cmd": "listening_sockets"}, socket_path)
+
+
+def audit_append(entry: dict, socket_path: Path = paths.APPLY_SOCKET_PATH) -> dict:
+    return send_command({"cmd": "audit_append", "entry": entry}, socket_path)

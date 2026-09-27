@@ -85,6 +85,8 @@ def login_submit(
     new_source = guard.record_success(ip, account.username)
     audit.append(audit_log_path, {"user": username, "role": account.role, "client": ip, "event": "login",
                                   **({"new_source": True} if new_source else {})})
+    if new_source:
+        audit.alert(audit_log_path, f"{username!r} signed in from a new address {ip}", user=username, client=ip)
     return issue_session(request, RedirectResponse("/", status_code=303), account, session_manager)
 
 

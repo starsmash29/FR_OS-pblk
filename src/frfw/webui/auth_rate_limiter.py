@@ -120,8 +120,8 @@ class BruteforceGuard:
     def record_success(self, ip: str, account: str | None = None) -> bool:
         """A successful sign-in resets `ip`'s failure history; with
         `account`, also the account's, and `ip` becomes (or stays) a
-        known source of it. Returns True when `ip` was *not* a known
-        source of `account` before (a sign-in from a new address)."""
+        known source of it. Returns True when the account has signed in
+        before, but never (or not for 90 days) from `ip`."""
         now = _now()
         with self._lock:
             self._attempts.pop(ip, None)
@@ -130,7 +130,9 @@ class BruteforceGuard:
                 self._account_attempts.pop(account, None)
                 known = self._known.setdefault(account, {})
                 seen = known.get(ip)
-                new_source = seen is None or now - seen > KNOWN_SOURCE_SECONDS
+                # The very first sign-in to an account has nothing to
+                # compare against: only a further address is "new".
+                new_source = bool(known) and (seen is None or now - seen > KNOWN_SOURCE_SECONDS)
                 known[ip] = now
             self._save()
             return new_source

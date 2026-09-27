@@ -12,6 +12,7 @@
     firewall-cli ensure-accounts
     firewall-cli users
     firewall-cli surface [config.yaml]
+    firewall-cli integrity
     firewall-cli mfa-reset USER
     firewall-cli ids-status
     firewall-cli iot-status
@@ -244,6 +245,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_surface.add_argument("config", nargs="?", type=Path, default=paths.CONFIG_PATH)
     p_surface.set_defaults(handler=_cmd_surface)
+
+    p_integrity = sub.add_parser(
+        "integrity", help="check FR_OS's installed files against the hashes recorded at install time",
+    )
+    p_integrity.set_defaults(handler=_cmd_integrity)
 
     p_ids_status = sub.add_parser(
         "ids-status",
@@ -480,8 +486,21 @@ def _cmd_set_admin_password(args: argparse.Namespace) -> int:
         return 1
 
     AdminStore().set_password(args.username, password, ROLE_ADMIN)
+    _console_alert(f"admin account {args.username!r} set from the console (firewall-cli set-admin-password)")
     print(f"Admin account {args.username!r} set")
     return 0
+
+
+def _console_alert(message: str) -> None:
+    """Security-lessons G9: what is done on the console shows up in the
+    webUI's security alerts like what is done in the webUI."""
+    from frfw.webui import audit
+
+    try:
+        audit.prepare(paths.AUDIT_LOG_PATH)
+        audit.alert(paths.AUDIT_LOG_PATH, message, user="console", client="console")
+    except OSError:
+        pass  # e.g. not root: the change itself stands
 
 
 def _cmd_mfa_reset(args: argparse.Namespace) -> int:
@@ -496,6 +515,7 @@ def _cmd_mfa_reset(args: argparse.Namespace) -> int:
     from frfw.webui.auth import SessionStore  # webUI extra, present wherever accounts are
 
     SessionStore(paths.WEBUI_SECRET_KEY_PATH.with_name("sessions.json")).revoke_user(args.username)
+    _console_alert(f"second factors of {args.username!r} removed from the console (firewall-cli mfa-reset)")
     print(f"Second factors of {args.username!r} removed; they sign in with the password alone until they add one")
     return 0
 
@@ -542,6 +562,20 @@ def _cmd_surface(args: argparse.Namespace) -> int:
         print(f"\nWARNING: {len(exposed)} service(s) reachable from {', '.join(sorted(internet))}", file=sys.stderr)
         return 2
     return 0
+
+
+def _cmd_integrity(args: argparse.Namespace) -> int:
+    from frfw import integrity
+
+    report = integrity.check()
+    print(f"FR_OS software integrity: {report.summary}")
+    for name in report.modified:
+        print(f"  modified: {name}")
+    for name in report.missing:
+        print(f"  missing:  {name}")
+    if not report.verifiable:
+        return 2
+    return 0 if report.ok else 1
 
 
 def _cmd_users(args: argparse.Namespace) -> int:

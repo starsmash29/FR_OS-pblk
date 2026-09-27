@@ -723,6 +723,33 @@ set-admin-password`, ZTNA users -- must be 8+ characters, not among the
 digits and punctuation removed: "Password123!" is "password"), not
 repetitive, and must not contain the username (`frfw.passwords`).
 
+### Detecting persistence (security-lessons G9)
+
+The audit log is root's (`/var/log/fr_os/audit.log`, 0640
+root:fr_os-webui). The webUI reads it but can't write it: its entries go
+to the apply-helper (`audit_append`), which stamps the time and origin
+itself and refuses anything but a small flat mapping -- so a compromised
+webUI can add lines but not rewrite or delete the ones that show what it
+did. `firewall-cli` (root) writes directly.
+
+Some entries are **alerts**: the changes that give an intruder a way to
+stay. A new admin account or a user made admin, an admin's password
+reset by another admin, a new or changed ZTNA user, a sign-in from an
+address the account hasn't used in 90 days (the G6 known sources),
+second factors removed or reset, the admin-MFA requirement turned off,
+management opened to the WAN, and account changes made on the console.
+The dashboard lists the alerts an admin hasn't marked as seen (per
+admin; viewers don't get them), and the audit table on the Users screen
+marks them.
+
+The software-integrity check (`frfw.integrity`) compares every file of
+the installed package with the SHA-256 `pip` recorded in its `RECORD`:
+a patched or deleted file shows on the dashboard and the System screen,
+and `firewall-cli integrity` exits 1. It can't catch an attacker with
+root who rewrites `RECORD` too -- that needs a manifest signed with the
+release key -- and a development install (`pip install -e`) is reported
+as not verifiable, not as clean.
+
 ### Sessions end on the server (security-lessons G7)
 
 A session is a signed cookie *and* an entry in `sessions.json` next to

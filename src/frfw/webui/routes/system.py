@@ -27,13 +27,16 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import Response
 
+from frfw import integrity
 from frfw import pqc as pqc_mod
 from frfw import persistence as persistence_mod
 from frfw.config import ConfigError, parse_config
 from frfw.metrics import generate_metrics_token
 from frfw import management
 from frfw.webui.actions import try_save
-from frfw.webui.deps import get_helper, get_raw_config, get_webui_cert_path, require_login
+from frfw.webui import audit
+from frfw.webui.client_ip import client_ip
+from frfw.webui.deps import get_audit_log_path, get_helper, get_raw_config, get_webui_cert_path, require_login
 from frfw.webui.helper_client import HelperClient
 from frfw.webui.responses import redirect_with
 from frfw.webui.templating import templates
@@ -83,6 +86,7 @@ def _render_system(request: Request, username: str, raw: dict, cert_path: Path, 
             "username": username,
             "status": status,
             "persistence": persistence,
+            "integrity": integrity.cached_check(),
             "management": management_view,
             "metrics_site": metrics_raw.get("site") or "",
             "metrics_hostname": raw.get("hostname") or "",
@@ -130,10 +134,12 @@ def save_pqc_settings(
 
 @router.post("/system/management")
 def save_management(
+    request: Request,
     allow_wan: bool = Form(False),
     username: str = Depends(require_login),
     raw: dict = Depends(get_raw_config),
     helper: HelperClient = Depends(get_helper),
+    audit_log_path: Path = Depends(get_audit_log_path),
 ):
     """Security-lessons F2/G4: the explicit, warned opt-in to manage the
     router from the internet (off by default)."""
@@ -144,6 +150,8 @@ def save_management(
     if not ok:
         return redirect_with("/system", error=message)
     if allow_wan:
+        audit.alert(audit_log_path, f"{username!r} opened management (webUI, SSH) to the internet",
+                    user=username, client=client_ip(request))
         return redirect_with("/system", error="Saved. " + management.WAN_WARNING + " Click Apply to load it.")
     return redirect_with("/system", success="Management is LAN-only again -- click Apply to load it")
 

@@ -93,4 +93,6 @@ def ensure() -> list[str]:
     paths.CONFIG_PATH.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
     _ensure_dir(paths.WEBUI_STATE_DIR, 0o700, paths.WEBUI_USER, paths.WEBUI_USER)
     _ensure_dir(paths.SENSOR_STATE_DIR, 0o750, paths.SENSOR_USER, paths.WEBUI_USER)
+    # The audit log is root's; the webUI reads it (security-lessons G9/E6).
+    _ensure_dir(paths.AUDIT_LOG_DIR, 0o750, "root", paths.WEBUI_USER)
     return done

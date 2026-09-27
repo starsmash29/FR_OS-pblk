@@ -94,6 +94,18 @@
   <p class="muted">Which zones count as management: <code>management.zones</code> in the config (default: every zone that isn't internet-facing).</p>
 </div>
 <div class="card">
+  <h3>Software integrity</h3>
+  <p class="muted">Every file of FR_OS is compared with the SHA-256 recorded when it was installed
+    (security-lessons G9). This catches a patched or deleted file; it can't catch someone with root who
+    rewrites the record too.</p>
+  {% if not integrity.verifiable %}<p><span class="badge">not verifiable</span> {{ integrity.note }}</p>
+  {% elif integrity.ok %}<p><span class="badge badge-green">ok</span> {{ integrity.summary }}</p>
+  {% else %}<p><span class="badge badge-red">changed</span> {{ integrity.summary }}</p>
+  <ul>{% for f in (integrity.modified + integrity.missing)[:20] %}<li><code>{{ f }}</code></li>{% endfor %}</ul>
+  {% endif %}
+</div>
+
+<div class="card">
   <h3>Storage &amp; persistence</h3>
   {% if not persistence.live %}
   <p><span class="badge badge-green">installed</span> This router runs from its own disk; every change is kept.</p>
