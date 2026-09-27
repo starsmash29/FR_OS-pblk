@@ -46,3 +46,15 @@ def dhcp_config_dict(minimal_config_dict) -> dict:
         }
     }
     return minimal_config_dict
+
+
+@pytest.fixture(autouse=True)
+def _never_touch_the_hosts_sshd(tmp_path, monkeypatch):
+    """No test may write /etc/ssh or reload the machine's own sshd: the
+    management drop-in goes to tmp_path, and the sshd used to check it is
+    one that doesn't exist -- tests of the drop-in pass a real or fake
+    sshd explicitly."""
+    from frfw import management, paths
+
+    monkeypatch.setattr(paths, "SSHD_MANAGEMENT_DROPIN_PATH", tmp_path / "sshd_config.d" / "40-fr_os-management.conf")
+    monkeypatch.setattr(management, "SSHD_BINARY", "fr-os-tests-have-no-sshd")

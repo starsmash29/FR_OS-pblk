@@ -171,6 +171,7 @@ def test_apply_all_dry_run_touches_nothing(dhcp_config_dict, tmp_path, monkeypat
         "IoT isolation disabled",
         "PQC hybrid TLS disabled",
         "sshd not installed",
+        "PQC hybrid SSH KEX disabled",  # sshd installed, PQC never enabled
         "Ad-block DNS resolver disabled",
     )
     for message in result.messages:

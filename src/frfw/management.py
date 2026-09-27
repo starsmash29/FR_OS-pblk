@@ -19,8 +19,10 @@ out; the webUI and `apply` warn while that is on.
 
 from __future__ import annotations
 
+import grp
 import ipaddress
 import os
+import pwd
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -34,6 +36,9 @@ from frfw.config.schema import Config
 SSH_PORT = 22
 WEBUI_PORT = 443
 MANAGEMENT_PORTS = (SSH_PORT, WEBUI_PORT)
+
+#: The sshd binary to validate the drop-in with (tests point it elsewhere).
+SSHD_BINARY = "sshd"
 
 LOOPBACK = "127.0.0.1"
 ANY = "0.0.0.0"
@@ -85,8 +90,9 @@ def listen_addresses(config: Config) -> list[str]:
 
 _SSHD_DROPIN_HEADER = """\
 # Managed by FR_OS (frfw.management) -- regenerated on every `apply`, do
-# not edit by hand. Where sshd listens: the management zones only
-# (management.* in /etc/fr_os/config.yaml).
+# not edit by hand. Where sshd listens -- the management zones only
+# (management.* in /etc/fr_os/config.yaml) -- and how it authenticates:
+# keys only, members of the SSH group only (security-lessons F2/F3).
 """
 
 
@@ -99,10 +105,47 @@ class SyncResult:
     message: str
 
 
+#: Security-lessons F3: keys only, no root, only members of the SSH
+#: group, few tries, a short grace time. sshd uses the first value it
+#: reads, and this file sorts before distribution drop-ins such as
+#: 50-cloud-init.conf, so these win.
+SSHD_HARDENING = (
+    "PermitRootLogin no",
+    "PasswordAuthentication no",
+    "KbdInteractiveAuthentication no",
+    "PermitEmptyPasswords no",
+    "PubkeyAuthentication yes",
+    "AuthenticationMethods publickey",
+    f"AllowGroups {paths.SSH_GROUP}",
+    "MaxAuthTries 3",
+    "LoginGraceTime 30",
+    "X11Forwarding no",
+)
+
+
 def sshd_dropin(config: Config) -> str:
     lines = [_SSHD_DROPIN_HEADER.rstrip("\n")]
     lines += [f"ListenAddress {address}" for address in listen_addresses(config)]
+    lines += list(SSHD_HARDENING)
     return "\n".join(lines) + "\n"
+
+
+def ssh_login_users() -> list[str]:
+    """Members of the SSH group that have an authorized_keys file -- the
+    people who can actually log in with the drop-in above."""
+    try:
+        members = grp.getgrnam(paths.SSH_GROUP).gr_mem
+    except KeyError:
+        return []
+    users = []
+    for name in members:
+        try:
+            home = Path(pwd.getpwnam(name).pw_dir)
+        except KeyError:
+            continue
+        if (home / ".ssh" / "authorized_keys").is_file():
+            users.append(name)
+    return sorted(users)
 
 
 def sync_sshd(
@@ -110,12 +153,13 @@ def sync_sshd(
     *,
     dry_run: bool = False,
     dropin_path: Path | None = None,
-    sshd_binary: str = "sshd",
+    sshd_binary: str | None = None,
 ) -> SyncResult:
     """Write the ListenAddress drop-in, check it with `sshd -t` (restoring
     the previous one if sshd rejects it) and reload sshd -- a reload keeps
     open sessions. A no-op without sshd."""
     dropin_path = paths.SSHD_MANAGEMENT_DROPIN_PATH if dropin_path is None else dropin_path
+    sshd_binary = SSHD_BINARY if sshd_binary is None else sshd_binary
     if shutil.which(sshd_binary) is None:
         return SyncResult("sshd not installed; nothing to bind")
     content = sshd_dropin(config)
@@ -124,7 +168,7 @@ def sync_sshd(
         return SyncResult(f"Would make sshd listen on {where} (dry-run)")
     previous = dropin_path.read_text() if dropin_path.exists() else None
     if previous == content:
-        return SyncResult(f"sshd listens on {where}")
+        return SyncResult(f"sshd listens on {where}; {_who_can_log_in()}")
     if os.geteuid() != 0:
         raise ManagementError("writing the sshd drop-in needs root")
     dropin_path.parent.mkdir(parents=True, exist_ok=True)
@@ -140,7 +184,15 @@ def sync_sshd(
     reload = svc.systemctl("try-reload-or-restart", "ssh", timeout=60)
     if reload.returncode != 0:
         raise ManagementError(reload.stderr.strip() or "failed to reload the ssh service")
-    return SyncResult(f"sshd listens on {where}")
+    return SyncResult(f"sshd listens on {where}; {_who_can_log_in()}")
+
+
+def _who_can_log_in() -> str:
+    users = ssh_login_users()
+    if users:
+        return f"key login for {', '.join(users)}"
+    return (f"nobody can log in over SSH yet (keys only): add a user to the {paths.SSH_GROUP} "
+            "group and give them ~/.ssh/authorized_keys")
 
 
 # -- the webUI ---------------------------------------------------------------------

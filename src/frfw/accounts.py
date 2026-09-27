@@ -50,6 +50,14 @@ def _user_exists(name: str) -> bool:
         return False
 
 
+def _group_exists(name: str) -> bool:
+    try:
+        grp.getgrnam(name)
+        return True
+    except KeyError:
+        return False
+
+
 def _group_members(name: str) -> list[str]:
     try:
         return list(grp.getgrnam(name).gr_mem)
@@ -75,6 +83,12 @@ def ensure() -> list[str]:
     if paths.SENSOR_USER not in _group_members(paths.WEBUI_USER):
         _run(["usermod", "--append", "--groups", paths.WEBUI_USER, "--", paths.SENSOR_USER])
         done.append(f"added {paths.SENSOR_USER} to group {paths.WEBUI_USER}")
+
+    if not _group_exists(paths.SSH_GROUP):
+        # sshd's AllowGroups (frfw.management): empty until the admin adds
+        # someone, i.e. no SSH login at all by default.
+        _run(["groupadd", "--system", "--", paths.SSH_GROUP])
+        done.append(f"created group {paths.SSH_GROUP}")
 
     paths.CONFIG_PATH.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
     _ensure_dir(paths.WEBUI_STATE_DIR, 0o700, paths.WEBUI_USER, paths.WEBUI_USER)

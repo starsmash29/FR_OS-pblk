@@ -714,7 +714,13 @@ ahead of the admin's rules; the webUI binds loopback and the management
 interfaces' static addresses instead of 0.0.0.0 (one socket each, with
 `IP_FREEBIND` so a LAN address that isn't up yet doesn't stop it); sshd
 gets a `ListenAddress` drop-in (validated with `sshd -t`, reloaded, never
-restarted). When the addresses change, `apply` restarts the webUI a few
+restarted). The same drop-in hardens sshd's authentication
+(security-lessons F3): `PasswordAuthentication no`, `AuthenticationMethods
+publickey`, `PermitRootLogin no`, `AllowGroups fr_os-ssh` (a group
+`ensure-accounts` creates empty -- no SSH login until the admin adds
+someone with a key), `MaxAuthTries 3`, `LoginGraceTime 30`. It sorts
+before distribution drop-ins (e.g. cloud-init's 50-), and sshd keeps the
+first value it reads, so these win; `apply` says who can log in. When the addresses change, `apply` restarts the webUI a few
 seconds later. `management.allow_wan` is the explicit opt-in, confirmed
 and warned on the System screen and in every `apply`.
 
