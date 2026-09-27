@@ -693,6 +693,17 @@ creates the accounts, so an update that brings these units also brings
 the account they need. The update-helper's socket is 0600 and owned by
 `fr_os-webui`, and that helper accepts only root and the webUI.
 
+### Password hashing (security-lessons G2)
+
+Passwords (webUI accounts, ZTNA users) are hashed with `hashlib.scrypt`
+(OpenSSL through the standard library -- no compiled dependency, the
+reason argon2 was avoided), N=2^15, r=8, p=3: OWASP's equivalent of
+N=2^17 at a quarter of the memory, 32 MiB per check. The hash string
+carries its parameters (`scrypt$N$r$p$salt$digest`). A hash from before
+this (PBKDF2-SHA256, 200 000 iterations) still verifies at that floor and
+is replaced in place on the next successful sign-in; the old hash is not
+kept anywhere.
+
 ### Review checklist for anything that authenticates (security-lessons H1)
 
 - The client never chooses how strictly it is checked: no request field,

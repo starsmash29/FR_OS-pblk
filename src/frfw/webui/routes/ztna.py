@@ -40,7 +40,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Form, Request
 
-from frfw.admin_account import hash_password, verify_password
+from frfw.admin_account import hash_password, needs_rehash, verify_password
 from frfw.webui.actions import try_save
 from frfw.webui.auth_rate_limiter import BruteforceGuard, reject_failed_login
 from frfw.webui.client_ip import client_ip
@@ -112,6 +112,13 @@ def login_submit(
 
     if not verify_password(password, user.get("password_hash", "")):
         return reject_failed_login(ip, guard, helper, redirect_path="/ztna/login")
+
+    if needs_rehash(user.get("password_hash", "")):
+        # Security-lessons G2: replace a pre-scrypt hash in place on this
+        # successful sign-in (the old one isn't kept). Best effort: a save
+        # that fails must not lock the user out.
+        user["password_hash"] = hash_password(password)
+        try_save(raw, helper)
 
     guard.record_success(ip)
     result = helper.authorize_ztna(ip, username)

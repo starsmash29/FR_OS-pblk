@@ -41,10 +41,24 @@ from frfw import paths
 
 AUTH_FILE_PATH = paths.WEBUI_AUTH_PATH
 
+#: Security-lessons G2. New hashes: scrypt from hashlib (OpenSSL, no
+#: compiled dependency), with OWASP's N=2^15, r=8, p=3 -- as strong as
+#: their N=2^17, p=1 at a quarter of the memory (32 MiB per check), which
+#: matters on a small router. Stored as scrypt$N$r$p$salt$digest.
+SCRYPT_ALGORITHM = "scrypt"
+SCRYPT_N = 2**15
+SCRYPT_R = 8
+SCRYPT_P = 3
+#: The least work a stored scrypt hash may ask for (N*r*p) -- H1: a
+#: stored hash can't lower how hard a password is checked.
+_SCRYPT_MIN_COST = SCRYPT_N * SCRYPT_R * SCRYPT_P
+_SCRYPT_MAXMEM = 256 * 1024 * 1024
+
+#: Hashes written before G2: PBKDF2-SHA256, 200 000 iterations. Still
+#: accepted at sign-in, never below that floor, and replaced by a scrypt
+#: hash on the next successful sign-in (`needs_rehash`); the old one is
+#: not kept anywhere.
 _PBKDF2_ALGORITHM = "pbkdf2_sha256"
-_PBKDF2_ITERATIONS = 200_000
-#: Security-lessons H1: a stored hash can't lower how hard a password is
-#: checked -- anything weaker than this never verifies, whatever it says.
 MIN_PBKDF2_ITERATIONS = 200_000
 
 ROLE_ADMIN = "admin"
@@ -61,25 +75,39 @@ class AccountError(Exception):
 
 def hash_password(password: str) -> str:
     salt = secrets.token_bytes(16)
-    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, _PBKDF2_ITERATIONS)
-    return f"{_PBKDF2_ALGORITHM}${_PBKDF2_ITERATIONS}${salt.hex()}${digest.hex()}"
+    digest = hashlib.scrypt(password.encode(), salt=salt, n=SCRYPT_N, r=SCRYPT_R, p=SCRYPT_P,
+                            maxmem=_SCRYPT_MAXMEM, dklen=32)
+    return f"{SCRYPT_ALGORITHM}${SCRYPT_N}${SCRYPT_R}${SCRYPT_P}${salt.hex()}${digest.hex()}"
 
 
 def verify_password(password: str, stored: str) -> bool:
+    """True if `password` matches `stored`. Fails closed on anything it
+    doesn't fully understand or that is weaker than the floors."""
     try:
-        algorithm, iterations_str, salt_hex, digest_hex = stored.split("$")
-        if algorithm != _PBKDF2_ALGORITHM:
+        fields = stored.split("$")
+        if fields[0] == SCRYPT_ALGORITHM and len(fields) == 6:
+            n, r, p = (int(x) for x in fields[1:4])
+            salt, expected = bytes.fromhex(fields[4]), bytes.fromhex(fields[5])
+            if n * r * p < _SCRYPT_MIN_COST or r < SCRYPT_R or n & (n - 1) or len(salt) < 16 or len(expected) != 32:
+                return False
+            actual = hashlib.scrypt(password.encode(), salt=salt, n=n, r=r, p=p, maxmem=_SCRYPT_MAXMEM, dklen=32)
+        elif fields[0] == _PBKDF2_ALGORITHM and len(fields) == 4:
+            iterations = int(fields[1])
+            salt, expected = bytes.fromhex(fields[2]), bytes.fromhex(fields[3])
+            if iterations < MIN_PBKDF2_ITERATIONS or len(salt) < 16 or len(expected) != 32:
+                return False
+            actual = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, iterations)
+        else:
             return False
-        iterations = int(iterations_str)
-        salt = bytes.fromhex(salt_hex)
-        expected = bytes.fromhex(digest_hex)
-    except (ValueError, AttributeError):
+    except (ValueError, AttributeError, TypeError, MemoryError):
         return False
-    if iterations < MIN_PBKDF2_ITERATIONS or len(salt) < 16 or len(expected) != 32:
-        return False
-
-    actual = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, iterations)
     return hmac.compare_digest(actual, expected)
+
+
+def needs_rehash(stored: str) -> bool:
+    """Whether a hash that just verified should be replaced: anything that
+    isn't scrypt with today's parameters."""
+    return not stored.startswith(f"{SCRYPT_ALGORITHM}${SCRYPT_N}${SCRYPT_R}${SCRYPT_P}$")
 
 
 #: Names a first-run setup won't accept for the admin account: the ones
@@ -148,14 +176,23 @@ class AdminStore:
         return self.users().get(username)
 
     def verify(self, username: str, password: str) -> AdminAccount | None:
-        """The account, if the password is right; None otherwise."""
+        """The account, if the password is right; None otherwise. A hash
+        from before security-lessons G2 is replaced by a scrypt one right
+        here, on the successful sign-in -- the old hash isn't kept."""
         account = self.get(username)
         if account is None:
             # Still run a hash to keep the timing similar whether or not
             # the username exists, rather than short-circuiting.
             hash_password(password)
             return None
-        return account if verify_password(password, account.password_hash) else None
+        if not verify_password(password, account.password_hash):
+            return None
+        if needs_rehash(account.password_hash):
+            users = self.users()
+            users[username] = AdminAccount(username, hash_password(password), account.role, account.must_change)
+            self._write(users)
+            account = users[username]
+        return account
 
     # -- writing -----------------------------------------------------------
 

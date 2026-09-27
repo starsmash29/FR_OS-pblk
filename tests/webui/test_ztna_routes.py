@@ -79,7 +79,7 @@ def test_add_user_hashes_password_before_saving(logged_in_client, webui_env):
     assert len(config.ztna.users) == 1
     assert config.ztna.users[0].username == "alice"
     assert config.ztna.users[0].password_hash != "hunter22222"
-    assert config.ztna.users[0].password_hash.startswith("pbkdf2_sha256$")
+    assert config.ztna.users[0].password_hash.startswith("scrypt$")
 
 
 def test_add_user_rejects_short_password(logged_in_client, webui_env):
