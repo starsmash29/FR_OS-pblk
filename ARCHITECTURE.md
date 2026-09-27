@@ -495,9 +495,10 @@ error, it's "no update available" -- the GitHub API simply returns a 404
 in that case, which the module handles explicitly.
 
 **Applying** (`apply_update`, `rollback_update`) requires real root
-privileges: it downloads and unpacks a release tarball
-(`https://github.com/<repo>/archive/refs/tags/<tag>.tar.gz`), `pip
-install`s it, updates the systemd unit files, and restarts the affected
+privileges: it downloads the release's signed source tarball
+(`https://github.com/<repo>/releases/download/<tag>/frfw-<version>.tar.gz`
+plus `SHA256SUMS` and `SHA256SUMS.sig`, see "Signed releases" below),
+verifies and unpacks it, `pip install`s it, updates the systemd unit files, and restarts the affected
 services. This half can only be invoked from the privileged
 `fr-update-helper` daemon (see below), or directly via a `firewall-cli
 update apply/rollback` command run as root over SSH -- the webUI process
@@ -554,13 +555,24 @@ the attempt and the error message get recorded in the state file's
 `last_update` field, and the call raises `UpdateError` -- neither the CLI
 nor the webUI page stays silent on a failed update.
 
-### Known limitation: no cryptographic signature verification
+### Signed releases
 
-There's no cryptographic signature check at all on the downloaded release
-tarball, beyond the HTTPS connection to GitHub -- the same trust model as
-a plain `git clone`/`pip install` from an unpinned index. Release signing
-(`cosign` or a GPG-signed checksum file) is a reasonable next step, once
-there are real, tagged releases to sign.
+An update is installed only if it verifies (`frfw.release_signing`,
+review triage A4). A release carries the source tarball
+(`frfw-<version>.tar.gz`), a `SHA256SUMS` over it and the ISO, and an
+Ed25519 signature over that file (`SHA256SUMS.sig`), made in CI with the
+`FROS_RELEASE_SIGNING_KEY` secret. The updater checks the signature
+against the public keys shipped in the *installed* package
+(`src/frfw/release_keys/*.pem`, with the `openssl` CLI — no new Python
+dependency) and the tarball against the signed checksum, before anything
+is extracted. A cached copy is re-verified on every use, so a rollback
+can't be fed a swapped cache either. With no trusted key in the build,
+every update is refused. Key setup and the release procedure:
+[docs/RELEASING.md](docs/RELEASING.md).
+
+Still not verified: the Python dependencies `pip` resolves from PyPI for
+the release (`>=` floors), and releases older than this mechanism
+(v0.1.0 is unsigned, so a router won't update or roll back to it).
 
 ### Verification
 

@@ -21,16 +21,16 @@ throughout the rest of frfw:
 The update *source* is this project's own GitHub repo (`DEFAULT_REPO`,
 overridable via config.yaml's `update.repo` for a fork/community
 edition). A release is identified by a `vMAJOR.MINOR.PATCH` git tag;
-"installing" it means downloading that tag's source tarball
-(`https://github.com/<repo>/archive/refs/tags/<tag>.tar.gz`) and
-`pip install`ing it in place, exactly like a fresh install would.
+"installing" it means downloading that release's source tarball, its
+`SHA256SUMS` and `SHA256SUMS.sig` (release assets), verifying them
+against the public keys shipped in *this* build (frfw.release_signing)
+and only then extracting and `pip install`ing it. An unsigned release, a
+signature from an unknown key or a tarball that doesn't match the signed
+checksum is refused before anything is extracted -- also when it comes
+from the local cache (a rollback re-verifies).
 
-**Known limitation, stated plainly**: there is no cryptographic
-signature verification of the downloaded release -- HTTPS-to-GitHub is
-the only trust boundary right now, the same as `git clone` or `pip
-install` from an unpinned index would give you. Signing releases (e.g.
-with `cosign` or a GPG-signed checksum file) is a reasonable follow-up
-once there are real, tagged releases to sign.
+Still trusted without verification: the Python dependencies `pip`
+resolves from PyPI for the release (`>=` floors in pyproject.toml).
 
 Rollback is a single level deep: applying an update remembers the
 version you were on as `previous_version`; rolling back reinstalls that
@@ -55,7 +55,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from frfw import __version__, paths
+from frfw import __version__, paths, release_signing
 
 #: This project's own repo; checked/installed from unless config.yaml's
 #: `update.repo` overrides it (see frfw.config.schema.UpdateConfig).
@@ -279,8 +279,7 @@ def _run(cmd: list[str]) -> None:
         raise UpdateError(f"`{cmd[0]}` not found: {exc}") from exc
 
 
-def _download_tarball(repo: str, tag: str, dest: Path, timeout: float) -> None:
-    url = f"https://github.com/{repo}/archive/refs/tags/{tag}.tar.gz"
+def _download(url: str, dest: Path, timeout: float) -> None:
     request = urllib.request.Request(url, headers={"User-Agent": "fr_os-update"})
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -288,6 +287,14 @@ def _download_tarball(repo: str, tag: str, dest: Path, timeout: float) -> None:
                 shutil.copyfileobj(response, f)
     except urllib.error.URLError as exc:
         raise UpdateError(f"could not download {url}: {exc}") from exc
+
+
+def _download_release_assets(repo: str, tag: str, version: str, dest: Path, timeout: float) -> None:
+    """The source tarball and the signed checksums, from the release."""
+    base = f"https://github.com/{repo}/releases/download/{tag}"
+    for name in (release_signing.source_tarball_name(version), release_signing.SUMS_NAME,
+                 release_signing.SIGNATURE_NAME):
+        _download(f"{base}/{name}", dest / name, timeout)
 
 
 def _safe_extract(tarball: Path, dest: Path) -> Path:
@@ -323,26 +330,50 @@ def _safe_extract(tarball: Path, dest: Path) -> Path:
     return entries[0]
 
 
-def _fetch_release(repo: str, version: str, releases_dir: Path, timeout: float) -> Path:
-    """Return a local directory containing `version`'s source, downloading
-    and extracting it if not already cached under `releases_dir`."""
-    existing = releases_dir / version
-    if (existing / "pyproject.toml").is_file():
-        return existing
+def _verify(artifacts: Path, version: str) -> None:
+    name = release_signing.source_tarball_name(version)
+    try:
+        release_signing.verify_release(
+            artifacts / name,
+            artifacts / release_signing.SUMS_NAME,
+            artifacts / release_signing.SIGNATURE_NAME,
+            name=name,
+        )
+    except (release_signing.SignatureError, OSError) as exc:
+        raise UpdateError(f"release {version} failed verification, not installing it: {exc}") from exc
 
+
+def _fetch_release(repo: str, version: str, releases_dir: Path, timeout: float) -> Path:
+    """Return a local directory containing `version`'s verified source.
+
+    `releases_dir/<version>/` keeps the downloaded tarball, SHA256SUMS
+    and signature (so a rollback works offline) and, under `src/`, what
+    was extracted from them. The signature is checked every time, also
+    for a cached copy, and the source re-extracted from the verified
+    tarball -- never trusted just because it is on disk.
+    """
     releases_dir.mkdir(parents=True, exist_ok=True)
+    cache = releases_dir / version
     tag = version if version.startswith("v") else f"v{version}"
     with tempfile.TemporaryDirectory(dir=releases_dir) as tmp:
         tmp_path = Path(tmp)
-        tarball = tmp_path / "release.tar.gz"
-        _download_tarball(repo, tag, tarball, timeout)
-        extracted_root = _safe_extract(tarball, tmp_path / "extracted")
+        artifacts = tmp_path / "artifacts"
+        artifacts.mkdir()
+        cached = [cache / n for n in (release_signing.source_tarball_name(version),
+                                      release_signing.SUMS_NAME, release_signing.SIGNATURE_NAME)]
+        if all(p.is_file() for p in cached):
+            for p in cached:
+                shutil.copy2(p, artifacts / p.name)
+        else:
+            _download_release_assets(repo, tag, version, artifacts, timeout)
+        _verify(artifacts, version)
+        _safe_extract(artifacts / release_signing.source_tarball_name(version), artifacts / "src")
 
-        if existing.exists():
-            shutil.rmtree(existing)
-        shutil.move(str(extracted_root), str(existing))
+        if cache.exists():
+            shutil.rmtree(cache)
+        shutil.move(str(artifacts), str(cache))
 
-    return existing
+    return next(p for p in (cache / "src").iterdir() if p.is_dir())
 
 
 def _stage_systemd_units(release_dir: Path) -> None:
