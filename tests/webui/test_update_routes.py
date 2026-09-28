@@ -97,3 +97,36 @@ def test_page_shows_rollback_button_only_when_previous_version_recorded(
     )
     page = logged_in_client.get("/update")
     assert "Roll back to 0.1.0" in page.text
+
+
+# --- security-lessons J3: the opt-in -----------------------------------------------------
+
+
+def test_admin_turns_automatic_security_updates_on_and_off(logged_in_client, webui_env):
+    import yaml
+
+    webui_env["config_path"].write_text(yaml.safe_dump({
+        "version": 1, "hostname": "router", "zones": {"wan": {}, "lan": {}},
+        "interfaces": {"wan": {"device": "eth0", "zone": "wan"}, "lan": {"device": "eth1", "zone": "lan"}},
+        "rules": [], "nat": {"masquerade": [{"out_zone": "wan"}]},
+    }))
+    assert 'value="true">' in logged_in_client.get("/update").text  # off by default
+    response = logged_in_client.post("/update/auto-security", data={"enabled": "true"})
+    assert "success=Security+releases+will+be+installed" in response.headers["location"]
+    assert yaml.safe_load(webui_env["config_path"].read_text())["update"]["auto_install_security"] is True
+    assert 'value="true" checked>' in logged_in_client.get("/update").text
+    logged_in_client.post("/update/auto-security", data={})
+    assert yaml.safe_load(webui_env["config_path"].read_text())["update"]["auto_install_security"] is False
+
+
+def test_a_failed_automatic_install_shows_on_the_update_screen(logged_in_client, webui_env):
+    import json
+
+    from frfw import __version__
+
+    webui_env["update_check_path"].write_text(json.dumps({
+        "current_version": __version__, "update_available": True, "latest_version": "99.0.0", "security": True,
+        "error": None, "auto_install_error": "signature does not verify", "checked_at": "2026-09-28T10:00:00Z",
+    }))
+    page = logged_in_client.get("/update").text
+    assert "Installing security release 99.0.0 automatically failed: signature does not verify" in page

@@ -61,6 +61,25 @@ def _never_touch_the_hosts_sshd(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _never_touch_the_hosts_audit_log(tmp_path_factory, monkeypatch):
+    """The root-owned audit log (/var/log/fr_os) is a directory of its own
+    per test, never the machine's."""
+    from frfw import paths
+
+    log_dir = tmp_path_factory.mktemp("var_log_fr_os")
+    monkeypatch.setattr(paths, "AUDIT_LOG_DIR", log_dir)
+    monkeypatch.setattr(paths, "AUDIT_LOG_PATH", log_dir / "audit.log")
+
+
+@pytest.fixture(autouse=True)
+def _never_touch_the_hosts_update_check(tmp_path_factory, monkeypatch):
+    """The periodic update check's cache (/etc/fr_os/update_check.json)."""
+    from frfw import paths
+
+    monkeypatch.setattr(paths, "UPDATE_CHECK_PATH", tmp_path_factory.mktemp("etc_fr_os") / "update_check.json")
+
+
+@pytest.fixture(autouse=True)
 def _never_touch_the_hosts_ip_forwarding(tmp_path_factory, monkeypatch):
     """An apply turns IPv4 forwarding on (frfw.forwarding); in tests that
     switch is a file of its own (not in tmp_path, which some tests list),

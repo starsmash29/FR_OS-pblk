@@ -270,9 +270,14 @@ class UpdateConfig:
     """Which GitHub repo to check for new FR_OS releases against (phase 6,
     see frfw.update). Empty string means "use the built-in default"
     (`frfw.update.DEFAULT_REPO`) -- override only for a fork/community
-    edition mirror that publishes its own releases."""
+    edition mirror that publishes its own releases.
+
+    `auto_install_security` (security-lessons J3, off by default): let
+    fr-update-check.timer install a *security* release by itself, after
+    verifying its signature like any update (A4)."""
 
     repo: str = ""
+    auto_install_security: bool = False
 
 
 @dataclass(frozen=True)

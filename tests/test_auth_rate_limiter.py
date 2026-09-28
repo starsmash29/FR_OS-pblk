@@ -58,7 +58,7 @@ def test_record_success_on_unknown_ip_is_a_harmless_noop():
 def test_old_failures_outside_the_window_do_not_count(monkeypatch):
     guard = BruteforceGuard(max_attempts=5, window_seconds=300)
     clock = {"t": 1000.0}
-    monkeypatch.setattr("time.monotonic", lambda: clock["t"])
+    monkeypatch.setattr("frfw.webui.auth_rate_limiter._now", lambda: clock["t"])
 
     for _ in range(4):
         guard.record_failure("10.0.0.1")
@@ -72,7 +72,7 @@ def test_old_failures_outside_the_window_do_not_count(monkeypatch):
 def test_failures_within_window_still_count_after_partial_expiry(monkeypatch):
     guard = BruteforceGuard(max_attempts=5, window_seconds=300)
     clock = {"t": 1000.0}
-    monkeypatch.setattr("time.monotonic", lambda: clock["t"])
+    monkeypatch.setattr("frfw.webui.auth_rate_limiter._now", lambda: clock["t"])
 
     guard.record_failure("10.0.0.1")  # t=1000
     clock["t"] += 100  # t=1100, still within the window of the first

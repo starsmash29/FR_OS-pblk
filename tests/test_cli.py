@@ -156,14 +156,14 @@ def test_set_admin_password_success(tmp_path, monkeypatch, capsys):
     from frfw.admin_account import AdminStore
 
     monkeypatch.setattr("frfw.cli.AdminStore", lambda: AdminStore(tmp_path / "auth.json"))
-    passwords = iter(["hunter22", "hunter22"])
+    passwords = iter(["zebra-lamp-42", "zebra-lamp-42"])
     monkeypatch.setattr("getpass.getpass", lambda prompt="": next(passwords))
 
     exit_code = main(["set-admin-password"])
     out = capsys.readouterr().out
     assert exit_code == 0
     assert "set" in out
-    assert AdminStore(tmp_path / "auth.json").verify("admin", "hunter22")
+    assert AdminStore(tmp_path / "auth.json").verify("admin", "zebra-lamp-42")
 
 
 def test_set_admin_password_mismatch_fails(tmp_path, monkeypatch, capsys):
@@ -366,3 +366,13 @@ def test_set_admin_password_promotes_and_users_lists_roles(monkeypatch, capsys, 
     capsys.readouterr()
     assert main(["users"]) == 0
     assert capsys.readouterr().out.split() == ["boss", "admin", "guest", "admin"]
+
+
+def test_set_admin_password_refuses_a_common_password(tmp_path, monkeypatch, capsys):
+    """Security-lessons G6: the console path refuses what the webUI does."""
+    monkeypatch.setattr("frfw.cli.AdminStore", lambda: AdminStore(tmp_path / "auth.json"))
+    answers = iter(["Password123!", "Password123!"])
+    monkeypatch.setattr("getpass.getpass", lambda prompt="": next(answers))
+    assert main(["set-admin-password"]) == 1
+    assert "most common" in capsys.readouterr().err
+    assert not (tmp_path / "auth.json").exists()

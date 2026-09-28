@@ -14,7 +14,8 @@
     {% if check_result.latest is none %}
     <p class="muted">No releases have been published for this repo yet.</p>
     {% elif check_result.update_available %}
-    <p><strong>Update available: {{ check_result.latest.version | with_codename }}</strong></p>
+    <p><strong>Update available: {{ check_result.latest.version | with_codename }}</strong>
+      {% if check_result.latest.security %}<span class="badge badge-red">security release</span>{% endif %}</p>
     {% if check_result.latest.notes %}
     <pre>{{ check_result.latest.notes }}</pre>
     {% endif %}
@@ -26,6 +27,21 @@
     <p class="muted">Already up to date (latest published release: {{ check_result.latest.version | with_codename }}).</p>
     {% endif %}
   {% endif %}
+</div>
+
+<div class="card">
+  <h3>Security updates</h3>
+  <p class="muted">The router checks for new releases twice a day{% if periodic and periodic.checked_at %} (last: {{ periodic.checked_at }}){% endif %}.
+    A security release shows a red banner on every page. How fast we fix vulnerabilities is in SECURITY.md.</p>
+  {% if periodic and periodic.error %}<div class="flash-error">The last periodic check failed: {{ periodic.error }}</div>{% endif %}
+  {% if periodic and periodic.auto_install_error %}<div class="flash-error">Installing security release {{ periodic.latest_version }} automatically failed: {{ periodic.auto_install_error }}</div>{% endif %}
+  <form method="post" action="/update/auto-security">
+    <label><input type="checkbox" name="enabled" value="true"{% if auto_install_security %} checked{% endif %}>
+      Install security updates automatically</label>
+    <p class="muted">Only releases marked as security releases, and only after their signature verifies. The webUI restarts
+      afterwards, and the dashboard shows an alert saying what was installed.</p>
+    <button type="submit">Save</button>
+  </form>
 </div>
 
 <div class="card">
@@ -57,10 +73,10 @@
 
 <div class="card">
   <p class="muted">
-    Updates are installed from {{ repo }}'s GitHub releases over HTTPS; there
-    is no separate cryptographic signature check on top of that yet. See
-    ARCHITECTURE.md's update mechanism section for exactly what "update" and
-    "rollback" do.
+    Updates are installed from {{ repo }}'s GitHub releases over HTTPS, and only
+    when the release's signature (SHA256SUMS.sig) verifies against the key this
+    router ships with. See ARCHITECTURE.md's update mechanism section for exactly
+    what "update" and "rollback" do.
   </p>
 </div>
 {% endblock %}

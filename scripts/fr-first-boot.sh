@@ -91,6 +91,7 @@ for unit in \
     fr-xdp-sni-logger \
     fr-appid \
     fr-schedule-check.timer \
+    fr-update-check.timer \
     fr-tls-fp \
     fr-update-helper.socket
 do

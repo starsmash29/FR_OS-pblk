@@ -71,11 +71,26 @@ def shell_hostname(request) -> str:
         return "fr-router"
 
 
+def update_notice(request) -> dict | None:
+    """Security-lessons G10: what the periodic update check found (the
+    cache fr-update-check.timer writes), for the banner on every page."""
+    cache_path = getattr(request.app.state, "update_check_path", None)
+    if cache_path is None:
+        return None
+    from frfw import update
+
+    data = update.read_check_cache(Path(cache_path), current_version=__version__)
+    if not data or not data.get("update_available") or not data.get("latest_version"):
+        return None
+    return data
+
+
 templates.env.globals.update(
     NAV=NAV,
     nav_matches=_matches,
     nav_location=nav_location,
     shell_hostname=shell_hostname,
+    update_notice=update_notice,
     FROS_VERSION=__version__,
     FROS_CODENAME=__codename__,
 )

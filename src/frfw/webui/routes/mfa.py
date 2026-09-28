@@ -62,9 +62,12 @@ def _finish_login(request, tid, account, tickets, store, session_manager, guard,
     if not tickets.consume(tid):  # used up in a parallel request
         return redirect_with("/login", error="This sign-in was already completed or has expired")
     ip = client_ip(request)
-    guard.record_success(ip)
+    new_source = guard.record_success(ip, account.username)
     audit.append(audit_log_path, {"user": account.username, "role": account.role, "client": ip,
-                                  "event": f"login ({how})"})
+                                  "event": f"login ({how})", **({"new_source": True} if new_source else {})})
+    if new_source:
+        audit.alert(audit_log_path, f"{account.username!r} signed in from a new address {ip}",
+                    user=account.username, client=ip)
     response = RedirectResponse("/", status_code=303)
     response.delete_cookie(mfa.TICKET_COOKIE, path="/login")
     return issue_session(request, response, store.get(account.username), session_manager)
@@ -307,7 +310,8 @@ def mfa_remove(
     else:
         return redirect_with("/account/mfa", error="Unknown factor")
     store.set_mfa(username, current)
-    audit.append(audit_log_path, {"user": username, "client": client_ip(request), "event": f"removed {kind}"})
+    audit.alert(audit_log_path, f"{username!r} removed a second factor ({kind})", user=username,
+                client=client_ip(request), event=f"removed {kind}")
     return redirect_with("/account/mfa", success="Removed")
 
 
@@ -321,9 +325,14 @@ def mfa_policy(
     store: AdminStore = Depends(get_admin_store),
     audit_log_path: Path = Depends(get_audit_log_path),
 ):
+    was_required = bool(store.policy().get("require_mfa_for_admins"))
     store.set_policy(require_mfa_for_admins=require)
-    audit.append(audit_log_path, {"user": username, "client": client_ip(request),
-                                  "event": f"require MFA for admins: {require}"})
+    if require or not was_required:
+        audit.append(audit_log_path, {"user": username, "client": client_ip(request),
+                                      "event": f"require MFA for admins: {require}"})
+    else:
+        audit.alert(audit_log_path, f"{username!r} turned the second-factor requirement for admins off",
+                    user=username, client=client_ip(request))
     return redirect_with("/users", success="Admins must use a second factor" if require else
                          "A second factor is optional again")
 
@@ -342,6 +351,6 @@ def mfa_reset(
     except AccountError as exc:
         return redirect_with("/users", error=str(exc))
     session_manager.revoke_user(target)
-    audit.append(audit_log_path, {"user": username, "client": client_ip(request),
-                                  "event": f"reset second factors of {target!r}"})
+    audit.alert(audit_log_path, f"second factors of {target!r} removed by {username!r}",
+                user=username, client=client_ip(request))
     return redirect_with("/users", success=f"Second factors of {target!r} removed; their sessions ended")

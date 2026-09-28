@@ -122,7 +122,7 @@ def test_viewer_sees_pages_but_not_account_management(env):
 
 def test_admin_manages_accounts_and_the_audit_log_records_it(env):
     admin = _client(env, "boss", "adminpass1")
-    assert admin.post("/users/add", data={"new_username": "tech", "new_password": "techpass12", "role": "viewer"}).status_code == 303
+    assert admin.post("/users/add", data={"new_username": "tech", "new_password": "violet-anchor-9", "role": "viewer"}).status_code == 303
     assert env["admin_store"].get("tech").role == "viewer"
     admin.post("/users/tech/role", data={"role": "admin"})
     assert env["admin_store"].get("tech").is_admin
@@ -133,11 +133,13 @@ def test_admin_manages_accounts_and_the_audit_log_records_it(env):
     assert page.status_code == 303  # boss no longer exists: the open session ended
 
     log = [json.loads(l) for l in env["audit_log_path"].read_text().splitlines()]
-    events = [(e.get("user"), e.get("event") or f"{e['method']} {e['path']}", e.get("status")) for e in log]
+    events = [(e.get("user"), e.get("event") or e.get("alert") or f"{e['method']} {e['path']}", e.get("status"))
+              for e in log]
     assert ("boss", "login", None) in events
+    assert ("boss", "'tech' made an admin by 'boss'", None) in events  # security-lessons G9
     assert ("boss", "POST /users/add", 303) in events
     assert ("boss", "POST /users/boss/delete", 303) in events
-    assert "techpass12" not in env["audit_log_path"].read_text()
+    assert "violet-anchor-9" not in env["audit_log_path"].read_text()
 
 
 def test_viewer_attempts_are_audited_as_denied(env):

@@ -1,0 +1,12 @@
+[Unit]
+Description=Periodic FR_OS update check (security-lessons G10/J3)
+Documentation=https://github.com/starsmash29/FR_OS-pblk
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=12h
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

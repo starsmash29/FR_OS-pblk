@@ -55,6 +55,9 @@ WEBUI_CERT_PATH = WEBUI_STATE_DIR / "cert.pem"
 WEBUI_KEY_PATH = WEBUI_STATE_DIR / "key.pem"
 WEBUI_AUTH_PATH = WEBUI_STATE_DIR / "auth.json"
 WEBUI_SECRET_KEY_PATH = WEBUI_STATE_DIR / "secret.key"
+#: Failed-login counters and each account's known sign-in sources,
+#: persisted so a webUI restart doesn't reset them (security-lessons G6).
+LOGIN_GUARD_STATE_PATH = WEBUI_STATE_DIR / "login_guard.json"
 
 #: AI IDS engine's display-only recent-events log (phase 11, see
 #: frfw.ai_ids.daemon.load_recent_events) -- the last several
@@ -79,6 +82,10 @@ AI_IDS_STATE_PATH = SENSOR_STATE_DIR / "ai_ids_state.json"
 #: called fresh on every webUI page load, same as the AI IDS screen's
 #: live-computed progress.
 UPDATE_STATE_PATH = Path("/etc/fr_os/update_state.json")
+
+#: The last periodic update check (fr-update-check.timer, security-lessons
+#: G10/J3), read by the webUI for the "update available" banner.
+UPDATE_CHECK_PATH = Path("/etc/fr_os/update_check.json")
 
 #: Extracted release source trees, one directory per installed version,
 #: kept around after each successful update so a rollback can reinstall
@@ -212,6 +219,15 @@ SCHEDULE_STATE_PATH = Path("/etc/fr_os/schedule_state.json")
 #: the HTTP status. Never form contents. Written by the unprivileged
 #: webUI, size-capped with one rotated generation.
 WEBUI_AUDIT_LOG_PATH = WEBUI_STATE_DIR / "audit.log"
+
+#: The audit log since security-lessons G9/E6: root's, not the webUI's.
+#: The webUI can read it (group fr_os-webui) but only *add* to it, through
+#: the apply-helper -- a compromised webUI can't erase its tracks.
+AUDIT_LOG_DIR = Path("/var/log/fr_os")
+AUDIT_LOG_PATH = AUDIT_LOG_DIR / "audit.log"
+
+#: Per admin: the time up to which they have seen the security alerts.
+ALERTS_SEEN_PATH = WEBUI_STATE_DIR / "alerts_seen.json"
 
 #: TLS client fingerprint inventory (phase 19, see frfw.tlsfp.daemon):
 #: which JA4/JA3 fingerprints each client presented, and recent events

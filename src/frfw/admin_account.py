@@ -41,7 +41,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from frfw import paths
+from frfw import passwords, paths
 
 AUTH_FILE_PATH = paths.WEBUI_AUTH_PATH
 
@@ -69,7 +69,7 @@ ROLE_ADMIN = "admin"
 ROLE_VIEWER = "viewer"
 ROLES = (ROLE_ADMIN, ROLE_VIEWER)
 
-MIN_PASSWORD_LENGTH = 8
+MIN_PASSWORD_LENGTH = passwords.MIN_LENGTH
 _USERNAME_RE = re.compile(r"^[a-z_][a-z0-9_.-]{0,31}\Z")
 
 
@@ -155,9 +155,12 @@ def validate_username(username: str) -> None:
         )
 
 
-def validate_password(password: str) -> None:
-    if len(password) < MIN_PASSWORD_LENGTH:
-        raise AccountError(f"Password must be at least {MIN_PASSWORD_LENGTH} characters")
+def validate_password(password: str, username: str | None = None) -> None:
+    """Length, the common-password list and the username (security-lessons
+    G6, frfw.passwords)."""
+    reason = passwords.problem(password, username)
+    if reason:
+        raise AccountError(reason)
 
 
 #: Which account files this thread holds the lock of (it is re-entrant).
@@ -319,7 +322,7 @@ class AdminStore:
         validate_username(new_username)
         if new_username in RESERVED_USERNAMES:
             raise AccountError(f"Choose a username other than {new_username!r} -- it's the first one attackers try")
-        validate_password(password)
+        validate_password(password, new_username)
         users = self.users()
         account = users.get(current)
         if account is None or not account.must_change:
@@ -336,7 +339,7 @@ class AdminStore:
     @_serialized
     def add_user(self, username: str, password: str, role: str) -> None:
         validate_username(username)
-        validate_password(password)
+        validate_password(password, username)
         if role not in ROLES:
             raise AccountError(f"Unknown role {role!r}")
         if username in self.users():

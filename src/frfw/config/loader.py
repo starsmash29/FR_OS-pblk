@@ -611,7 +611,11 @@ def _parse_update(raw: Any) -> UpdateConfig:
         except validate.ArgumentError as exc:
             raise ConfigError(f"update.repo: {exc}") from exc
 
-    return UpdateConfig(repo=repo)
+    auto_install_security = raw.get("auto_install_security", False)
+    if not isinstance(auto_install_security, bool):
+        raise ConfigError("update.auto_install_security must be true or false")
+
+    return UpdateConfig(repo=repo, auto_install_security=auto_install_security)
 
 
 def internet_facing_zones(zones: dict[str, Zone], nat: NatConfig) -> set[str]:

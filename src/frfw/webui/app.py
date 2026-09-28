@@ -68,7 +68,9 @@ def create_app(
     iot_inventory_path: Path = paths.IOT_INVENTORY_PATH,
     adblock_category_dir: Path = paths.ADBLOCK_CATEGORY_DIR,
     appid_usage_path: Path = paths.APPID_USAGE_PATH,
-    audit_log_path: Path = paths.WEBUI_AUDIT_LOG_PATH,
+    audit_log_path: Path = paths.AUDIT_LOG_PATH,
+    alerts_seen_path: Path = paths.ALERTS_SEEN_PATH,
+    update_check_path: Path = paths.UPDATE_CHECK_PATH,
     tlsfp_state_path: Path = paths.TLSFP_STATE_PATH,
     webui_cert_path: Path = paths.WEBUI_CERT_PATH,
 ) -> FastAPI:
@@ -77,19 +79,25 @@ def create_app(
     app.state.admin_store = admin_store or AdminStore()
     app.state.session_manager = session_manager or SessionManager()
     app.state.helper = helper or SocketHelperClient()
+    if helper is None:
+        # Security-lessons G9/E6: on a router the audit log is root's; the
+        # webUI adds to it only through the apply-helper.
+        audit.route(audit_log_path, app.state.helper.audit_append)
     app.state.update_helper = update_helper or SocketUpdateHelperClient()
     app.state.ai_ids_state_path = ai_ids_state_path
     app.state.update_state_path = update_state_path
     app.state.xdp_state_path = xdp_state_path
     app.state.adblock_hosts_path = adblock_hosts_path
     app.state.adblock_category_dir = adblock_category_dir
-    app.state.bruteforce_guard = bruteforce_guard or BruteforceGuard()
+    app.state.bruteforce_guard = bruteforce_guard or BruteforceGuard(state_path=paths.LOGIN_GUARD_STATE_PATH)
     # Security-lessons G5: second-factor login tickets and enrolment challenges.
     app.state.mfa_tickets = TicketStore()
     app.state.mfa_enrolments = TicketStore(lifetime=600)
     app.state.iot_inventory_path = iot_inventory_path
     app.state.appid_usage_path = appid_usage_path
     app.state.audit_log_path = audit_log_path
+    app.state.alerts_seen_path = alerts_seen_path
+    app.state.update_check_path = update_check_path
     app.state.tlsfp_state_path = tlsfp_state_path
     app.state.webui_cert_path = webui_cert_path
 

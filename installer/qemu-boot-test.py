@@ -275,6 +275,12 @@ def main() -> int:
         check_sandboxed_services(check, upper, "-b")
         check("Server listening" not in journal(upper, "-b", "-u", "ssh.service"),
               "sshd did not listen at all this boot (off while nobody has a key)")
+        audit_log = upper / "var" / "log" / "fr_os" / "audit.log"
+        check(audit_log.exists() and audit_log.stat().st_uid == 0 and audit_log.stat().st_mode & 0o777 == 0o640
+              and '"via": "webui"' in audit_log.read_text(),
+              "the webUI's audit entries went through the apply-helper into the root-owned log (0640)")
+        timer = journal(upper, "-b", "-u", "fr-update-check.timer")
+        check("Started" in timer, "the periodic update check (fr-update-check.timer) is armed (security-lessons G10)")
         check("IPv4 forwarding" in journal(upper, "-b", "-u", "fr-firewall.service"),
               "the boot-time apply turned IPv4 forwarding on (the router routes)")
 

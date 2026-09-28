@@ -106,6 +106,10 @@ class ReleaseInfo:
     notes: str
     published_at: str | None = None
     html_url: str = ""
+    #: A security release (security-lessons G10): "[security]" in the
+    #: release title, or a "Security: yes" line in its notes. See
+    #: docs/RELEASING.md.
+    security: bool = False
 
 
 @dataclass(frozen=True)
@@ -203,15 +207,71 @@ def _fetch_json(url: str, timeout: float) -> object:
         raise UpdateError(f"invalid JSON from {url}: {exc}") from exc
 
 
+_SECURITY_LINE = re.compile(r"^\s*security:\s*yes\s*$", re.I | re.M)
+
+
+def is_security_release(name: str, notes: str) -> bool:
+    return "[security]" in name.lower() or bool(_SECURITY_LINE.search(notes))
+
+
 def _release_from_json(raw: dict) -> ReleaseInfo:
     tag = str(raw.get("tag_name") or "")
+    notes = str(raw.get("body") or "")
     return ReleaseInfo(
         tag=tag,
         version=tag[1:] if tag.startswith("v") else tag,
-        notes=str(raw.get("body") or ""),
+        notes=notes,
         published_at=raw.get("published_at"),
         html_url=str(raw.get("html_url") or ""),
+        security=is_security_release(str(raw.get("name") or ""), notes),
     )
+
+
+# -- the periodic check (security-lessons G10/J3) ------------------------------------
+
+
+def write_check_cache(result: UpdateCheckResult, path: Path | None = None, *,
+                      error: str | None = None, auto_install_error: str | None = None) -> None:
+    """What the last periodic check found, for the webUI's banner (the
+    webUI itself doesn't have to reach GitHub to know). 0644: it holds
+    nothing secret."""
+    latest = result.latest
+    data = {
+        "checked_at": result.checked_at,
+        "current_version": result.current_version,
+        "update_available": result.update_available,
+        "latest_version": latest.version if latest else None,
+        "security": bool(latest and latest.security and result.update_available),
+        "html_url": latest.html_url if latest else "",
+        "error": error,
+        # J3: the automatic install of this security release failed.
+        "auto_install_error": auto_install_error,
+    }
+    write_json_cache(data, path)
+
+
+def write_json_cache(data: dict, path: Path | None = None) -> None:
+    path = path or paths.UPDATE_CHECK_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data))
+    tmp.chmod(0o644)
+    tmp.replace(path)
+
+
+def read_check_cache(path: Path | None = None, *, current_version: str | None = None) -> dict | None:
+    """The cached check, or None -- also when it is about a version that is
+    no longer the installed one (an update happened since)."""
+    path = path or paths.UPDATE_CHECK_PATH
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    if current_version is not None and data.get("current_version") != current_version:
+        return None
+    return data
 
 
 def list_releases(

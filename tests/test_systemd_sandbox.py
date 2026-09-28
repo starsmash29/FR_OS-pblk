@@ -80,6 +80,7 @@ BROAD = {
 PROTECT_SYSTEM = {
     "fr-accounts.service": "yes",  # useradd writes /etc/passwd, /etc/group, /etc/shadow
     "fr-update-helper.service": "full",  # pip writes wherever /usr/local's Python lives
+    "fr-update-check.service": "full",  # installs a security release with auto_install_security (J3)
     "fr-first-boot.service": None,
     "fr-persistence-setup.service": None,
 }
@@ -97,6 +98,7 @@ ROOT = {
     "fr-persistence-setup.service": "partitions the boot medium",
     "fr-initial-password.service": "rewrites the root-only console notice",
     "fr-update-helper.service": "installs a verified release",
+    "fr-update-check.service": "checks for releases; may install a verified security release (opt-in)",
     "fr-tls-fp.service": "opens a pinned BPF map, then drops to fr_os-sensor (frfw.privdrop)",
     "fr-xdp-sni-logger.service": "opens a pinned BPF map, then drops to fr_os-sensor (frfw.privdrop)",
 }
@@ -120,6 +122,7 @@ EXPOSURE_BUDGET.update({
     "fr-firewall.service": 4.5,
     "fr-schedule-check.service": 4.5,
     "fr-update-helper.service": 3.5,
+    "fr-update-check.service": 3.5,
     "fr-first-boot.service": 7.5,
     "fr-persistence-setup.service": 8.0,
 })

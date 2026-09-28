@@ -704,6 +704,84 @@ this (PBKDF2-SHA256, 200 000 iterations) still verifies at that floor and
 is replaced in place on the next successful sign-in; the old hash is not
 kept anywhere.
 
+### Brute force and credential stuffing (security-lessons G6)
+
+Two counters guard both sign-ins (`/login`, `/ztna/login`): per source
+address (5 failures in 5 minutes jail it at the firewall for an hour)
+and per account (10 failures in 15 minutes, from any number of
+addresses, refuse that account's sign-in for the rest of the window --
+what a botnet spreading one guess per address runs into). An address
+the account signed in from in the last 90 days is a *known source* and
+is never locked out, so the lock can't be turned against the owner;
+unknown usernames lock like real ones, so the message tells nothing.
+Both counters and the known sources live in `login_guard.json` (0600,
+the webUI's state directory) and survive a restart.
+
+New passwords -- webUI accounts, first-run setup, resets, `firewall-cli
+set-admin-password`, ZTNA users -- must be 8+ characters, not among the
+10,000 most common passwords (a local list, also matched with trailing
+digits and punctuation removed: "Password123!" is "password"), not
+repetitive, and must not contain the username (`frfw.passwords`).
+
+### Detecting persistence (security-lessons G9)
+
+The audit log is root's (`/var/log/fr_os/audit.log`, 0640
+root:fr_os-webui). The webUI reads it but can't write it: its entries go
+to the apply-helper (`audit_append`), which stamps the time and origin
+itself and refuses anything but a small flat mapping -- so a compromised
+webUI can add lines but not rewrite or delete the ones that show what it
+did. `firewall-cli` (root) writes directly.
+
+Some entries are **alerts**: the changes that give an intruder a way to
+stay. A new admin account or a user made admin, an admin's password
+reset by another admin, a new or changed ZTNA user, a sign-in from an
+address the account hasn't used in 90 days (the G6 known sources),
+second factors removed or reset, the admin-MFA requirement turned off,
+management opened to the WAN, and account changes made on the console.
+The dashboard lists the alerts an admin hasn't marked as seen (per
+admin; viewers don't get them), and the audit table on the Users screen
+marks them.
+
+The software-integrity check (`frfw.integrity`) compares every file of
+the installed package with the SHA-256 `pip` recorded in its `RECORD`:
+a patched or deleted file shows on the dashboard and the System screen,
+and `firewall-cli integrity` exits 1. It can't catch an attacker with
+root who rewrites `RECORD` too -- that needs a manifest signed with the
+release key -- and a development install (`pip install -e`) is reported
+as not verifiable, not as clean.
+
+### Security updates are loud (security-lessons G10)
+
+`fr-update-check.timer` runs `firewall-cli update auto` ten minutes
+after boot and then every 12 hours (with up to an hour of random delay,
+so a fleet doesn't hit GitHub at once). It records what it found in
+`/etc/fr_os/update_check.json` (0644, nothing secret), so the webUI
+never has to reach GitHub itself. A release is a **security release**
+when its title carries `[security]` or its notes a `Security: yes` line
+(docs/RELEASING.md). Every webUI page then shows a red "Security update
+available" banner; an ordinary release is a quiet notice; the banner
+goes once the new version is installed (the cache names the version it
+was about). A failed check keeps the last finding, with the error, so a
+network outage doesn't hide a pending security fix. How to report a
+vulnerability, and how fast we fix one, is in `SECURITY.md`.
+
+### Installing security releases without waiting (security-lessons J3)
+
+With `update.auto_install_security: true` (off by default; a switch on
+the Update screen), `firewall-cli update auto` also *installs* a security
+release as soon as it finds one, through the same `apply_update` as a
+manual update -- so the signature must verify (A4). A failure behaves
+like a failed manual update: before the release is verified nothing has
+changed; after that, the error says to roll back (one click on the
+Update screen) -- it isn't rolled back by itself. Either outcome is a security alert on the
+dashboard (the software changed without anyone clicking), and a failed
+install is shown on the Update screen while the red banner stays. An
+ordinary release is never installed by itself, and neither is anything
+when the config can't be read. `fr-update-check.service` runs as root
+with the same sandbox as `fr-update-helper.service` (it writes where an
+update writes). `SECURITY.md` publishes the fix-time targets that make
+this worth having: 7 days for a critical vulnerability.
+
 ### Sessions end on the server (security-lessons G7)
 
 A session is a signed cookie *and* an entry in `sessions.json` next to

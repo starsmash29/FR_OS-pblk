@@ -12,6 +12,7 @@
     firewall-cli ensure-accounts
     firewall-cli users
     firewall-cli surface [config.yaml]
+    firewall-cli integrity
     firewall-cli mfa-reset USER
     firewall-cli ids-status
     firewall-cli iot-status
@@ -20,6 +21,7 @@
     firewall-cli metrics-token (--generate | --disable) [--site NAME] [config.yaml]
     firewall-cli schedule-check [config.yaml]
     firewall-cli update check [config.yaml]
+    firewall-cli update auto [config.yaml]
     firewall-cli update apply VERSION [--repo OWNER/REPO]
     firewall-cli update rollback [--repo OWNER/REPO]
     firewall-cli xdp-status
@@ -55,7 +57,7 @@ import yaml
 
 from frfw import __version__, codename_for, netdetect, paths, schedule_refresh, skeleton, xdp as xdp_mod
 from frfw import accounts as accounts_mod
-from frfw import initial_password
+from frfw import initial_password, passwords
 from frfw import persistence as persistence_mod
 from frfw import update as update_mod
 from frfw.adblock import AdblockError
@@ -249,6 +251,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p_surface.add_argument("config", nargs="?", type=Path, default=paths.CONFIG_PATH)
     p_surface.set_defaults(handler=_cmd_surface)
 
+    p_integrity = sub.add_parser(
+        "integrity", help="check FR_OS's installed files against the hashes recorded at install time",
+    )
+    p_integrity.set_defaults(handler=_cmd_integrity)
+
     p_ids_status = sub.add_parser(
         "ids-status",
         help="show the AI IDS/IPS engine's currently quarantined hosts",
@@ -319,6 +326,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     add_config_arg(p_update_check)
     p_update_check.set_defaults(handler=_cmd_update_check)
+
+    p_update_auto = update_sub.add_parser(
+        "auto",
+        help="the periodic check (fr-update-check.timer): record what's available for the webUI's banner",
+    )
+    add_config_arg(p_update_auto)
+    p_update_auto.set_defaults(handler=_cmd_update_auto)
 
     p_update_apply = update_sub.add_parser(
         "apply", help="download, install and activate a specific version (needs root)"
@@ -478,13 +492,27 @@ def _cmd_set_admin_password(args: argparse.Namespace) -> int:
     if password != confirm:
         print("error: passwords do not match", file=sys.stderr)
         return 1
-    if len(password) < 8:
-        print("error: password must be at least 8 characters", file=sys.stderr)
+    weak = passwords.problem(password, args.username)  # security-lessons G6
+    if weak:
+        print(f"error: {weak}", file=sys.stderr)
         return 1
 
     AdminStore().set_password(args.username, password, ROLE_ADMIN)
+    _console_alert(f"admin account {args.username!r} set from the console (firewall-cli set-admin-password)")
     print(f"Admin account {args.username!r} set")
     return 0
+
+
+def _console_alert(message: str, *, user: str = "console", client: str = "console") -> None:
+    """Security-lessons G9: what is done on the console shows up in the
+    webUI's security alerts like what is done in the webUI."""
+    from frfw.webui import audit
+
+    try:
+        audit.prepare(paths.AUDIT_LOG_PATH)
+        audit.alert(paths.AUDIT_LOG_PATH, message, user=user, client=client)
+    except OSError:
+        pass  # e.g. not root: the change itself stands
 
 
 def _cmd_mfa_reset(args: argparse.Namespace) -> int:
@@ -499,6 +527,7 @@ def _cmd_mfa_reset(args: argparse.Namespace) -> int:
     from frfw.webui.auth import SessionStore  # webUI extra, present wherever accounts are
 
     SessionStore(paths.WEBUI_SECRET_KEY_PATH.with_name("sessions.json")).revoke_user(args.username)
+    _console_alert(f"second factors of {args.username!r} removed from the console (firewall-cli mfa-reset)")
     print(f"Second factors of {args.username!r} removed; they sign in with the password alone until they add one")
     return 0
 
@@ -545,6 +574,20 @@ def _cmd_surface(args: argparse.Namespace) -> int:
         print(f"\nWARNING: {len(exposed)} service(s) reachable from {', '.join(sorted(internet))}", file=sys.stderr)
         return 2
     return 0
+
+
+def _cmd_integrity(args: argparse.Namespace) -> int:
+    from frfw import integrity
+
+    report = integrity.check()
+    print(f"FR_OS software integrity: {report.summary}")
+    for name in report.modified:
+        print(f"  modified: {name}")
+    for name in report.missing:
+        print(f"  missing:  {name}")
+    if not report.verifiable:
+        return 2
+    return 0 if report.ok else 1
 
 
 def _cmd_users(args: argparse.Namespace) -> int:
@@ -732,6 +775,55 @@ def _cmd_update_check(args: argparse.Namespace) -> int:
     else:
         print("Already up to date.")
     return 0
+
+
+def _cmd_update_auto(args: argparse.Namespace) -> int:
+    """fr-update-check.timer's job. Security-lessons G10: check once and
+    record the result for the webUI's "update available" banner (red for
+    a security release); a failed check keeps what the last good one
+    found, with the error. J3: with `update.auto_install_security`, also
+    install a security release -- apply_update verifies its signature
+    first, as for any update -- and tell the admins either way."""
+    repo = _resolve_update_repo(args.config)
+    try:
+        result = update_mod.check_latest(__version__, repo=repo)
+    except update_mod.UpdateError as exc:
+        previous = update_mod.read_check_cache(current_version=__version__) or {}
+        update_mod.write_json_cache({**previous, "current_version": __version__, "error": str(exc)})
+        print(f"update check failed: {exc}", file=sys.stderr)
+        return 1
+    update_mod.write_check_cache(result)
+    if result.latest is None or not result.update_available:
+        print(f"FR_OS {__version__} is up to date")
+        return 0
+    version = result.latest.version
+    if not result.latest.security:
+        print(f"update available: {version}")
+        return 0
+    print(f"SECURITY update available: {version}")
+    if not _auto_install_security(args.config):
+        return 0
+    try:
+        installed = update_mod.apply_update(version, repo=repo)
+    except update_mod.UpdateError as exc:
+        update_mod.write_check_cache(result, auto_install_error=str(exc))
+        _console_alert(f"automatic install of security release {version} failed: {exc}", **_TIMER)
+        print(f"automatic install of {version} failed: {exc}", file=sys.stderr)
+        return 1
+    # The software changed without anyone clicking: that is an alert (G9).
+    _console_alert(f"security release {installed} installed automatically (was {__version__})", **_TIMER)
+    print(f"installed security release {installed}")
+    return 0
+
+
+_TIMER = {"user": "fr-update-check", "client": "timer"}
+
+
+def _auto_install_security(config_path: str) -> bool:
+    try:
+        return load_config(config_path).update.auto_install_security
+    except (FileNotFoundError, ConfigError):
+        return False  # never install on a guess
 
 
 def _cmd_update_apply(args: argparse.Namespace) -> int:

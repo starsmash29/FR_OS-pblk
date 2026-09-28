@@ -15,7 +15,7 @@ def _seed_interface(client):
     )
 
 
-def _enable_ztna_with_user(logged_in_client, username="alice", password="hunter22"):
+def _enable_ztna_with_user(logged_in_client, username="alice", password="zebra-lamp-42"):
     _seed_interface(logged_in_client)
     # The user must exist *before* enabling: /ztna/settings validates the
     # whole config immediately, and enabled=true with zero users is
@@ -47,7 +47,7 @@ def test_ztna_admin_page_shows_disabled_by_default(logged_in_client):
 def test_save_settings_persists_enabled_and_ttl(logged_in_client, webui_env):
     _seed_interface(logged_in_client)
     logged_in_client.post(
-        "/ztna/users/add", data={"new_username": "alice", "new_password": "hunter22222"}
+        "/ztna/users/add", data={"new_username": "alice", "new_password": "zebra-lamp-4242"}
     )
     response = logged_in_client.post(
         "/ztna/settings", data={"enabled": "true", "session_ttl_seconds": 1800}
@@ -73,12 +73,12 @@ def test_enabling_with_no_users_is_rejected_by_validation(logged_in_client, webu
 def test_add_user_hashes_password_before_saving(logged_in_client, webui_env):
     _seed_interface(logged_in_client)
     logged_in_client.post(
-        "/ztna/users/add", data={"new_username": "alice", "new_password": "hunter22222"}
+        "/ztna/users/add", data={"new_username": "alice", "new_password": "zebra-lamp-4242"}
     )
     config = load_config(webui_env["config_path"])
     assert len(config.ztna.users) == 1
     assert config.ztna.users[0].username == "alice"
-    assert config.ztna.users[0].password_hash != "hunter22222"
+    assert config.ztna.users[0].password_hash != "zebra-lamp-4242"
     assert config.ztna.users[0].password_hash.startswith("scrypt$")
 
 
@@ -96,7 +96,7 @@ def test_add_user_rejects_short_password(logged_in_client, webui_env):
 def test_remove_user(logged_in_client, webui_env):
     _seed_interface(logged_in_client)
     logged_in_client.post(
-        "/ztna/users/add", data={"new_username": "alice", "new_password": "hunter22222"}
+        "/ztna/users/add", data={"new_username": "alice", "new_password": "zebra-lamp-4242"}
     )
     response = logged_in_client.post("/ztna/users/remove/alice")
     assert "success" in response.headers["location"]
@@ -147,7 +147,7 @@ def test_status_page_is_public(client):
 
 
 def test_login_fails_when_gate_disabled(client):
-    response = client.post("/ztna/login", data={"username": "alice", "password": "hunter22"})
+    response = client.post("/ztna/login", data={"username": "alice", "password": "zebra-lamp-42"})
     assert response.status_code == 303
     assert "error" in response.headers["location"]
     assert "disabled" in response.headers["location"].lower()
@@ -163,14 +163,14 @@ def test_login_fails_with_wrong_password(logged_in_client, client):
 def test_login_fails_with_unknown_username(logged_in_client, client):
     _enable_ztna_with_user(logged_in_client)
 
-    response = client.post("/ztna/login", data={"username": "mallory", "password": "hunter22"})
+    response = client.post("/ztna/login", data={"username": "mallory", "password": "zebra-lamp-42"})
     assert "error" in response.headers["location"]
 
 
 def test_successful_login_authorizes_ip_and_redirects_to_status(logged_in_client, client, webui_env):
     _enable_ztna_with_user(logged_in_client)
 
-    response = client.post("/ztna/login", data={"username": "alice", "password": "hunter22"})
+    response = client.post("/ztna/login", data={"username": "alice", "password": "zebra-lamp-42"})
     assert response.status_code == 303
     assert response.headers["location"].startswith("/ztna/status")
 
@@ -186,7 +186,7 @@ def test_login_reports_helper_failure(logged_in_client, client, webui_env):
         "message": "kernel exploded",
     }
 
-    response = client.post("/ztna/login", data={"username": "alice", "password": "hunter22"})
+    response = client.post("/ztna/login", data={"username": "alice", "password": "zebra-lamp-42"})
     assert "error" in response.headers["location"]
     assert "kernel+exploded" in response.headers["location"]
 
@@ -221,7 +221,7 @@ def test_successful_ztna_login_resets_the_failure_counter(app, logged_in_client,
 
     for _ in range(4):
         attacker.post("/ztna/login", data={"username": "alice", "password": "wrong"})
-    success = attacker.post("/ztna/login", data={"username": "alice", "password": "hunter22"})
+    success = attacker.post("/ztna/login", data={"username": "alice", "password": "zebra-lamp-42"})
     assert success.headers["location"].startswith("/ztna/status")
 
     for _ in range(4):

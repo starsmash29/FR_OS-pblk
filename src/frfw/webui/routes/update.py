@@ -19,13 +19,15 @@ from fastapi import APIRouter, Depends, Form, Request
 from frfw import __version__ as installed_version
 from frfw import update as update_mod
 from frfw.config import ConfigError, parse_config
+from frfw.webui.actions import try_save
 from frfw.webui.deps import (
+    get_helper,
     get_raw_config,
     get_update_helper,
     get_update_state_path,
     require_login,
 )
-from frfw.webui.helper_client import UpdateHelperClient
+from frfw.webui.helper_client import HelperClient, UpdateHelperClient
 from frfw.webui.responses import redirect_with
 from frfw.webui.templating import templates
 
@@ -38,6 +40,10 @@ def _resolve_repo(raw: dict) -> str:
     except ConfigError:
         return update_mod.DEFAULT_REPO
     return config.update.repo or update_mod.DEFAULT_REPO
+
+
+def _auto_install_security(raw: dict) -> bool:
+    return (raw.get("update") or {}).get("auto_install_security") is True
 
 
 @router.get("/update")
@@ -56,6 +62,9 @@ def show_update(
         check_error = str(exc)
 
     state = update_mod.load_state(current_version=installed_version, path=state_path)
+    # What fr-update-check.timer last found (security-lessons G10/J3).
+    periodic = update_mod.read_check_cache(Path(request.app.state.update_check_path),
+                                           current_version=installed_version)
 
     return templates.TemplateResponse(
         request,
@@ -67,6 +76,8 @@ def show_update(
             "check_result": check_result,
             "check_error": check_error,
             "state": state,
+            "periodic": periodic,
+            "auto_install_security": _auto_install_security(raw),
             "error": request.query_params.get("error"),
             "success": request.query_params.get("success"),
         },
@@ -102,3 +113,23 @@ def rollback_update(
             + " -- the webUI will restart in a few seconds.",
         )
     return redirect_with("/update", error=result.get("message") or "Rollback failed")
+
+
+@router.post("/update/auto-security")
+def save_auto_security(
+    enabled: bool = Form(False),
+    username: str = Depends(require_login),
+    raw: dict = Depends(get_raw_config),
+    helper: HelperClient = Depends(get_helper),
+):
+    """Security-lessons J3: the opt-in to let the router install signed
+    security releases by itself (fr-update-check.timer, twice a day)."""
+    section = dict(raw.get("update") or {})
+    section["auto_install_security"] = enabled
+    raw["update"] = section
+    ok, message = try_save(raw, helper)
+    if not ok:
+        return redirect_with("/update", error=message)
+    if enabled:
+        return redirect_with("/update", success="Security releases will be installed automatically")
+    return redirect_with("/update", success="Automatic install of security releases is off")

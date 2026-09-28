@@ -46,6 +46,7 @@ class FakeHelper:
         self.iot_isolated: list[str] = []  # stands in for the kernel iot_isolated set
         self.iot_sync_calls: list[list[str]] = []
         self.iot_scan_calls = 0
+        self.audit_entries: list[dict] = []
 
     def ping(self):
         return {"ok": True, "message": "pong"}
@@ -159,6 +160,10 @@ class FakeHelper:
     listeners: list[dict] = []
     interface_addresses: dict[str, list[str]] = {}
 
+    def audit_append(self, entry: dict) -> dict:
+        self.audit_entries.append(entry)
+        return {"ok": True}
+
     def listening_sockets(self) -> dict:
         return {"ok": True, "listeners": list(self.listeners), "addresses": dict(self.interface_addresses)}
 
@@ -209,6 +214,8 @@ def webui_env(tmp_path):
         "iot_inventory_path": tmp_path / "iot_inventory.json",
         "appid_usage_path": tmp_path / "appid_usage.json",
         "audit_log_path": tmp_path / "audit.log",
+        "alerts_seen_path": tmp_path / "alerts_seen.json",
+        "update_check_path": tmp_path / "update_check.json",
         "tlsfp_state_path": tmp_path / "tls_fingerprints.json",
         "webui_cert_path": tmp_path / "cert.pem",
     }
