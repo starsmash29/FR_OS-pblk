@@ -210,6 +210,7 @@ def build_ruleset(config: Config, *, clock: ScheduleClock | None = None, now: fl
     if input_rules:
         lines.append("")
         lines.extend(f"\t\t{line}" for r in input_rules for line in _render_rule(r, clock))
+    lines.extend(_render_drop_log(config, "input"))
     lines.append("\t}")
 
     lines.append("")
@@ -239,6 +240,7 @@ def build_ruleset(config: Config, *, clock: ScheduleClock | None = None, now: fl
     if forward_rules:
         lines.append("")
         lines.extend(f"\t\t{line}" for r in forward_rules for line in _render_rule(r, clock))
+    lines.extend(_render_drop_log(config, "forward"))
     lines.append("\t}")
 
     lines.append("")
@@ -254,6 +256,21 @@ def build_ruleset(config: Config, *, clock: ScheduleClock | None = None, now: fl
     lines.append("}")
     lines.append("")
     return "\n".join(lines)
+
+
+#: Prefix of the default-deny drop log lines (security-lessons K6);
+#: frfw.firewall_log finds them in the kernel log by it.
+DROP_LOG_PREFIX = "fr_os/drop/"
+
+
+def _render_drop_log(config: Config, chain: str) -> list[str]:
+    """Last in the chain, right before its `policy drop`: log what nothing
+    accepted, rate-limited so a flood can't fill the disk."""
+    if not config.logging.drops:
+        return []
+    rate = config.logging.drops_per_minute
+    return ["", f'\t\tlimit rate {rate}/minute burst {rate} packets log prefix "{DROP_LOG_PREFIX}{chain}: " '
+                f'{_comment("log-default-drop")}']
 
 
 def active_rules(config: Config, now: float | None = None) -> list[Rule]:

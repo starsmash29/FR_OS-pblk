@@ -147,6 +147,10 @@ def listening_sockets(socket_path: Path = paths.APPLY_SOCKET_PATH) -> dict:
     return send_command({"cmd": "listening_sockets"}, socket_path)
 
 
+def firewall_drops(socket_path: Path = paths.APPLY_SOCKET_PATH) -> dict:
+    return send_command({"cmd": "firewall_drops"}, socket_path)
+
+
 def wireguard_status(socket_path: Path = paths.APPLY_SOCKET_PATH) -> dict:
     return send_command({"cmd": "wireguard_status"}, socket_path)
 

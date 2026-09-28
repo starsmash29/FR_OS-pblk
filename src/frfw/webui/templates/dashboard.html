@@ -169,4 +169,22 @@
   </table>
   <p class="muted">Apply now pushes the saved config to the running system: interface addresses, the nftables firewall ruleset, and DHCP (Kea) if configured.</p>
 </section>
+
+{% if drops is not none %}
+<section class="card">
+  <div class="card-head"><h3>{{ icon("block") }}Recently dropped</h3><span class="muted">default deny, logged (rate-limited)</span></div>
+  {% if drops %}
+  <table>
+    <tr><th>When</th><th>Chain</th><th>From</th><th>To</th><th>Protocol / port</th><th>Interface</th></tr>
+    {% for d in drops %}
+    <tr><td>{{ d.when }}</td><td>{{ d.chain }}</td><td>{{ d.src or "-" }}</td><td>{{ d.dst or "-" }}</td>
+      <td>{{ d.proto or "-" }}{% if d.dport %}/{{ d.dport }}{% endif %}</td><td>{{ d["in"] or "-" }}</td></tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <p class="muted">Nothing dropped lately.</p>
+  {% endif %}
+  <p class="muted">Kept in the system journal within its size and age limit; admin sign-ins and changes are in the audit log.</p>
+</section>
+{% endif %}
 {% endblock %}

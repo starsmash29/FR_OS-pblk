@@ -33,6 +33,7 @@ from frfw.config.schema import (
     Interface,
     IotConfig,
     IotIsolationMode,
+    LoggingConfig,
     ManagementConfig,
     Masquerade,
     MetricsConfig,
@@ -140,6 +141,7 @@ def parse_config(raw: Any) -> Config:
     metrics = _parse_metrics(raw.get("metrics", {}) or {})
     management = _parse_management(raw.get("management", {}) or {}, zones, nat)
     wireguard = _parse_wireguard(raw.get("wireguard", {}) or {}, zones, nat, interfaces)
+    logging_config = _parse_logging(raw.get("logging", {}) or {})
 
     return Config(
         version=version,
@@ -161,6 +163,7 @@ def parse_config(raw: Any) -> Config:
         metrics=metrics,
         management=management,
         wireguard=wireguard,
+        logging=logging_config,
         timezone=tz_name,
     )
 
@@ -707,6 +710,18 @@ def valid_wireguard_key(key: Any) -> bool:
         return len(base64.b64decode(key, validate=True)) == 32
     except ValueError:
         return False
+
+
+def _parse_logging(raw: Any) -> LoggingConfig:
+    if not isinstance(raw, dict):
+        raise ConfigError("'logging' must be a mapping")
+    drops = raw.get("drops", True)
+    if not isinstance(drops, bool):
+        raise ConfigError("logging.drops must be true or false")
+    rate = raw.get("drops_per_minute", 10)
+    if not isinstance(rate, int) or isinstance(rate, bool) or not 1 <= rate <= 10000:
+        raise ConfigError("logging.drops_per_minute must be 1-10000")
+    return LoggingConfig(drops=drops, drops_per_minute=rate)
 
 
 def _tunnel_zones(raw: Any) -> set[str]:

@@ -397,6 +397,22 @@ metrics:
   `telemetry/grafana-fleet-dashboard.json` and the `Site` selector of
   `telemetry/grafana-dashboard.json`.
 
+## `logging`
+
+What the router logs out of the box (security-lessons K6).
+
+```yaml
+logging:
+  drops: true            # default: log what the default-deny policy drops
+  drops_per_minute: 10   # per chain; a flood can't fill the disk
+```
+
+The log lines (`fr_os/drop/input: ...`, `fr_os/drop/forward: ...`) go
+to the kernel log. The journal keeps them within its limit (200 MB, 90
+days; `/etc/systemd/journald.conf.d/fr_os.conf`), and the dashboard shows
+the latest ones. Admin sign-ins and every change are always in the audit
+log, which rotates at 1 MB.
+
 ## `wireguard`
 
 The WireGuard VPN (security-lessons G8): remote access with keys instead

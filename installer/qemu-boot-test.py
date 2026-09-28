@@ -45,6 +45,9 @@ from contextlib import contextmanager
 from pathlib import Path
 
 WEBUI_PORT = 8443
+#: Forwarded to a LAN port nothing allows: the default policy drops it,
+#: and the drop must be logged (security-lessons K6).
+CLOSED_PORT = 8444
 NEW_PASSWORD = "changed-in-boot-3"
 NEW_USERNAME = "netadmin"
 DISK_SIZE = 2 * 2**30
@@ -71,7 +74,8 @@ class Vm:
             "-drive", f"file={disk},format=raw,if=virtio",
             "-nic", "user,model=virtio-net-pci,mac=52:54:00:00:00:01",
             "-nic", ("user,model=virtio-net-pci,mac=52:54:00:00:00:02,net=192.168.1.0/24,"
-                     f"host=192.168.1.2,dhcpstart=192.168.1.50,hostfwd=tcp::{WEBUI_PORT}-192.168.1.1:443"),
+                     f"host=192.168.1.2,dhcpstart=192.168.1.50,hostfwd=tcp::{WEBUI_PORT}-192.168.1.1:443,"
+                     f"hostfwd=tcp::{CLOSED_PORT}-192.168.1.1:4444"),
             "-display", "none", "-serial", f"file:{self.serial}",
             "-monitor", f"unix:{self.monitor},server,nowait",
         ]
@@ -284,6 +288,10 @@ def main() -> int:
         listen = re.search(r"webUI restarting to listen on ([0-9., ]+)", applied)
         check(listen is not None and "10.99.0.1" in listen.group(1),
               "the webUI also listens on the VPN's tunnel address (security-lessons K5)")
+        try:  # dropped by the default policy, so this times out
+            socket.create_connection(("127.0.0.1", CLOSED_PORT), timeout=3).recv(1)
+        except OSError:
+            pass
         time.sleep(5)  # fr-initial-password.path reacts to the account file
     check(vm.power_off(), "powered off")
     vm.kill()
@@ -309,6 +317,8 @@ def main() -> int:
               "the router's WireGuard key is root's (0600, 0700 directory) and not in config.yaml")
         check("WireGuard VPN turned on" in audit_log.read_text() and "new VPN device 'laptop'" in audit_log.read_text(),
               "turning the VPN on and adding a device are security alerts")
+        dropped = journal(upper, "-b", "-k", "--grep", "fr_os/drop/input")
+        check("DPT=4444" in dropped, "a packet the default policy dropped was logged (security-lessons K6)")
         timer = journal(upper, "-b", "-u", "fr-update-check.timer")
         check("Started" in timer, "the periodic update check (fr-update-check.timer) is armed (security-lessons G10)")
         check("IPv4 forwarding" in journal(upper, "-b", "-u", "fr-firewall.service"),

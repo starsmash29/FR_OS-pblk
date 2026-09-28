@@ -750,6 +750,29 @@ root who rewrites `RECORD` too -- that needs a manifest signed with the
 release key -- and a development install (`pip install -e`) is reported
 as not verifiable, not as clean.
 
+### Logging on by default (security-lessons K6)
+
+You can't investigate what nobody logged. Out of the box:
+
+- **Firewall drops.** Each chain's last rule, right before its `policy
+  drop`, logs what nothing accepted:
+  `limit rate 10/minute burst 10 packets log prefix "fr_os/drop/<chain>: "`.
+  The rate limit means a flood can't fill the disk. The lines go to the
+  kernel log (`nf_log_syslog` is loaded at boot, so the sandboxed apply
+  units never load it). The dashboard's "Recently dropped" card reads
+  the latest ones through the apply-helper (`firewall_drops`), since
+  the kernel log is root's. `logging.drops: false` turns it off.
+- **Admin sign-ins and changes.** The audit log (G9) has recorded every
+  sign-in and every change request since phase 18, root-owned since G9.
+- **Retention.** The journal is capped at 200 MB and 90 days (a
+  journald drop-in the image and the install script put in place),
+  instead of journald's percentage-of-the-disk default. The audit log
+  rotates at 1 MB, keeping one old generation.
+
+The QEMU boot test sends a packet to a LAN port nothing allows. It then
+finds the kernel's drop line for it in the persisted journal. Forwarding
+logs to a SIEM is still ROADMAP phase 34.
+
 ### Segmentation by default (security-lessons K4)
 
 On a flat LAN, one hacked camera or a guest's infected laptop reaches

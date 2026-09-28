@@ -493,6 +493,19 @@ class ManagementConfig:
 
 
 @dataclass(frozen=True)
+class LoggingConfig:
+    """What the router logs out of the box (security-lessons K6).
+
+    `drops`: every packet the default-deny policy drops is logged to the
+    kernel log (journal), at most `drops_per_minute` a minute per chain
+    so a flood can't fill the disk. Admin sign-ins and config changes are
+    always in the audit log (frfw.webui.audit)."""
+
+    drops: bool = True
+    drops_per_minute: int = 10
+
+
+@dataclass(frozen=True)
 class WireguardPeer:
     """One device allowed into the WireGuard VPN: its public key and its
     address inside the tunnel (a /32 in `WireguardConfig.address`'s
@@ -550,6 +563,7 @@ class Config:
     metrics: MetricsConfig = field(default_factory=MetricsConfig)
     management: ManagementConfig = field(default_factory=ManagementConfig)
     wireguard: WireguardConfig = field(default_factory=WireguardConfig)
+    logging: LoggingConfig = field(default_factory=LoggingConfig)
     #: IANA time zone rule schedules are written in (phase 17); None =
     #: the router's own local zone.
     timezone: str | None = None

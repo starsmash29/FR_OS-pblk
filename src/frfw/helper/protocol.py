@@ -64,6 +64,8 @@ from __future__ import annotations
 #: and the interfaces' addresses, for the webUI's attack-surface view.
 #: "audit_append" (security-lessons G9/E6) adds one entry to the root-owned
 #: audit log: the webUI can add to it, never rewrite or remove it.
+#: "firewall_drops" (security-lessons K6) reads the latest default-deny
+#: drops from the kernel log, which needs root.
 #: "wireguard_status" (security-lessons G8) reports the router's WireGuard
 #: public key -- its private key is root's -- and each peer's last
 #: handshake and traffic.
@@ -89,6 +91,7 @@ COMMANDS = (
     "listening_sockets",
     "audit_append",
     "wireguard_status",
+    "firewall_drops",
 )
 
 #: Maximum accepted request/response line length, to bound memory use from
