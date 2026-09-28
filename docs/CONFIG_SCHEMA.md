@@ -368,6 +368,39 @@ metrics:
   `telemetry/grafana-fleet-dashboard.json` and the `Site` selector of
   `telemetry/grafana-dashboard.json`.
 
+## `wireguard`
+
+The WireGuard VPN (security-lessons G8): remote access with keys instead
+of passwords. The webUI's VPN screen writes this section.
+
+```yaml
+zones:
+  vpn: {}                      # the tunnel's zone (it needs no 'interfaces' entry)
+wireguard:
+  enabled: true
+  address: 10.99.0.1/24        # the router in the tunnel, with the tunnel's prefix
+  listen_port: 51820           # UDP, opened on the input chain
+  zone: vpn                    # default "vpn"; must not face the internet
+  endpoint: vpn.example.net    # optional: what devices connect to (for their configuration)
+  peers:
+    - name: laptop
+      public_key: 3Ld5...=     # the device's public key; its private key never is here
+      address: 10.99.0.2       # the device in the tunnel (a /32 in the tunnel subnet)
+```
+
+- The tunnel interface is `wg0`. It belongs to `zone`, so rules decide
+  what the VPN may reach, like any other zone (`from_zone: vpn`). The
+  VPN screen adds `webui-from-vpn`, `ssh-from-vpn` and `vpn-to-lan` when
+  it turns the VPN on, if they aren't there.
+- The router's own private key is **not** in this file: it is generated
+  on the first apply into `/etc/fr_os/wireguard/private.key` (0600
+  root). A `private_key` here is refused.
+- Refused: a tunnel subnet overlapping an interface's, a peer address
+  outside the tunnel or used twice, the same public key twice, an
+  internet-facing `zone`.
+- Needs the `wireguard` kernel module (Debian's kernel has it; the FR_OS
+  image loads it at boot) and `wg` from wireguard-tools.
+
 ## `management`
 
 Where the router can be managed from: the webUI (:443) and SSH (:22).

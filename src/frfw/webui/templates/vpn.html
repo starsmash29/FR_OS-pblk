@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}VPN - FR_OS{% endblock %}
+{% block content %}
+<h1>VPN (WireGuard)</h1>
+<p class="muted">
+  Reach your network -- and manage this router -- from anywhere, with a key per device instead of a password.
+  A stolen password works from anywhere; a WireGuard key only on the device that holds it, and the router only
+  ever knows its public half. This is the safe alternative to opening the webUI to the internet.
+</p>
+
+<div class="card status-card">
+  <span class="badge {{ 'badge-green' if enabled else 'badge-red' }}">{{ "On" if enabled else "Off" }}</span>
+  <dl>
+    <div><dt>Tunnel</dt><dd>{{ "up" if up else "down" }}</dd></div>
+    <div><dt>Devices</dt><dd>{{ peers|length }}</dd></div>
+    <div><dt>Port</dt><dd>UDP {{ listen_port }}</dd></div>
+  </dl>
+</div>
+
+<div class="card">
+  <h3>Settings</h3>
+  <form method="post" action="/vpn/settings">
+    <label><input type="checkbox" name="enabled" value="true" {{ "checked" if enabled else "" }} style="display:inline;width:auto;"> VPN on</label>
+    <label>Router's address in the tunnel</label>
+    <input type="text" name="address" value="{{ address }}" required>
+    <label>UDP port</label>
+    <input type="number" name="listen_port" value="{{ listen_port }}" min="1" max="65535" required>
+    <label>Address devices reach the router at (your public IP or a DNS name)</label>
+    <input type="text" name="endpoint" value="{{ endpoint }}" placeholder="vpn.example.net">
+    <button type="submit">Save settings</button>
+  </form>
+  <p class="muted" style="margin-top:0.8rem;">
+    Turning it on adds a <code>vpn</code> zone and rules that let the VPN reach the webUI, SSH and the LAN (if they
+    aren't there yet); change them on the <a href="/rules">Rules</a> screen. Click Apply on the dashboard to load it.
+  </p>
+  {% if router_key %}<p>Router's public key: <code>{{ router_key }}</code></p>{% endif %}
+</div>
+
+<div class="card">
+  <h3>Devices</h3>
+  {% if not peers %}
+  <p class="muted">No devices yet -- add one below.</p>
+  {% else %}
+  <table>
+    <tr><th>Name</th><th>Address</th><th>Public key</th><th>Last handshake</th><th></th></tr>
+    {% for p in peers %}
+    <tr>
+      <td>{{ p.name }}</td>
+      <td>{{ p.address }}</td>
+      <td><code>{{ p.public_key[:12] }}...</code></td>
+      <td>{% if p.handshake %}{{ p.handshake }}{% if p.endpoint_seen %} from {{ p.endpoint_seen }}{% endif %}{% else %}<span class="muted">never</span>{% endif %}</td>
+      <td>
+        <form class="inline" method="post" action="/vpn/peers/remove/{{ p.name }}" onsubmit="return confirm('Remove VPN device {{ p.name }}?')">
+          <button type="submit" class="danger">Remove</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+
+  <h3 style="margin-top:1.2rem;">Add a device</h3>
+  <form method="post" action="/vpn/peers/add">
+    <label>Name</label>
+    <input type="text" name="name" pattern="[A-Za-z0-9][A-Za-z0-9_.\-]{0,31}" required placeholder="phone">
+    <label>Its public key (leave empty to have the router make a key pair and show the device's configuration once)</label>
+    <input type="text" name="public_key" placeholder="optional">
+    <label><input type="checkbox" name="full_tunnel" value="true" style="display:inline;width:auto;"> Send all its traffic through the VPN (otherwise only the VPN and the LAN)</label>
+    <button type="submit">Add device</button>
+  </form>
+</div>
+{% endblock %}

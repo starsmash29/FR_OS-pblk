@@ -27,6 +27,7 @@ from frfw.config.schema import (
     Rule,
 )
 from frfw.nft.schedule import ScheduleClock, current_clock, segments
+from frfw.wireguard import IFACE as WIREGUARD_IFACE
 
 #: Single `inet` table holding both the filter and NAT chains. `inet`
 #: supports `type nat` chains (nftables >= 0.9.7), which lets NAT rules
@@ -195,6 +196,13 @@ def build_ruleset(config: Config, *, clock: ScheduleClock | None = None) -> str:
                 f"\t\tiifname @{_iface_set_name(zone)} tcp dport {{ {ports} }} drop "
                 f"{_comment(f'no-management-from-{zone}')}"
             )
+    if config.wireguard.enabled:
+        # From anywhere, the internet included: WireGuard answers nothing
+        # to a packet that isn't from a known key, so the port can't even
+        # be told apart from a closed one.
+        lines.append(
+            f"\t\tudp dport {config.wireguard.listen_port} accept {_comment('wireguard')}"
+        )
     if input_rules:
         lines.append("")
         lines.extend(f"\t\t{line}" for r in input_rules for line in _render_rule(r, clock))
@@ -248,6 +256,9 @@ def _zone_devices(config: Config) -> dict[str, list[str]]:
     zones: dict[str, list[str]] = {name: [] for name in config.zones}
     for iface in config.interfaces.values():
         zones[iface.zone].append(iface.device)
+    if config.wireguard.enabled:
+        # Security-lessons G8: the tunnel is an interface of its zone.
+        zones[config.wireguard.zone].append(WIREGUARD_IFACE)
     return zones
 
 
@@ -260,7 +271,8 @@ def _render_iface_set(zone: str, devices: list[str]) -> list[str]:
     return [
         f"\tset {_iface_set_name(zone)} {{",
         "\t\ttype ifname",
-        f"\t\telements = {{ {elements} }}",
+        # A zone kept for a tunnel that is off has no interface yet.
+        *([f"\t\telements = {{ {elements} }}"] if devices else []),
         "\t}",
     ]
 

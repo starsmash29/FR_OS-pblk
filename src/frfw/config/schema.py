@@ -483,6 +483,43 @@ class ManagementConfig:
 
 
 @dataclass(frozen=True)
+class WireguardPeer:
+    """One device allowed into the WireGuard VPN: its public key and its
+    address inside the tunnel (a /32 in `WireguardConfig.address`'s
+    subnet). The device's private key is never here -- it stays on the
+    device (or, when the webUI generates the pair, is shown once)."""
+
+    name: str
+    public_key: str
+    address: str
+
+
+@dataclass(frozen=True)
+class WireguardConfig:
+    """The WireGuard VPN (security-lessons G8/K5): remote access with
+    keys, not reusable passwords, and the safe way to manage the router
+    from outside instead of management.allow_wan.
+
+    The router's own private key is not in config.yaml either: it lives
+    in /etc/fr_os/wireguard/private.key (0600 root), generated on the
+    first apply that needs it (frfw.wireguard).
+
+    `address`: the router's address in the tunnel, with the tunnel's
+    prefix (e.g. "10.99.0.1/24"). `zone`: the zone the tunnel interface
+    (wg0) belongs to -- rules, NAT and management treat it like any other
+    zone; it must not face the internet. `endpoint`: the host name or
+    address clients reach the router at (only used to write their
+    configuration)."""
+
+    enabled: bool = False
+    listen_port: int = 51820
+    address: str = ""
+    zone: str = "vpn"
+    endpoint: str = ""
+    peers: list[WireguardPeer] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class Config:
     version: int
     hostname: str
@@ -502,6 +539,7 @@ class Config:
     tls_fingerprint: TlsFingerprintConfig = field(default_factory=TlsFingerprintConfig)
     metrics: MetricsConfig = field(default_factory=MetricsConfig)
     management: ManagementConfig = field(default_factory=ManagementConfig)
+    wireguard: WireguardConfig = field(default_factory=WireguardConfig)
     #: IANA time zone rule schedules are written in (phase 17); None =
     #: the router's own local zone.
     timezone: str | None = None

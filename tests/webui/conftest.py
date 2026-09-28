@@ -167,6 +167,12 @@ class FakeHelper:
     def listening_sockets(self) -> dict:
         return {"ok": True, "listeners": list(self.listeners), "addresses": dict(self.interface_addresses)}
 
+    #: What `wireguard_status` reports (security-lessons G8); tests set it.
+    wireguard: dict = {"public_key": "R" * 43 + "=", "up": False, "peers": {}}
+
+    def wireguard_status(self) -> dict:
+        return {"ok": True, **self.wireguard}
+
 
 class FakeUpdateHelper:
     """An in-memory stand-in for the real Unix-socket update-helper.

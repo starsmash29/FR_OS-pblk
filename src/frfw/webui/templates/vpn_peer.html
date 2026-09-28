@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}VPN device - FR_OS{% endblock %}
+{% block content %}
+<h1>VPN device "{{ name }}"</h1>
+<div class="flash-error">
+  This page is the only copy of the device's private key: the router doesn't keep it. Scan or copy it now; once you
+  leave, it is gone (add the device again to get a new one).
+</div>
+<div class="card">
+  <h3>Scan with the WireGuard app</h3>
+  <div style="background:#fff;display:inline-block;padding:8px;border-radius:6px;">{{ qr_svg|safe }}</div>
+  <h3 style="margin-top:1rem;">Or copy the configuration</h3>
+  <pre>{{ config_text }}</pre>
+  <p class="muted">Click Apply on the dashboard so the router accepts the new device.</p>
+  <p><a href="/vpn">Back to the VPN screen</a></p>
+</div>
+{% endblock %}

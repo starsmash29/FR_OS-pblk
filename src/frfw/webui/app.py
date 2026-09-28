@@ -45,6 +45,7 @@ from frfw.webui.routes import (
     system,
     tls,
     update,
+    vpn,
     xdp,
     ztna,
 )
@@ -132,6 +133,7 @@ def create_app(
     app.include_router(update.router)
     app.include_router(xdp.router)
     app.include_router(ztna.router)
+    app.include_router(vpn.router)
     app.include_router(system.router)
     app.include_router(surface.router)
     app.include_router(adblock.router)

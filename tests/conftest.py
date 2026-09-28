@@ -89,3 +89,21 @@ def _never_touch_the_hosts_ip_forwarding(tmp_path_factory, monkeypatch):
     switch = tmp_path_factory.mktemp("proc_sys") / "ip_forward"
     switch.write_text("0\n")
     monkeypatch.setattr(forwarding, "IP_FORWARD_PATH", switch)
+
+
+@pytest.fixture(autouse=True)
+def _never_touch_the_hosts_wireguard(tmp_path_factory, monkeypatch):
+    """An apply syncs the WireGuard tunnel (frfw.wireguard): in tests there
+    is no wg0 and nothing runs `ip`/`wg` on the machine, and the router's
+    key goes to a directory of its own. Tests of the real tunnel pass
+    their own runner."""
+    import subprocess
+
+    from frfw import paths, wireguard
+
+    def no_tunnel_here(argv, *, input=None, check=True):
+        return subprocess.CompletedProcess(argv, 1 if argv[:3] == ["ip", "link", "show"] else 0, "", "")
+
+    key_dir = tmp_path_factory.mktemp("etc_fr_os_wireguard")
+    monkeypatch.setattr(paths, "WIREGUARD_KEY_PATH", key_dir / "private.key")
+    monkeypatch.setattr(wireguard, "_run", no_tunnel_here)

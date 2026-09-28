@@ -65,6 +65,9 @@ else
     chmod 0640 "$CONFIG_PATH"
 fi
 
+echo "==> Loading the WireGuard module at boot (VPN, security-lessons G8)"
+echo wireguard > /etc/modules-load.d/fr_os-wireguard.conf
+
 echo "==> Installing systemd units"
 if [[ -d "$REPO_ROOT/systemd" ]]; then
     install -m 0644 "$REPO_ROOT/systemd/fr-accounts.service" "$SYSTEMD_DIR/"

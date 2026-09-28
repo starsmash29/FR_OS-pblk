@@ -61,6 +61,7 @@ from frfw import (
     paths,
     pqc,
     schedule_refresh,
+    wireguard,
     xdp,
     ztna,
 )
@@ -173,6 +174,11 @@ def apply_all(
 
     # Routing only once the forward chain is loaded (frfw.forwarding).
     messages.append(forwarding.enable(dry_run=dry_run))
+
+    # The VPN tunnel (security-lessons G8), also only behind the ruleset,
+    # and before the management sync below, which may listen on its
+    # address.
+    messages.append(wireguard.sync(config, dry_run=dry_run).message)
 
     # Addresses only after the ruleset is in: a device name in the config
     # that doesn't exist on this machine fails here, and must not leave

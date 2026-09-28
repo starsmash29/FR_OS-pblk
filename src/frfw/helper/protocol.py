@@ -64,6 +64,9 @@ from __future__ import annotations
 #: and the interfaces' addresses, for the webUI's attack-surface view.
 #: "audit_append" (security-lessons G9/E6) adds one entry to the root-owned
 #: audit log: the webUI can add to it, never rewrite or remove it.
+#: "wireguard_status" (security-lessons G8) reports the router's WireGuard
+#: public key -- its private key is root's -- and each peer's last
+#: handshake and traffic.
 COMMANDS = (
     "ping",
     "apply",
@@ -85,6 +88,7 @@ COMMANDS = (
     "iot_scan",
     "listening_sockets",
     "audit_append",
+    "wireguard_status",
 )
 
 #: Maximum accepted request/response line length, to bound memory use from
