@@ -43,12 +43,22 @@ interfaces:
     zone: wan            # required, a zone name declared under zones
     address: 10.0.0.1/24  # optional, IPv4 address with CIDR prefix; applied by frfw.ifaddr
     description: "..."   # optional, free text
+  iot:
+    device: eth1.30
+    zone: iot
+    address: 192.168.30.1/24
+    vlan: {parent: eth1, id: 30}  # optional: an 802.1Q VLAN, created by apply if missing
 ```
 
 `address` is the router's own static IPv4 address on that interface --
 applied via `ip addr replace` (`frfw.ifaddr`). Only required if the
 zone should get a DHCP pool (see `dhcp` below); leave it unset on an
 interface managed by a DHCP client (e.g. a typical WAN interface).
+
+`vlan` (security-lessons K4) makes the interface an 802.1Q VLAN of
+`parent` with the given `id` (1-4094). Apply creates it if missing and
+brings both up. The Segments screen uses this for the IoT and guest
+segments on the LAN port.
 
 ## `zones`
 

@@ -21,6 +21,7 @@ NAV = [
     ]),
     ("Network", [
         ("Interfaces", "/interfaces", "settings_ethernet", False),
+        ("Segments", "/segments", "lan", False),
         ("Rules", "/rules", "security", False),
         ("NAT", "/nat", "alt_route", False),
         ("DHCP", "/dhcp", "dynamic_form", False),

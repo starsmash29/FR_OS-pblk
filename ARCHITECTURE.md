@@ -750,6 +750,33 @@ root who rewrites `RECORD` too -- that needs a manifest signed with the
 release key -- and a development install (`pip install -e`) is reported
 as not verifiable, not as clean.
 
+### Segmentation by default (security-lessons K4)
+
+On a flat LAN, one hacked camera or a guest's infected laptop reaches
+every device. Two changes make segments the default path:
+
+- **New installs isolate IoT devices.** The first-boot config
+  (`frfw.skeleton`) turns IoT isolation (phase 14) on for the LAN with
+  `auto_isolate`. Devices classified as IoT reach the internet, but not
+  the rest of the LAN or the router's management. The IoT Devices
+  screen trusts one back with a click.
+- **The Segments screen** (`frfw.segments`) is offered right after
+  first-run setup, and stays in the sidebar. It adds an IoT segment
+  (VLAN 30, 192.168.30.0/24) and/or a guest segment (VLAN 40,
+  192.168.40.0/24) on the LAN port. Each gets:
+  - its own zone and DHCP;
+  - one rule to the internet and none towards the LAN or the router's
+    management;
+  - for IoT, isolation of the devices.
+  Adding them pins `management.zones` to the zones that manage the
+  router today, so a new segment never becomes a management zone. An
+  interface can now be a VLAN (`vlan: {parent, id}`), which apply
+  creates with `ip link add ... type vlan`. The access point or switch
+  tags the IoT and guest Wi-Fi or ports with those IDs.
+
+The QEMU boot test adds both segments through the webUI and applies them
+on Debian's kernel (the unit-test sandbox has no 802.1Q support).
+
 ### The rule check and temporary rules (security-lessons K2)
 
 Firewall rule sets grow by accretion. A rule opened "for a moment" stays

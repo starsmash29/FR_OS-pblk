@@ -146,4 +146,6 @@ def setup_submit(
     session_manager.revoke_user(username)  # the generated account's sessions end
     audit.append(audit_log_path, {"user": account.username, "client": client_ip(request),
                                   "event": f"first-run setup: renamed {username!r}"})
-    return issue_session(request, RedirectResponse("/", status_code=303), account, session_manager)
+    # Security-lessons K4: next, the offer to split IoT and guests off.
+    return issue_session(request, RedirectResponse("/segments?first_run=1", status_code=303), account,
+                         session_manager)

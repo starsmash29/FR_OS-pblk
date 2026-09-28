@@ -102,4 +102,9 @@ def build_skeleton_config(
     }
     if dhcp:
         config["dhcp"] = dhcp
+    # Security-lessons K4: IoT isolation on from the start. Devices the
+    # scanner classifies as IoT reach the internet but not the rest of
+    # the LAN or the router's management; the IoT Devices screen trusts
+    # one back with a click.
+    config["iot"] = {"enabled": True, "zones": ["lan"], "auto_isolate": True, "isolation_mode": "internet_only"}
     return yaml.safe_dump(config, sort_keys=False, default_flow_style=False)

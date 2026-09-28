@@ -41,6 +41,10 @@ class Interface:
     `DhcpPool`), since the pool's subnet and gateway are derived from it.
     Leave it unset for an interface whose address is managed elsewhere
     (e.g. a WAN interface using DHCP from the ISP).
+
+    `vlan_parent`/`vlan_id` (security-lessons K4) make it an 802.1Q VLAN
+    on another device -- an IoT or guest segment on the LAN port -- which
+    `frfw.ifaddr` creates if it doesn't exist yet.
     """
 
     name: str
@@ -48,6 +52,8 @@ class Interface:
     zone: str
     address: str | None = None
     description: str = ""
+    vlan_parent: str | None = None
+    vlan_id: int | None = None
 
 
 @dataclass(frozen=True)

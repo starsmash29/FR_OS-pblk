@@ -228,8 +228,23 @@ def _parse_interfaces(
             address = _validate_interface_address(address, f"Interface {name!r} address")
 
         description = body.get("description", "")
+        vlan_parent = vlan_id = None
+        vlan = body.get("vlan")
+        if vlan is not None:
+            if not isinstance(vlan, dict):
+                raise ConfigError(f"Interface {name!r}: vlan must be a mapping with parent and id")
+            vlan_parent, vlan_id = vlan.get("parent"), vlan.get("id")
+            try:
+                validate.ifname(vlan_parent)
+            except validate.ArgumentError as exc:
+                raise ConfigError(f"Interface {name!r} vlan.parent: {exc}") from exc
+            if not isinstance(vlan_id, int) or isinstance(vlan_id, bool) or not 1 <= vlan_id <= 4094:
+                raise ConfigError(f"Interface {name!r}: vlan.id must be 1-4094")
+            if vlan_parent == device:
+                raise ConfigError(f"Interface {name!r}: a VLAN can't be its own parent")
         interfaces[name] = Interface(
-            name=name, device=device, zone=zone, address=address, description=description
+            name=name, device=device, zone=zone, address=address, description=description,
+            vlan_parent=vlan_parent, vlan_id=vlan_id,
         )
 
     used_zones = {iface.zone for iface in interfaces.values()} | set(tunnel_zones)

@@ -183,7 +183,7 @@ def wait_for_webui(opener, timeout: float) -> str | None:
 
 
 def post(opener, path: str, fields: dict) -> str:
-    data = urllib.parse.urlencode(fields).encode()
+    data = urllib.parse.urlencode(fields, doseq=True).encode()
     with opener.open(f"https://127.0.0.1:{WEBUI_PORT}{path}", data=data, timeout=30) as resp:
         return resp.geturl()
 
@@ -260,19 +260,27 @@ def main() -> int:
     check(landed.endswith("/setup"), "the admin password from boot 2 still works, and leads to first-run setup")
     done = post(opener, "/setup", {"username": NEW_USERNAME, "password": NEW_PASSWORD,
                                    "password_confirm": NEW_PASSWORD}) if landed else ""
-    check(done.endswith("/"), f"setup renamed the account to {NEW_USERNAME!r} with a new password")
-    if done.endswith("/"):
+    set_up = done.endswith("/segments?first_run=1")  # then the segments offer (security-lessons K4)
+    check(set_up, f"setup renamed the account to {NEW_USERNAME!r} with a new password")
+    if set_up:
         post(opener, "/rules/timezone", {"timezone": "Europe/Budapest"})
         # Security-lessons G8: the WireGuard VPN on Debian's own kernel
         # module (the unit tests use the userspace implementation).
         post(opener, "/vpn/settings", {"enabled": "true", "address": "10.99.0.1/24", "listen_port": "51820",
                                        "endpoint": "vpn.example.net"})
+        # Security-lessons K4: the segments offered after setup, on real
+        # VLAN devices (802.1Q on the LAN port).
+        post(opener, "/segments", {"segment": ["iot", "guest"]})
         device_key = base64.b64encode(os.urandom(32)).decode()
         post(opener, "/vpn/peers/add", {"name": "laptop", "public_key": device_key})
         applied = urllib.parse.unquote_plus(post(opener, "/apply", {}))
         check("WireGuard up: wg0 10.99.0.1/24, UDP 51820, 1 peer(s)" in applied,
               "the VPN came up on the kernel's WireGuard (security-lessons G8)"
               + ("" if "WireGuard up" in applied else f": {applied[:300]}"))
+        check(re.search(r"\.30=192\.168\.30\.1/24", applied) is not None
+              and re.search(r"\.40=192\.168\.40\.1/24", applied) is not None,
+              "the IoT and guest segments came up on VLANs of the LAN port (security-lessons K4)"
+              + ("" if ".30=" in applied else f": {applied[:300]}"))
         listen = re.search(r"webUI restarting to listen on ([0-9., ]+)", applied)
         check(listen is not None and "10.99.0.1" in listen.group(1),
               "the webUI also listens on the VPN's tunnel address (security-lessons K5)")
