@@ -25,7 +25,7 @@ import pytest
 
 from frfw import iot_isolation as iso
 from frfw.config import parse_config
-from frfw.nft import build_ruleset
+from frfw.nft import RuntimeSets, build_ruleset
 
 requires_nft = pytest.mark.skipif(shutil.which("nft") is None, reason="nft binary not installed")
 requires_root = pytest.mark.skipif(os.geteuid() != 0, reason="nftables/netns access requires root")
@@ -82,11 +82,11 @@ def test_list_parses_plain_string_elements(monkeypatch):
     assert iso.list_isolated() == ["aa:bb:cc:dd:ee:01", "aa:bb:cc:dd:ee:02"]
 
 
-def test_snapshot_never_raises_and_restore_swallows_errors(monkeypatch):
+def test_snapshot_raises_on_unexpected_error(monkeypatch):
+    # Review FR-002: an unreadable set stops the apply instead of releasing everyone.
     monkeypatch.setattr(iso, "_run_nft", lambda args: _fake(1, stderr="weird failure"))
-    assert iso.snapshot_before_reload() == []
-    monkeypatch.setattr(iso.subprocess, "run", lambda *a, **kw: _fake(1, stderr="no set"))
-    iso.restore_after_reload(["aa:bb:cc:dd:ee:01"])  # must not raise
+    with pytest.raises(iso.IotIsolationError, match="weird failure"):
+        iso.snapshot_before_reload()
 
 
 # --- ruleset rendering ----------------------------------------------------------
@@ -118,9 +118,10 @@ def test_internet_only_mode_allows_masquerade_zones(minimal_config_dict):
     ruleset = build_ruleset(parse_config(_iot_raw(minimal_config_dict)))
     forward = ruleset.split("chain forward {")[1].split("chain output {")[0]
     lines = [l.strip() for l in forward.splitlines() if l.strip()]
-    assert lines[1] == 'ether saddr @iot_isolated oifname @wan_ifaces accept comment "iot-isolated-internet"'
-    assert lines[2] == 'ether saddr @iot_isolated drop comment "iot-isolated-forward"'
-    assert lines[3] == "ct state established,related accept"
+    assert lines[1] == 'ip saddr @ids_quarantine drop comment "ids-quarantine-forward"'
+    assert lines[2] == 'ether saddr @iot_isolated oifname @wan_ifaces accept comment "iot-isolated-internet"'
+    assert lines[3] == 'ether saddr @iot_isolated drop comment "iot-isolated-forward"'
+    assert lines[4] == "ct state established,related accept"
 
 
 def test_block_mode_has_no_internet_exception(minimal_config_dict):
@@ -164,13 +165,9 @@ def test_real_sync_replaces_membership_atomically(real_iot_table):
 
 @requires_nft
 @requires_root
-def test_real_snapshot_restore_round_trip(real_iot_table):
+def test_real_snapshot_reads_membership(real_iot_table):
     iso.sync_isolated(["aa:bb:cc:dd:ee:04"])
-    snap = iso.snapshot_before_reload()
-    subprocess.run(["nft", "flush", "set", "inet", real_iot_table, "iot_test"], check=True)
-    assert iso.list_isolated() == []
-    iso.restore_after_reload(snap)
-    assert iso.list_isolated() == ["aa:bb:cc:dd:ee:04"]
+    assert iso.snapshot_before_reload() == ["aa:bb:cc:dd:ee:04"]
 
 
 # --- real packets -----------------------------------------------------------------
@@ -306,15 +303,36 @@ def test_real_packets_block_mode_isolation_and_reload_survival(two_hosts):
     assert connect("10.78.2.10", 8080) == "FAIL"
     assert connect("10.78.1.1", 8081) == "FAIL"
 
-    # A full apply's `flush ruleset` empties the set; snapshot/restore is
-    # what keeps the device isolated across it.
-    snapshot = iso.snapshot_before_reload()
+    # A full apply's `flush ruleset` empties the set; carrying the members
+    # into the new ruleset (review FR-002) keeps the device isolated across
+    # it, in the same transaction.
     subprocess.run(["nft", "-f", "-"], input=build_ruleset(config), text=True, check=True)
     assert connect("10.78.2.10", 8080) == "OK"
-    iso.restore_after_reload(snapshot)
+    iso.sync_isolated([two_hosts["mac"]])
+    runtime = RuntimeSets(iot_isolated=tuple(iso.snapshot_before_reload()))
+    subprocess.run(["nft", "-f", "-"], input=build_ruleset(config, runtime=runtime), text=True, check=True)
     assert connect("10.78.2.10", 8080) == "FAIL"
 
     iso.sync_isolated([])
+    assert connect("10.78.2.10", 8080) == "OK"
+
+
+@requires_netns
+def test_real_packets_quarantine_cuts_forwarded_traffic(two_hosts):
+    """Review C-01 on the wire: an IDS-quarantined host can reach neither
+    the router nor anything through it, and is back once released."""
+    from frfw import ids_quarantine
+
+    subprocess.run(["nft", "-f", "-"], input=build_ruleset(_router_config("block")), text=True, check=True)
+    connect = two_hosts["connect"]
+    assert connect("10.78.2.10", 8080) == "OK"
+    assert connect("10.78.1.1", 8081) == "OK"
+
+    ids_quarantine.quarantine_ip("10.78.1.10", 60)
+    assert connect("10.78.2.10", 8080) == "FAIL"   # through the router
+    assert connect("10.78.1.1", 8081) == "FAIL"    # the router itself
+
+    subprocess.run(["nft", "flush", "set", "inet", "fr_os", "ids_quarantine"], check=True)
     assert connect("10.78.2.10", 8080) == "OK"
 
 

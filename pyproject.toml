@@ -11,6 +11,8 @@ requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
 dependencies = [
     "PyYAML>=6.0",
+    # WireGuard keys (frfw.wireguard), used by every apply.
+    "cryptography>=41",
 ]
 
 [project.optional-dependencies]
@@ -53,3 +55,6 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "reads_runtime_sets: the test reads the live nft runtime sets itself (see tests/conftest.py)",
+]

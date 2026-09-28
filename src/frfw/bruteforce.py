@@ -19,7 +19,7 @@ second of it elapsing, no code running).
 Every function here that touches the kernel requires root, for the same
 reason `frfw.ztna` documents in detail: even a read-only `nft list`
 needs CAP_NET_ADMIN. This module is a close structural mirror of
-`frfw.ztna` (same `_nft`/`_run_nft`/`_list_set_elements`/snapshot-restore
+`frfw.ztna` (same `_nft`/`_run_nft`/`_list_set_elements`/snapshot
 shape, against a different set) rather than sharing code with it --
 consistent with how `frfw.pqc`'s TLS and SSH halves, or `frfw.kea` and
 `frfw.xdp`'s subprocess-wrapping, also don't share a common base despite
@@ -34,9 +34,9 @@ IMPORTANT -- the same `flush ruleset` problem ZTNA has. Since
 constant's comment in frfw.nft.builder), *every* firewall apply -- not
 just ones enabling some optional feature -- would otherwise silently
 un-ban every currently-jailed IP the instant an admin saves any unrelated
-config change. `snapshot_before_reload()`/`restore_after_reload()` exist
-to prevent exactly that, called from `frfw.provision.apply_all` the same
-way as ZTNA's pair.
+config change. `snapshot_before_reload()` exists to prevent exactly
+that: `frfw.provision.apply_all` reads the live bans with it and the new
+ruleset carries them (frfw.nft.RuntimeSets), the same way as ZTNA's.
 """
 
 from __future__ import annotations
@@ -78,45 +78,22 @@ def ban_ip(ip: str, duration_seconds: int) -> None:
 def list_banned() -> list[tuple[str, int]]:
     """Live (ip, remaining_seconds) pairs for every currently jailed IP
     -- a status query, e.g. for the metrics exporter's
-    `fros_bruteforce_banned_ips` gauge (see frfw.metrics). Unlike
-    `snapshot_before_reload()` below, this does NOT swallow nft errors:
-    a status query should surface a genuine problem (e.g. `nft` itself
-    missing) rather than silently reporting zero banned IPs -- the same
-    distinction `frfw.ids_quarantine.list_quarantined()` makes."""
+    `fros_bruteforce_banned_ips` gauge (see frfw.metrics). Surfaces a
+    genuine nft problem rather than silently reporting zero banned IPs."""
     return _list_set_elements()
 
 
 def snapshot_before_reload() -> list[tuple[str, int]]:
-    """Best-effort (ip, remaining_seconds) pairs for every currently
-    jailed IP, to hand to `restore_after_reload()` after a full ruleset
-    reload wipes the set (see this module's docstring). Never raises --
-    mirrors `frfw.ztna.snapshot_before_reload`'s exact reasoning: a fresh
-    install, a temporarily missing `nft` binary, or any other failure
-    just means "nothing to preserve", never a reason to fail an
-    otherwise-valid firewall apply."""
-    try:
-        return _list_set_elements()
-    except BruteforceError:
-        return []
-
-
-def restore_after_reload(snapshot: list[tuple[str, int]]) -> None:
-    """Re-adds every (ip, remaining_seconds) pair from a prior
-    `snapshot_before_reload()` call, each with a fresh timeout set to its
-    captured remaining time. Best-effort per element, and never raises --
-    identical rationale to `frfw.ztna.restore_after_reload`."""
-    for ip, remaining in snapshot:
-        if remaining <= 0:
-            continue
-        try:
-            _nft(
-                [
-                    "add", "element", "inet", FILTER_TABLE, BRUTEFORCE_JAIL_SET_NAME,
-                    "{", f"{ip} timeout {remaining}s", "}",
-                ]
-            )
-        except BruteforceError:
-            continue
+    """Every currently jailed IP (ip, seconds left), read just
+    before a full ruleset reload: frfw.provision.apply_all passes them to
+    frfw.nft.build_ruleset, which writes them into the new ruleset's set
+    declaration, so they survive the reload in the same nft transaction
+    (review FR-002). A set or table that isn't loaded yet means nothing
+    to carry over; any other failure raises BruteforceError -- the apply then
+    stops before touching the running ruleset, rather than silently
+    releasing everyone.
+    """
+    return _list_set_elements()
 
 
 # --- kernel state (nft) -------------------------------------------------

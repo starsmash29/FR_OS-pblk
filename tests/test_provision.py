@@ -74,64 +74,6 @@ def _iot_config_dict(base: dict) -> dict:
     return cfg
 
 
-def test_apply_all_skips_iot_snapshot_restore_when_disabled(minimal_config_dict, tmp_path, monkeypatch):
-    calls = []
-    monkeypatch.setattr(iot_isolation_mod, "snapshot_before_reload", lambda: calls.append("snap") or [])
-    monkeypatch.setattr(iot_isolation_mod, "restore_after_reload", lambda s: calls.append("restore"))
-    apply_all(
-        parse_config(minimal_config_dict),
-        backup_dir=tmp_path / "backups",
-        kea_config_path=tmp_path / "kea.json",
-        xdp_state_path=tmp_path / "xdp_state.json",
-        pqc_conf_path=tmp_path / "pqc_openssl.cnf",
-        ssh_kex_dropin_path=tmp_path / "50-fr_os-pqc-kex.conf",
-        adblock_hosts_path=tmp_path / "adblock.hosts",
-        adblock_dnsmasq_conf_path=tmp_path / "dnsmasq_adblock.conf",
-    )
-    assert calls == []
-
-
-def test_apply_all_snapshots_and_restores_iot_isolation_when_enabled(
-    minimal_config_dict, tmp_path, monkeypatch
-):
-    restored = []
-    monkeypatch.setattr(
-        iot_isolation_mod, "snapshot_before_reload", lambda: ["aa:bb:cc:dd:ee:01", "aa:bb:cc:dd:ee:02"]
-    )
-    monkeypatch.setattr(iot_isolation_mod, "restore_after_reload", lambda s: restored.append(list(s)))
-    result = apply_all(
-        parse_config(_iot_config_dict(minimal_config_dict)),
-        backup_dir=tmp_path / "backups",
-        kea_config_path=tmp_path / "kea.json",
-        xdp_state_path=tmp_path / "xdp_state.json",
-        pqc_conf_path=tmp_path / "pqc_openssl.cnf",
-        ssh_kex_dropin_path=tmp_path / "50-fr_os-pqc-kex.conf",
-        adblock_hosts_path=tmp_path / "adblock.hosts",
-        adblock_dnsmasq_conf_path=tmp_path / "dnsmasq_adblock.conf",
-    )
-    assert restored == [["aa:bb:cc:dd:ee:01", "aa:bb:cc:dd:ee:02"]]
-    assert "IoT isolation: 2 isolated device(s) preserved across reload" in result.messages
-
-
-def test_apply_all_skips_iot_snapshot_restore_on_dry_run(minimal_config_dict, tmp_path, monkeypatch):
-    calls = []
-    monkeypatch.setattr(iot_isolation_mod, "snapshot_before_reload", lambda: calls.append("snap") or [])
-    monkeypatch.setattr(iot_isolation_mod, "restore_after_reload", lambda s: calls.append("restore"))
-    result = apply_all(
-        parse_config(_iot_config_dict(minimal_config_dict)),
-        dry_run=True,
-        backup_dir=tmp_path / "backups",
-        kea_config_path=tmp_path / "kea.json",
-        xdp_state_path=tmp_path / "xdp_state.json",
-        pqc_conf_path=tmp_path / "pqc_openssl.cnf",
-        ssh_kex_dropin_path=tmp_path / "50-fr_os-pqc-kex.conf",
-        adblock_hosts_path=tmp_path / "adblock.hosts",
-        adblock_dnsmasq_conf_path=tmp_path / "dnsmasq_adblock.conf",
-    )
-    assert calls == []
-    assert any("IoT isolation: would preserve" in m for m in result.messages)
-
-
 def test_apply_all_dry_run_touches_nothing(dhcp_config_dict, tmp_path, monkeypatch):
     monkeypatch.setattr("os.geteuid", lambda: 1000)  # not root -- dry-run must not care
     ip_calls = []
@@ -202,157 +144,6 @@ def test_apply_all_applies_addresses_and_dhcp_together(dhcp_config_dict, tmp_pat
     ]
     assert kea_path.exists()
     assert "Kea DHCP config applied" in result.messages[4]
-
-
-def test_apply_all_skips_bruteforce_snapshot_restore_on_dry_run(minimal_config_dict, tmp_path, monkeypatch):
-    calls = []
-    monkeypatch.setattr(bruteforce_mod, "snapshot_before_reload", lambda: calls.append("snapshot") or [])
-    monkeypatch.setattr(bruteforce_mod, "restore_after_reload", lambda snap: calls.append("restore"))
-
-    config = parse_config(minimal_config_dict)
-    result = apply_all(
-        config, dry_run=True, backup_dir=tmp_path / "backups", kea_config_path=tmp_path / "kea.json"
-    )
-
-    # Unlike ZTNA, the jail set is always declared, but a dry run reloads
-    # nothing, so there is still nothing to snapshot or restore.
-    assert calls == []
-    assert any("would preserve active bans" in m.lower() for m in result.messages)
-
-
-def test_apply_all_snapshots_and_restores_bruteforce_bans(minimal_config_dict, tmp_path, monkeypatch):
-    calls = []
-    fake_snapshot = [("10.0.0.9", 1200)]
-    monkeypatch.setattr(
-        bruteforce_mod, "snapshot_before_reload", lambda: calls.append("snapshot") or fake_snapshot
-    )
-    monkeypatch.setattr(
-        bruteforce_mod, "restore_after_reload", lambda snap: calls.append(("restore", snap))
-    )
-
-    config = parse_config(minimal_config_dict)
-    result = apply_all(config, backup_dir=tmp_path / "backups", kea_config_path=tmp_path / "kea.json")
-
-    assert calls == ["snapshot", ("restore", fake_snapshot)]
-    assert any("1 active ban(s) preserved" in m for m in result.messages)
-
-
-def test_apply_all_does_not_call_restore_when_nothing_was_banned(minimal_config_dict, tmp_path, monkeypatch):
-    calls = []
-    monkeypatch.setattr(bruteforce_mod, "snapshot_before_reload", lambda: calls.append("snapshot") or [])
-    monkeypatch.setattr(
-        bruteforce_mod, "restore_after_reload", lambda snap: calls.append("restore")
-    )
-
-    config = parse_config(minimal_config_dict)
-    result = apply_all(config, backup_dir=tmp_path / "backups", kea_config_path=tmp_path / "kea.json")
-
-    # No point calling nft to restore an empty set of bans.
-    assert calls == ["snapshot"]
-    assert any("0 active ban(s) preserved" in m for m in result.messages)
-
-
-def test_apply_all_skips_ids_quarantine_snapshot_restore_on_dry_run(minimal_config_dict, tmp_path, monkeypatch):
-    calls = []
-    monkeypatch.setattr(ids_quarantine_mod, "snapshot_before_reload", lambda: calls.append("snapshot") or [])
-    monkeypatch.setattr(ids_quarantine_mod, "restore_after_reload", lambda snap: calls.append("restore"))
-
-    config = parse_config(minimal_config_dict)
-    result = apply_all(
-        config, dry_run=True, backup_dir=tmp_path / "backups", kea_config_path=tmp_path / "kea.json"
-    )
-
-    # Like the brute-force jail, the quarantine set is always declared,
-    # but a dry run reloads nothing, so there is still nothing to
-    # snapshot or restore.
-    assert calls == []
-    assert any("would preserve active quarantines" in m.lower() for m in result.messages)
-
-
-def test_apply_all_snapshots_and_restores_ids_quarantines(minimal_config_dict, tmp_path, monkeypatch):
-    calls = []
-    fake_snapshot = [("10.0.0.9", 1200)]
-    monkeypatch.setattr(
-        ids_quarantine_mod, "snapshot_before_reload", lambda: calls.append("snapshot") or fake_snapshot
-    )
-    monkeypatch.setattr(
-        ids_quarantine_mod, "restore_after_reload", lambda snap: calls.append(("restore", snap))
-    )
-
-    config = parse_config(minimal_config_dict)
-    result = apply_all(config, backup_dir=tmp_path / "backups", kea_config_path=tmp_path / "kea.json")
-
-    assert calls == ["snapshot", ("restore", fake_snapshot)]
-    assert any("1 active quarantine(s) preserved" in m for m in result.messages)
-
-
-def test_apply_all_does_not_call_restore_when_nothing_was_quarantined(minimal_config_dict, tmp_path, monkeypatch):
-    calls = []
-    monkeypatch.setattr(ids_quarantine_mod, "snapshot_before_reload", lambda: calls.append("snapshot") or [])
-    monkeypatch.setattr(
-        ids_quarantine_mod, "restore_after_reload", lambda snap: calls.append("restore")
-    )
-
-    config = parse_config(minimal_config_dict)
-    result = apply_all(config, backup_dir=tmp_path / "backups", kea_config_path=tmp_path / "kea.json")
-
-    # No point calling nft to restore an empty set of quarantines.
-    assert calls == ["snapshot"]
-    assert any("0 active quarantine(s) preserved" in m for m in result.messages)
-
-
-def test_apply_all_skips_ztna_snapshot_restore_when_disabled(minimal_config_dict, tmp_path, monkeypatch):
-    calls = []
-    monkeypatch.setattr(ztna_mod, "snapshot_before_reload", lambda: calls.append("snapshot") or [])
-    monkeypatch.setattr(ztna_mod, "restore_after_reload", lambda snap: calls.append("restore"))
-
-    config = parse_config(minimal_config_dict)  # ztna disabled by default
-    apply_all(config, backup_dir=tmp_path / "backups", kea_config_path=tmp_path / "kea.json")
-
-    assert calls == []
-
-
-def test_apply_all_skips_ztna_snapshot_restore_on_dry_run(minimal_config_dict, tmp_path, monkeypatch):
-    calls = []
-    monkeypatch.setattr(ztna_mod, "snapshot_before_reload", lambda: calls.append("snapshot") or [])
-    monkeypatch.setattr(ztna_mod, "restore_after_reload", lambda snap: calls.append("restore"))
-
-    minimal_config_dict["ztna"] = {
-        "enabled": True,
-        "users": [{"username": "a", "password_hash": "x"}],
-    }
-    config = parse_config(minimal_config_dict)
-    result = apply_all(
-        config, dry_run=True, backup_dir=tmp_path / "backups", kea_config_path=tmp_path / "kea.json"
-    )
-
-    assert calls == []
-    assert any("would preserve" in m.lower() for m in result.messages)
-
-
-def test_apply_all_snapshots_and_restores_ztna_sessions_when_enabled(
-    minimal_config_dict, tmp_path, monkeypatch
-):
-    calls = []
-    fake_snapshot = [("10.0.0.5", 1800), ("10.0.0.6", 900)]
-    monkeypatch.setattr(
-        ztna_mod, "snapshot_before_reload", lambda: calls.append("snapshot") or fake_snapshot
-    )
-    monkeypatch.setattr(
-        ztna_mod, "restore_after_reload", lambda snap: calls.append(("restore", snap))
-    )
-
-    minimal_config_dict["ztna"] = {
-        "enabled": True,
-        "users": [{"username": "a", "password_hash": "x"}],
-    }
-    config = parse_config(minimal_config_dict)
-    result = apply_all(config, backup_dir=tmp_path / "backups", kea_config_path=tmp_path / "kea.json")
-
-    # snapshot must happen before the restore, and restore must receive
-    # exactly what the snapshot returned.
-    assert calls == ["snapshot", ("restore", fake_snapshot)]
-    assert any("2 active session(s) preserved" in m for m in result.messages)
 
 
 def test_apply_all_merges_adblock_critical_domains_into_xdp_blocklist_without_persisting(
@@ -517,3 +308,96 @@ def test_the_vpn_comes_up_only_behind_the_ruleset(minimal_config_dict, tmp_path,
         apply_all(parse_config(minimal_config_dict), backup_dir=tmp_path / "b", kea_config_path=tmp_path / "k.json",
                   xdp_state_path=tmp_path / "x.json")
     assert "wireguard" not in order
+
+
+# --- runtime sets across the reload (review FR-002) ---------------------------
+
+
+def _apply_kwargs(tmp_path):
+    return dict(
+        backup_dir=tmp_path / "backups",
+        kea_config_path=tmp_path / "kea.json",
+        xdp_state_path=tmp_path / "xdp_state.json",
+        pqc_conf_path=tmp_path / "pqc_openssl.cnf",
+        ssh_kex_dropin_path=tmp_path / "50-fr_os-pqc-kex.conf",
+        adblock_hosts_path=tmp_path / "adblock.hosts",
+        adblock_dnsmasq_conf_path=tmp_path / "dnsmasq_adblock.conf",
+    )
+
+
+@pytest.fixture
+def loaded_rulesets(monkeypatch):
+    """Every nft script the apply loads, and every other nft call."""
+    loaded, other = [], []
+
+    def run_nft(args, stdin):
+        (loaded.append(stdin) if args == ["-f", "-"] else other.append(args))
+
+    monkeypatch.setattr(apply_mod, "_run_nft", run_nft)
+    return loaded, other
+
+
+def _runtime_readers(monkeypatch, calls, **values):
+    for name, mod in (("bruteforce", bruteforce_mod), ("ids_quarantine", ids_quarantine_mod),
+                      ("ztna", ztna_mod), ("iot", iot_isolation_mod)):
+        monkeypatch.setattr(mod, "snapshot_before_reload",
+                            lambda name=name: calls.append(name) or list(values.get(name, [])))
+
+
+@pytest.mark.reads_runtime_sets
+def test_runtime_sets_come_back_in_the_same_ruleset(minimal_config_dict, tmp_path, monkeypatch, loaded_rulesets):
+    raw = _iot_config_dict(minimal_config_dict)
+    raw["ztna"] = {"enabled": True, "users": [{"username": "a", "password_hash": "x"}]}
+    calls = []
+    _runtime_readers(monkeypatch, calls, bruteforce=[("203.0.113.5", 300), ("203.0.113.6", 0)],
+                     ids_quarantine=[("10.0.0.9", 7000)], ztna=[("10.0.0.20", 100)],
+                     iot=["aa:bb:cc:dd:ee:01", "aa:bb:cc:dd:ee:02"])
+
+    result = apply_all(parse_config(raw), **_apply_kwargs(tmp_path))
+
+    loaded, other = loaded_rulesets
+    assert len(loaded) == 1 and loaded[0].startswith("flush ruleset")
+    ruleset = loaded[0]
+    assert "elements = { 203.0.113.5 timeout 300s }" in ruleset   # the expired ban is dropped
+    assert "elements = { 10.0.0.9 timeout 7000s }" in ruleset
+    assert "elements = { 10.0.0.20 timeout 100s }" in ruleset
+    assert "elements = { aa:bb:cc:dd:ee:01, aa:bb:cc:dd:ee:02 }" in ruleset
+    # Nothing is re-added after the load: there is no window, and no step to fail.
+    assert not [a for a in other if a[:2] == ["add", "element"]]
+    assert sorted(calls) == ["bruteforce", "ids_quarantine", "iot", "ztna"]
+    assert "Brute-force jail: 1 active ban(s) preserved across reload" in result.messages
+    assert "AI IDS quarantine: 1 active quarantine(s) preserved across reload" in result.messages
+    assert "ZTNA gate: 1 active session(s) preserved across reload" in result.messages
+    assert "IoT isolation: 2 isolated device(s) preserved across reload" in result.messages
+
+
+@pytest.mark.reads_runtime_sets
+def test_ztna_and_iot_sets_are_read_only_while_on(minimal_config_dict, tmp_path, monkeypatch, loaded_rulesets):
+    calls = []
+    _runtime_readers(monkeypatch, calls, ztna=[("10.0.0.20", 100)], iot=["aa:bb:cc:dd:ee:01"])
+    apply_all(parse_config(minimal_config_dict), **_apply_kwargs(tmp_path))
+    assert sorted(calls) == ["bruteforce", "ids_quarantine"]
+    assert "10.0.0.20" not in loaded_rulesets[0][0]
+
+
+@pytest.mark.reads_runtime_sets
+def test_dry_run_reads_no_runtime_sets(minimal_config_dict, tmp_path, monkeypatch):
+    calls = []
+    _runtime_readers(monkeypatch, calls)
+    result = apply_all(parse_config(_iot_config_dict(minimal_config_dict)), dry_run=True, **_apply_kwargs(tmp_path))
+    assert calls == []
+    assert any("Brute-force jail: would preserve" in m for m in result.messages)
+    assert any("IoT isolation: would preserve" in m for m in result.messages)
+
+
+@pytest.mark.reads_runtime_sets
+def test_an_unreadable_set_stops_the_apply_before_the_reload(minimal_config_dict, tmp_path, monkeypatch,
+                                                             loaded_rulesets):
+    # Review FR-002: reloading anyway would release every quarantined host.
+    def broken():
+        raise ids_quarantine_mod.IdsQuarantineError("netlink: Error: Could not process rule")
+
+    monkeypatch.setattr(ids_quarantine_mod, "snapshot_before_reload", broken)
+    with pytest.raises(apply_mod.NftError, match="could not read the AI IDS quarantine .* nothing was changed"):
+        apply_all(parse_config(minimal_config_dict), **_apply_kwargs(tmp_path))
+    assert loaded_rulesets[0] == []

@@ -14,9 +14,9 @@ filtered:
 1. nftables ruleset, backing up the previous one first (`frfw.apply`),
    with scheduled rules rendered for the current UTC offset and that
    offset recorded for the hourly DST check (`frfw.schedule_refresh`) --
-   bracketed by a brute-force jail snapshot/restore, an AI IDS
-   quarantine snapshot/restore, and a ZTNA session snapshot/restore (see
-   step 5's comment and `frfw.bruteforce`/`frfw.ids_quarantine`/
+   carrying the brute-force jail, the AI IDS quarantine, ZTNA sessions
+   and isolated IoT devices over the reload in the same transaction (see
+   the comment at the top of apply_all and `frfw.bruteforce`/`frfw.ids_quarantine`/
    `frfw.ztna`'s module docstrings for why)
 2. Interface static addresses (`frfw.ifaddr`) -- after the ruleset, so a
    device the config names but this machine lacks can't stop the
@@ -66,9 +66,9 @@ from frfw import (
     ztna,
 )
 from frfw.adblock import dns_service as adblock_dns
-from frfw.apply import apply_ruleset
+from frfw.apply import NftError, apply_ruleset
 from frfw.config.schema import Config
-from frfw.nft import build_ruleset
+from frfw.nft import RuntimeSets, build_ruleset
 from frfw.nft.schedule import current_clock
 from frfw.tlsfp import daemon as tlsfp_daemon
 
@@ -101,43 +101,23 @@ def apply_all(
     schedule_clock = (
         current_clock(config.timezone) if schedule_refresh.has_schedules(config) else None
     )
-    ruleset = build_ruleset(config, clock=schedule_clock)
-    # Step 2's `nft -f` reload does `flush ruleset` first (see
-    # frfw.nft.builder's docstring), which wipes both the brute-force
-    # jail and the ZTNA gate's authorized-clients set along with
-    # everything else -- snapshot each immediately before the reload and
-    # restore immediately after, so an unrelated firewall change (a new
-    # rule, a DHCP pool edit, ...) never silently un-bans an active
-    # attacker mid-attempt or logs every ZTNA session out. The jail
-    # snapshot/restore is unconditional (BRUTEFORCE_JAIL_SET_NAME is
-    # always declared, unlike ZTNA's set) except in a dry run, where
-    # nothing is actually reloaded so there is nothing to preserve.
-    preserve_bruteforce = not dry_run
-    bruteforce_snapshot = bruteforce.snapshot_before_reload() if preserve_bruteforce else []
-
-    # Same reasoning and same unconditional treatment as the brute-force
-    # jail immediately above: IDS_QUARANTINE_SET_NAME is always declared
-    # (see frfw.nft.builder), so it needs the same flush-survival
-    # bracketing regardless of whether config.ai_ids.enabled -- a
-    # quarantine already in effect must survive an unrelated config
-    # change even if AI IDS detection itself is later turned off (the
-    # enforcement set and the detection engine are independent: turning
-    # the daemon off should not silently amnesty already-quarantined
-    # hosts).
-    preserve_ids_quarantine = not dry_run
-    ids_quarantine_snapshot = (
-        ids_quarantine.snapshot_before_reload() if preserve_ids_quarantine else []
-    )
-
-    preserve_ztna = not dry_run and config.ztna.enabled
-    ztna_snapshot = ztna.snapshot_before_reload() if preserve_ztna else []
-
-    # IoT isolation (phase 14): only declared when iot.enabled, so only
-    # bracketed then -- same reasoning as ZTNA just above. Without this,
-    # every unrelated config save would silently release every isolated
-    # device until the next scan re-synced the set.
-    preserve_iot = not dry_run and config.iot.enabled
-    iot_snapshot = iot_isolation.snapshot_before_reload() if preserve_iot else []
+    # Step 1's `nft -f` reload does `flush ruleset` first (see
+    # frfw.nft.builder's docstring), which wipes the brute-force jail, the
+    # AI IDS quarantine, ZTNA sessions and isolated IoT devices along with
+    # everything else. Their live members are read here and written into
+    # the new ruleset itself (RuntimeSets), so they come back in the same
+    # nft transaction as the flush: an unrelated config change never
+    # un-bans an attacker, releases a quarantined host or logs a ZTNA
+    # session out, not even for a moment (review FR-002). A read that
+    # fails stops the apply before anything is reloaded -- the running
+    # ruleset keeps enforcing -- rather than silently releasing everyone.
+    # The jail and the quarantine are always declared (the detection
+    # engine and the enforcement set are independent: turning AI IDS off
+    # must not amnesty quarantined hosts); ZTNA and IoT isolation only
+    # while their feature is on. A dry run reloads nothing, so it reads
+    # nothing either.
+    runtime = RuntimeSets() if dry_run else _read_runtime_sets(config)
+    ruleset = build_ruleset(config, clock=schedule_clock, runtime=runtime)
 
     nft_result = apply_ruleset(ruleset, dry_run=dry_run, backup_dir=backup_dir)
     messages.append(nft_result.message)
@@ -152,25 +132,10 @@ def apply_all(
     elif not dry_run:
         schedule_refresh.clear_record(schedule_state_path)
 
-    bruteforce_preserved = 0
-    if preserve_bruteforce and bruteforce_snapshot:
-        bruteforce.restore_after_reload(bruteforce_snapshot)
-        bruteforce_preserved = len(bruteforce_snapshot)
-
-    ids_quarantine_preserved = 0
-    if preserve_ids_quarantine and ids_quarantine_snapshot:
-        ids_quarantine.restore_after_reload(ids_quarantine_snapshot)
-        ids_quarantine_preserved = len(ids_quarantine_snapshot)
-
-    ztna_preserved = 0
-    if preserve_ztna and ztna_snapshot:
-        ztna.restore_after_reload(ztna_snapshot)
-        ztna_preserved = len(ztna_snapshot)
-
-    iot_preserved = 0
-    if preserve_iot and iot_snapshot:
-        iot_isolation.restore_after_reload(iot_snapshot)
-        iot_preserved = len(iot_snapshot)
+    bruteforce_preserved = sum(1 for _, left in runtime.bruteforce_jail if left > 0)
+    ids_quarantine_preserved = sum(1 for _, left in runtime.ids_quarantine if left > 0)
+    ztna_preserved = sum(1 for _, left in runtime.ztna if left > 0) if config.ztna.enabled else 0
+    iot_preserved = len(runtime.iot_isolated) if config.iot.enabled else 0
 
     # Routing only once the forward chain is loaded (frfw.forwarding).
     messages.append(forwarding.enable(dry_run=dry_run))
@@ -275,3 +240,25 @@ def apply_all(
         messages.append("WARNING: " + management.WAN_WARNING)
 
     return ProvisionResult(messages=messages)
+
+
+def _read_runtime_sets(config: Config) -> RuntimeSets:
+    """The members to carry over the reload (see apply_all's step 1)."""
+    readers = [
+        ("the brute-force jail", bruteforce.snapshot_before_reload, bruteforce.BruteforceError, True),
+        ("the AI IDS quarantine", ids_quarantine.snapshot_before_reload, ids_quarantine.IdsQuarantineError, True),
+        ("ZTNA sessions", ztna.snapshot_before_reload, ztna.ZtnaError, config.ztna.enabled),
+        ("isolated IoT devices", iot_isolation.snapshot_before_reload, iot_isolation.IotIsolationError,
+         config.iot.enabled),
+    ]
+    found = []
+    for what, read, error, wanted in readers:
+        if not wanted:
+            found.append(())
+            continue
+        try:
+            found.append(tuple(read()))
+        except error as exc:
+            raise NftError(f"could not read {what} before reloading the firewall, so nothing was "
+                           f"changed (the running ruleset keeps enforcing): {exc}") from exc
+    return RuntimeSets(*found)

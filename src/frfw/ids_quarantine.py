@@ -1,12 +1,21 @@
 """Kernel-level IPS enforcement for the AI IDS engine (frfw.ai_ids):
 quarantines a source IP by adding it to the `ids_quarantine` nftables set
 (`frfw.nft.builder.IDS_QUARANTINE_SET_NAME`), which the generated
-ruleset's `chain input` drops unconditionally, near the very top --
-right after the brute-force jail's own drop rule, before any other rule.
+ruleset drops unconditionally in both `chain input` (near the very top,
+right after the brute-force jail's own drop rule) and `chain forward`
+(first): a quarantined host reaches neither the router nor anything
+through it (review C-01 -- it used to be the router only).
+
+`quarantine_ip` refuses addresses no detector should ever quarantine
+(loopback, unspecified, multicast, link-local, reserved, broadcast, and
+the router's own addresses, which the helper passes in) and caps the
+duration at MAX_DURATION_SECONDS: the command is open to the parser
+daemons, so a bug in one must not be able to lock the router out of
+itself for years (review C-04).
 
 This module is a deliberate close structural mirror of frfw.bruteforce
 (itself a mirror of frfw.ztna) rather than sharing code with either of
-them: same `_nft`/`_run_nft`/`_list_set_elements`/snapshot-restore shape,
+them: same `_nft`/`_run_nft`/`_list_set_elements`/snapshot shape,
 against a third, independent kernel set. See frfw.bruteforce's own
 docstring for why this project keeps doing this instead of factoring out
 a shared "banned-IP-set" base class -- a jail set of banned IPs, a set
@@ -38,9 +47,9 @@ jail have. Since IDS_QUARANTINE_SET_NAME is declared unconditionally
 apply -- not just ones enabling some optional feature -- would otherwise
 silently un-quarantine every currently-quarantined IP the instant an
 admin saves any unrelated config change.
-`snapshot_before_reload()`/`restore_after_reload()` exist to prevent
-exactly that, called from `frfw.provision.apply_all` the same way as the
-brute-force jail's and ZTNA's own pairs.
+`snapshot_before_reload()` exists to prevent exactly that: the live
+quarantines are carried into the new ruleset (frfw.nft.RuntimeSets) by
+`frfw.provision.apply_all`, like the brute-force jail's and ZTNA's.
 """
 
 from __future__ import annotations
@@ -58,18 +67,38 @@ class IdsQuarantineError(Exception):
     `nft` binary itself is unavailable."""
 
 
-def quarantine_ip(ip: str, duration_seconds: int) -> None:
+#: The longest quarantine a single request may ask for (7 days).
+MAX_DURATION_SECONDS = 7 * 24 * 3600
+
+
+def check_target(ip: str, own_addresses: frozenset[str] = frozenset()) -> ipaddress.IPv4Address:
+    """`ip` as an address that may be quarantined, or IdsQuarantineError."""
+    try:
+        addr = ipaddress.IPv4Address(ip)
+    except ValueError as exc:
+        raise IdsQuarantineError(f"invalid IPv4 address {ip!r}: {exc}") from exc
+    if (addr.is_loopback or addr.is_unspecified or addr.is_multicast or addr.is_link_local
+            or addr.is_reserved or addr == ipaddress.IPv4Address("255.255.255.255")):
+        raise IdsQuarantineError(f"refusing to quarantine {ip}: not a host address")
+    if str(addr) in own_addresses:
+        raise IdsQuarantineError(f"refusing to quarantine {ip}: it is one of the router's own addresses")
+    return addr
+
+
+def quarantine_ip(ip: str, duration_seconds: int, *, own_addresses: frozenset[str] = frozenset()) -> None:
     """Adds `ip` to the kernel's IDS quarantine set for
     `duration_seconds` -- the sole enforcement action. Requires root and
     the set to already exist (i.e. at least one firewall apply must have
     run since install, same precondition frfw.bruteforce.ban_ip has for
-    its own set)."""
-    try:
-        ipaddress.IPv4Address(ip)
-    except ValueError as exc:
-        raise IdsQuarantineError(f"invalid IPv4 address {ip!r}: {exc}") from exc
+    its own set). `own_addresses`: the router's addresses, never
+    quarantined (see this module's docstring)."""
+    check_target(ip, own_addresses)
     if duration_seconds <= 0:
         raise IdsQuarantineError(f"duration_seconds must be positive, got {duration_seconds}")
+    if duration_seconds > MAX_DURATION_SECONDS:
+        raise IdsQuarantineError(
+            f"duration_seconds may be at most {MAX_DURATION_SECONDS} (7 days), got {duration_seconds}"
+        )
 
     _nft(
         [
@@ -81,45 +110,23 @@ def quarantine_ip(ip: str, duration_seconds: int) -> None:
 
 def list_quarantined() -> list[tuple[str, int]]:
     """Live (ip, remaining_seconds) pairs for every currently quarantined
-    IP -- the webUI dashboard/AI IDS screen's status query. Unlike
-    `snapshot_before_reload()` below, this does NOT swallow nft errors:
-    a status query should surface a genuine problem (e.g. `nft` itself
-    missing) to the admin rather than silently reporting zero
+    IP -- the webUI dashboard/AI IDS screen's status query. Surfaces a
+    genuine nft problem to the admin rather than silently reporting zero
     quarantined hosts."""
     return _list_set_elements()
 
 
 def snapshot_before_reload() -> list[tuple[str, int]]:
-    """Best-effort (ip, remaining_seconds) pairs for every currently
-    quarantined IP, to hand to `restore_after_reload()` after a full
-    ruleset reload wipes the set (see this module's docstring). Never
-    raises -- mirrors `frfw.bruteforce.snapshot_before_reload`'s exact
-    reasoning: a fresh install, a temporarily missing `nft` binary, or
-    any other failure just means "nothing to preserve", never a reason
-    to fail an otherwise-valid firewall apply."""
-    try:
-        return _list_set_elements()
-    except IdsQuarantineError:
-        return []
-
-
-def restore_after_reload(snapshot: list[tuple[str, int]]) -> None:
-    """Re-adds every (ip, remaining_seconds) pair from a prior
-    `snapshot_before_reload()` call, each with a fresh timeout set to its
-    captured remaining time. Best-effort per element, and never raises --
-    identical rationale to `frfw.bruteforce.restore_after_reload`."""
-    for ip, remaining in snapshot:
-        if remaining <= 0:
-            continue
-        try:
-            _nft(
-                [
-                    "add", "element", "inet", FILTER_TABLE, IDS_QUARANTINE_SET_NAME,
-                    "{", f"{ip} timeout {remaining}s", "}",
-                ]
-            )
-        except IdsQuarantineError:
-            continue
+    """Every currently quarantined IP (ip, seconds left), read just
+    before a full ruleset reload: frfw.provision.apply_all passes them to
+    frfw.nft.build_ruleset, which writes them into the new ruleset's set
+    declaration, so they survive the reload in the same nft transaction
+    (review FR-002). A set or table that isn't loaded yet means nothing
+    to carry over; any other failure raises IdsQuarantineError -- the apply then
+    stops before touching the running ruleset, rather than silently
+    releasing everyone.
+    """
+    return _list_set_elements()
 
 
 # --- kernel state (nft) -------------------------------------------------

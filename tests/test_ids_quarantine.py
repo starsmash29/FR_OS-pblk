@@ -41,6 +41,27 @@ def test_quarantine_ip_rejects_non_positive_duration(monkeypatch):
         ids_quarantine_mod.quarantine_ip("10.0.0.5", 0)
 
 
+@pytest.mark.parametrize("ip", ["127.0.0.1", "127.1.2.3", "0.0.0.0", "224.0.0.1", "169.254.9.9",
+                                "240.0.0.1", "255.255.255.255"])
+def test_quarantine_ip_refuses_non_host_addresses(monkeypatch, ip):
+    monkeypatch.setattr(ids_quarantine_mod, "_run_nft", lambda args: pytest.fail("nft should not be invoked"))
+    with pytest.raises(ids_quarantine_mod.IdsQuarantineError, match="not a host address"):
+        ids_quarantine_mod.quarantine_ip(ip, 3600)
+
+
+def test_quarantine_ip_refuses_own_addresses(monkeypatch):
+    monkeypatch.setattr(ids_quarantine_mod, "_run_nft", lambda args: pytest.fail("nft should not be invoked"))
+    with pytest.raises(ids_quarantine_mod.IdsQuarantineError, match="router's own"):
+        ids_quarantine_mod.quarantine_ip("192.168.1.1", 3600, own_addresses=frozenset({"192.168.1.1"}))
+
+
+def test_quarantine_ip_caps_duration(monkeypatch):
+    monkeypatch.setattr(ids_quarantine_mod, "_run_nft", lambda args: _fake_completed())
+    ids_quarantine_mod.quarantine_ip("10.0.0.5", ids_quarantine_mod.MAX_DURATION_SECONDS)
+    with pytest.raises(ids_quarantine_mod.IdsQuarantineError, match="at most"):
+        ids_quarantine_mod.quarantine_ip("10.0.0.5", ids_quarantine_mod.MAX_DURATION_SECONDS + 1)
+
+
 def test_quarantine_ip_calls_nft_add_element_with_ttl(monkeypatch):
     calls = []
     monkeypatch.setattr(ids_quarantine_mod, "_run_nft", lambda args: (calls.append(args), _fake_completed())[1])
@@ -67,26 +88,11 @@ def test_snapshot_before_reload_returns_empty_when_set_missing(monkeypatch):
     assert ids_quarantine_mod.snapshot_before_reload() == []
 
 
-def test_snapshot_before_reload_never_raises_on_unexpected_error(monkeypatch):
+def test_snapshot_before_reload_raises_on_unexpected_error(monkeypatch):
     monkeypatch.setattr(ids_quarantine_mod, "_run_nft", lambda args: _fake_completed(1, stderr="some other error"))
-    assert ids_quarantine_mod.snapshot_before_reload() == []
-
-
-def test_restore_after_reload_skips_expired_and_continues_past_failures(monkeypatch):
-    calls = []
-
-    def fake_run_nft(args):
-        calls.append(args)
-        if "1.2.3.4" in " ".join(args):
-            return _fake_completed(1, stderr="no such set")
-        return _fake_completed()
-
-    monkeypatch.setattr(ids_quarantine_mod, "_run_nft", fake_run_nft)
-
-    ids_quarantine_mod.restore_after_reload([("10.0.0.1", 0), ("1.2.3.4", 100), ("10.0.0.2", 50)])
-
-    assert len(calls) == 2  # the expired one never even calls nft
-    assert any("10.0.0.2 timeout 50s" in " ".join(c) for c in calls)
+    # Review FR-002: an unreadable set stops the apply instead of releasing everyone.
+    with pytest.raises(ids_quarantine_mod.IdsQuarantineError, match="some other error"):
+        ids_quarantine_mod.snapshot_before_reload()
 
 
 # --- real integration tests: actual kernel nftables state -------------------
@@ -134,23 +140,10 @@ def test_real_kernel_evicts_expired_ban_on_its_own(real_jail_table):
 
 @requires_nft
 @requires_root
-def test_real_snapshot_and_restore_preserves_remaining_time(real_jail_table):
+def test_real_snapshot_reads_remaining_time(real_jail_table):
     ids_quarantine_mod.quarantine_ip("10.98.0.3", 3600)
-
-    snapshot = ids_quarantine_mod.snapshot_before_reload()
-    assert any(ip == "10.98.0.3" for ip, _ in snapshot)
-
-    # Simulate the ruleset reload wiping the set (frfw.nft.builder's
-    # `flush ruleset` would do this to the *whole* kernel state; flushing
-    # just our test set's contents is the equivalent for this test).
-    subprocess.run(["nft", "flush", "set", "inet", real_jail_table, "quarantine_test"], check=True)
-    assert ids_quarantine_mod.snapshot_before_reload() == []
-
-    ids_quarantine_mod.restore_after_reload(snapshot)
-
-    restored = ids_quarantine_mod.snapshot_before_reload()
-    matches = [remaining for ip, remaining in restored if ip == "10.98.0.3"]
-    assert matches and matches[0] > 0
+    matches = [left for ip, left in ids_quarantine_mod.snapshot_before_reload() if ip == "10.98.0.3"]
+    assert matches and 3500 < matches[0] <= 3600
 
 
 @requires_nft

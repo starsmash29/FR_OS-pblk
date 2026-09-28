@@ -615,6 +615,11 @@ def _parse_dhcp_reservations(
     return reservations
 
 
+#: Mirrors frfw.ids_quarantine.MAX_DURATION_SECONDS (not imported: the
+#: loader stays free of the kernel-facing modules).
+_MAX_QUARANTINE_SECONDS = 7 * 24 * 3600
+
+
 def _parse_ai_ids(raw: Any) -> AiIdsConfig:
     if not isinstance(raw, dict):
         raise ConfigError("'ai_ids' must be a mapping")
@@ -639,6 +644,11 @@ def _parse_ai_ids(raw: Any) -> AiIdsConfig:
         or quarantine_duration_seconds <= 0
     ):
         raise ConfigError("ai_ids.quarantine_duration_seconds must be a positive integer")
+    if quarantine_duration_seconds > _MAX_QUARANTINE_SECONDS:
+        # The apply-helper refuses longer ones (frfw.ids_quarantine).
+        raise ConfigError(
+            f"ai_ids.quarantine_duration_seconds may be at most {_MAX_QUARANTINE_SECONDS} (7 days)"
+        )
 
     return AiIdsConfig(
         enabled=enabled,

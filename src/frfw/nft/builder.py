@@ -9,14 +9,20 @@ to coexist with hand-written nftables rules outside of frfw. See
 `ZTNA_SET_NAME`'s and `IOT_ISOLATED_SET_NAME`'s own comments below for
 the four deliberate exceptions to "fully reproducible from YAML alone":
 each set holds runtime state by design (banned IPs; IDS-quarantined IPs;
-authorized ZTNA clients; isolated IoT MACs), and surviving a `flush
-ruleset` for each is handled one layer up, in `frfw.provision.apply_all`,
-not here.
+authorized ZTNA clients; isolated IoT MACs). `frfw.provision.apply_all`
+reads their live members before a reload and passes them in as
+`RuntimeSets`; they are written into the set declarations of the same
+script, so the flush and their return are one nft transaction -- there
+is no moment in which a banned or quarantined host is let through, and
+no separate restore step that could fail on its own (review FR-002).
 """
 
 from __future__ import annotations
 
+import ipaddress
+import re
 import time
+from dataclasses import dataclass
 
 from frfw import management
 from frfw.config.schema import (
@@ -56,9 +62,8 @@ FILTER_TABLE = "fr_os"
 #: path, which is what `dynamic` is actually for).
 #:
 #: Same `flush ruleset` survival problem as ZTNA_SET_NAME (see that
-#: constant's comment below for the full explanation) -- handled the
-#: same way, one layer up in frfw.provision.apply_all, via
-#: frfw.bruteforce.snapshot_before_reload/restore_after_reload.
+#: constant's comment below) -- its live bans are carried into the new
+#: ruleset (RuntimeSets, from frfw.bruteforce.snapshot_before_reload).
 BRUTEFORCE_JAIL_SET_NAME = "bruteforce_jail"
 
 #: AI IDS/IPS quarantine set (phase 11, see frfw.ids_quarantine and
@@ -73,8 +78,8 @@ BRUTEFORCE_JAIL_SET_NAME = "bruteforce_jail"
 #: same reason (every element is added by an explicit `nft add element`
 #: call from frfw.ids_quarantine.quarantine_ip, never by a data-path rule
 #: needing `dynamic`), and it has the same `flush ruleset` survival
-#: problem, handled the same way in frfw.provision.apply_all via
-#: frfw.ids_quarantine.snapshot_before_reload/restore_after_reload.
+#: problem, handled the same way (RuntimeSets, from
+#: frfw.ids_quarantine.snapshot_before_reload).
 IDS_QUARANTINE_SET_NAME = "ids_quarantine"
 
 #: The ZTNA gate's kernel-resident set of currently-authorized source
@@ -91,12 +96,10 @@ IDS_QUARANTINE_SET_NAME = "ids_quarantine"
 #: fine (a config's rules/sets are supposed to be fully reproducible from
 #: the YAML alone) but would silently and abruptly log out every active
 #: ZTNA session on the next unrelated firewall change -- so
-#: frfw.provision.apply_all specifically snapshots this set's contents
-#: (frfw.ztna.snapshot_before_reload) before calling apply_ruleset and
-#: restores them (frfw.ztna.restore_after_reload) immediately after, each
-#: with a fresh timeout equal to its previously-remaining time. See that
-#: module's docstring for the full reasoning; this comment exists so
-#: nobody "cleans up" that snapshot/restore call thinking it's dead code.
+#: frfw.provision.apply_all reads this set's contents
+#: (frfw.ztna.snapshot_before_reload) before the reload and passes them
+#: in as RuntimeSets; each comes back in the same nft transaction with
+#: its remaining time as its timeout.
 ZTNA_SET_NAME = "authenticated_ztna_users"
 
 #: IoT isolation set (phase 14, see frfw.iot_isolation and frfw.iot):
@@ -106,10 +109,10 @@ ZTNA_SET_NAME = "authenticated_ztna_users"
 #: work in an `inet` table's input and forward hooks, and it matches IPv4
 #: and IPv6 traffic alike since it never looks at the IP header. Rendered
 #: only when `config.iot.enabled`, like ZTNA_SET_NAME, and with the same
-#: `flush ruleset` survival problem, handled the same way in
-#: frfw.provision.apply_all via frfw.iot_isolation's snapshot/restore
-#: pair. No `flags timeout`: membership is recomputed wholesale on every
-#: scan (frfw.iot_isolation.sync_isolated), not aged out.
+#: `flush ruleset` survival problem, handled the same way (RuntimeSets,
+#: from frfw.iot_isolation.snapshot_before_reload). No `flags timeout`:
+#: membership is recomputed wholesale on every scan
+#: (frfw.iot_isolation.sync_isolated), not aged out.
 IOT_ISOLATED_SET_NAME = "iot_isolated"
 
 #: Fixed local UDP port the IoT scanner (frfw.iot.mdns) sends its mDNS
@@ -123,12 +126,27 @@ IOT_ISOLATED_SET_NAME = "iot_isolated"
 IOT_MDNS_REPLY_PORT = 53530
 
 
-def build_ruleset(config: Config, *, clock: ScheduleClock | None = None, now: float | None = None) -> str:
+@dataclass(frozen=True)
+class RuntimeSets:
+    """The runtime members to carry into a new ruleset: (ip, seconds
+    left) for the timed sets, MACs for IoT isolation."""
+
+    bruteforce_jail: tuple[tuple[str, int], ...] = ()
+    ids_quarantine: tuple[tuple[str, int], ...] = ()
+    ztna: tuple[tuple[str, int], ...] = ()
+    iot_isolated: tuple[str, ...] = ()
+
+
+def build_ruleset(config: Config, *, clock: ScheduleClock | None = None, now: float | None = None,
+                  runtime: RuntimeSets | None = None) -> str:
     """Render `config` as one nft script. `clock` only matters for rules
     with a `schedule` (phase 17): it defaults to the current offset of
     `config.timezone` and the kernel's zone, see frfw.nft.schedule --
     tests pass a fixed one. The result must be loaded with TZ=UTC
-    (frfw.apply does), since scheduled rules carry UTC hours."""
+    (frfw.apply does), since scheduled rules carry UTC hours. `runtime`:
+    set members to keep across the reload (see this module's docstring);
+    ZTNA sessions and isolated devices only while their feature is on."""
+    runtime = runtime or RuntimeSets()
     if clock is None and any(r.schedule is not None for r in config.rules):
         clock = current_clock(config.timezone)
     zone_devices = _zone_devices(config)
@@ -138,18 +156,18 @@ def build_ruleset(config: Config, *, clock: ScheduleClock | None = None, now: fl
         lines.extend(_render_iface_set(zone, zone_devices[zone]))
 
     lines.append("")
-    lines.extend(_render_bruteforce_jail_set())
+    lines.extend(_render_bruteforce_jail_set(runtime.bruteforce_jail))
 
     lines.append("")
-    lines.extend(_render_ids_quarantine_set())
+    lines.extend(_render_ids_quarantine_set(runtime.ids_quarantine))
 
     if config.ztna.enabled:
         lines.append("")
-        lines.extend(_render_ztna_set(config))
+        lines.extend(_render_ztna_set(config, runtime.ztna))
 
     if config.iot.enabled:
         lines.append("")
-        lines.extend(_render_iot_isolated_set())
+        lines.extend(_render_iot_isolated_set(runtime.iot_isolated))
 
     def _cuts(rule: Rule) -> bool:
         return rule.schedule is not None and rule.schedule.cut_established
@@ -217,6 +235,12 @@ def build_ruleset(config: Config, *, clock: ScheduleClock | None = None, now: fl
     lines.append("\tchain forward {")
     lines.append("\t\ttype filter hook forward priority filter; policy drop;")
     lines.append("")
+    # A quarantined host is cut off from everything it would reach
+    # *through* the router too (the internet, other zones), not only from
+    # the router itself -- and ahead of the established accept, so its
+    # open sessions end at once. Its peers' packets to it may still pass,
+    # but nothing it sends back does.
+    lines.append(f"\t\t{_render_ids_quarantine_forward_rule()}")
     if config.iot.enabled:
         # Same "before established" placement as the input chain above,
         # and before every config-derived rule: an admin rule can't
@@ -304,16 +328,24 @@ def _render_iface_set(zone: str, devices: list[str]) -> list[str]:
     ]
 
 
-def _render_bruteforce_jail_set() -> list[str]:
-    # No `elements = {...}` and no set-level default `timeout` line:
-    # every element frfw.bruteforce.ban_ip adds carries its own explicit
-    # `timeout <n>s`, since the ban duration is a per-call parameter
-    # (from the socket request), not a single fixed value worth baking
-    # into the set declaration the way ZTNA's session_ttl_seconds is.
+def _timed_elements(members: tuple[tuple[str, int], ...]) -> list[str]:
+    """`elements = { ip timeout Ns, ... }` for the members still live;
+    each address is re-validated (it comes from `nft -j` output)."""
+    items = [f"{ipaddress.IPv4Address(ip)} timeout {int(left)}s" for ip, left in members if int(left) > 0]
+    return [f"\t\telements = {{ {', '.join(items)} }}"] if items else []
+
+
+def _render_bruteforce_jail_set(members: tuple[tuple[str, int], ...] = ()) -> list[str]:
+    # No set-level default `timeout` line: every element frfw.bruteforce.
+    # ban_ip adds carries its own explicit `timeout <n>s`, since the ban
+    # duration is a per-call parameter (from the socket request), not a
+    # single fixed value worth baking into the set declaration the way
+    # ZTNA's session_ttl_seconds is. `members`: bans carried over a reload.
     return [
         f"\tset {BRUTEFORCE_JAIL_SET_NAME} {{",
         "\t\ttype ipv4_addr",
         "\t\tflags timeout",
+        *_timed_elements(members),
         "\t}",
     ]
 
@@ -322,14 +354,15 @@ def _render_bruteforce_drop_rule() -> str:
     return f"ip saddr @{BRUTEFORCE_JAIL_SET_NAME} drop {_comment('bruteforce-jail')}"
 
 
-def _render_ids_quarantine_set() -> list[str]:
+def _render_ids_quarantine_set(members: tuple[tuple[str, int], ...] = ()) -> list[str]:
     # Same shape as _render_bruteforce_jail_set() and the same reasoning
-    # for no `elements = {...}`/set-level `timeout` line -- see
-    # IDS_QUARANTINE_SET_NAME's own comment above.
+    # for no set-level `timeout` line -- see IDS_QUARANTINE_SET_NAME's
+    # own comment above.
     return [
         f"\tset {IDS_QUARANTINE_SET_NAME} {{",
         "\t\ttype ipv4_addr",
         "\t\tflags timeout",
+        *_timed_elements(members),
         "\t}",
     ]
 
@@ -338,29 +371,36 @@ def _render_ids_quarantine_drop_rule() -> str:
     return f"ip saddr @{IDS_QUARANTINE_SET_NAME} drop {_comment('ids-quarantine')}"
 
 
-def _render_ztna_set(config: Config) -> list[str]:
-    # No `elements = {...}` line, unlike _render_iface_set: this set's
-    # membership is 100% runtime state (added by frfw.ztna.authorize_ip
-    # via the privileged helper after a successful ZTNA login), never
-    # config-derived -- an empty set here is the correct starting state
-    # every time the ruleset is (re)loaded, restored from a pre-reload
-    # snapshot immediately afterward when there's anything to restore
-    # (see this module's ZTNA_SET_NAME comment).
+def _render_ids_quarantine_forward_rule() -> str:
+    return f"ip saddr @{IDS_QUARANTINE_SET_NAME} drop {_comment('ids-quarantine-forward')}"
+
+
+def _render_ztna_set(config: Config, members: tuple[tuple[str, int], ...] = ()) -> list[str]:
+    # This set's membership is 100% runtime state (added by frfw.ztna.
+    # authorize_ip via the privileged helper after a successful ZTNA
+    # login), never config-derived: its only elements are the sessions
+    # carried over a reload (see this module's ZTNA_SET_NAME comment).
     return [
         f"\tset {ZTNA_SET_NAME} {{",
         "\t\ttype ipv4_addr",
         "\t\tflags dynamic,timeout",
         f"\t\ttimeout {config.ztna.session_ttl_seconds}s",
+        *_timed_elements(members),
         "\t}",
     ]
 
 
-def _render_iot_isolated_set() -> list[str]:
+def _render_iot_isolated_set(members: tuple[str, ...] = ()) -> list[str]:
+    macs = [m for m in members if _MAC_RE.fullmatch(m)]
     return [
         f"\tset {IOT_ISOLATED_SET_NAME} {{",
         "\t\ttype ether_addr",
+        *([f"\t\telements = {{ {', '.join(macs)} }}"] if macs else []),
         "\t}",
     ]
+
+
+_MAC_RE = re.compile(r"[0-9a-f]{2}(:[0-9a-f]{2}){5}")
 
 
 def _render_iot_input_rules(config: Config) -> list[str]:

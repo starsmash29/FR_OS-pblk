@@ -111,7 +111,7 @@ def _handle_request(request: dict, server: "ApplyHelperServer") -> dict:
             return _handle_ban_ip(request)
 
         if cmd == "quarantine_ip":
-            return _handle_quarantine_ip(request)
+            return _handle_quarantine_ip(request, server)
 
         if cmd == "ids_quarantine_status":
             return _handle_ids_quarantine_status()
@@ -238,7 +238,21 @@ def _handle_ban_ip(request: dict) -> dict:
     return {"ok": True, "message": f"{ip} jailed for {duration_seconds}s"}
 
 
-def _handle_quarantine_ip(request: dict) -> dict:
+def _router_addresses(server: "ApplyHelperServer") -> frozenset[str]:
+    """The router's own IPv4 addresses per the saved config (never
+    quarantined). An unreadable config gives none: loopback and the other
+    non-host addresses are still refused by ids_quarantine itself."""
+    try:
+        config = load_config(server.config_path)
+    except (ConfigError, OSError, yaml.YAMLError):
+        return frozenset()
+    own = {str(ipaddress.IPv4Interface(i.address).ip) for i in config.interfaces.values() if i.address}
+    if config.wireguard.enabled and config.wireguard.address:
+        own.add(str(ipaddress.IPv4Interface(config.wireguard.address).ip))
+    return frozenset(own)
+
+
+def _handle_quarantine_ip(request: dict, server: "ApplyHelperServer") -> dict:
     ip = request.get("ip")
     duration_seconds = request.get("duration_seconds", 7200)
     if not isinstance(ip, str) or not ip:
@@ -246,7 +260,7 @@ def _handle_quarantine_ip(request: dict) -> dict:
     if not isinstance(duration_seconds, int) or isinstance(duration_seconds, bool):
         return {"ok": False, "message": "'duration_seconds' must be an integer"}
 
-    ids_quarantine.quarantine_ip(ip, duration_seconds)
+    ids_quarantine.quarantine_ip(ip, duration_seconds, own_addresses=_router_addresses(server))
     return {"ok": True, "message": f"{ip} quarantined for {duration_seconds}s"}
 
 

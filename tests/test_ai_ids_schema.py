@@ -34,6 +34,8 @@ def test_ai_ids_round_trips(minimal_config_dict):
         (lambda d: d["ai_ids"].update(quarantine_duration_seconds=-1), "positive integer"),
         (lambda d: d["ai_ids"].update(quarantine_duration_seconds=True), "positive integer"),
         (lambda d: d["ai_ids"].update(quarantine_duration_seconds="3600"), "positive integer"),
+        # Review C-04: the apply-helper refuses longer quarantines.
+        (lambda d: d["ai_ids"].update(quarantine_duration_seconds=7 * 24 * 3600 + 1), "at most"),
         (lambda d: d.update(ai_ids="not-a-mapping"), "must be a mapping"),
     ],
 )

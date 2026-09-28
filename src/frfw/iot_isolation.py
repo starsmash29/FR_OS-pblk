@@ -4,7 +4,7 @@ keeps the `iot_isolated` nftables set
 addresses the IoT scanner decided to isolate.
 
 A deliberate structural mirror of frfw.ids_quarantine / frfw.bruteforce /
-frfw.ztna (same `_run_nft`/`_list_set_elements`/snapshot-restore shape,
+frfw.ztna (same `_run_nft`/`_list_set_elements`/snapshot shape,
 see frfw.bruteforce's docstring for why this project keeps these
 separate instead of sharing a base class), with two real differences:
 
@@ -85,25 +85,16 @@ def list_isolated() -> list[str]:
 
 
 def snapshot_before_reload() -> list[str]:
-    """Best-effort current membership, never raises (a missing set or
-    `nft` binary just means nothing to preserve)."""
-    try:
-        return _list_set_elements()
-    except IotIsolationError:
-        return []
-
-
-def restore_after_reload(snapshot: list[str]) -> None:
-    """Re-add a prior snapshot after a full ruleset reload recreated the
-    set empty. Best-effort, never raises -- a failure here must not turn
-    an otherwise-successful apply into an error; the next scan re-syncs
-    the set anyway."""
-    if not snapshot:
-        return
-    try:
-        sync_isolated(snapshot)
-    except IotIsolationError:
-        pass
+    """Every currently isolated device's MAC (the MACs), read just
+    before a full ruleset reload: frfw.provision.apply_all passes them to
+    frfw.nft.build_ruleset, which writes them into the new ruleset's set
+    declaration, so they survive the reload in the same nft transaction
+    (review FR-002). A set or table that isn't loaded yet means nothing
+    to carry over; any other failure raises IotIsolationError -- the apply then
+    stops before touching the running ruleset, rather than silently
+    releasing everyone.
+    """
+    return _list_set_elements()
 
 
 # --- kernel state (nft) -------------------------------------------------

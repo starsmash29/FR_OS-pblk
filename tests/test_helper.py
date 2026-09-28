@@ -14,6 +14,7 @@ import threading
 from pathlib import Path
 
 import pytest
+import yaml
 
 from frfw import adblock as adblock_mod
 from frfw import apply as apply_mod
@@ -362,6 +363,34 @@ def test_quarantine_ip_success_calls_nft_add_element(running_server):
 def test_quarantine_ip_defaults_to_two_hours(running_server):
     response = client.send_command({"cmd": "quarantine_ip", "ip": "10.0.0.10"}, running_server)
     assert response == {"ok": True, "message": "10.0.0.10 quarantined for 7200s"}
+
+
+def test_quarantine_ip_refuses_the_routers_own_address(running_server, tmp_path):
+    # Review C-04: the parser daemons may send quarantine_ip, so a bug in
+    # one must not be able to cut the router off from its own address.
+    config_path = tmp_path / "config.yaml"
+    raw = yaml.safe_load(config_path.read_text())
+    iface = next(iter(raw["interfaces"].values()))
+    iface["address"] = "10.0.0.1/24"
+    config_path.write_text(yaml.safe_dump(raw))
+
+    response = client.quarantine_ip("10.0.0.1", 7200, running_server)
+    assert response["ok"] is False
+    assert "router's own addresses" in response["message"]
+    assert client.quarantine_ip("10.0.0.2", 7200, running_server)["ok"] is True
+
+
+@pytest.mark.parametrize("ip", ["127.0.0.1", "0.0.0.0", "224.0.0.251", "169.254.1.1", "255.255.255.255"])
+def test_quarantine_ip_refuses_non_host_addresses(running_server, ip):
+    response = client.quarantine_ip(ip, 7200, running_server)
+    assert response["ok"] is False
+    assert "not a host address" in response["message"]
+
+
+def test_quarantine_ip_caps_the_duration(running_server):
+    response = client.quarantine_ip("10.0.0.9", 10 * 365 * 24 * 3600, running_server)
+    assert response["ok"] is False
+    assert "at most" in response["message"]
 
 
 def test_ids_quarantine_status_empty_when_nothing_quarantined(running_server):

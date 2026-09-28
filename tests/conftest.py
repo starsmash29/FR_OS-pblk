@@ -115,3 +115,17 @@ def _never_touch_the_hosts_rule_hits(tmp_path_factory, monkeypatch):
     from frfw import paths
 
     monkeypatch.setattr(paths, "RULE_HITS_PATH", tmp_path_factory.mktemp("etc_fr_os_hits") / "rule_hits.json")
+
+
+@pytest.fixture(autouse=True)
+def _never_read_the_hosts_runtime_sets(request, monkeypatch):
+    """An apply carries the jail, quarantine, ZTNA and IoT sets over the
+    reload (frfw.provision, review FR-002) by reading them from the
+    kernel first; in tests there is nothing to carry unless a test says
+    so with @pytest.mark.reads_runtime_sets."""
+    if request.node.get_closest_marker("reads_runtime_sets"):
+        return
+    from frfw import provision
+    from frfw.nft import RuntimeSets
+
+    monkeypatch.setattr(provision, "_read_runtime_sets", lambda config: RuntimeSets())

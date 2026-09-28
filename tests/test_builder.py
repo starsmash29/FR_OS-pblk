@@ -140,6 +140,17 @@ def test_bruteforce_jail_drop_rule_is_first_rule_in_input_chain(minimal_config_d
     assert rule_lines[2] == 'iifname "lo" accept'
 
 
+def test_ids_quarantine_also_cuts_forwarded_traffic(minimal_config_dict):
+    # Review C-01: a quarantined host used to lose only the router itself;
+    # its traffic through the router (the internet, other zones) went on.
+    ruleset = build_ruleset(parse_config(minimal_config_dict))
+    forward = ruleset.split("chain forward {")[1].split("chain output {")[0]
+    lines = [l.strip() for l in forward.splitlines()
+             if l.strip() and not l.strip().startswith(("type", "}"))]
+    assert lines[0] == 'ip saddr @ids_quarantine drop comment "ids-quarantine-forward"'
+    assert lines.index("ct state established,related accept") > 0
+
+
 def test_ids_quarantine_set_always_rendered(minimal_config_dict):
     # Like the brute-force jail (and unlike the ZTNA set), the IDS
     # quarantine set is a kernel-level defense with no "off" switch --
@@ -173,3 +184,32 @@ def test_ztna_enabled_ruleset_passes_nft_syntax_check(minimal_config_dict):
         ["nft", "-c", "-f", "-"], input=ruleset, capture_output=True, text=True
     )
     assert proc.returncode == 0, proc.stderr
+
+
+@requires_nft
+@pytest.mark.reads_runtime_sets
+@pytest.mark.skipif(__import__("os").geteuid() != 0, reason="loading a ruleset needs root")
+def test_real_reload_keeps_bans_quarantines_and_sessions(minimal_config_dict):
+    """Review FR-002 against the kernel: read the live sets, reload with a
+    fresh ruleset carrying them, and everything is still there with its
+    remaining time -- no separate restore step involved."""
+    from frfw import bruteforce, ids_quarantine, provision, ztna
+
+    minimal_config_dict["ztna"] = {"enabled": True, "users": [{"username": "a", "password_hash": "x"}]}
+    config = parse_config(minimal_config_dict)
+    try:
+        subprocess.run(["nft", "-f", "-"], input=build_ruleset(config), text=True, check=True)
+        bruteforce.ban_ip("203.0.113.5", 600)
+        ids_quarantine.quarantine_ip("10.0.0.9", 600)
+        subprocess.run(["nft", "add", "element", "inet", "fr_os", "authenticated_ztna_users",
+                        "{ 10.0.0.20 timeout 600s }"], check=True)
+
+        runtime = provision._read_runtime_sets(config)
+        subprocess.run(["nft", "-f", "-"], input=build_ruleset(config, runtime=runtime), text=True, check=True)
+
+        for read, ip in ((bruteforce.list_banned, "203.0.113.5"), (ids_quarantine.list_quarantined, "10.0.0.9"),
+                         (ztna.list_authorized, "10.0.0.20")):
+            left = dict(read()).get(ip)
+            assert left is not None and 500 < left <= 600, (ip, read())
+    finally:
+        subprocess.run(["nft", "flush", "ruleset"], check=False)

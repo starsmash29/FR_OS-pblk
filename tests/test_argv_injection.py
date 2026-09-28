@@ -232,9 +232,43 @@ def test_the_updater_refuses_a_hostile_repo(value):
 
 def test_pip_gets_double_dash_before_the_release(argv, tmp_path, monkeypatch):
     monkeypatch.setattr(update, "_stage_systemd_units", lambda d: None)
-    update._install_release_dir(tmp_path / "frfw-0.2.0")
-    pip = next(cmd for cmd in argv if cmd[0] == "pip3")
-    assert pip[-2] == "--" and pip[-1].endswith("frfw-0.2.0[webui]")
+    release = tmp_path / "frfw-0.2.0"
+    release.mkdir()
+    (release / "requirements.lock").write_text("")
+    update._install_release_dir(release)
+    pips = [cmd for cmd in argv if cmd[0] == "pip3"]
+    # Review FR-001: the locked dependencies (hashes, wheels only), then
+    # the release itself with nothing resolved from PyPI.
+    assert pips[0][-4:] == ["--require-hashes", "--only-binary=:all:", "-r", str(release / "requirements.lock")]
+    assert pips[1][-4:] == ["--no-deps", "--no-build-isolation", "--", str(release)]
+
+
+def test_a_release_without_a_lock_is_not_installed(argv, tmp_path, monkeypatch):
+    monkeypatch.setattr(update, "_stage_systemd_units", lambda d: None)
+    (tmp_path / "frfw-0.2.0").mkdir()
+    with pytest.raises(update.UpdateError, match="unpinned"):
+        update._install_release_dir(tmp_path / "frfw-0.2.0")
+    assert argv == []
+
+
+def test_the_lock_pins_every_dependency_with_hashes():
+    """requirements.lock covers pyproject's dependencies (core and webui)
+    and the build backend, each `==` with at least one sha256."""
+    import re
+    import tomllib
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    project = tomllib.loads((root / "pyproject.toml").read_text())["project"]
+    wanted = project["dependencies"] + project["optional-dependencies"]["webui"] + ["setuptools", "wheel"]
+    norm = lambda n: re.sub(r"[-_.]+", "-", n).lower()
+    wanted = {norm(re.split(r"[<>=!~\[ ;]", w, maxsplit=1)[0]) for w in wanted}
+    entries = re.findall(r"^([A-Za-z0-9_.-]+)==(\S+) \\\n((?:    --hash=sha256:[0-9a-f]{64}(?: \\)?\n)+)",
+                         (root / "requirements.lock").read_text(), re.M)
+    pinned = {norm(name) for name, _, _ in entries}
+    assert wanted <= pinned, wanted - pinned
+    body = [l for l in (root / "requirements.lock").read_text().splitlines() if l and not l.startswith("#")]
+    assert len([l for l in body if not l.startswith(" ")]) == len(entries)  # nothing unpinned or unhashed
 
 
 @pytest.mark.parametrize("value", ["fr-router,IP:6.6.6.6", "-newkey", "a/CN=evil", "x\nY"])
