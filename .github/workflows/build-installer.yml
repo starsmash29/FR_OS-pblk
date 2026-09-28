@@ -26,6 +26,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # the review check compares commits and tags
+
+      - name: Adversarial review on record (security-lessons J2)
+        # A release is published only after at least two different AI
+        # models reviewed it and every critical/high finding is closed
+        # (docs/RELEASING.md, "Before tagging"). Checked first, before
+        # half an hour of building.
+        if: ${{ inputs.release_tag != '' }}
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          version=$(python3 -c "import re;print(re.search(r'__version__ = \"([^\"]+)\"', open('src/frfw/__init__.py').read()).group(1))")
+          if [ "$RELEASE_TAG" != "v$version" ]; then
+            echo "::error::release_tag $RELEASE_TAG doesn't match the version in the source (v$version)"
+            exit 1
+          fi
+          python3 scripts/check_release_review.py "$version"
 
       - name: Install live-build tooling
         run: |
