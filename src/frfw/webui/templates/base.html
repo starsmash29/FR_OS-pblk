@@ -54,6 +54,9 @@
 <main class="content">
 <div class="content-inner">
 {% if here %}<div class="breadcrumb"><span>FR_OS</span><span>{{ here[0] }}</span><span class="here">{{ here[1] }}</span></div>{% endif %}
+{% set notice = update_notice(request) %}
+{% if notice and notice.security %}<div class="flash-error">Security update available: FR_OS {{ notice.latest_version }}. Install it on the <a href="/update">Update</a> screen.</div>
+{% elif notice %}<div class="notice">FR_OS {{ notice.latest_version }} is available -- see <a href="/update">Update</a>.</div>{% endif %}
 {% if is_viewer %}<div class="readonly-banner"><svg class="icon"><use href="/static/icons.svg#visibility"/></svg><span>Read-only account: you can look at everything, but changes are disabled. You can change your own password under <a href="/account">Account</a>.</span></div>{% endif %}
 {% if error %}<div class="flash-error">{{ error }}</div>{% endif %}
 {% if success %}<div class="flash-success">{{ success }}</div>{% endif %}

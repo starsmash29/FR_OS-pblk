@@ -279,6 +279,8 @@ def main() -> int:
         check(audit_log.exists() and audit_log.stat().st_uid == 0 and audit_log.stat().st_mode & 0o777 == 0o640
               and '"via": "webui"' in audit_log.read_text(),
               "the webUI's audit entries went through the apply-helper into the root-owned log (0640)")
+        timer = journal(upper, "-b", "-u", "fr-update-check.timer")
+        check("Started" in timer, "the periodic update check (fr-update-check.timer) is armed (security-lessons G10)")
 
     print()
     if check.failures:

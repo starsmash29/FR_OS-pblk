@@ -70,6 +70,7 @@ def create_app(
     appid_usage_path: Path = paths.APPID_USAGE_PATH,
     audit_log_path: Path = paths.AUDIT_LOG_PATH,
     alerts_seen_path: Path = paths.ALERTS_SEEN_PATH,
+    update_check_path: Path = paths.UPDATE_CHECK_PATH,
     tlsfp_state_path: Path = paths.TLSFP_STATE_PATH,
     webui_cert_path: Path = paths.WEBUI_CERT_PATH,
 ) -> FastAPI:
@@ -96,6 +97,7 @@ def create_app(
     app.state.appid_usage_path = appid_usage_path
     app.state.audit_log_path = audit_log_path
     app.state.alerts_seen_path = alerts_seen_path
+    app.state.update_check_path = update_check_path
     app.state.tlsfp_state_path = tlsfp_state_path
     app.state.webui_cert_path = webui_cert_path
 

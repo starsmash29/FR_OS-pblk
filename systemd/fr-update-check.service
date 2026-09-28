@@ -1,0 +1,35 @@
+[Unit]
+Description=FR_OS update check (records what's available for the webUI's banner)
+Documentation=https://github.com/starsmash29/FR_OS-pblk
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=firewall-cli update auto /etc/fr_os/config.yaml
+# Sandbox (security-lessons I1; checked by tests/test_systemd_sandbox.py).
+# Root like fr-update-helper: with update.auto_install_security (J3) it
+# installs a verified security release -- pip into /usr/local, units into
+# /etc/systemd/system -- so ProtectSystem=full rather than strict.
+NoNewPrivileges=yes
+ProtectSystem=full
+ReadWritePaths=/etc/fr_os /etc/systemd/system /opt/fr_os /usr/local -/var/log/fr_os
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+MemoryDenyWriteExecute=yes
+SystemCallFilter=~@clock @cpu-emulation @debug @module @mount @obsolete @raw-io @reboot @swap
+SystemCallErrorNumber=EPERM
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
+CapabilityBoundingSet=CAP_CHOWN CAP_FOWNER CAP_FSETID CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_KILL

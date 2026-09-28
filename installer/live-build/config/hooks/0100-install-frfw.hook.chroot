@@ -37,6 +37,8 @@ for unit in \
     fr-appid.service \
     fr-schedule-check.service \
     fr-schedule-check.timer \
+    fr-update-check.service \
+    fr-update-check.timer \
     fr-tls-fp.service
 do
     install -m 0644 "/opt/frfw-src/systemd/$unit" "/etc/systemd/system/$unit"

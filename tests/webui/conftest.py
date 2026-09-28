@@ -215,6 +215,7 @@ def webui_env(tmp_path):
         "appid_usage_path": tmp_path / "appid_usage.json",
         "audit_log_path": tmp_path / "audit.log",
         "alerts_seen_path": tmp_path / "alerts_seen.json",
+        "update_check_path": tmp_path / "update_check.json",
         "tlsfp_state_path": tmp_path / "tls_fingerprints.json",
         "webui_cert_path": tmp_path / "cert.pem",
     }

@@ -750,6 +750,21 @@ root who rewrites `RECORD` too -- that needs a manifest signed with the
 release key -- and a development install (`pip install -e`) is reported
 as not verifiable, not as clean.
 
+### Security updates are loud (security-lessons G10)
+
+`fr-update-check.timer` runs `firewall-cli update auto` ten minutes
+after boot and then every 12 hours (with up to an hour of random delay,
+so a fleet doesn't hit GitHub at once). It records what it found in
+`/etc/fr_os/update_check.json` (0644, nothing secret), so the webUI
+never has to reach GitHub itself. A release is a **security release**
+when its title carries `[security]` or its notes a `Security: yes` line
+(docs/RELEASING.md). Every webUI page then shows a red "Security update
+available" banner; an ordinary release is a quiet notice; the banner
+goes once the new version is installed (the cache names the version it
+was about). A failed check keeps the last finding, with the error, so a
+network outage doesn't hide a pending security fix. How to report a
+vulnerability, and how fast we fix one, is in `SECURITY.md`.
+
 ### Sessions end on the server (security-lessons G7)
 
 A session is a signed cookie *and* an entry in `sessions.json` next to

@@ -55,6 +55,18 @@ openssl pkeyutl -verify -pubin -inkey fros-release-1.pem -rawin -in SHA256SUMS -
 sha256sum -c --ignore-missing SHA256SUMS
 ```
 
+## Security releases
+
+A release that fixes a vulnerability must say so, so routers can tell
+(security-lessons G10/J3): put **`[security]` in the release title**
+(for example `v0.3.1 [security]`), or a line `Security: yes` in its
+notes. Routers then show a red "Security update available" banner on
+every webUI page, and those with `update.auto_install_security: true`
+install it by themselves within about 12 hours -- after verifying its
+signature like any other update. Say what was fixed in the notes, and
+link the GitHub Security Advisory. The fix-time targets are in
+[SECURITY.md](../SECURITY.md).
+
 ## Rotating the key
 
 Add the new public key next to the old one and release that build signed

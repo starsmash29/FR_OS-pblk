@@ -69,3 +69,11 @@ def _never_touch_the_hosts_audit_log(tmp_path_factory, monkeypatch):
     log_dir = tmp_path_factory.mktemp("var_log_fr_os")
     monkeypatch.setattr(paths, "AUDIT_LOG_DIR", log_dir)
     monkeypatch.setattr(paths, "AUDIT_LOG_PATH", log_dir / "audit.log")
+
+
+@pytest.fixture(autouse=True)
+def _never_touch_the_hosts_update_check(tmp_path_factory, monkeypatch):
+    """The periodic update check's cache (/etc/fr_os/update_check.json)."""
+    from frfw import paths
+
+    monkeypatch.setattr(paths, "UPDATE_CHECK_PATH", tmp_path_factory.mktemp("etc_fr_os") / "update_check.json")

@@ -83,6 +83,10 @@ AI_IDS_STATE_PATH = SENSOR_STATE_DIR / "ai_ids_state.json"
 #: live-computed progress.
 UPDATE_STATE_PATH = Path("/etc/fr_os/update_state.json")
 
+#: The last periodic update check (fr-update-check.timer, security-lessons
+#: G10/J3), read by the webUI for the "update available" banner.
+UPDATE_CHECK_PATH = Path("/etc/fr_os/update_check.json")
+
 #: Extracted release source trees, one directory per installed version,
 #: kept around after each successful update so a rollback can reinstall
 #: the previous version without needing network access again.

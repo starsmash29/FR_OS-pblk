@@ -21,6 +21,7 @@
     firewall-cli metrics-token (--generate | --disable) [--site NAME] [config.yaml]
     firewall-cli schedule-check [config.yaml]
     firewall-cli update check [config.yaml]
+    firewall-cli update auto [config.yaml]
     firewall-cli update apply VERSION [--repo OWNER/REPO]
     firewall-cli update rollback [--repo OWNER/REPO]
     firewall-cli xdp-status
@@ -321,6 +322,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     add_config_arg(p_update_check)
     p_update_check.set_defaults(handler=_cmd_update_check)
+
+    p_update_auto = update_sub.add_parser(
+        "auto",
+        help="the periodic check (fr-update-check.timer): record what's available for the webUI's banner",
+    )
+    add_config_arg(p_update_auto)
+    p_update_auto.set_defaults(handler=_cmd_update_auto)
 
     p_update_apply = update_sub.add_parser(
         "apply", help="download, install and activate a specific version (needs root)"
@@ -762,6 +770,28 @@ def _cmd_update_check(args: argparse.Namespace) -> int:
             print(result.latest.notes)
     else:
         print("Already up to date.")
+    return 0
+
+
+def _cmd_update_auto(args: argparse.Namespace) -> int:
+    """fr-update-check.timer's job. Security-lessons G10: check once and
+    record the result for the webUI's "update available" banner (red for
+    a security release); a failed check keeps what the last good one
+    found, with the error."""
+    repo = _resolve_update_repo(args.config)
+    try:
+        result = update_mod.check_latest(__version__, repo=repo)
+    except update_mod.UpdateError as exc:
+        previous = update_mod.read_check_cache(current_version=__version__) or {}
+        update_mod.write_json_cache({**previous, "current_version": __version__, "error": str(exc)})
+        print(f"update check failed: {exc}", file=sys.stderr)
+        return 1
+    update_mod.write_check_cache(result)
+    if result.latest is None or not result.update_available:
+        print(f"FR_OS {__version__} is up to date")
+        return 0
+    kind = "SECURITY update" if result.latest.security else "update"
+    print(f"{kind} available: {result.latest.version}")
     return 0
 
 
