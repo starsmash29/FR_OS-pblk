@@ -24,6 +24,7 @@ from frfw.webui.deps import (
 )
 from frfw.webui.helper_client import HelperClient
 from frfw.webui.responses import redirect_with
+from frfw.webui.routes.security import score_for
 from frfw.webui.templating import templates
 
 router = APIRouter()
@@ -119,6 +120,8 @@ def dashboard(
         entry["when"] = time.strftime("%Y-%m-%d %H:%M", time.localtime(float(entry.get("ts") or 0)))
     integrity_report = integrity.cached_check()
     drops = _recent_drops(helper) if config is not None and config.logging.drops else None
+    # Security-lessons K8: the checklist's score and what's still open.
+    score = score_for(request, raw, request.app.state.admin_store, helper)
 
     ai_ids_running = is_daemon_active()
     system = sysinfo.snapshot()
@@ -155,6 +158,7 @@ def dashboard(
             "alerts": alerts,
             "integrity": integrity_report,
             "drops": drops,
+            "score": score,
             "error": request.query_params.get("error"),
             "success": request.query_params.get("success"),
         },

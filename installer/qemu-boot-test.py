@@ -279,6 +279,10 @@ def main() -> int:
         found = re.search(r'id="unneeded">(.*?)</div>', surface_page, re.S)
         check(clean, "nothing listens that the config doesn't need (security-lessons K7)"
               + ("" if clean else ": " + " ".join((found.group(1) if found else surface_page[:300]).split())))
+        score_page = get(opener, "/security")
+        score = re.search(r'id="score">(\d+)%', score_page)
+        check(score is not None, "the security score page works on the real router (security-lessons K8)"
+              + (f": {score.group(1)}%" if score else ""))
         post(opener, "/rules/timezone", {"timezone": "Europe/Budapest"})
         # Security-lessons G8: the WireGuard VPN on Debian's own kernel
         # module (the unit tests use the userspace implementation).

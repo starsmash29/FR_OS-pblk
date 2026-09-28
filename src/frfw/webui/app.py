@@ -41,6 +41,7 @@ from frfw.webui.routes import (
     mfa,
     nat,
     rules,
+    security,
     segments,
     surface,
     system,
@@ -136,6 +137,7 @@ def create_app(
     app.include_router(ztna.router)
     app.include_router(vpn.router)
     app.include_router(segments.router)
+    app.include_router(security.router)
     app.include_router(system.router)
     app.include_router(surface.router)
     app.include_router(adblock.router)

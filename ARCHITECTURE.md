@@ -750,6 +750,29 @@ root who rewrites `RECORD` too -- that needs a manifest signed with the
 release key -- and a development install (`pip install -e`) is reported
 as not verifiable, not as clean.
 
+### The security score (security-lessons K8)
+
+`frfw.security_score` pulls the lessons together into a checklist. Each
+item is worked out from what the router knows:
+
+- no account has a default name (K1/G1);
+- every admin has a second factor (G5);
+- management is closed to the WAN (F2/G4/K5);
+- no newer release is available (G10), and security releases install
+  themselves (J3);
+- the rule check finds no any-to-any, internet-wide or shadowed rules
+  (K2);
+- firewall drops are logged (K6);
+- IoT isolation or segments are on (K4);
+- nothing unneeded listens (K7);
+- FR_OS's own files are intact (G9).
+
+The Security score screen shows the score and every item, with a link to
+the screen that fixes it. The dashboard shows the score and what's still
+open. An item whose facts aren't available right now is "unknown" and
+counts neither way: say, no update check has run yet, or the helper
+didn't list the sockets.
+
 ### Nothing listening that isn't needed (security-lessons K7)
 
 The attack-surface view (I3) shows what listens and who can reach it.

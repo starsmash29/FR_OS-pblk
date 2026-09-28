@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Security score - FR_OS{% endblock %}
+{% block content %}
+<h1>Security score</h1>
+<p class="muted">The hardening checklist: what attackers used against firewalls in 2026, checked against this router.
+  Each item links to the screen that fixes it. Unknown items don't count either way.</p>
+<div class="card status-card">
+  <span class="badge {{ 'badge-green' if score.percent == 100 else 'badge-yellow' if score.percent >= 70 else 'badge-red' }}" id="score">{{ score.percent }}%</span>
+  <dl>
+    <div><dt>Passed</dt><dd>{{ score.passed }} / {{ score.known }}</dd></div>
+    <div><dt>Open</dt><dd>{{ score.open|length }}</dd></div>
+  </dl>
+</div>
+<div class="card">
+  <table>
+    <tr><th></th><th>Check</th><th>Status</th><th></th></tr>
+    {% for c in score.checks %}
+    <tr>
+      <td>{% if c.state == "ok" %}<span class="badge badge-green">ok</span>{% elif c.state == "fail" %}<span class="badge badge-red">open</span>{% else %}<span class="badge">unknown</span>{% endif %}</td>
+      <td>{{ c.title }} <span class="muted">({{ c.lesson }})</span></td>
+      <td>{{ c.detail }}</td>
+      <td>{% if c.state != "ok" %}<a href="{{ c.link }}">fix</a>{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+{% endblock %}

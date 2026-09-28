@@ -57,6 +57,15 @@
   </table>
 </section>
 {% endif %}
+<section class="card" id="security-score">
+  <div class="card-head"><h3>{{ icon("verified_user") }}Security score: {{ score.percent }}%</h3><a href="/security" class="muted">checklist</a></div>
+  {% if score.open %}
+  <ul>{% for c in score.open %}<li><a href="{{ c.link }}">{{ c.title }}</a> -- {{ c.detail }}</li>{% endfor %}</ul>
+  {% else %}
+  <p>Every checked item is in order ({{ score.passed }} / {{ score.known }}).</p>
+  {% endif %}
+</section>
+
 {% if integrity.verifiable and not integrity.ok %}
 <section class="card" style="border-color: var(--error);">
   <div class="card-head"><h3>{{ icon("error") }}Installed software changed</h3></div>

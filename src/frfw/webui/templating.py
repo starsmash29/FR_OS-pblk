@@ -40,6 +40,7 @@ NAV = [
         ("Update", "/update", "system_update_alt", False),
         ("System", "/system", "tune", False),
         ("Attack surface", "/surface", "shield_lock", False),
+        ("Security score", "/security", "verified_user", False),
         ("Users", "/users", "group", True),
     ]),
 ]
