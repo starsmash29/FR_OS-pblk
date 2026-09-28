@@ -41,6 +41,27 @@ def test_quarantine_ip_rejects_non_positive_duration(monkeypatch):
         ids_quarantine_mod.quarantine_ip("10.0.0.5", 0)
 
 
+@pytest.mark.parametrize("ip", ["127.0.0.1", "127.1.2.3", "0.0.0.0", "224.0.0.1", "169.254.9.9",
+                                "240.0.0.1", "255.255.255.255"])
+def test_quarantine_ip_refuses_non_host_addresses(monkeypatch, ip):
+    monkeypatch.setattr(ids_quarantine_mod, "_run_nft", lambda args: pytest.fail("nft should not be invoked"))
+    with pytest.raises(ids_quarantine_mod.IdsQuarantineError, match="not a host address"):
+        ids_quarantine_mod.quarantine_ip(ip, 3600)
+
+
+def test_quarantine_ip_refuses_own_addresses(monkeypatch):
+    monkeypatch.setattr(ids_quarantine_mod, "_run_nft", lambda args: pytest.fail("nft should not be invoked"))
+    with pytest.raises(ids_quarantine_mod.IdsQuarantineError, match="router's own"):
+        ids_quarantine_mod.quarantine_ip("192.168.1.1", 3600, own_addresses=frozenset({"192.168.1.1"}))
+
+
+def test_quarantine_ip_caps_duration(monkeypatch):
+    monkeypatch.setattr(ids_quarantine_mod, "_run_nft", lambda args: _fake_completed())
+    ids_quarantine_mod.quarantine_ip("10.0.0.5", ids_quarantine_mod.MAX_DURATION_SECONDS)
+    with pytest.raises(ids_quarantine_mod.IdsQuarantineError, match="at most"):
+        ids_quarantine_mod.quarantine_ip("10.0.0.5", ids_quarantine_mod.MAX_DURATION_SECONDS + 1)
+
+
 def test_quarantine_ip_calls_nft_add_element_with_ttl(monkeypatch):
     calls = []
     monkeypatch.setattr(ids_quarantine_mod, "_run_nft", lambda args: (calls.append(args), _fake_completed())[1])

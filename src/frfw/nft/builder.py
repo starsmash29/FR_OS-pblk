@@ -217,6 +217,12 @@ def build_ruleset(config: Config, *, clock: ScheduleClock | None = None, now: fl
     lines.append("\tchain forward {")
     lines.append("\t\ttype filter hook forward priority filter; policy drop;")
     lines.append("")
+    # A quarantined host is cut off from everything it would reach
+    # *through* the router too (the internet, other zones), not only from
+    # the router itself -- and ahead of the established accept, so its
+    # open sessions end at once. Its peers' packets to it may still pass,
+    # but nothing it sends back does.
+    lines.append(f"\t\t{_render_ids_quarantine_forward_rule()}")
     if config.iot.enabled:
         # Same "before established" placement as the input chain above,
         # and before every config-derived rule: an admin rule can't
@@ -336,6 +342,10 @@ def _render_ids_quarantine_set() -> list[str]:
 
 def _render_ids_quarantine_drop_rule() -> str:
     return f"ip saddr @{IDS_QUARANTINE_SET_NAME} drop {_comment('ids-quarantine')}"
+
+
+def _render_ids_quarantine_forward_rule() -> str:
+    return f"ip saddr @{IDS_QUARANTINE_SET_NAME} drop {_comment('ids-quarantine-forward')}"
 
 
 def _render_ztna_set(config: Config) -> list[str]:

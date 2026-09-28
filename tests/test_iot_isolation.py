@@ -118,9 +118,10 @@ def test_internet_only_mode_allows_masquerade_zones(minimal_config_dict):
     ruleset = build_ruleset(parse_config(_iot_raw(minimal_config_dict)))
     forward = ruleset.split("chain forward {")[1].split("chain output {")[0]
     lines = [l.strip() for l in forward.splitlines() if l.strip()]
-    assert lines[1] == 'ether saddr @iot_isolated oifname @wan_ifaces accept comment "iot-isolated-internet"'
-    assert lines[2] == 'ether saddr @iot_isolated drop comment "iot-isolated-forward"'
-    assert lines[3] == "ct state established,related accept"
+    assert lines[1] == 'ip saddr @ids_quarantine drop comment "ids-quarantine-forward"'
+    assert lines[2] == 'ether saddr @iot_isolated oifname @wan_ifaces accept comment "iot-isolated-internet"'
+    assert lines[3] == 'ether saddr @iot_isolated drop comment "iot-isolated-forward"'
+    assert lines[4] == "ct state established,related accept"
 
 
 def test_block_mode_has_no_internet_exception(minimal_config_dict):
@@ -315,6 +316,25 @@ def test_real_packets_block_mode_isolation_and_reload_survival(two_hosts):
     assert connect("10.78.2.10", 8080) == "FAIL"
 
     iso.sync_isolated([])
+    assert connect("10.78.2.10", 8080) == "OK"
+
+
+@requires_netns
+def test_real_packets_quarantine_cuts_forwarded_traffic(two_hosts):
+    """Review C-01 on the wire: an IDS-quarantined host can reach neither
+    the router nor anything through it, and is back once released."""
+    from frfw import ids_quarantine
+
+    subprocess.run(["nft", "-f", "-"], input=build_ruleset(_router_config("block")), text=True, check=True)
+    connect = two_hosts["connect"]
+    assert connect("10.78.2.10", 8080) == "OK"
+    assert connect("10.78.1.1", 8081) == "OK"
+
+    ids_quarantine.quarantine_ip("10.78.1.10", 60)
+    assert connect("10.78.2.10", 8080) == "FAIL"   # through the router
+    assert connect("10.78.1.1", 8081) == "FAIL"    # the router itself
+
+    subprocess.run(["nft", "flush", "set", "inet", "fr_os", "ids_quarantine"], check=True)
     assert connect("10.78.2.10", 8080) == "OK"
 
 

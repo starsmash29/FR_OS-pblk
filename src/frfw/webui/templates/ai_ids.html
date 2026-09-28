@@ -41,7 +41,7 @@
   <form method="post" action="/ai-ids/settings">
     <label><input type="checkbox" name="enabled" value="true" {{ "checked" if enabled else "" }} style="display:inline;width:auto;"> Enabled</label>
     <label>Quarantine duration (seconds)</label>
-    <input type="number" name="quarantine_duration_seconds" value="{{ quarantine_duration_seconds }}" min="1" required>
+    <input type="number" name="quarantine_duration_seconds" value="{{ quarantine_duration_seconds }}" min="1" max="604800" required>
     <label>Excluded MAC addresses (comma-separated)</label>
     <input type="text" name="excluded_macs" value="{{ excluded_macs }}" placeholder="aa:bb:cc:dd:ee:ff, 11:22:33:44:55:66">
     <p class="muted">Resolved against DHCP static reservations to exclude their current IP from scoring/quarantine (e.g. a backup server or NAS that legitimately opens many connections).</p>

@@ -140,6 +140,17 @@ def test_bruteforce_jail_drop_rule_is_first_rule_in_input_chain(minimal_config_d
     assert rule_lines[2] == 'iifname "lo" accept'
 
 
+def test_ids_quarantine_also_cuts_forwarded_traffic(minimal_config_dict):
+    # Review C-01: a quarantined host used to lose only the router itself;
+    # its traffic through the router (the internet, other zones) went on.
+    ruleset = build_ruleset(parse_config(minimal_config_dict))
+    forward = ruleset.split("chain forward {")[1].split("chain output {")[0]
+    lines = [l.strip() for l in forward.splitlines()
+             if l.strip() and not l.strip().startswith(("type", "}"))]
+    assert lines[0] == 'ip saddr @ids_quarantine drop comment "ids-quarantine-forward"'
+    assert lines.index("ct state established,related accept") > 0
+
+
 def test_ids_quarantine_set_always_rendered(minimal_config_dict):
     # Like the brute-force jail (and unlike the ZTNA set), the IDS
     # quarantine set is a kernel-level defense with no "off" switch --
