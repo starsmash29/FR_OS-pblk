@@ -23,18 +23,29 @@
 <div class="flash-success">Nothing is reachable from an internet-facing zone ({{ internet|sort|join(", ") or "none" }}).</div>
 {% endif %}
 
+{% if unneeded %}
+<div class="flash-error" id="unneeded">
+  {{ unneeded|length }} reachable service{{ "s" if unneeded|length != 1 }} nothing in FR_OS's configuration needs:
+  {% for r in unneeded %}{{ r.listener.proto }}/{{ r.listener.port }} {{ r.listener.label }}{{ ", " if not loop.last }}{% endfor %}.
+  Stop or uninstall {{ "them" if unneeded|length != 1 else "it" }} -- every listening service is something to attack (security-lessons K7).
+</div>
+{% else %}
+<div class="flash-success" id="unneeded">Every reachable service is one the configuration needs.</div>
+{% endif %}
+
 <div class="card">
   <h3>Listening services</h3>
   <div class="scroll-table">
   <table>
     <tr>
-      <th>Port</th><th>Service</th><th>Bound to</th>
+      <th>Port</th><th>Service</th><th>Needed by</th><th>Bound to</th>
       {% for zone in zones %}<th>{{ zone }}{% if zone in internet %} <span class="badge badge-red">internet</span>{% endif %}</th>{% endfor %}
     </tr>
     {% for r in rows %}
     <tr>
       <td><code>{{ r.listener.proto }}/{{ r.listener.port }}</code></td>
       <td>{{ r.listener.label }}</td>
+      <td>{% if r.needed %}<span class="muted">{{ r.needed }}</span>{% elif r.reachable %}<span class="badge badge-red">not needed</span>{% else %}<span class="muted">-</span>{% endif %}</td>
       <td><code>{{ r.listener.address }}{% if r.listener.device %}%{{ r.listener.device }}{% endif %}</code>
         {% if r.listener.loopback %}<span class="muted">(loopback)</span>{% elif r.listener.wildcard and not r.listener.device %}<span class="muted">(every address)</span>{% endif %}</td>
       {% for zone in zones %}
@@ -49,7 +60,7 @@
       {% endfor %}
     </tr>
     {% else %}
-    <tr><td colspan="{{ 3 + zones|length }}" class="muted">Nothing is listening.</td></tr>
+    <tr><td colspan="{{ 4 + zones|length }}" class="muted">Nothing is listening.</td></tr>
     {% endfor %}
   </table>
   </div>

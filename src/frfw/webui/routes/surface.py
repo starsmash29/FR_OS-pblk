@@ -51,12 +51,14 @@ def show_surface(
             internet = management.internet_zones(config)
             wan_addresses = surface.wan_addresses(config, addresses)
     exposed = [r for r in rows if r.internet]
+    unneeded = [r for r in rows if r.unneeded]
     return templates.TemplateResponse(request, "surface.html", {
         "username": username,
         "rows": rows,
         "zones": zones,
         "internet": internet,
         "exposed": exposed,
+        "unneeded": unneeded,
         "wan_addresses": wan_addresses,
         "allow_wan": bool(config and config.management.allow_wan),
         "error": error,

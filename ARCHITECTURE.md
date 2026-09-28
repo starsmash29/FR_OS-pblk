@@ -750,6 +750,28 @@ root who rewrites `RECORD` too -- that needs a manifest signed with the
 release key -- and a development install (`pip install -e`) is reported
 as not verifiable, not as clean.
 
+### Nothing listening that isn't needed (security-lessons K7)
+
+The attack-surface view (I3) shows what listens and who can reach it.
+K7 adds a verdict for each socket: what in the configuration needs it
+(`frfw.surface.needed_by`):
+
+- the webUI and SSH (sshd runs only while someone has a key);
+- the WAN's DHCP client;
+- the DNS filter, only with `adblocker` on;
+- the DHCP server, only with DHCP pools;
+- the IoT scan, only with `iot` on;
+- the WireGuard port, only with the VPN on;
+- anything on loopback, which no zone can reach anyway.
+
+A socket reachable from a zone with no such reason is flagged "not
+needed". It appears at the top of the Attack surface page, and
+`firewall-cli surface` exits 3 for it (2 still means reachable from the
+internet). An unneeded socket the firewall closes everywhere isn't
+flagged: it can't be attacked from any zone. The QEMU boot test opens
+the page on a freshly set-up router and expects nothing flagged, so a
+package that starts listening on its own fails the build.
+
 ### Logging on by default (security-lessons K6)
 
 You can't investigate what nobody logged. Out of the box:

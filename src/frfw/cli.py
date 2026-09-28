@@ -580,12 +580,18 @@ def _cmd_surface(args: argparse.Namespace) -> int:
         where = f"{l.address}%{l.device}" if l.device else l.address
         reach = ", ".join(f"{zone}: {v.state}" for zone, v in row.zones.items()) or "no zone (loopback/unbound)"
         flag = "  <-- reachable from the internet side" if row.internet else ""
+        if row.unneeded:
+            flag += "  <-- nothing in the config needs it"
         print(f"{l.proto}/{l.port:<6} {l.label:<24} {where:<22} {reach}{flag}")
     exposed = [r for r in rows if r.internet]
+    unneeded = [r for r in rows if r.unneeded]
+    if unneeded:
+        names = ", ".join(f"{r.listener.proto}/{r.listener.port} {r.listener.label}" for r in unneeded)
+        print(f"\nWARNING: not needed by FR_OS, stop it: {names}", file=sys.stderr)
     if exposed:
         print(f"\nWARNING: {len(exposed)} service(s) reachable from {', '.join(sorted(internet))}", file=sys.stderr)
         return 2
-    return 0
+    return 3 if unneeded else 0
 
 
 def _cmd_integrity(args: argparse.Namespace) -> int:

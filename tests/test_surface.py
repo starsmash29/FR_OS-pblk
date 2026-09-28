@@ -177,3 +177,54 @@ def test_the_cli_exits_2_when_something_faces_the_internet(tmp_path, monkeypatch
     out = capsys.readouterr()
     assert "tcp/8080" in out.out and "reachable from the internet side" in out.out
     assert "WARNING: 1 service(s) reachable from wan" in out.err
+
+
+# -- security-lessons K7: nothing listening that isn't needed ----------------------------------
+
+
+def test_each_socket_says_what_needs_it():
+    config = _config(rules=[{"name": "any-in", "action": "accept", "from_zone": "lan", "to_zone": "self"}])
+    rows = {(r.listener.proto, r.listener.port, r.listener.address): r
+            for r in surface.surface(config, surface.parse_ss(SS_OUTPUT), ADDRESSES)}
+    assert rows[("tcp", 443, "192.168.1.1")].needed == "the webUI"
+    assert rows[("udp", 33863, "127.0.0.1")].needed == "local only"
+    # dnsmasq and Kea listen, but the config asks for neither: not needed.
+    assert rows[("udp", 53, "192.168.1.1")].unneeded
+    assert rows[("udp", 67, "0.0.0.0")].unneeded
+    # And a stray web server, reachable from the LAN, certainly isn't.
+    assert rows[("tcp", 8080, "::")].unneeded and rows[("tcp", 8080, "::")].listener.label == "unknown"
+
+
+def test_what_the_config_turns_on_is_needed():
+    config = _config(
+        dhcp={"lan": {"range_start": "192.168.1.100", "range_end": "192.168.1.199", "dns_servers": ["1.1.1.1"]}},
+        adblocker={"enabled": True, "source_urls": ["https://example.com/hosts"]},
+        zones={"wan": {}, "lan": {}, "vpn": {}},
+        wireguard={"enabled": True, "address": "10.99.0.1/24"},
+    )
+    listeners = [surface.Listener("udp", "0.0.0.0", 67, device="eth1"), surface.Listener("udp", "192.168.1.1", 53),
+                 surface.Listener("udp", "0.0.0.0", 51820)]
+    assert [surface.needed_by(config, l) for l in listeners] == [
+        "the DHCP server (dhcp)", "the DNS filter (adblocker)", "the WireGuard VPN (wireguard)"]
+
+
+def test_a_closed_unneeded_socket_is_not_flagged():
+    """Unneeded but unreachable (the firewall drops it everywhere) is not
+    worth an alarm: it can't be attacked from any zone."""
+    rows = surface.surface(_config(), [surface.Listener("tcp", "0.0.0.0", 8080)], ADDRESSES)
+    assert rows[0].needed is None and not rows[0].reachable and not rows[0].unneeded
+
+
+def test_the_cli_says_so(monkeypatch, tmp_path, capsys):
+    from frfw import cli
+
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump({
+        "version": 1, "hostname": "router", "zones": {"wan": {}, "lan": {}},
+        "interfaces": {"wan": {"device": "eth0", "zone": "wan"},
+                       "lan": {"device": "eth1", "zone": "lan", "address": "192.168.1.1/24"}},
+        "rules": [{"name": "any-in", "action": "accept", "from_zone": "lan", "to_zone": "self"}],
+        "nat": {"masquerade": [{"out_zone": "wan"}]}}))
+    monkeypatch.setattr(surface, "collect", lambda: ([surface.Listener("tcp", "192.168.1.1", 8080)], ADDRESSES))
+    assert cli.main(["surface", str(path)]) == 3
+    assert "not needed by FR_OS, stop it: tcp/8080" in capsys.readouterr().err

@@ -186,6 +186,11 @@ def wait_for_webui(opener, timeout: float) -> str | None:
     return None
 
 
+def get(opener, path: str) -> str:
+    with opener.open(f"https://127.0.0.1:{WEBUI_PORT}{path}", timeout=60) as resp:
+        return resp.read().decode()
+
+
 def post(opener, path: str, fields: dict) -> str:
     data = urllib.parse.urlencode(fields, doseq=True).encode()
     with opener.open(f"https://127.0.0.1:{WEBUI_PORT}{path}", data=data, timeout=30) as resp:
@@ -267,6 +272,13 @@ def main() -> int:
     set_up = done.endswith("/segments?first_run=1")  # then the segments offer (security-lessons K4)
     check(set_up, f"setup renamed the account to {NEW_USERNAME!r} with a new password")
     if set_up:
+        # Security-lessons K7: a fresh FR_OS listens on nothing its config
+        # doesn't need.
+        surface_page = get(opener, "/surface")
+        clean = 'class="flash-success" id="unneeded"' in surface_page
+        found = re.search(r'id="unneeded">(.*?)</div>', surface_page, re.S)
+        check(clean, "nothing listens that the config doesn't need (security-lessons K7)"
+              + ("" if clean else ": " + " ".join((found.group(1) if found else surface_page[:300]).split())))
         post(opener, "/rules/timezone", {"timezone": "Europe/Budapest"})
         # Security-lessons G8: the WireGuard VPN on Debian's own kernel
         # module (the unit tests use the userspace implementation).
