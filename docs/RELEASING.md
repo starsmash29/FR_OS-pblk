@@ -37,15 +37,48 @@ openssl pkey -in fros-release.key -pubout -out src/frfw/release_keys/fros-releas
 Until a public key is committed, every build refuses every update — that
 is on purpose.
 
+## Before tagging: the adversarial review (J2)
+
+Every release is reviewed by at least two different AI models before it
+is tagged (security-lessons J2); one model's blind spots are rarely
+another's.
+
+1. Pick the commit you mean to release and run
+   [review-prompt.md](review-prompt.md) against it with each model. Save
+   each report as `docs/reviews/v<VERSION>-<MODEL>.md`.
+2. Triage the reports into one record, `docs/reviews/v<VERSION>.md`,
+   starting from [reviews/TEMPLATE.md](reviews/TEMPLATE.md): the
+   reviewed commit, the models, and one table row per distinct finding
+   with its severity and status. Check each finding against the code the
+   way [review-triage.md](review-triage.md) did -- reviews overstate and
+   miss things.
+3. Close every **critical** and **high** finding: `fixed` (with the
+   commit or PR), `accepted` (with the reason), `not a bug` or
+   `duplicate`. Medium and low findings may stay open as issues.
+4. Merge the record to `main` with the version bump.
+
+The release workflow enforces this: before it builds anything it runs
+`scripts/check_release_review.py <VERSION>`, which refuses the release
+when the record is missing, names fewer than two models, reviewed a
+commit that isn't part of this release or is older than the previous
+release, or still has an open critical/high finding. Run it locally
+first:
+
+```bash
+python3 scripts/check_release_review.py 0.3.0
+```
+
 ## Publishing a release
 
 1. Bump `__version__` in `src/frfw/__init__.py` and `version` in
-   `pyproject.toml`, merge to `main`.
+   `pyproject.toml`, and merge it to `main` together with the review
+   record (above).
 2. Create the GitHub release with its tag (`vX.Y.Z`) on that commit.
 3. Run the *Build installer ISO* workflow on `main` with `release_tag` =
-   `vX.Y.Z`. It builds the ISO, packages the source, writes
-   `SHA256SUMS`, signs it, checks that the signing key's public half is
-   one this commit ships, boot-tests the ISO and uploads all four assets.
+   `vX.Y.Z`. It checks the review record, builds the ISO, packages the
+   source, writes `SHA256SUMS`, signs it, checks that the signing key's
+   public half is one this commit ships, boot-tests the ISO and uploads
+   all four assets.
    Without the `FROS_RELEASE_SIGNING_KEY` secret it refuses to publish.
 
 Users can check a download the same way:
