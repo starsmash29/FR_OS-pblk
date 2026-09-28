@@ -464,17 +464,25 @@ def _stage_systemd_units(release_dir: Path) -> None:
             dest.chmod(0o755)
 
 
+#: The release's hash-pinned dependencies (review FR-001).
+LOCK_FILE = "requirements.lock"
+
+
 def _install_release_dir(release_dir: Path) -> None:
-    _run(
-        [
-            "pip3",
-            "install",
-            "--break-system-packages",
-            "--no-cache-dir",
-            "--",
-            f"{release_dir}[webui]",
-        ]
-    )
+    """pip-install a verified release as root. Review FR-001: the
+    dependencies come only from the release's own requirements.lock --
+    exact versions, each file checked against its sha256, wheels only --
+    and the release itself is then built with the locked setuptools
+    (--no-build-isolation) and nothing else (--no-deps), so pip resolves
+    nothing unpinned from PyPI. The lock is inside the signed tarball, so
+    the signature covers what gets installed. A release without a lock
+    is refused rather than installed with whatever PyPI serves today."""
+    lock = release_dir / LOCK_FILE
+    if not lock.is_file():
+        raise UpdateError(f"the release has no {LOCK_FILE}: refusing to install unpinned dependencies")
+    pip = ["pip3", "install", "--break-system-packages", "--no-cache-dir"]
+    _run([*pip, "--require-hashes", "--only-binary=:all:", "-r", str(lock)])
+    _run([*pip, "--no-deps", "--no-build-isolation", "--", str(release_dir)])
     _stage_systemd_units(release_dir)
     _run(["systemctl", "daemon-reload"])
 

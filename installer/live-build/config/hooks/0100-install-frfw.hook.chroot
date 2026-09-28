@@ -9,7 +9,12 @@
 set -e
 
 echo "frfw: installing from bundled source (/opt/frfw-src)..."
-pip3 install --break-system-packages --no-cache-dir /opt/frfw-src[webui]
+# Review FR-001: dependencies only from the hash-pinned lock (wheels
+# only), then frfw itself with the locked build backend and no further
+# resolving -- the same two steps the updater runs (frfw.update).
+pip3 install --break-system-packages --no-cache-dir --require-hashes --only-binary=:all: \
+    -r /opt/frfw-src/requirements.lock
+pip3 install --break-system-packages --no-cache-dir --no-deps --no-build-isolation /opt/frfw-src
 
 # The WireGuard module is loaded at boot (security-lessons G8), so the
 # sandboxed units that apply the config (ProtectKernelModules=yes) never

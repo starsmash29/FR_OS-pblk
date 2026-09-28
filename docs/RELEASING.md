@@ -68,6 +68,25 @@ first:
 python3 scripts/check_release_review.py 0.3.0
 ```
 
+## Dependencies: requirements.lock
+
+The router installs its Python dependencies only from `requirements.lock`
+(review FR-001): exact versions, the sha256 of every release file, wheels
+only, installed with `pip --require-hashes` by both the image build and
+the updater; frfw itself is then installed with `--no-deps
+--no-build-isolation`, so nothing unpinned comes from PyPI. The lock
+travels inside the signed source tarball.
+
+To change a dependency, edit `pyproject.toml`, run the tests against the
+new versions, and regenerate the lock from that environment:
+
+```bash
+pip freeze > /tmp/tested.txt
+scripts/lock-requirements.sh /tmp/tested.txt
+```
+
+Review the diff of `requirements.lock` like code: it is what runs as root.
+
 ## Publishing a release
 
 1. Bump `__version__` in `src/frfw/__init__.py` and `version` in
