@@ -765,6 +765,23 @@ was about). A failed check keeps the last finding, with the error, so a
 network outage doesn't hide a pending security fix. How to report a
 vulnerability, and how fast we fix one, is in `SECURITY.md`.
 
+### Installing security releases without waiting (security-lessons J3)
+
+With `update.auto_install_security: true` (off by default; a switch on
+the Update screen), `firewall-cli update auto` also *installs* a security
+release as soon as it finds one, through the same `apply_update` as a
+manual update -- so the signature must verify (A4). A failure behaves
+like a failed manual update: before the release is verified nothing has
+changed; after that, the error says to roll back (one click on the
+Update screen) -- it isn't rolled back by itself. Either outcome is a security alert on the
+dashboard (the software changed without anyone clicking), and a failed
+install is shown on the Update screen while the red banner stays. An
+ordinary release is never installed by itself, and neither is anything
+when the config can't be read. `fr-update-check.service` runs as root
+with the same sandbox as `fr-update-helper.service` (it writes where an
+update writes). `SECURITY.md` publishes the fix-time targets that make
+this worth having: 7 days for a critical vulnerability.
+
 ### Sessions end on the server (security-lessons G7)
 
 A session is a signed cookie *and* an entry in `sessions.json` next to

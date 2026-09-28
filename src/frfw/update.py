@@ -231,7 +231,7 @@ def _release_from_json(raw: dict) -> ReleaseInfo:
 
 
 def write_check_cache(result: UpdateCheckResult, path: Path | None = None, *,
-                      error: str | None = None) -> None:
+                      error: str | None = None, auto_install_error: str | None = None) -> None:
     """What the last periodic check found, for the webUI's banner (the
     webUI itself doesn't have to reach GitHub to know). 0644: it holds
     nothing secret."""
@@ -244,6 +244,8 @@ def write_check_cache(result: UpdateCheckResult, path: Path | None = None, *,
         "security": bool(latest and latest.security and result.update_available),
         "html_url": latest.html_url if latest else "",
         "error": error,
+        # J3: the automatic install of this security release failed.
+        "auto_install_error": auto_install_error,
     }
     write_json_cache(data, path)
 

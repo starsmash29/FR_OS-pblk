@@ -499,14 +499,14 @@ def _cmd_set_admin_password(args: argparse.Namespace) -> int:
     return 0
 
 
-def _console_alert(message: str) -> None:
+def _console_alert(message: str, *, user: str = "console", client: str = "console") -> None:
     """Security-lessons G9: what is done on the console shows up in the
     webUI's security alerts like what is done in the webUI."""
     from frfw.webui import audit
 
     try:
         audit.prepare(paths.AUDIT_LOG_PATH)
-        audit.alert(paths.AUDIT_LOG_PATH, message, user="console", client="console")
+        audit.alert(paths.AUDIT_LOG_PATH, message, user=user, client=client)
     except OSError:
         pass  # e.g. not root: the change itself stands
 
@@ -777,7 +777,9 @@ def _cmd_update_auto(args: argparse.Namespace) -> int:
     """fr-update-check.timer's job. Security-lessons G10: check once and
     record the result for the webUI's "update available" banner (red for
     a security release); a failed check keeps what the last good one
-    found, with the error."""
+    found, with the error. J3: with `update.auto_install_security`, also
+    install a security release -- apply_update verifies its signature
+    first, as for any update -- and tell the admins either way."""
     repo = _resolve_update_repo(args.config)
     try:
         result = update_mod.check_latest(__version__, repo=repo)
@@ -790,9 +792,34 @@ def _cmd_update_auto(args: argparse.Namespace) -> int:
     if result.latest is None or not result.update_available:
         print(f"FR_OS {__version__} is up to date")
         return 0
-    kind = "SECURITY update" if result.latest.security else "update"
-    print(f"{kind} available: {result.latest.version}")
+    version = result.latest.version
+    if not result.latest.security:
+        print(f"update available: {version}")
+        return 0
+    print(f"SECURITY update available: {version}")
+    if not _auto_install_security(args.config):
+        return 0
+    try:
+        installed = update_mod.apply_update(version, repo=repo)
+    except update_mod.UpdateError as exc:
+        update_mod.write_check_cache(result, auto_install_error=str(exc))
+        _console_alert(f"automatic install of security release {version} failed: {exc}", **_TIMER)
+        print(f"automatic install of {version} failed: {exc}", file=sys.stderr)
+        return 1
+    # The software changed without anyone clicking: that is an alert (G9).
+    _console_alert(f"security release {installed} installed automatically (was {__version__})", **_TIMER)
+    print(f"installed security release {installed}")
     return 0
+
+
+_TIMER = {"user": "fr-update-check", "client": "timer"}
+
+
+def _auto_install_security(config_path: str) -> bool:
+    try:
+        return load_config(config_path).update.auto_install_security
+    except (FileNotFoundError, ConfigError):
+        return False  # never install on a guess
 
 
 def _cmd_update_apply(args: argparse.Namespace) -> int:

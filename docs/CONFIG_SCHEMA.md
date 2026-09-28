@@ -389,6 +389,26 @@ management:
   `/etc/ssh/sshd_config.d/40-fr_os-management.conf`). With `allow_wan`
   they listen on every address; `apply` and the System screen warn.
 
+## `update`
+
+Where FR_OS looks for new releases, and whether it may install security
+releases by itself (security-lessons G10/J3).
+
+```yaml
+update:
+  repo: ""                       # optional; default: the upstream FR_OS repo
+  auto_install_security: false   # opt-in: install signed security releases automatically
+```
+
+- `repo`: `owner/name` of a GitHub repository publishing FR_OS releases
+  (a fork or a mirror). Empty means the built-in default.
+- `auto_install_security`: `fr-update-check.timer` (twice a day) installs
+  a release marked as a security release (docs/RELEASING.md) as soon as it
+  finds one -- only after its signature verifies, like any update -- and
+  the dashboard shows an alert saying what was installed, or why the
+  install failed. Ordinary releases are never installed by themselves.
+  Off by default; the Update screen has a switch for it.
+
 ## Known limitations
 
 - Only IPv4 addresses/networks are supported in `src_address`/
