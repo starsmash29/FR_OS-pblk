@@ -23,3 +23,4 @@ dnsmasq-base
 # `wg` for the WireGuard VPN (frfw.wireguard, security-lessons G8); the
 # kernel module itself ships with Debian's kernel
 wireguard-tools
+unattended-upgrades

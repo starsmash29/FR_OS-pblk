@@ -44,6 +44,25 @@ install signed security releases by itself (Update screen →
 Every release is signed (Ed25519, `SHA256SUMS.sig`); a router refuses an
 update whose signature doesn't verify against the key it ships with.
 
+## Operating system updates (review FR-003/C-02)
+
+FR_OS runs on Debian 12 (bookworm), and Debian's security fixes reach a
+router in two ways:
+
+- **Every image** is built with `bookworm-security`, and the build fails
+  if a security update is left uninstalled.
+- **Every router** installs Debian security updates by itself, daily
+  (`unattended-upgrades`, restricted to the security suite, without
+  reboots), into its persistent root. That covers OpenSSL, OpenSSH,
+  dnsmasq, Kea, nftables and the rest of userspace.
+
+**The kernel is the exception.** A live-booted FR_OS runs the kernel from
+its boot medium, so a kernel package upgrade on the router would never
+be used. Kernel fixes arrive with a new FR_OS image: we publish one when
+a Debian kernel security update matters for a router (remote reachable,
+netfilter, network drivers), and the release notes say so. Writing the
+new image to the boot medium is the way to install it today.
+
 ## Scope
 
 In scope: everything in this repository -- the webUI, the privileged

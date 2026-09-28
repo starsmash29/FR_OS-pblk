@@ -54,6 +54,35 @@ def test_package_list_has_core_dependencies():
         assert expected in packages
 
 
+def test_the_image_is_built_with_debian_security_updates():
+    """Review FR-003/C-02: this live-build writes a security suite that
+    doesn't exist (hence --security false), so bookworm-security comes
+    from config/archives -- into the build chroot and the finished image
+    -- and a hook fails the build unless it's used and fully applied."""
+    for stage in ("chroot", "binary"):
+        lines = (LIVE_BUILD_DIR / "config" / "archives" / f"debian-security.list.{stage}").read_text().splitlines()
+        assert "deb http://security.debian.org/debian-security bookworm-security main contrib non-free "\
+               "non-free-firmware" in lines
+    hooks = sorted(p.name for p in (LIVE_BUILD_DIR / "config" / "hooks").glob("*.hook.chroot"))
+    assert hooks.index("0050-security-updates.hook.chroot") < hooks.index("0100-install-frfw.hook.chroot")
+    hook = LIVE_BUILD_DIR / "config" / "hooks" / "0050-security-updates.hook.chroot"
+    assert hook.stat().st_mode & 0o111
+    text = hook.read_text()
+    assert "apt-get -y -o Dpkg::Options::=--force-confold upgrade" in text
+    assert "dist-upgrade | grep '^Inst'" in text and "exit 1" in text
+
+
+def test_the_router_installs_security_updates_but_not_the_kernel():
+    packages = set((LIVE_BUILD_DIR / "config" / "package-lists" / "frfw.list.chroot").read_text().split())
+    assert "unattended-upgrades" in packages
+    text = (LIVE_BUILD_DIR / "config" / "hooks" / "0050-security-updates.hook.chroot").read_text()
+    assert 'APT::Periodic::Unattended-Upgrade "1";' in text
+    # Only the security suite (the Debian default also takes point releases).
+    assert "#clear Unattended-Upgrade::Origins-Pattern;" in text
+    assert '"origin=Debian,codename=${distro_codename}-security,label=Debian-Security";' in text
+    assert '"linux-image-";' in text and 'Unattended-Upgrade::Automatic-Reboot "false";' in text
+
+
 def test_build_orchestration_script_exists_and_is_executable():
     script = REPO_ROOT / "installer" / "build-live-image.sh"
     assert script.is_file()
@@ -80,6 +109,8 @@ def test_bash_scripts_pass_shellcheck(path: Path):
     [
         LIVE_BUILD_DIR / "auto" / "config",
         LIVE_BUILD_DIR / "config" / "hooks" / "0100-install-frfw.hook.chroot",
+        LIVE_BUILD_DIR / "config" / "hooks" / "0050-security-updates.hook.chroot",
+        SCRIPTS_DIR / "lock-requirements.sh",
     ],
 )
 def test_posix_sh_scripts_pass_shellcheck(path: Path):

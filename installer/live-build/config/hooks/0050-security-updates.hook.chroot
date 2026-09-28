@@ -1,0 +1,57 @@
+#!/bin/sh
+# Debian security updates (review FR-003/C-02), at build time and on the
+# router.
+#
+# Build: config/archives/debian-security.list.chroot put bookworm-security
+# into the chroot's sources before the kernel and packages were installed
+# (this live-build's own --security writes a suite that doesn't exist, see
+# auto/config). Here the build fails unless that suite is really in use
+# and, after an upgrade, nothing from it is left uninstalled -- an image
+# is never published with known-fixed Debian vulnerabilities in it.
+#
+# Router: unattended-upgrades installs security updates from that suite
+# only, daily, into the persistent root. The kernel is excluded: a live
+# system boots the kernel on its boot medium, so a kernel package upgrade
+# on the router would only fill the persistence partition without ever
+# running -- kernel fixes arrive with a new FR_OS image (SECURITY.md).
+set -e
+
+if ! grep -qs "bookworm-security" /etc/apt/sources.list /etc/apt/sources.list.d/*.list; then
+    echo "frfw: bookworm-security is not in the build's apt sources" >&2
+    exit 1
+fi
+
+export DEBIAN_FRONTEND=noninteractive
+echo "frfw: installing Debian security updates..."
+apt-get update
+apt-get -y -o Dpkg::Options::=--force-confold upgrade
+
+if ! apt-cache policy | grep -q "bookworm-security"; then
+    echo "frfw: apt does not use bookworm-security (apt-cache policy)" >&2
+    exit 1
+fi
+pending=$(apt-get -s -o Dpkg::Options::=--force-confold dist-upgrade | grep '^Inst' || true)
+if [ -n "$pending" ]; then
+    echo "frfw: updates still not installed in the image:" >&2
+    echo "$pending" >&2
+    exit 1
+fi
+
+echo "frfw: enabling automatic security updates on the router..."
+cat > /etc/apt/apt.conf.d/20auto-upgrades <<'CONF'
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+CONF
+cat > /etc/apt/apt.conf.d/52fr_os-unattended-upgrades <<'CONF'
+// FR_OS (review FR-003/C-02): Debian security updates only, never a
+// reboot, never the kernel (see config/hooks/0050-security-updates).
+#clear Unattended-Upgrade::Origins-Pattern;
+Unattended-Upgrade::Origins-Pattern {
+        "origin=Debian,codename=${distro_codename}-security,label=Debian-Security";
+};
+Unattended-Upgrade::Package-Blacklist {
+        "linux-image-";
+        "linux-headers-";
+};
+Unattended-Upgrade::Automatic-Reboot "false";
+CONF

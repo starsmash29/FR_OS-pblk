@@ -33,7 +33,12 @@
 #   hardcodes the security suite as "<codename>/updates" instead of the
 #   "<codename>-security" every Debian release since stretch actually
 #   uses -- so the security line 404s. Flip back to `true` on current
-#   live-build too.
+#   live-build too. The security suite is NOT off, though (review
+#   FR-003/C-02): config/archives/debian-security.list.{chroot,binary}
+#   add the correct `bookworm-security` line to the build chroot (before
+#   the kernel and packages are installed) and to the finished image,
+#   and config/hooks/0050-security-updates.hook.chroot fails the build
+#   unless it is in use and nothing from it is left uninstalled.
 # - `--syslinux-theme live-build`: this snapshot's LB_SYSLINUX_THEME
 #   defaults to "ubuntu-oneiric" (a codename from 2011), which needs the
 #   nonexistent-in-Debian package syslinux-themes-ubuntu-oneiric.
