@@ -206,7 +206,7 @@ def test_full_wan_lan_nat_round_trip_matches_cli_expectations(logged_in_client, 
     from frfw.nft import build_ruleset
 
     ruleset = build_ruleset(config)
-    assert "iifname @lan_ifaces oifname @wan_ifaces accept" in ruleset
+    assert "iifname @lan_ifaces oifname @wan_ifaces counter accept" in ruleset
     assert "masquerade" in ruleset
 
 

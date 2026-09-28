@@ -219,6 +219,10 @@ APPID_USAGE_PATH = SENSOR_STATE_DIR / "appid_usage.json"
 #: Root-only, written by apply.
 SCHEDULE_STATE_PATH = Path("/etc/fr_os/schedule_state.json")
 
+#: When each firewall rule last matched (security-lessons K2,
+#: frfw.rule_hits), kept by fr-schedule-check.timer, read by the webUI.
+RULE_HITS_PATH = Path("/etc/fr_os/rule_hits.json")
+
 #: WebUI audit log (phase 18, see frfw.webui.audit): one JSON line per
 #: change request and login -- who, when, from where, which endpoint, and
 #: the HTTP status. Never form contents. Written by the unprivileged

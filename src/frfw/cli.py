@@ -20,6 +20,7 @@
     firewall-cli tls-fingerprints
     firewall-cli metrics-token (--generate | --disable) [--site NAME] [config.yaml]
     firewall-cli schedule-check [config.yaml]
+    firewall-cli rule-check [config.yaml]
     firewall-cli update check [config.yaml]
     firewall-cli update auto [config.yaml]
     firewall-cli update apply VERSION [--repo OWNER/REPO]
@@ -57,7 +58,7 @@ import yaml
 
 from frfw import __version__, codename_for, netdetect, paths, schedule_refresh, skeleton, xdp as xdp_mod
 from frfw import accounts as accounts_mod
-from frfw import initial_password, passwords
+from frfw import initial_password, passwords, rule_hits, rule_lint
 from frfw import persistence as persistence_mod
 from frfw import update as update_mod
 from frfw.adblock import AdblockError
@@ -314,6 +315,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     add_config_arg(p_schedule)
     p_schedule.set_defaults(handler=_cmd_schedule_check)
+
+    p_rule_check = sub.add_parser(
+        "rule-check",
+        help="the rule check: any-to-any, shadowed, unused and expired rules (exit 1 on a warning)",
+    )
+    add_config_arg(p_rule_check)
+    p_rule_check.set_defaults(handler=_cmd_rule_check)
 
     p_apps_status = sub.add_parser(
         "apps-status",
@@ -717,6 +725,12 @@ def _cmd_tls_fingerprints(args: argparse.Namespace) -> int:
 
 def _cmd_schedule_check(args: argparse.Namespace) -> int:
     config = load_config(args.config)
+    # Security-lessons K2: the same hourly run keeps the per-rule hit
+    # record the rule check uses for "unused for 90 days".
+    try:
+        rule_hits.record(rule_hits.read_counters(), [r.name for r in config.rules])
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        print(f"rule hit counters not recorded: {exc}", file=sys.stderr)
     result = schedule_refresh.check(config)
     print(result.message)
     if result.status == "config_changed":
@@ -726,6 +740,16 @@ def _cmd_schedule_check(args: argparse.Namespace) -> int:
     for message in apply_all(config).messages:
         print(message)
     return 0
+
+
+def _cmd_rule_check(args: argparse.Namespace) -> int:
+    findings = rule_lint.lint(load_config(args.config))
+    if not findings:
+        print("Rule check: no problems found")
+        return 0
+    for f in findings:
+        print(f"{f.severity:<7} {f.rule}: {f.message}")
+    return 1 if any(f.severity == rule_lint.WARNING for f in findings) else 0
 
 
 def _cmd_apps_status(args: argparse.Namespace) -> int:

@@ -19,7 +19,7 @@ def test_build_ruleset_contains_expected_rules(example_config_path):
     assert 'set wan_ifaces' in ruleset
     assert 'elements = { "eth0" }' in ruleset
     assert "policy drop;" in ruleset  # input/forward default-deny
-    assert 'iifname @lan_ifaces tcp dport 22 accept comment "rule:allow-ssh-from-lan-to-router"' in ruleset
+    assert 'iifname @lan_ifaces tcp dport 22 counter accept comment "rule:allow-ssh-from-lan-to-router"' in ruleset
     assert "oifname @wan_ifaces masquerade" in ruleset
     assert "dnat ip to 10.0.2.10:443" in ruleset
 

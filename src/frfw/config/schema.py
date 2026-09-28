@@ -110,6 +110,10 @@ class Rule:
     #: a device regardless of the address DHCP gave it.
     src_mac: str | None = None
     schedule: RuleSchedule | None = None
+    #: A temporary rule (security-lessons K2): Unix time after which it no
+    #: longer matches. The kernel enforces it (`meta time`), and rulesets
+    #: built after it leave the rule out.
+    expires: int | None = None
 
 
 @dataclass(frozen=True)

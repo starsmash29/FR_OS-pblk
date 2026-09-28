@@ -750,6 +750,43 @@ root who rewrites `RECORD` too -- that needs a manifest signed with the
 release key -- and a development install (`pip install -e`) is reported
 as not verifiable, not as clean.
 
+### The rule check and temporary rules (security-lessons K2)
+
+Firewall rule sets grow by accretion. A rule opened "for a moment" stays
+for years; a broad accept added above a narrow drop silently cancels
+it. `frfw.rule_lint` checks the rules the way a reviewer would and
+reports:
+
+- **any-to-any** accept rules;
+- accept rules that open all of a zone (or the router) to the internet,
+  without a port or a source address;
+- rules **shadowed** by an earlier rule in the same chain that matches
+  everything they do and decides differently, so they never match; with
+  the same decision, they are reported as **redundant**;
+- rules **unused** for 90 days;
+- **expired** temporary rules.
+
+"Matches everything" is decided field by field and conservatively
+(zones, protocol, port ranges, address containment, MAC, ZTNA,
+schedule, expiry): the check never calls a rule shadowed when it isn't,
+though a rule shadowed by a combination of others can slip through. It
+runs on the Rules screen (with a badge on each flagged rule), when a
+rule is added (a warning right away), and as `firewall-cli rule-check`.
+
+Every rule in the ruleset has an nft `counter`. The kernel resets them
+on each apply, so `fr-schedule-check.timer` (root, hourly) folds them
+into `/etc/fr_os/rule_hits.json`: when each rule was first seen and
+when its counter last went up. That record drives "unused for 90 days"
+and the Rules screen's "last match" column.
+
+A **temporary rule** has an `expires` time. The ruleset renders it with
+`meta time < <Unix time>`, so the kernel itself stops matching it at
+that second, without a reload or a timer. Tested in a network
+namespace: a client gets in before the expiry and not after. Rulesets
+built later leave it out. Its entry stays in config.yaml, marked
+expired, until the Rules screen's "Remove expired rules" clears it. The
+router never rewrites the admin's config on its own.
+
 ### Security updates are loud (security-lessons G10)
 
 `fr-update-check.timer` runs `firewall-cli update auto` ten minutes

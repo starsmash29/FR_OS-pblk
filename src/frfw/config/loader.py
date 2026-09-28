@@ -8,6 +8,7 @@ library, since this code is meant to run on the target router itself.
 from __future__ import annotations
 
 import base64
+import datetime
 import ipaddress
 import re
 import zoneinfo
@@ -122,7 +123,7 @@ def parse_config(raw: Any) -> Config:
 
     zones = _parse_zones(raw.get("zones", {}))
     interfaces = _parse_interfaces(raw.get("interfaces", {}), zones, _tunnel_zones(raw.get("wireguard")))
-    rules = _parse_rules(raw.get("rules", []), zones)
+    rules = _parse_rules(raw.get("rules", []), zones, tz_name)
     nat = _parse_nat(raw.get("nat", {}) or {}, zones)
     dhcp = _parse_dhcp(raw.get("dhcp", {}) or {}, zones, interfaces)
     ai_ids = _parse_ai_ids(raw.get("ai_ids", {}) or {})
@@ -244,7 +245,7 @@ def _valid_zone_ref(zone: Any, zones: dict[str, Zone]) -> bool:
     return zone is None or zone == SELF_ZONE or zone in zones
 
 
-def _parse_rules(raw: Any, zones: dict[str, Zone]) -> list[Rule]:
+def _parse_rules(raw: Any, zones: dict[str, Zone], tz_name: str | None = None) -> list[Rule]:
     if not isinstance(raw, list):
         raise ConfigError("'rules' must be a list")
     rules: list[Rule] = []
@@ -313,6 +314,10 @@ def _parse_rules(raw: Any, zones: dict[str, Zone]) -> list[Rule]:
         if body.get("schedule") is not None:
             schedule = _parse_schedule(body["schedule"], f"Rule {name!r} schedule", action)
 
+        expires = None
+        if body.get("expires") is not None:
+            expires = parse_expiry(body["expires"], tz_name, f"Rule {name!r} expires")
+
         rules.append(
             Rule(
                 name=name,
@@ -327,9 +332,28 @@ def _parse_rules(raw: Any, zones: dict[str, Zone]) -> list[Rule]:
                 require_ztna=require_ztna,
                 src_mac=src_mac,
                 schedule=schedule,
+                expires=expires,
             )
         )
     return rules
+
+
+def parse_expiry(value: Any, tz_name: str | None, what: str = "expires") -> int:
+    """A rule's expiry (security-lessons K2) as Unix time: an ISO 8601
+    date and time ("2026-10-01T18:00", or YAML's own timestamp); without
+    an offset it is read in the config's `timezone` (else the router's)."""
+    if isinstance(value, datetime.datetime):
+        moment = value
+    elif isinstance(value, str):
+        try:
+            moment = datetime.datetime.fromisoformat(value.strip())
+        except ValueError as exc:
+            raise ConfigError(f"{what}: expected a date and time like 2026-10-01T18:00, got {value!r}") from exc
+    else:
+        raise ConfigError(f"{what}: expected a date and time like 2026-10-01T18:00, got {value!r}")
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=zoneinfo.ZoneInfo(tz_name)) if tz_name else moment.astimezone()
+    return int(moment.timestamp())
 
 
 def _validate_port_spec(value: Any, what: str) -> str:

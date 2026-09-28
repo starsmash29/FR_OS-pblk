@@ -90,11 +90,30 @@ rules:
       start: "21:30"               # required with schedule, local "HH:MM"
       end: "06:30"                 # required with schedule, "HH:MM" or "24:00"
       cut_established: false       # optional; drop/reject only
+    expires: "2026-10-01T18:00"    # optional: a temporary rule (security-lessons K2)
 ```
 
 With `to_zone: self`, the rule goes into the `input` chain (no `oifname`
 constraint, since the destination is the router itself); otherwise into
 the `forward` chain.
+
+### Temporary rules and the rule check (security-lessons K2)
+
+`expires` is an ISO 8601 date and time; without an offset it is read in
+the top-level `timezone`. The kernel itself stops matching the rule at
+that second (`meta time`), with no reload needed, and rulesets built
+later leave it out. The entry stays in config.yaml, marked expired, until
+it is removed: the Rules screen has a button for that.
+
+`firewall-cli rule-check` and the Rules screen check the rules for:
+- any-to-any accept rules;
+- accept rules open to all of a zone from the internet;
+- rules shadowed or made redundant by an earlier rule;
+- rules nothing has matched for 90 days;
+- expired rules.
+
+Every rule has an nft counter. `fr-schedule-check.timer` records hourly
+when each rule last matched, in `/etc/fr_os/rule_hits.json`.
 
 ### Schedules (phase 17)
 

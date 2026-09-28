@@ -107,3 +107,11 @@ def _never_touch_the_hosts_wireguard(tmp_path_factory, monkeypatch):
     key_dir = tmp_path_factory.mktemp("etc_fr_os_wireguard")
     monkeypatch.setattr(paths, "WIREGUARD_KEY_PATH", key_dir / "private.key")
     monkeypatch.setattr(wireguard, "_run", no_tunnel_here)
+
+
+@pytest.fixture(autouse=True)
+def _never_touch_the_hosts_rule_hits(tmp_path_factory, monkeypatch):
+    """The per-rule hit record (security-lessons K2, /etc/fr_os/rule_hits.json)."""
+    from frfw import paths
+
+    monkeypatch.setattr(paths, "RULE_HITS_PATH", tmp_path_factory.mktemp("etc_fr_os_hits") / "rule_hits.json")

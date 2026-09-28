@@ -16,6 +16,8 @@ not here.
 
 from __future__ import annotations
 
+import time
+
 from frfw import management
 from frfw.config.schema import (
     SELF_ZONE,
@@ -121,7 +123,7 @@ IOT_ISOLATED_SET_NAME = "iot_isolated"
 IOT_MDNS_REPLY_PORT = 53530
 
 
-def build_ruleset(config: Config, *, clock: ScheduleClock | None = None) -> str:
+def build_ruleset(config: Config, *, clock: ScheduleClock | None = None, now: float | None = None) -> str:
     """Render `config` as one nft script. `clock` only matters for rules
     with a `schedule` (phase 17): it defaults to the current offset of
     `config.timezone` and the kernel's zone, see frfw.nft.schedule --
@@ -152,10 +154,12 @@ def build_ruleset(config: Config, *, clock: ScheduleClock | None = None) -> str:
     def _cuts(rule: Rule) -> bool:
         return rule.schedule is not None and rule.schedule.cut_established
 
-    input_cut = [r for r in config.rules if r.to_zone == SELF_ZONE and _cuts(r)]
-    forward_cut = [r for r in config.rules if r.to_zone != SELF_ZONE and _cuts(r)]
-    input_rules = [r for r in config.rules if r.to_zone == SELF_ZONE and not _cuts(r)]
-    forward_rules = [r for r in config.rules if r.to_zone != SELF_ZONE and not _cuts(r)]
+    # Security-lessons K2: a temporary rule past its expiry is left out.
+    live = active_rules(config, now)
+    input_cut = [r for r in live if r.to_zone == SELF_ZONE and _cuts(r)]
+    forward_cut = [r for r in live if r.to_zone != SELF_ZONE and _cuts(r)]
+    input_rules = [r for r in live if r.to_zone == SELF_ZONE and not _cuts(r)]
+    forward_rules = [r for r in live if r.to_zone != SELF_ZONE and not _cuts(r)]
 
     lines.append("")
     lines.append("\tchain input {")
@@ -250,6 +254,12 @@ def build_ruleset(config: Config, *, clock: ScheduleClock | None = None) -> str:
     lines.append("}")
     lines.append("")
     return "\n".join(lines)
+
+
+def active_rules(config: Config, now: float | None = None) -> list[Rule]:
+    """The rules a ruleset built at `now` contains: all but expired ones."""
+    now = time.time() if now is None else now
+    return [r for r in config.rules if r.expires is None or r.expires > now]
 
 
 def _zone_devices(config: Config) -> dict[str, list[str]]:
@@ -371,6 +381,11 @@ def _render_rule(rule: Rule, clock: ScheduleClock | None = None) -> list[str]:
     segment (frfw.nft.schedule.segments), all carrying the same comment."""
     exprs: list[str] = []
 
+    if rule.expires is not None:
+        # Security-lessons K2: the kernel itself stops matching a
+        # temporary rule at its expiry (Unix time, so no time zone).
+        exprs.append(f"meta time < {rule.expires}")
+
     if rule.from_zone is not None:
         exprs.append(f"iifname @{_iface_set_name(rule.from_zone)}")
     if rule.to_zone is not None and rule.to_zone != SELF_ZONE:
@@ -394,6 +409,9 @@ def _render_rule(rule: Rule, clock: ScheduleClock | None = None) -> list[str]:
     if rule.log:
         exprs.append(f'log prefix "fr_os/{rule.name}: "')
 
+    # Per-rule hit counters for the rule check (security-lessons K2,
+    # frfw.rule_hits): never used for 90 days is worth a look.
+    exprs.append("counter")
     exprs.append(rule.action.value)
     exprs.append(_comment(f"rule:{rule.name}"))
     if rule.schedule is None:
