@@ -782,6 +782,68 @@ with the same sandbox as `fr-update-helper.service` (it writes where an
 update writes). `SECURITY.md` publishes the fix-time targets that make
 this worth having: 7 days for a critical vulnerability.
 
+### A VPN with keys, not passwords (security-lessons G8)
+
+The 2026 firewall intrusions often started with VPN credentials:
+phished, sprayed, or read on a compromised box and replayed. FR_OS's
+remote access is WireGuard only. Each device has its own key pair, and
+the router knows only the public half. A key copied off one device
+doesn't unlock a second one, and nothing a user types can be sniffed
+and reused.
+
+- `wireguard:` in config.yaml lists the devices by public key. The
+  router's private key is in `/etc/fr_os/wireguard/private.key` (0600
+  root, directory 0700), generated on the first apply. It is never in
+  config.yaml, which the webUI can read; a `private_key` there is
+  refused. The webUI learns the router's public key and each device's
+  last handshake from the apply-helper (`wireguard_status`).
+- `frfw.wireguard.sync`, in `apply_all` right after the ruleset (like
+  forwarding):
+  - creates `wg0` if it's missing;
+  - loads keys and peers with `wg syncconf` (existing sessions survive),
+    with the private key on `wg`'s standard input, never in a file or
+    on a command line;
+  - sets the tunnel address and brings the link up.
+  With WireGuard off, it removes `wg0`.
+- The ruleset puts `wg0` in its zone's interface set and accepts the
+  UDP port from anywhere. WireGuard stays silent to any packet that
+  isn't from a known key, so the open port can't be told apart from a
+  closed one. Everything else the VPN may reach is ordinary rules.
+- The VPN screen adds a device in one of two ways:
+  - the device's own public key is pasted, and its private key never
+    leaves it;
+  - the router makes the pair and shows the device's configuration
+    once, as text and as a QR code for the WireGuard app. The page is
+    `Cache-Control: no-store`, and the private key isn't stored or
+    logged anywhere.
+  Turning the VPN on, and every new device, is a security alert (G9).
+- Tested for real: two network namespaces joined by a WireGuard tunnel
+  (the userspace wireguard-go, since the test sandbox has no kernel
+  module), with FR_OS's own ruleset on the router. A configured device
+  reaches the router through the tunnel. The same port outside the
+  tunnel is dropped, and a key the router doesn't know gets nowhere.
+  The QEMU boot test turns the VPN on through the webUI and applies it
+  on Debian's kernel module.
+
+Not done: ZTNA still signs users in with local passwords; FIDO2 there
+is future work.
+
+### Managing from outside through the VPN (security-lessons K5)
+
+The tunnel's zone doesn't face the internet, so it is a management zone
+by default (F2/G4). The firewall doesn't drop the webUI and SSH from it,
+and both listen on the router's tunnel address too: the webUI through
+the listen addresses (it restarts on apply when they change), sshd
+through its `ListenAddress` drop-in. The VPN screen's
+`webui-from-vpn`/`ssh-from-vpn` rules let them in. An admin who
+doesn't want management over the VPN lists only the other zones in
+`management.zones`. The System screen points to the VPN wherever it
+talks about remote management. When the WAN is opened while the VPN is
+on, it says there is no need to. The warnings name the VPN screen as
+the alternative. With MFA for admins (G5) this is K5's "VPN
+misconfiguration" answer: a single remote-access path, key-based, and
+nothing from the internet on the management plane.
+
 ### Sessions end on the server (security-lessons G7)
 
 A session is a signed cookie *and* an entry in `sessions.json` next to

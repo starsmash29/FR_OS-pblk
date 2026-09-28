@@ -20,3 +20,6 @@ dbus
 # the dnsmasq binary for fr-adblock-dns.service (DNS filtering); -base
 # has no dnsmasq.service of its own to fight over port 53
 dnsmasq-base
+# `wg` for the WireGuard VPN (frfw.wireguard, security-lessons G8); the
+# kernel module itself ships with Debian's kernel
+wireguard-tools

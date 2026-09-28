@@ -87,6 +87,11 @@ UPDATE_STATE_PATH = Path("/etc/fr_os/update_state.json")
 #: G10/J3), read by the webUI for the "update available" banner.
 UPDATE_CHECK_PATH = Path("/etc/fr_os/update_check.json")
 
+#: The WireGuard VPN's private key (security-lessons G8): root only,
+#: never in config.yaml. frfw.wireguard generates it on first use.
+WIREGUARD_DIR = Path("/etc/fr_os/wireguard")
+WIREGUARD_KEY_PATH = WIREGUARD_DIR / "private.key"
+
 #: Extracted release source trees, one directory per installed version,
 #: kept around after each successful update so a rollback can reinstall
 #: the previous version without needing network access again.

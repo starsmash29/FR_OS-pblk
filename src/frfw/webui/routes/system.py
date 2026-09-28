@@ -74,6 +74,8 @@ def _render_system(request: Request, username: str, raw: dict, cert_path: Path, 
         "blocked": management.blocked_zones(config),
         "addresses": management.listen_addresses(config),
         "warning": management.WAN_WARNING,
+        # Security-lessons K5: the way to manage from outside.
+        "vpn_on": config.wireguard.enabled,
     }
     metrics_raw = raw.get("metrics") or {}
     # Unprivileged: no blkid probing, only /proc (which is all the webUI needs).

@@ -7,6 +7,7 @@ library, since this code is meant to run on the target router itself.
 
 from __future__ import annotations
 
+import base64
 import ipaddress
 import re
 import zoneinfo
@@ -43,6 +44,8 @@ from frfw.config.schema import (
     TlsFingerprintConfig,
     TlsFingerprintEntry,
     UpdateConfig,
+    WireguardConfig,
+    WireguardPeer,
     XdpSniFilterConfig,
     Zone,
     ZtnaConfig,
@@ -118,7 +121,7 @@ def parse_config(raw: Any) -> Config:
             raise ConfigError(f"'timezone' must be an IANA time zone name (e.g. Europe/Budapest), got {tz_name!r}")
 
     zones = _parse_zones(raw.get("zones", {}))
-    interfaces = _parse_interfaces(raw.get("interfaces", {}), zones)
+    interfaces = _parse_interfaces(raw.get("interfaces", {}), zones, _tunnel_zones(raw.get("wireguard")))
     rules = _parse_rules(raw.get("rules", []), zones)
     nat = _parse_nat(raw.get("nat", {}) or {}, zones)
     dhcp = _parse_dhcp(raw.get("dhcp", {}) or {}, zones, interfaces)
@@ -135,6 +138,7 @@ def parse_config(raw: Any) -> Config:
     tls_fingerprint = _parse_tls_fingerprint(raw.get("tls_fingerprint", {}) or {}, xdp_sni_filter)
     metrics = _parse_metrics(raw.get("metrics", {}) or {})
     management = _parse_management(raw.get("management", {}) or {}, zones, nat)
+    wireguard = _parse_wireguard(raw.get("wireguard", {}) or {}, zones, nat, interfaces)
 
     return Config(
         version=version,
@@ -155,6 +159,7 @@ def parse_config(raw: Any) -> Config:
         tls_fingerprint=tls_fingerprint,
         metrics=metrics,
         management=management,
+        wireguard=wireguard,
         timezone=tz_name,
     )
 
@@ -184,7 +189,9 @@ def _parse_zones(raw: Any) -> dict[str, Zone]:
     return zones
 
 
-def _parse_interfaces(raw: Any, zones: dict[str, Zone]) -> dict[str, Interface]:
+def _parse_interfaces(
+    raw: Any, zones: dict[str, Zone], tunnel_zones: set[str] = frozenset()
+) -> dict[str, Interface]:
     if not isinstance(raw, dict) or not raw:
         raise ConfigError("'interfaces' must be a non-empty mapping")
     interfaces: dict[str, Interface] = {}
@@ -224,7 +231,7 @@ def _parse_interfaces(raw: Any, zones: dict[str, Zone]) -> dict[str, Interface]:
             name=name, device=device, zone=zone, address=address, description=description
         )
 
-    used_zones = {iface.zone for iface in interfaces.values()}
+    used_zones = {iface.zone for iface in interfaces.values()} | set(tunnel_zones)
     for zone_name in zones:
         if zone_name not in used_zones:
             raise ConfigError(
@@ -646,6 +653,125 @@ def _parse_management(raw: Any, zones: dict[str, Zone], nat: NatConfig) -> Manag
         if zone not in chosen:
             chosen.append(zone)
     return ManagementConfig(zones=tuple(chosen), allow_wan=allow_wan)
+
+
+#: WireGuard peer names: like ZTNA usernames (a device, not
+#: infrastructure), and safe inside a wg config comment.
+_WG_PEER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,31}\Z")
+
+
+def valid_wireguard_key(key: Any) -> bool:
+    """A WireGuard key: 32 bytes, standard base64 (44 characters)."""
+    if not isinstance(key, str) or len(key) != 44:
+        return False
+    try:
+        return len(base64.b64decode(key, validate=True)) == 32
+    except ValueError:
+        return False
+
+
+def _tunnel_zones(raw: Any) -> set[str]:
+    """The zone of a configured WireGuard tunnel counts as used, like an
+    interface's (wg0 isn't under 'interfaces')."""
+    if isinstance(raw, dict) and (raw.get("enabled") or raw.get("address")):
+        zone = raw.get("zone", "vpn")
+        return {zone} if isinstance(zone, str) else set()
+    return set()
+
+
+def _parse_wireguard(
+    raw: Any, zones: dict[str, Zone], nat: NatConfig, interfaces: dict[str, Interface]
+) -> WireguardConfig:
+    if not isinstance(raw, dict):
+        raise ConfigError("'wireguard' must be a mapping")
+    if "private_key" in raw:
+        # config.yaml is readable by the webUI; the key stays root's
+        # (frfw.wireguard keeps it in /etc/fr_os/wireguard).
+        raise ConfigError("wireguard.private_key must not be in config.yaml; the router keeps its key itself")
+    enabled = raw.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ConfigError("wireguard.enabled must be a boolean")
+    port = raw.get("listen_port", 51820)
+    if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
+        raise ConfigError("wireguard.listen_port must be a port number (1-65535)")
+
+    address = raw.get("address", "") or ""
+    network = None
+    if address:
+        try:
+            iface = ipaddress.IPv4Interface(address)
+        except (ValueError, TypeError) as exc:
+            raise ConfigError(f"wireguard.address: {address!r} is not an IPv4 address with a prefix") from exc
+        if "/" not in str(address) or iface.network.prefixlen > 30:
+            raise ConfigError("wireguard.address needs the tunnel's prefix, /30 or wider (e.g. 10.99.0.1/24)")
+        if iface.ip in (iface.network.network_address, iface.network.broadcast_address):
+            raise ConfigError(f"wireguard.address: {address} is not a host address")
+        network = iface.network
+        for other in interfaces.values():
+            if other.address and ipaddress.IPv4Interface(other.address).network.overlaps(network):
+                raise ConfigError(
+                    f"wireguard.address: the tunnel {network} overlaps interface {other.name!r} ({other.address})"
+                )
+        address = str(iface)
+
+    zone = raw.get("zone", "vpn")
+    if enabled or zone != "vpn":
+        if not isinstance(zone, str) or zone not in zones:
+            raise ConfigError(f"wireguard.zone: undefined zone {zone!r} (add it under 'zones')")
+        if zone in internet_facing_zones(zones, nat):
+            raise ConfigError(f"wireguard.zone: {zone!r} faces the internet; the tunnel needs a zone of its own")
+
+    endpoint = raw.get("endpoint", "") or ""
+    if endpoint:
+        try:
+            validate.hostname(endpoint)
+        except validate.ArgumentError as exc:
+            raise ConfigError(f"wireguard.endpoint: {exc}") from exc
+
+    peers_raw = raw.get("peers", []) or []
+    if not isinstance(peers_raw, list):
+        raise ConfigError("wireguard.peers must be a list")
+    peers: list[WireguardPeer] = []
+    names: set[str] = set()
+    keys: set[str] = set()
+    addresses: set[ipaddress.IPv4Address] = set()
+    for i, body in enumerate(peers_raw):
+        if not isinstance(body, dict):
+            raise ConfigError(f"wireguard.peers[{i}] must be a mapping")
+        name = body.get("name")
+        if not isinstance(name, str) or not _WG_PEER_NAME_RE.match(name):
+            raise ConfigError(f"wireguard.peers[{i}]: invalid name {name!r}")
+        if name in names:
+            raise ConfigError(f"wireguard.peers[{i}]: duplicate name {name!r}")
+        key = body.get("public_key")
+        if not valid_wireguard_key(key):
+            raise ConfigError(f"wireguard.peers[{i}] ({name}): public_key is not a WireGuard key")
+        if key in keys:
+            raise ConfigError(f"wireguard.peers[{i}] ({name}): the same public_key is used twice")
+        if network is None:
+            raise ConfigError("wireguard.peers need wireguard.address (the tunnel subnet)")
+        peer_addr = body.get("address")
+        try:
+            peer_iface = ipaddress.IPv4Interface(peer_addr)
+        except (ValueError, TypeError) as exc:
+            raise ConfigError(f"wireguard.peers[{i}] ({name}): invalid address {peer_addr!r}") from exc
+        if peer_iface.network.prefixlen != 32:
+            raise ConfigError(f"wireguard.peers[{i}] ({name}): the address must be a single host (/32)")
+        ip = peer_iface.ip
+        if ip not in network or ip in (network.network_address, network.broadcast_address,
+                                       ipaddress.IPv4Interface(address).ip):
+            raise ConfigError(f"wireguard.peers[{i}] ({name}): {ip} is not a free host address in {network}")
+        if ip in addresses:
+            raise ConfigError(f"wireguard.peers[{i}] ({name}): address {ip} is used twice")
+        names.add(name)
+        keys.add(key)
+        addresses.add(ip)
+        peers.append(WireguardPeer(name=name, public_key=key, address=f"{ip}/32"))
+
+    if enabled and network is None:
+        raise ConfigError("wireguard.enabled is true but wireguard.address (the tunnel subnet) is not set")
+    return WireguardConfig(enabled=enabled, listen_port=port, address=address, zone=zone,
+                           endpoint=endpoint, peers=peers)
 
 
 def _parse_pqc(raw: Any) -> PqcConfig:

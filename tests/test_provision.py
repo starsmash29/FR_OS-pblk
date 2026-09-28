@@ -45,9 +45,10 @@ def test_apply_all_runs_every_step_in_order(minimal_config_dict, tmp_path):
         adblock_dnsmasq_conf_path=tmp_path / "dnsmasq_adblock.conf",
     )
 
-    assert len(result.messages) == 14
+    assert len(result.messages) == 15
     assert "Ruleset applied" in result.messages[0]
     assert result.messages[1] == "IPv4 forwarding turned on"  # only after the ruleset
+    assert result.messages.pop(2) == "WireGuard off"  # security-lessons G8, also behind the ruleset
     assert "No interface addresses" in result.messages[2]
     assert "No DHCP zones" in result.messages[3]
     assert "Ad-block DNS resolver disabled" in result.messages[4]
@@ -200,7 +201,7 @@ def test_apply_all_applies_addresses_and_dhcp_together(dhcp_config_dict, tmp_pat
         ["link", "set", "dev", "lo", "up"],
     ]
     assert kea_path.exists()
-    assert "Kea DHCP config applied" in result.messages[3]
+    assert "Kea DHCP config applied" in result.messages[4]
 
 
 def test_apply_all_skips_bruteforce_snapshot_restore_on_dry_run(minimal_config_dict, tmp_path, monkeypatch):
@@ -491,3 +492,28 @@ def test_forwarding_is_turned_on_only_after_the_ruleset_loads(minimal_config_dic
         apply_all(parse_config(minimal_config_dict), backup_dir=tmp_path / "b", kea_config_path=tmp_path / "k.json",
                   xdp_state_path=tmp_path / "x.json")
     assert forwarding.IP_FORWARD_PATH.read_text().strip() == "0"
+
+
+def test_the_vpn_comes_up_only_behind_the_ruleset(minimal_config_dict, tmp_path, monkeypatch):
+    """Security-lessons G8: like forwarding, the tunnel is synced after the
+    ruleset is loaded, and not at all when loading it fails."""
+    from frfw import wireguard
+
+    order = []
+    monkeypatch.setattr(apply_mod, "_run_nft", lambda args, stdin: order.append("nft"))
+    monkeypatch.setattr(wireguard, "sync", lambda config, **kw: order.append("wireguard") or
+                        wireguard.SyncResult("WireGuard off"))
+    apply_all(parse_config(minimal_config_dict), backup_dir=tmp_path / "b", kea_config_path=tmp_path / "k.json",
+              xdp_state_path=tmp_path / "x.json")
+    assert "nft" in order and order[-1] == "wireguard" and order.count("wireguard") == 1
+
+    order.clear()
+
+    def nft_fails(args, stdin):
+        raise apply_mod.NftError("syntax error")
+
+    monkeypatch.setattr(apply_mod, "_run_nft", nft_fails)
+    with pytest.raises(apply_mod.NftError):
+        apply_all(parse_config(minimal_config_dict), backup_dir=tmp_path / "b", kea_config_path=tmp_path / "k.json",
+                  xdp_state_path=tmp_path / "x.json")
+    assert "wireguard" not in order

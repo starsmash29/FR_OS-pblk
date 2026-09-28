@@ -86,8 +86,15 @@
   <p>The webUI and SSH listen on <code>{{ management.addresses | join(", ") }}</code> and are reachable from
     {% if management.zones %}the <strong>{{ management.zones | join(", ") }}</strong> zone(s){% else %}no zone (console only){% endif %}.
     {% if management.blocked %}The firewall drops them from <strong>{{ management.blocked | join(", ") }}</strong>, whatever the rules say.{% endif %}</p>
+  <p>
+    {% if management.vpn_on %}Away from home, manage the router through the <a href="/vpn">VPN</a>: it is on, and the
+    webUI and SSH listen on its tunnel address too.{% if management.allow_wan %} There is no need to open them to the
+    internet as well -- turn that off below.{% endif %}
+    {% else %}To manage the router from outside, turn on the <a href="/vpn">VPN</a> (WireGuard) rather than opening the
+    webUI and SSH to the internet.{% endif %}
+  </p>
   <form method="post" action="/system/management"
-        onsubmit="return !this.allow_wan.checked || confirm('Make the webUI and SSH reachable from the internet? A VPN (WireGuard) is the safer way to manage the router remotely.')">
+        onsubmit="return !this.allow_wan.checked || confirm('Make the webUI and SSH reachable from the internet? The VPN (WireGuard, VPN screen) is the safer way to manage the router remotely.')">
     <label class="checkbox-row"><input type="checkbox" name="allow_wan" value="true" {{ "checked" if management.allow_wan }}> Allow management from the internet (WAN) -- not recommended</label>
     <button type="submit">Save</button>
   </form>

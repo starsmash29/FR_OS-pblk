@@ -11,6 +11,11 @@ set -e
 echo "frfw: installing from bundled source (/opt/frfw-src)..."
 pip3 install --break-system-packages --no-cache-dir /opt/frfw-src[webui]
 
+# The WireGuard module is loaded at boot (security-lessons G8), so the
+# sandboxed units that apply the config (ProtectKernelModules=yes) never
+# have to load it themselves.
+echo wireguard > /etc/modules-load.d/fr_os-wireguard.conf
+
 echo "frfw: staging scripts and systemd units..."
 install -m 0755 /opt/frfw-src/scripts/fr-first-boot.sh /usr/local/sbin/fr-first-boot.sh
 install -m 0755 /opt/frfw-src/scripts/install-system-integration.sh /usr/local/sbin/install-system-integration.sh

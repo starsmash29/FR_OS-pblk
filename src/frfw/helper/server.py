@@ -30,7 +30,7 @@ from pathlib import Path
 
 import yaml
 
-from frfw import bruteforce, conntrack, hwinfo, ids_quarantine, iot_isolation, kea, paths, surface, svc, ztna
+from frfw import bruteforce, conntrack, hwinfo, ids_quarantine, iot_isolation, kea, paths, surface, svc, wireguard, ztna
 from frfw.adblock import AdblockError
 from frfw.iot import leases as iot_leases
 from frfw.iot_isolation import IotIsolationError
@@ -50,6 +50,7 @@ from frfw.provision import apply_all
 from frfw.surface import SurfaceError
 from frfw.webui import audit as webui_audit
 from frfw.forwarding import ForwardingError
+from frfw.wireguard import WireguardError
 from frfw.ztna import ZtnaError
 
 _SD_LISTEN_FDS_START = 3
@@ -145,11 +146,14 @@ def _handle_request(request: dict, server: "ApplyHelperServer") -> dict:
         if cmd == "audit_append":
             return _handle_audit_append(request, server)
 
+        if cmd == "wireguard_status":
+            return {"ok": True, **wireguard.status()}
+
         return {"ok": False, "message": f"unknown command {cmd!r}"}
     except (
         ConfigError, NftError, IfaddrError, KeaError, ZtnaError, PqcError, AdblockError,
         BruteforceError, IdsQuarantineError, ConntrackError, HwInfoError, IotIsolationError,
-        SurfaceError, ForwardingError, FileNotFoundError, yaml.YAMLError,
+        SurfaceError, ForwardingError, WireguardError, FileNotFoundError, yaml.YAMLError,
     ) as exc:
         return {"ok": False, "message": str(exc)}
 

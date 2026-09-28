@@ -1287,7 +1287,7 @@ candidates for later releases:
 
 - **Networking**: VLAN provisioning and a port matrix, LACP link
   aggregation, policy-based routing and multi-WAN failover, BGP/OSPF
-  peering, WireGuard VPN (peers with QR provisioning), Dynamic DNS,
+  peering, Dynamic DNS,
   DNS static overrides, encrypted DoH/DoT upstreams, DHCP lease inventory
   with static-lease pinning, ARP/NDP neighbour table.
 - **Traffic shaping**: CAKE/fq_codel smart queue management, HTB tree

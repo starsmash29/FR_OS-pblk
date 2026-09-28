@@ -45,7 +45,7 @@ ANY = "0.0.0.0"
 
 WAN_WARNING = (
     "management.allow_wan is on: the webUI and SSH are reachable from the internet. "
-    "Use a VPN (WireGuard) for remote management instead and turn this off."
+    "Use the WireGuard VPN (VPN screen) for remote management instead and turn this off."
 )
 
 
@@ -83,6 +83,10 @@ def listen_addresses(config: Config) -> list[str]:
             ip = str(ipaddress.IPv4Interface(iface.address).ip)
             if ip not in addresses:
                 addresses.append(ip)
+    wg = config.wireguard
+    if wg.enabled and wg.zone in zones:
+        # Security-lessons K5: manage the router through the VPN.
+        addresses.append(str(ipaddress.IPv4Interface(wg.address).ip))
     return addresses
 
 

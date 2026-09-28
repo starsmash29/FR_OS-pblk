@@ -24,6 +24,7 @@ NAV = [
         ("Rules", "/rules", "security", False),
         ("NAT", "/nat", "alt_route", False),
         ("DHCP", "/dhcp", "dynamic_form", False),
+        ("VPN", "/vpn", "key", False),
     ]),
     ("Protection", [
         ("AI IDS/IPS", "/ai-ids", "psychology", False),

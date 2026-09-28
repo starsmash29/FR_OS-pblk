@@ -28,7 +28,9 @@ without (TCG). Exit status 0 = every check passed.
 from __future__ import annotations
 
 import argparse
+import base64
 import http.cookiejar
+import os
 import re
 import shutil
 import socket
@@ -261,6 +263,19 @@ def main() -> int:
     check(done.endswith("/"), f"setup renamed the account to {NEW_USERNAME!r} with a new password")
     if done.endswith("/"):
         post(opener, "/rules/timezone", {"timezone": "Europe/Budapest"})
+        # Security-lessons G8: the WireGuard VPN on Debian's own kernel
+        # module (the unit tests use the userspace implementation).
+        post(opener, "/vpn/settings", {"enabled": "true", "address": "10.99.0.1/24", "listen_port": "51820",
+                                       "endpoint": "vpn.example.net"})
+        device_key = base64.b64encode(os.urandom(32)).decode()
+        post(opener, "/vpn/peers/add", {"name": "laptop", "public_key": device_key})
+        applied = urllib.parse.unquote_plus(post(opener, "/apply", {}))
+        check("WireGuard up: wg0 10.99.0.1/24, UDP 51820, 1 peer(s)" in applied,
+              "the VPN came up on the kernel's WireGuard (security-lessons G8)"
+              + ("" if "WireGuard up" in applied else f": {applied[:300]}"))
+        listen = re.search(r"webUI restarting to listen on ([0-9., ]+)", applied)
+        check(listen is not None and "10.99.0.1" in listen.group(1),
+              "the webUI also listens on the VPN's tunnel address (security-lessons K5)")
         time.sleep(5)  # fr-initial-password.path reacts to the account file
     check(vm.power_off(), "powered off")
     vm.kill()
@@ -279,6 +294,13 @@ def main() -> int:
         check(audit_log.exists() and audit_log.stat().st_uid == 0 and audit_log.stat().st_mode & 0o777 == 0o640
               and '"via": "webui"' in audit_log.read_text(),
               "the webUI's audit entries went through the apply-helper into the root-owned log (0640)")
+        key = upper / "etc" / "fr_os" / "wireguard" / "private.key"
+        check(key.exists() and key.stat().st_uid == 0 and key.stat().st_mode & 0o777 == 0o600
+              and key.parent.stat().st_mode & 0o777 == 0o700
+              and key.read_text().strip() not in (upper / "etc" / "fr_os" / "config.yaml").read_text(),
+              "the router's WireGuard key is root's (0600, 0700 directory) and not in config.yaml")
+        check("WireGuard VPN turned on" in audit_log.read_text() and "new VPN device 'laptop'" in audit_log.read_text(),
+              "turning the VPN on and adding a device are security alerts")
         timer = journal(upper, "-b", "-u", "fr-update-check.timer")
         check("Started" in timer, "the periodic update check (fr-update-check.timer) is armed (security-lessons G10)")
         check("IPv4 forwarding" in journal(upper, "-b", "-u", "fr-firewall.service"),
