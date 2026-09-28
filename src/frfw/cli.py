@@ -69,6 +69,7 @@ from frfw import apply as apply_mod
 from frfw.apply import NftError, list_backups, rollback_last
 from frfw.tlsfp.daemon import load_state as load_tlsfp_state
 from frfw.config import ConfigError, load_config, parse_config
+from frfw.forwarding import ForwardingError
 from frfw.metrics import generate_metrics_token
 from frfw.ids_quarantine import IdsQuarantineError, list_quarantined
 from frfw.iot_isolation import IotIsolationError, list_isolated
@@ -109,6 +110,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     except IotIsolationError as exc:
         print(f"IoT isolation error: {exc}", file=sys.stderr)
+        return 1
+    except ForwardingError as exc:
+        print(f"routing error: {exc}", file=sys.stderr)
         return 1
 
 

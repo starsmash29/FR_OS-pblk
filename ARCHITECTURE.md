@@ -911,6 +911,19 @@ then. What it can't see is said on the page: upstream NAT or the ISP,
 and port forwards to other hosts -- for those it suggests an `nmap` of
 the WAN address from outside (there is no built-in outside scanner).
 
+### Routing: IPv4 forwarding
+
+Found in review after step 4: nothing ever turned the kernel's IPv4
+forwarding on, and Debian's default is off, so LAN traffic never reached
+the WAN whatever the rules said. `apply` now turns it on
+(`frfw.forwarding`) right after the ruleset is loaded -- never before, so
+the kernel never routes without the forward chain in place -- and on
+every apply, so no sysctl.d file is needed. The fail-closed baseline
+leaves it off. The units that apply keep `/proc/sys` writable (no
+`ProtectKernelTunables`) for this. Tested with three network namespaces
+(client, router, server: a connection gets through only after it), and
+the QEMU boot test checks the boot-time apply turned it on.
+
 ### Every service in a sandbox (security-lessons I1)
 
 Every FR_OS unit runs in a systemd sandbox; `tests/test_systemd_sandbox.py`

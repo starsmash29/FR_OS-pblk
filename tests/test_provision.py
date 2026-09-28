@@ -45,25 +45,26 @@ def test_apply_all_runs_every_step_in_order(minimal_config_dict, tmp_path):
         adblock_dnsmasq_conf_path=tmp_path / "dnsmasq_adblock.conf",
     )
 
-    assert len(result.messages) == 13
+    assert len(result.messages) == 14
     assert "Ruleset applied" in result.messages[0]
-    assert "No interface addresses" in result.messages[1]
-    assert "No DHCP zones" in result.messages[2]
-    assert "Ad-block DNS resolver disabled" in result.messages[3]
-    assert "XDP SNI filter disabled" in result.messages[4]
-    assert "Brute-force jail" in result.messages[5]
-    assert "0 active ban(s) preserved" in result.messages[5]
-    assert "AI IDS quarantine" in result.messages[6]
-    assert "0 active quarantine(s) preserved" in result.messages[6]
-    assert "ZTNA gate disabled" in result.messages[7]
-    assert "IoT isolation disabled" in result.messages[8]
-    assert "PQC hybrid TLS disabled" in result.messages[9]
+    assert result.messages[1] == "IPv4 forwarding turned on"  # only after the ruleset
+    assert "No interface addresses" in result.messages[2]
+    assert "No DHCP zones" in result.messages[3]
+    assert "Ad-block DNS resolver disabled" in result.messages[4]
+    assert "XDP SNI filter disabled" in result.messages[5]
+    assert "Brute-force jail" in result.messages[6]
+    assert "0 active ban(s) preserved" in result.messages[6]
+    assert "AI IDS quarantine" in result.messages[7]
+    assert "0 active quarantine(s) preserved" in result.messages[7]
+    assert "ZTNA gate disabled" in result.messages[8]
+    assert "IoT isolation disabled" in result.messages[9]
+    assert "PQC hybrid TLS disabled" in result.messages[10]
     # This sandbox has no sshd installed at all, which is itself a real,
     # correctly-detected state (see frfw.pqc.sync_ssh_kex) rather than a
     # mock -- there is nothing to fake here.
-    assert "sshd not installed" in result.messages[10] or "PQC hybrid SSH KEX disabled" in result.messages[10]
-    assert "sshd not installed" in result.messages[11] or "sshd listens on" in result.messages[11]
-    assert result.messages[12].startswith("webUI listens on")
+    assert "sshd not installed" in result.messages[11] or "PQC hybrid SSH KEX disabled" in result.messages[11]
+    assert "sshd not installed" in result.messages[12] or "sshd listens on" in result.messages[12]
+    assert result.messages[13].startswith("webUI listens on")
 
 
 def _iot_config_dict(base: dict) -> dict:
@@ -199,7 +200,7 @@ def test_apply_all_applies_addresses_and_dhcp_together(dhcp_config_dict, tmp_pat
         ["link", "set", "dev", "lo", "up"],
     ]
     assert kea_path.exists()
-    assert "Kea DHCP config applied" in result.messages[2]
+    assert "Kea DHCP config applied" in result.messages[3]
 
 
 def test_apply_all_skips_bruteforce_snapshot_restore_on_dry_run(minimal_config_dict, tmp_path, monkeypatch):
@@ -463,3 +464,30 @@ def test_a_missing_interface_does_not_stop_the_ruleset_from_loading(minimal_conf
             xdp_state_path=tmp_path / "xdp_state.json",
         )
     assert ["-f", "-"] in loaded
+
+
+def test_forwarding_is_turned_on_only_after_the_ruleset_loads(minimal_config_dict, tmp_path, monkeypatch):
+    """Found in review: nothing turned IPv4 forwarding on, so the router
+    didn't route. It must come after the ruleset (never a moment of
+    unfiltered routing), and a failed ruleset load must leave it off."""
+    from frfw import forwarding
+
+    order = []
+    monkeypatch.setattr(apply_mod, "_run_nft", lambda args, stdin: order.append("nft"))
+    real_enable = forwarding.enable
+    monkeypatch.setattr(forwarding, "enable", lambda **kw: order.append("forwarding") or real_enable(**kw))
+    apply_all(parse_config(minimal_config_dict), backup_dir=tmp_path / "b", kea_config_path=tmp_path / "k.json",
+              xdp_state_path=tmp_path / "x.json")
+    assert order.index("forwarding") > order.index("nft")
+    assert forwarding.IP_FORWARD_PATH.read_text().strip() == "1"
+
+    forwarding.IP_FORWARD_PATH.write_text("0\n")
+
+    def nft_fails(args, stdin):
+        raise apply_mod.NftError("syntax error")
+
+    monkeypatch.setattr(apply_mod, "_run_nft", nft_fails)
+    with pytest.raises(apply_mod.NftError):
+        apply_all(parse_config(minimal_config_dict), backup_dir=tmp_path / "b", kea_config_path=tmp_path / "k.json",
+                  xdp_state_path=tmp_path / "x.json")
+    assert forwarding.IP_FORWARD_PATH.read_text().strip() == "0"

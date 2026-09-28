@@ -49,6 +49,7 @@ from frfw.pqc import PqcError
 from frfw.provision import apply_all
 from frfw.surface import SurfaceError
 from frfw.webui import audit as webui_audit
+from frfw.forwarding import ForwardingError
 from frfw.ztna import ZtnaError
 
 _SD_LISTEN_FDS_START = 3
@@ -148,7 +149,7 @@ def _handle_request(request: dict, server: "ApplyHelperServer") -> dict:
     except (
         ConfigError, NftError, IfaddrError, KeaError, ZtnaError, PqcError, AdblockError,
         BruteforceError, IdsQuarantineError, ConntrackError, HwInfoError, IotIsolationError,
-        SurfaceError, FileNotFoundError, yaml.YAMLError,
+        SurfaceError, ForwardingError, FileNotFoundError, yaml.YAMLError,
     ) as exc:
         return {"ok": False, "message": str(exc)}
 

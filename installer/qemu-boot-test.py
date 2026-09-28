@@ -281,6 +281,8 @@ def main() -> int:
               "the webUI's audit entries went through the apply-helper into the root-owned log (0640)")
         timer = journal(upper, "-b", "-u", "fr-update-check.timer")
         check("Started" in timer, "the periodic update check (fr-update-check.timer) is armed (security-lessons G10)")
+        check("IPv4 forwarding" in journal(upper, "-b", "-u", "fr-firewall.service"),
+              "the boot-time apply turned IPv4 forwarding on (the router routes)")
 
     print()
     if check.failures:
