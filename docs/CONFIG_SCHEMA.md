@@ -398,6 +398,10 @@ wireguard:
 - Refused: a tunnel subnet overlapping an interface's, a peer address
   outside the tunnel or used twice, the same public key twice, an
   internet-facing `zone`.
+- The tunnel's zone is a management zone unless `management.zones` says
+  otherwise: the webUI and SSH listen on the router's tunnel address, so
+  remote management goes through the VPN instead of `allow_wan`
+  (security-lessons K5).
 - Needs the `wireguard` kernel module (Debian's kernel has it; the FR_OS
   image loads it at boot) and `wg` from wireguard-tools.
 

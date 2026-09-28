@@ -828,6 +828,22 @@ and reused.
 Not done: ZTNA still signs users in with local passwords; FIDO2 there
 is future work.
 
+### Managing from outside through the VPN (security-lessons K5)
+
+The tunnel's zone doesn't face the internet, so it is a management zone
+by default (F2/G4). The firewall doesn't drop the webUI and SSH from it,
+and both listen on the router's tunnel address too: the webUI through
+the listen addresses (it restarts on apply when they change), sshd
+through its `ListenAddress` drop-in. The VPN screen's
+`webui-from-vpn`/`ssh-from-vpn` rules let them in. An admin who
+doesn't want management over the VPN lists only the other zones in
+`management.zones`. The System screen points to the VPN wherever it
+talks about remote management. When the WAN is opened while the VPN is
+on, it says there is no need to. The warnings name the VPN screen as
+the alternative. With MFA for admins (G5) this is K5's "VPN
+misconfiguration" answer: a single remote-access path, key-based, and
+nothing from the internet on the management plane.
+
 ### Sessions end on the server (security-lessons G7)
 
 A session is a signed cookie *and* an entry in `sessions.json` next to

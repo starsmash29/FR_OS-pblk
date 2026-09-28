@@ -273,6 +273,9 @@ def main() -> int:
         check("WireGuard up: wg0 10.99.0.1/24, UDP 51820, 1 peer(s)" in applied,
               "the VPN came up on the kernel's WireGuard (security-lessons G8)"
               + ("" if "WireGuard up" in applied else f": {applied[:300]}"))
+        listen = re.search(r"webUI restarting to listen on ([0-9., ]+)", applied)
+        check(listen is not None and "10.99.0.1" in listen.group(1),
+              "the webUI also listens on the VPN's tunnel address (security-lessons K5)")
         time.sleep(5)  # fr-initial-password.path reacts to the account file
     check(vm.power_off(), "powered off")
     vm.kill()
