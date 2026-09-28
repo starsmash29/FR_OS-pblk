@@ -275,6 +275,8 @@ def main() -> int:
         check_sandboxed_services(check, upper, "-b")
         check("Server listening" not in journal(upper, "-b", "-u", "ssh.service"),
               "sshd did not listen at all this boot (off while nobody has a key)")
+        check("IPv4 forwarding" in journal(upper, "-b", "-u", "fr-firewall.service"),
+              "the boot-time apply turned IPv4 forwarding on (the router routes)")
 
     print()
     if check.failures:

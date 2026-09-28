@@ -52,6 +52,7 @@ from pathlib import Path
 
 from frfw import (
     bruteforce,
+    forwarding,
     ids_quarantine,
     ifaddr,
     iot_isolation,
@@ -169,6 +170,9 @@ def apply_all(
     if preserve_iot and iot_snapshot:
         iot_isolation.restore_after_reload(iot_snapshot)
         iot_preserved = len(iot_snapshot)
+
+    # Routing only once the forward chain is loaded (frfw.forwarding).
+    messages.append(forwarding.enable(dry_run=dry_run))
 
     # Addresses only after the ruleset is in: a device name in the config
     # that doesn't exist on this machine fails here, and must not leave
