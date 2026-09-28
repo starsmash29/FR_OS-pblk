@@ -53,3 +53,6 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "reads_runtime_sets: the test reads the live nft runtime sets itself (see tests/conftest.py)",
+]

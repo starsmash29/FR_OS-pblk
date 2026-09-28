@@ -67,26 +67,11 @@ def test_snapshot_before_reload_returns_empty_when_set_missing(monkeypatch):
     assert bruteforce_mod.snapshot_before_reload() == []
 
 
-def test_snapshot_before_reload_never_raises_on_unexpected_error(monkeypatch):
+def test_snapshot_before_reload_raises_on_unexpected_error(monkeypatch):
     monkeypatch.setattr(bruteforce_mod, "_run_nft", lambda args: _fake_completed(1, stderr="some other error"))
-    assert bruteforce_mod.snapshot_before_reload() == []
-
-
-def test_restore_after_reload_skips_expired_and_continues_past_failures(monkeypatch):
-    calls = []
-
-    def fake_run_nft(args):
-        calls.append(args)
-        if "1.2.3.4" in " ".join(args):
-            return _fake_completed(1, stderr="no such set")
-        return _fake_completed()
-
-    monkeypatch.setattr(bruteforce_mod, "_run_nft", fake_run_nft)
-
-    bruteforce_mod.restore_after_reload([("10.0.0.1", 0), ("1.2.3.4", 100), ("10.0.0.2", 50)])
-
-    assert len(calls) == 2  # the expired one never even calls nft
-    assert any("10.0.0.2 timeout 50s" in " ".join(c) for c in calls)
+    # Review FR-002: an unreadable set stops the apply instead of releasing everyone.
+    with pytest.raises(bruteforce_mod.BruteforceError, match="some other error"):
+        bruteforce_mod.snapshot_before_reload()
 
 
 # --- real integration tests: actual kernel nftables state -------------------
@@ -134,23 +119,10 @@ def test_real_kernel_evicts_expired_ban_on_its_own(real_jail_table):
 
 @requires_nft
 @requires_root
-def test_real_snapshot_and_restore_preserves_remaining_time(real_jail_table):
+def test_real_snapshot_reads_remaining_time(real_jail_table):
     bruteforce_mod.ban_ip("10.98.0.3", 3600)
-
-    snapshot = bruteforce_mod.snapshot_before_reload()
-    assert any(ip == "10.98.0.3" for ip, _ in snapshot)
-
-    # Simulate the ruleset reload wiping the set (frfw.nft.builder's
-    # `flush ruleset` would do this to the *whole* kernel state; flushing
-    # just our test set's contents is the equivalent for this test).
-    subprocess.run(["nft", "flush", "set", "inet", real_jail_table, "jail_test"], check=True)
-    assert bruteforce_mod.snapshot_before_reload() == []
-
-    bruteforce_mod.restore_after_reload(snapshot)
-
-    restored = bruteforce_mod.snapshot_before_reload()
-    matches = [remaining for ip, remaining in restored if ip == "10.98.0.3"]
-    assert matches and matches[0] > 0
+    matches = [left for ip, left in bruteforce_mod.snapshot_before_reload() if ip == "10.98.0.3"]
+    assert matches and 3500 < matches[0] <= 3600
 
 
 @requires_nft

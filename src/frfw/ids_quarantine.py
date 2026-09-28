@@ -15,7 +15,7 @@ itself for years (review C-04).
 
 This module is a deliberate close structural mirror of frfw.bruteforce
 (itself a mirror of frfw.ztna) rather than sharing code with either of
-them: same `_nft`/`_run_nft`/`_list_set_elements`/snapshot-restore shape,
+them: same `_nft`/`_run_nft`/`_list_set_elements`/snapshot shape,
 against a third, independent kernel set. See frfw.bruteforce's own
 docstring for why this project keeps doing this instead of factoring out
 a shared "banned-IP-set" base class -- a jail set of banned IPs, a set
@@ -47,9 +47,9 @@ jail have. Since IDS_QUARANTINE_SET_NAME is declared unconditionally
 apply -- not just ones enabling some optional feature -- would otherwise
 silently un-quarantine every currently-quarantined IP the instant an
 admin saves any unrelated config change.
-`snapshot_before_reload()`/`restore_after_reload()` exist to prevent
-exactly that, called from `frfw.provision.apply_all` the same way as the
-brute-force jail's and ZTNA's own pairs.
+`snapshot_before_reload()` exists to prevent exactly that: the live
+quarantines are carried into the new ruleset (frfw.nft.RuntimeSets) by
+`frfw.provision.apply_all`, like the brute-force jail's and ZTNA's.
 """
 
 from __future__ import annotations
@@ -110,45 +110,23 @@ def quarantine_ip(ip: str, duration_seconds: int, *, own_addresses: frozenset[st
 
 def list_quarantined() -> list[tuple[str, int]]:
     """Live (ip, remaining_seconds) pairs for every currently quarantined
-    IP -- the webUI dashboard/AI IDS screen's status query. Unlike
-    `snapshot_before_reload()` below, this does NOT swallow nft errors:
-    a status query should surface a genuine problem (e.g. `nft` itself
-    missing) to the admin rather than silently reporting zero
+    IP -- the webUI dashboard/AI IDS screen's status query. Surfaces a
+    genuine nft problem to the admin rather than silently reporting zero
     quarantined hosts."""
     return _list_set_elements()
 
 
 def snapshot_before_reload() -> list[tuple[str, int]]:
-    """Best-effort (ip, remaining_seconds) pairs for every currently
-    quarantined IP, to hand to `restore_after_reload()` after a full
-    ruleset reload wipes the set (see this module's docstring). Never
-    raises -- mirrors `frfw.bruteforce.snapshot_before_reload`'s exact
-    reasoning: a fresh install, a temporarily missing `nft` binary, or
-    any other failure just means "nothing to preserve", never a reason
-    to fail an otherwise-valid firewall apply."""
-    try:
-        return _list_set_elements()
-    except IdsQuarantineError:
-        return []
-
-
-def restore_after_reload(snapshot: list[tuple[str, int]]) -> None:
-    """Re-adds every (ip, remaining_seconds) pair from a prior
-    `snapshot_before_reload()` call, each with a fresh timeout set to its
-    captured remaining time. Best-effort per element, and never raises --
-    identical rationale to `frfw.bruteforce.restore_after_reload`."""
-    for ip, remaining in snapshot:
-        if remaining <= 0:
-            continue
-        try:
-            _nft(
-                [
-                    "add", "element", "inet", FILTER_TABLE, IDS_QUARANTINE_SET_NAME,
-                    "{", f"{ip} timeout {remaining}s", "}",
-                ]
-            )
-        except IdsQuarantineError:
-            continue
+    """Every currently quarantined IP (ip, seconds left), read just
+    before a full ruleset reload: frfw.provision.apply_all passes them to
+    frfw.nft.build_ruleset, which writes them into the new ruleset's set
+    declaration, so they survive the reload in the same nft transaction
+    (review FR-002). A set or table that isn't loaded yet means nothing
+    to carry over; any other failure raises IdsQuarantineError -- the apply then
+    stops before touching the running ruleset, rather than silently
+    releasing everyone.
+    """
+    return _list_set_elements()
 
 
 # --- kernel state (nft) -------------------------------------------------

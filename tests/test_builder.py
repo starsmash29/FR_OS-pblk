@@ -184,3 +184,32 @@ def test_ztna_enabled_ruleset_passes_nft_syntax_check(minimal_config_dict):
         ["nft", "-c", "-f", "-"], input=ruleset, capture_output=True, text=True
     )
     assert proc.returncode == 0, proc.stderr
+
+
+@requires_nft
+@pytest.mark.reads_runtime_sets
+@pytest.mark.skipif(__import__("os").geteuid() != 0, reason="loading a ruleset needs root")
+def test_real_reload_keeps_bans_quarantines_and_sessions(minimal_config_dict):
+    """Review FR-002 against the kernel: read the live sets, reload with a
+    fresh ruleset carrying them, and everything is still there with its
+    remaining time -- no separate restore step involved."""
+    from frfw import bruteforce, ids_quarantine, provision, ztna
+
+    minimal_config_dict["ztna"] = {"enabled": True, "users": [{"username": "a", "password_hash": "x"}]}
+    config = parse_config(minimal_config_dict)
+    try:
+        subprocess.run(["nft", "-f", "-"], input=build_ruleset(config), text=True, check=True)
+        bruteforce.ban_ip("203.0.113.5", 600)
+        ids_quarantine.quarantine_ip("10.0.0.9", 600)
+        subprocess.run(["nft", "add", "element", "inet", "fr_os", "authenticated_ztna_users",
+                        "{ 10.0.0.20 timeout 600s }"], check=True)
+
+        runtime = provision._read_runtime_sets(config)
+        subprocess.run(["nft", "-f", "-"], input=build_ruleset(config, runtime=runtime), text=True, check=True)
+
+        for read, ip in ((bruteforce.list_banned, "203.0.113.5"), (ids_quarantine.list_quarantined, "10.0.0.9"),
+                         (ztna.list_authorized, "10.0.0.20")):
+            left = dict(read()).get(ip)
+            assert left is not None and 500 < left <= 600, (ip, read())
+    finally:
+        subprocess.run(["nft", "flush", "ruleset"], check=False)

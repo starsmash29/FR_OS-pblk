@@ -36,15 +36,11 @@ entire nftables state, this one included; the very next line in the
 same reload recreates an empty set. Left alone, that means any admin
 clicking "Apply" for a completely unrelated firewall change (e.g.
 adding a rule for a new device) would instantly and silently log out
-every currently-authorized ZTNA client. `snapshot_before_reload()` /
-`restore_after_reload()` exist specifically to prevent that:
-frfw.provision.apply_all calls the former immediately before
-`frfw.apply.apply_ruleset()` and the latter immediately after,
-re-adding every previously-authorized IP with a fresh timeout equal to
-whatever time it had left. This does mean a session can gain a few
-extra seconds (the time the apply itself took) on every such reload --
-an explicit, harmless-in-practice tradeoff in the user's favor, not a
-bug.
+every currently-authorized ZTNA client. `snapshot_before_reload()`
+exists specifically to prevent that: frfw.provision.apply_all reads the
+sessions with it just before the reload and the new ruleset declares
+them again (frfw.nft.RuntimeSets), each with whatever time it had left,
+in the same nft transaction as the flush.
 """
 
 from __future__ import annotations
@@ -117,51 +113,22 @@ def get_authorization(ip: str, *, state_path: Path = paths.ZTNA_STATE_PATH) -> Z
 def list_authorized() -> list[tuple[str, int]]:
     """Live (ip, remaining_seconds) pairs for every currently authorized
     ZTNA client -- a status query, e.g. for the metrics exporter's
-    `fros_ztna_active_sessions` gauge (see frfw.metrics). Unlike
-    `snapshot_before_reload()` below, this does NOT swallow nft errors --
-    the same distinction `frfw.ids_quarantine.list_quarantined()` makes
-    for its own status-query counterpart."""
+    `fros_ztna_active_sessions` gauge (see frfw.metrics). Surfaces a
+    genuine nft problem rather than reporting zero sessions."""
     return _list_set_elements()
 
 
 def snapshot_before_reload() -> list[tuple[str, int]]:
-    """Best-effort (ip, remaining_seconds) pairs for every currently
-    authorized client, to hand to `restore_after_reload()` after a full
-    ruleset reload wipes the set (see this module's docstring). Never
-    raises: a fresh install (the table/set doesn't exist yet, e.g. ZTNA
-    was never enabled or this is the very first apply), a temporarily
-    missing `nft` binary, or any other failure just means "nothing to
-    preserve" -- none of those are reasons to fail an otherwise-valid
-    firewall apply that has nothing to do with ZTNA.
+    """Every currently authorized ZTNA client (ip, seconds left), read just
+    before a full ruleset reload: frfw.provision.apply_all passes them to
+    frfw.nft.build_ruleset, which writes them into the new ruleset's set
+    declaration, so they survive the reload in the same nft transaction
+    (review FR-002). A set or table that isn't loaded yet means nothing
+    to carry over; any other failure raises ZtnaError -- the apply then
+    stops before touching the running ruleset, rather than silently
+    releasing everyone.
     """
-    try:
-        return _list_set_elements()
-    except ZtnaError:
-        return []
-
-
-def restore_after_reload(snapshot: list[tuple[str, int]]) -> None:
-    """Re-adds every (ip, remaining_seconds) pair from a prior
-    `snapshot_before_reload()` call, each with a fresh timeout set to
-    its captured remaining time. Best-effort per element -- one stale
-    or now-invalid entry (e.g. the new config disabled ZTNA, so the set
-    no longer exists at all) never blocks the rest, and this function
-    never raises: restoring sessions is a courtesy on top of a firewall
-    apply that has already succeeded by the time this runs, never a
-    reason to report that apply as failed.
-    """
-    for ip, remaining in snapshot:
-        if remaining <= 0:
-            continue
-        try:
-            _nft(
-                [
-                    "add", "element", "inet", FILTER_TABLE, ZTNA_SET_NAME,
-                    "{", f"{ip} timeout {remaining}s", "}",
-                ]
-            )
-        except ZtnaError:
-            continue
+    return _list_set_elements()
 
 
 # --- kernel state (nft) -------------------------------------------------

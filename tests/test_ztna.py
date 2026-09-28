@@ -104,28 +104,11 @@ def test_snapshot_before_reload_returns_empty_when_set_missing(monkeypatch):
     assert ztna_mod.snapshot_before_reload() == []
 
 
-def test_snapshot_before_reload_never_raises_on_unexpected_error(monkeypatch):
+def test_snapshot_before_reload_raises_on_unexpected_error(monkeypatch):
     monkeypatch.setattr(ztna_mod, "_run_nft", lambda args: _fake_completed(1, stderr="some other error"))
-    assert ztna_mod.snapshot_before_reload() == []
-
-
-def test_restore_after_reload_skips_expired_and_continues_past_failures(monkeypatch):
-    calls = []
-
-    def fake_run_nft(args):
-        calls.append(args)
-        if "1.2.3.4" in " ".join(args):
-            return _fake_completed(1, stderr="no such set")
-        return _fake_completed()
-
-    monkeypatch.setattr(ztna_mod, "_run_nft", fake_run_nft)
-
-    # (ip, remaining): one already-expired (skipped without an nft call),
-    # one that fails (swallowed), one that succeeds.
-    ztna_mod.restore_after_reload([("10.0.0.1", 0), ("1.2.3.4", 100), ("10.0.0.2", 50)])
-
-    assert len(calls) == 2  # the expired one never even calls nft
-    assert any("10.0.0.2 timeout 50s" in " ".join(c) for c in calls)
+    # Review FR-002: an unreadable set stops the apply instead of releasing everyone.
+    with pytest.raises(ztna_mod.ZtnaError, match="some other error"):
+        ztna_mod.snapshot_before_reload()
 
 
 # --- real integration tests: actual kernel nftables state -------------------
@@ -179,25 +162,10 @@ def test_real_kernel_evicts_expired_element_on_its_own(real_ztna_table, tmp_path
 
 @requires_nft
 @requires_root
-def test_real_snapshot_and_restore_preserves_remaining_time(real_ztna_table, tmp_path):
+def test_real_snapshot_reads_remaining_time(real_ztna_table, tmp_path):
     ztna_mod.authorize_ip("10.99.0.3", 3600, "carol", state_path=tmp_path / "state.json")
-
-    snapshot = ztna_mod.snapshot_before_reload()
-    assert any(ip == "10.99.0.3" for ip, _ in snapshot)
-
-    # Simulate the ruleset reload wiping the set (frfw.nft.builder's
-    # `flush ruleset` would do this to the *whole* kernel state; deleting
-    # just our test set's contents is the equivalent for this test).
-    subprocess.run(
-        ["nft", "flush", "set", "inet", real_ztna_table, "authed_test"], check=True
-    )
-    assert ztna_mod.get_authorization("10.99.0.3") is None
-
-    ztna_mod.restore_after_reload(snapshot)
-
-    auth = ztna_mod.get_authorization("10.99.0.3")
-    assert auth is not None
-    assert auth.expires_in_seconds > 0
+    matches = [left for ip, left in ztna_mod.snapshot_before_reload() if ip == "10.99.0.3"]
+    assert matches and 3500 < matches[0] <= 3600
 
 
 @requires_nft
