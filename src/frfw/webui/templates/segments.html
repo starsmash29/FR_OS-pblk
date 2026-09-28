@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Segments - FR_OS{% endblock %}
+{% block content %}
+<h1>Network segments</h1>
+{% if first_run %}<div class="notice">Your account is set up. One more recommended step: keep smart devices and guests
+  off your own network.</div>{% endif %}
+<p class="muted">
+  On one flat network, a hacked camera or a guest's infected laptop can reach every other device. A segment is a
+  separate network with its own addresses and DHCP that can reach the internet and nothing else. Each one here is a
+  VLAN on the LAN port (<code>{{ parent or "?" }}</code>): set your access point to put the IoT and guest Wi-Fi on these
+  VLAN IDs (or use a VLAN-capable switch).
+</p>
+<div class="card">
+  <form method="post" action="/segments">
+    <table>
+      <tr><th></th><th>Segment</th><th>VLAN</th><th>Network</th><th>Device</th><th></th></tr>
+      {% for s in segments %}
+      <tr>
+        <td>{% if not s.present %}<input type="checkbox" name="segment" value="{{ s.name }}" checked style="width:auto;">{% endif %}</td>
+        <td>{{ s.label }} (<code>{{ s.name }}</code>)</td>
+        <td>{{ s.vlan }}</td>
+        <td>{{ s.address }}</td>
+        <td><code>{{ s.device or "-" }}</code></td>
+        <td>{% if s.present %}<span class="badge badge-green">set up</span>{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    <p class="muted">Each gets DHCP (.100-.199, public DNS), a rule to the internet and nothing towards your LAN or this
+      router's management. IoT devices are also inventoried and isolated (see <a href="/iot">IoT Devices</a>).</p>
+    <button type="submit">Add the ticked segments</button>
+  </form>
+  {% if first_run %}<form method="post" action="/segments"><button type="submit" class="secondary">Skip for now</button></form>{% endif %}
+</div>
+{% endblock %}

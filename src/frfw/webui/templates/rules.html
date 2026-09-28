@@ -5,11 +5,31 @@
 <p class="muted">Evaluated in order, first match wins. "self" as a zone means the router itself.
 Scheduled drop/reject rules that cut open connections are evaluated before all other rules.</p>
 
+<div class="card">
+  <h3>Rule check</h3>
+  {% if not findings %}
+  <p><span class="badge badge-green">No problems found</span> -- no any-to-any or internet-wide accept rules, nothing shadowed, nothing unused for 90 days.</p>
+  {% else %}
+  <table>
+    <tr><th>Rule</th><th></th><th>Finding</th></tr>
+    {% for f in findings %}
+    <tr><td>{{ f.rule }}</td>
+      <td><span class="badge {{ 'badge-red' if f.severity == 'warning' else 'badge-yellow' }}">{{ f.kind }}</span></td>
+      <td>{{ f.message }}</td></tr>
+    {% endfor %}
+  </table>
+  {% if findings | selectattr("kind", "equalto", "expired") | list %}
+  <form method="post" action="/rules/remove-expired"><button type="submit">Remove expired rules</button></form>
+  {% endif %}
+  {% endif %}
+  <p class="muted">Rule hit counters are recorded hourly (<code>fr-schedule-check.timer</code>); "unused" means no match for 90 days.</p>
+</div>
+
 <table>
-  <tr><th>Name</th><th>Action</th><th>From</th><th>To</th><th>Proto</th><th>Port</th><th>Source MAC</th><th>Schedule</th><th>Log</th><th>ZTNA</th><th></th></tr>
+  <tr><th>Name</th><th>Action</th><th>From</th><th>To</th><th>Proto</th><th>Port</th><th>Source MAC</th><th>Schedule</th><th>Expires</th><th>Last match</th><th>Log</th><th>ZTNA</th><th></th></tr>
   {% for rule in rules %}
   <tr>
-    <td>{{ rule.name }}</td>
+    <td>{{ rule.name }}{% if flagged.get(rule.name) %} <span class="badge {{ 'badge-red' if flagged[rule.name].severity == 'warning' else 'badge-yellow' }}">{{ flagged[rule.name].kind }}</span>{% endif %}</td>
     <td><span class="badge {{ 'badge-green' if rule.action == 'accept' else 'badge-red' if rule.action == 'drop' else 'badge-yellow' }}">{{ rule.action }}</span></td>
     <td>{{ rule.from_zone or "any" }}</td>
     <td>{{ rule.to_zone or "any" }}</td>
@@ -24,6 +44,8 @@ Scheduled drop/reject rules that cut open connections are evaluated before all o
       {% if sched.cut %}<br><span class="muted">cuts open connections</span>{% endif %}
       {% else %}always{% endif %}
     </td>
+    <td>{% set exp = expiry.get(rule.name) %}{% if exp %}{{ exp.text }}{% if exp.past %} <span class="badge">expired</span>{% endif %}{% else %}-{% endif %}</td>
+    <td>{{ last_hit.get(rule.name) or "-" }}</td>
     <td>{{ "yes" if rule.log else "-" }}</td>
     <td>{{ "yes" if rule.require_ztna else "-" }}</td>
     <td>
@@ -84,6 +106,8 @@ Scheduled drop/reject rules that cut open connections are evaluated before all o
       <input type="time" name="schedule_end">
       <label><input type="checkbox" name="cut_established" value="true" style="display:inline;width:auto;"> Also cut connections opened before the window starts (drop/reject only)</label>
     </fieldset>
+    <label>Expires (optional -- a temporary rule: the firewall stops applying it at this time, in the schedule time zone)</label>
+    <input type="datetime-local" name="expires">
     <label><input type="checkbox" name="log" value="true" style="display:inline;width:auto;"> Log matches</label>
     <label>
       <input type="checkbox" name="require_ztna" value="true" style="display:inline;width:auto;">

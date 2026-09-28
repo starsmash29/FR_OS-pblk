@@ -32,7 +32,13 @@ class SyncResult:
 
 
 def sync_addresses(config: Config, *, dry_run: bool = False) -> SyncResult:
-    """Apply every interface's static `address`, if any are declared."""
+    """Create missing VLAN devices (security-lessons K4), then apply every
+    interface's static `address`, if any are declared."""
+    vlans = [iface for iface in config.interfaces.values() if iface.vlan_id is not None]
+    if vlans and not dry_run:
+        _require_root()
+        for iface in vlans:
+            _ensure_vlan(iface)
     addressed = [iface for iface in config.interfaces.values() if iface.address]
     if not addressed:
         return SyncResult(applied=False, message="No interface addresses to sync")
@@ -59,6 +65,18 @@ def _apply_one(iface: Interface) -> None:
     except validate.ArgumentError as exc:
         raise IfaddrError(str(exc)) from exc
     _run_ip(["addr", "replace", address, "dev", device])
+    _run_ip(["link", "set", "dev", device, "up"])
+
+
+def _ensure_vlan(iface: Interface) -> None:
+    try:
+        device = validate.ifname(iface.device)
+        parent = validate.ifname(iface.vlan_parent)
+    except validate.ArgumentError as exc:
+        raise IfaddrError(str(exc)) from exc
+    if subprocess.run(["ip", "link", "show", "dev", device], capture_output=True).returncode != 0:
+        _run_ip(["link", "add", "link", parent, "name", device, "type", "vlan", "id", str(iface.vlan_id)])
+    _run_ip(["link", "set", "dev", parent, "up"])
     _run_ip(["link", "set", "dev", device, "up"])
 
 

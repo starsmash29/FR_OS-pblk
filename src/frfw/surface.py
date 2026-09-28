@@ -93,10 +93,41 @@ class Row:
     listener: Listener
     zones: dict[str, Verdict] = field(default_factory=dict)
     internet: bool = False  # reachable (at all) from an internet-facing zone
+    #: What in the config needs this socket (security-lessons K7); None:
+    #: nothing does.
+    needed: str | None = None
 
     @property
     def reachable(self) -> bool:
         return any(v.state != CLOSED for v in self.zones.values())
+
+    @property
+    def unneeded(self) -> bool:
+        """Reachable from some zone, and nothing FR_OS runs needs it."""
+        return self.reachable and self.needed is None
+
+
+def needed_by(config: Config, listener: Listener) -> str | None:
+    """Why this socket is expected on an FR_OS router with this config
+    (security-lessons K7), or None: a service nothing here asked for."""
+    if listener.loopback:
+        return "local only"
+    key = (listener.proto, listener.port)
+    if key == ("tcp", management.WEBUI_PORT):
+        return "the webUI"
+    if key == ("tcp", management.SSH_PORT):
+        return "SSH (runs only while someone has a key)"
+    if key == ("udp", 68):
+        return "the WAN's DHCP client"
+    if listener.port == 53 and config.adblocker.enabled:
+        return "the DNS filter (adblocker)"
+    if key == ("udp", 67) and config.dhcp.zones:
+        return "the DHCP server (dhcp)"
+    if key in (("udp", 5353), ("udp", builder.IOT_MDNS_REPLY_PORT)) and config.iot.enabled:
+        return "the IoT scan (iot)"
+    if key == ("udp", config.wireguard.listen_port) and config.wireguard.enabled:
+        return "the WireGuard VPN (wireguard)"
+    return None
 
 
 # -- the sockets --------------------------------------------------------------------
@@ -280,6 +311,7 @@ def surface(config: Config, listeners: list[Listener], addresses: dict[str, list
         for zone in reachable_zones(listener, config, addresses):
             row.zones[zone] = input_verdict(config, zone, listener.proto, listener.port, listener.family)
         row.internet = any(z in internet and v.state != CLOSED for z, v in row.zones.items())
+        row.needed = needed_by(config, listener)
         rows.append(row)
     return sorted(rows, key=lambda r: (not r.internet, not r.reachable, r.listener.port, r.listener.proto))
 

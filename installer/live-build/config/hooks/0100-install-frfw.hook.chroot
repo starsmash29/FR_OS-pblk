@@ -16,6 +16,11 @@ pip3 install --break-system-packages --no-cache-dir /opt/frfw-src[webui]
 # have to load it themselves.
 echo wireguard > /etc/modules-load.d/fr_os-wireguard.conf
 
+# The journal's size and age limit, and the kernel's log backend for the
+# ruleset's drop log (security-lessons K6).
+echo nf_log_syslog > /etc/modules-load.d/fr_os-logging.conf
+install -D -m 0644 /opt/frfw-src/systemd/journald-fr_os.conf /etc/systemd/journald.conf.d/fr_os.conf
+
 echo "frfw: staging scripts and systemd units..."
 install -m 0755 /opt/frfw-src/scripts/fr-first-boot.sh /usr/local/sbin/fr-first-boot.sh
 install -m 0755 /opt/frfw-src/scripts/install-system-integration.sh /usr/local/sbin/install-system-integration.sh

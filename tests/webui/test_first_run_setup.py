@@ -60,7 +60,7 @@ def test_setup_renames_the_account_and_the_old_login_stops_working(client, gener
     _login(client)
     response = client.post("/setup", data={"username": "netadmin", "password": "my-own-pass-1",
                                            "password_confirm": "my-own-pass-1"})
-    assert response.status_code == 303 and response.headers["location"] == "/"
+    assert response.status_code == 303 and response.headers["location"] == "/segments?first_run=1"
     assert client.get("/").status_code == 200  # the new session cookie works
     assert generated.get("admin") is None
     account = generated.get("netadmin")

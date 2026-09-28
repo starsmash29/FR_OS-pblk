@@ -43,12 +43,22 @@ interfaces:
     zone: wan            # required, a zone name declared under zones
     address: 10.0.0.1/24  # optional, IPv4 address with CIDR prefix; applied by frfw.ifaddr
     description: "..."   # optional, free text
+  iot:
+    device: eth1.30
+    zone: iot
+    address: 192.168.30.1/24
+    vlan: {parent: eth1, id: 30}  # optional: an 802.1Q VLAN, created by apply if missing
 ```
 
 `address` is the router's own static IPv4 address on that interface --
 applied via `ip addr replace` (`frfw.ifaddr`). Only required if the
 zone should get a DHCP pool (see `dhcp` below); leave it unset on an
 interface managed by a DHCP client (e.g. a typical WAN interface).
+
+`vlan` (security-lessons K4) makes the interface an 802.1Q VLAN of
+`parent` with the given `id` (1-4094). Apply creates it if missing and
+brings both up. The Segments screen uses this for the IoT and guest
+segments on the LAN port.
 
 ## `zones`
 
@@ -90,11 +100,30 @@ rules:
       start: "21:30"               # required with schedule, local "HH:MM"
       end: "06:30"                 # required with schedule, "HH:MM" or "24:00"
       cut_established: false       # optional; drop/reject only
+    expires: "2026-10-01T18:00"    # optional: a temporary rule (security-lessons K2)
 ```
 
 With `to_zone: self`, the rule goes into the `input` chain (no `oifname`
 constraint, since the destination is the router itself); otherwise into
 the `forward` chain.
+
+### Temporary rules and the rule check (security-lessons K2)
+
+`expires` is an ISO 8601 date and time; without an offset it is read in
+the top-level `timezone`. The kernel itself stops matching the rule at
+that second (`meta time`), with no reload needed, and rulesets built
+later leave it out. The entry stays in config.yaml, marked expired, until
+it is removed: the Rules screen has a button for that.
+
+`firewall-cli rule-check` and the Rules screen check the rules for:
+- any-to-any accept rules;
+- accept rules open to all of a zone from the internet;
+- rules shadowed or made redundant by an earlier rule;
+- rules nothing has matched for 90 days;
+- expired rules.
+
+Every rule has an nft counter. `fr-schedule-check.timer` records hourly
+when each rule last matched, in `/etc/fr_os/rule_hits.json`.
 
 ### Schedules (phase 17)
 
@@ -367,6 +396,22 @@ metrics:
 - Example scraper setup: `telemetry/prometheus-multisite.yml`; dashboards:
   `telemetry/grafana-fleet-dashboard.json` and the `Site` selector of
   `telemetry/grafana-dashboard.json`.
+
+## `logging`
+
+What the router logs out of the box (security-lessons K6).
+
+```yaml
+logging:
+  drops: true            # default: log what the default-deny policy drops
+  drops_per_minute: 10   # per chain; a flood can't fill the disk
+```
+
+The log lines (`fr_os/drop/input: ...`, `fr_os/drop/forward: ...`) go
+to the kernel log. The journal keeps them within its limit (200 MB, 90
+days; `/etc/systemd/journald.conf.d/fr_os.conf`), and the dashboard shows
+the latest ones. Admin sign-ins and every change are always in the audit
+log, which rotates at 1 MB.
 
 ## `wireguard`
 

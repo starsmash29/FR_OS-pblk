@@ -30,7 +30,7 @@ from pathlib import Path
 
 import yaml
 
-from frfw import bruteforce, conntrack, hwinfo, ids_quarantine, iot_isolation, kea, paths, surface, svc, wireguard, ztna
+from frfw import bruteforce, conntrack, firewall_log, hwinfo, ids_quarantine, iot_isolation, kea, paths, surface, svc, wireguard, ztna
 from frfw.adblock import AdblockError
 from frfw.iot import leases as iot_leases
 from frfw.iot_isolation import IotIsolationError
@@ -148,6 +148,9 @@ def _handle_request(request: dict, server: "ApplyHelperServer") -> dict:
 
         if cmd == "wireguard_status":
             return {"ok": True, **wireguard.status()}
+
+        if cmd == "firewall_drops":
+            return {"ok": True, "drops": firewall_log.recent_drops()}
 
         return {"ok": False, "message": f"unknown command {cmd!r}"}
     except (

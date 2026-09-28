@@ -24,6 +24,7 @@ from frfw.webui.deps import (
 )
 from frfw.webui.helper_client import HelperClient
 from frfw.webui.responses import redirect_with
+from frfw.webui.routes.security import score_for
 from frfw.webui.templating import templates
 
 router = APIRouter()
@@ -118,6 +119,9 @@ def dashboard(
     for entry in alerts:
         entry["when"] = time.strftime("%Y-%m-%d %H:%M", time.localtime(float(entry.get("ts") or 0)))
     integrity_report = integrity.cached_check()
+    drops = _recent_drops(helper) if config is not None and config.logging.drops else None
+    # Security-lessons K8: the checklist's score and what's still open.
+    score = score_for(request, raw, request.app.state.admin_store, helper)
 
     ai_ids_running = is_daemon_active()
     system = sysinfo.snapshot()
@@ -153,10 +157,26 @@ def dashboard(
             "adblock_domain_count": adblock_domain_count,
             "alerts": alerts,
             "integrity": integrity_report,
+            "drops": drops,
+            "score": score,
             "error": request.query_params.get("error"),
             "success": request.query_params.get("success"),
         },
     )
+
+
+def _recent_drops(helper: HelperClient, shown: int = 10) -> list[dict]:
+    """Security-lessons K6: what the default-deny policy dropped lately
+    (the kernel log is root's, so the apply-helper reads it)."""
+    try:
+        reply = helper.firewall_drops()
+    except OSError:
+        return []
+    drops = reply.get("drops") if reply.get("ok") else None
+    rows = []
+    for entry in (drops or [])[:shown]:
+        rows.append({**entry, "when": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(float(entry.get("ts") or 0)))})
+    return rows
 
 
 @router.post("/apply")

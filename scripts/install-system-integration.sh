@@ -68,6 +68,12 @@ fi
 echo "==> Loading the WireGuard module at boot (VPN, security-lessons G8)"
 echo wireguard > /etc/modules-load.d/fr_os-wireguard.conf
 
+if [[ -f "$REPO_ROOT/systemd/journald-fr_os.conf" ]]; then
+    echo "==> Journal size and age limit, drop-log backend (security-lessons K6)"
+    echo nf_log_syslog > /etc/modules-load.d/fr_os-logging.conf
+    install -D -m 0644 "$REPO_ROOT/systemd/journald-fr_os.conf" /etc/systemd/journald.conf.d/fr_os.conf
+fi
+
 echo "==> Installing systemd units"
 if [[ -d "$REPO_ROOT/systemd" ]]; then
     install -m 0644 "$REPO_ROOT/systemd/fr-accounts.service" "$SYSTEMD_DIR/"

@@ -173,6 +173,12 @@ class FakeHelper:
     def wireguard_status(self) -> dict:
         return {"ok": True, **self.wireguard}
 
+    #: What `firewall_drops` reports (security-lessons K6); tests set it.
+    drops: list[dict] = []
+
+    def firewall_drops(self) -> dict:
+        return {"ok": True, "drops": list(self.drops)}
+
 
 class FakeUpdateHelper:
     """An in-memory stand-in for the real Unix-socket update-helper.

@@ -213,7 +213,7 @@ def test_setup_replayed_after_it_completed(app, generated):
     client = _sign_in(app, "admin", "generated-pw-1")
     old_cookie = client.cookies[COOKIE_NAME]
     form = {"username": "alice", "password": "orchid-lamp-7", "password_confirm": "orchid-lamp-7"}
-    assert client.post("/setup", data=form).headers["location"] == "/"
+    assert client.post("/setup", data=form).headers["location"] == "/segments?first_run=1"
     # The generated account's session ended; replaying it gets nothing.
     replay = _client(app)
     replay.cookies.set(COOKIE_NAME, old_cookie)
@@ -234,7 +234,7 @@ def test_parallel_setup_requests_create_one_account(app, generated):
         (lambda i=i, c=c: c.post("/setup", data={"username": f"owner{i}", "password": f"orchid-lamp-{i}x",
                                                   "password_confirm": f"orchid-lamp-{i}x"}))
         for i, c in enumerate(clients)])))
-    winners = [i for i, r in results.items() if r.headers["location"] == "/"]
+    winners = [i for i, r in results.items() if r.headers["location"] == "/segments?first_run=1"]
     assert len(winners) == 1, {i: r.headers["location"] for i, r in results.items()}
     assert set(generated.users()) == {f"owner{winners[0]}"}
     assert _signed_in(clients[winners[0]])

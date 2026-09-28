@@ -41,6 +41,10 @@ class Interface:
     `DhcpPool`), since the pool's subnet and gateway are derived from it.
     Leave it unset for an interface whose address is managed elsewhere
     (e.g. a WAN interface using DHCP from the ISP).
+
+    `vlan_parent`/`vlan_id` (security-lessons K4) make it an 802.1Q VLAN
+    on another device -- an IoT or guest segment on the LAN port -- which
+    `frfw.ifaddr` creates if it doesn't exist yet.
     """
 
     name: str
@@ -48,6 +52,8 @@ class Interface:
     zone: str
     address: str | None = None
     description: str = ""
+    vlan_parent: str | None = None
+    vlan_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -110,6 +116,10 @@ class Rule:
     #: a device regardless of the address DHCP gave it.
     src_mac: str | None = None
     schedule: RuleSchedule | None = None
+    #: A temporary rule (security-lessons K2): Unix time after which it no
+    #: longer matches. The kernel enforces it (`meta time`), and rulesets
+    #: built after it leave the rule out.
+    expires: int | None = None
 
 
 @dataclass(frozen=True)
@@ -483,6 +493,19 @@ class ManagementConfig:
 
 
 @dataclass(frozen=True)
+class LoggingConfig:
+    """What the router logs out of the box (security-lessons K6).
+
+    `drops`: every packet the default-deny policy drops is logged to the
+    kernel log (journal), at most `drops_per_minute` a minute per chain
+    so a flood can't fill the disk. Admin sign-ins and config changes are
+    always in the audit log (frfw.webui.audit)."""
+
+    drops: bool = True
+    drops_per_minute: int = 10
+
+
+@dataclass(frozen=True)
 class WireguardPeer:
     """One device allowed into the WireGuard VPN: its public key and its
     address inside the tunnel (a /32 in `WireguardConfig.address`'s
@@ -540,6 +563,7 @@ class Config:
     metrics: MetricsConfig = field(default_factory=MetricsConfig)
     management: ManagementConfig = field(default_factory=ManagementConfig)
     wireguard: WireguardConfig = field(default_factory=WireguardConfig)
+    logging: LoggingConfig = field(default_factory=LoggingConfig)
     #: IANA time zone rule schedules are written in (phase 17); None =
     #: the router's own local zone.
     timezone: str | None = None

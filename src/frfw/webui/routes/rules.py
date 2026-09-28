@@ -5,6 +5,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, Form, Request
 
+from frfw import rule_hits, rule_lint
 from frfw.config import ConfigError, parse_config
 from frfw.nft.schedule import WEEKDAY_KEYS, describe, is_active, local_minute_of_week
 from frfw.webui.actions import try_save
@@ -27,8 +28,17 @@ def list_rules(
     # the raw rules without them.
     tz_name = raw.get("timezone")
     schedules: dict[str, dict] = {}
+    findings: list[rule_lint.Finding] = []
+    expiry: dict[str, dict] = {}
+    hits = rule_hits.load()
     try:
         config = parse_config(raw)
+        # Security-lessons K2: the rule check, and temporary rules.
+        findings = rule_lint.lint(config, hits=hits)
+        for rule in config.rules:
+            if rule.expires is not None:
+                expiry[rule.name] = {"text": _local(rule.expires, config.timezone),
+                                     "past": rule.expires <= datetime.now().timestamp()}
         now_minute = local_minute_of_week(config.timezone)
         for rule in config.rules:
             if rule.schedule is not None:
@@ -55,6 +65,11 @@ def list_rules(
             "timezone": tz_name or "",
             "router_time": router_time,
             "weekdays": WEEKDAY_KEYS,
+            "findings": findings,
+            "flagged": {f.rule: f for f in findings},
+            "expiry": expiry,
+            "last_hit": {name: _local(e["last_hit"], tz_name) if e.get("last_hit") else None
+                         for name, e in hits.items()},
             "zones": sorted((raw.get("zones") or {}).keys()),
             "error": request.query_params.get("error"),
             "success": request.query_params.get("success"),
@@ -79,6 +94,7 @@ def add_rule(
     schedule_start: str = Form(""),
     schedule_end: str = Form(""),
     cut_established: bool = Form(False),
+    expires: str = Form(""),
     username: str = Depends(require_login),
     raw: dict = Depends(get_raw_config),
     helper: HelperClient = Depends(get_helper),
@@ -111,15 +127,54 @@ def add_rule(
         if cut_established:
             schedule["cut_established"] = True
         rule["schedule"] = schedule
+    if expires.strip():
+        rule["expires"] = expires.strip()
 
     rules = raw.setdefault("rules", [])
     rules[:] = [r for r in rules if r.get("name") != name]  # replace if it already existed
     rules.append(rule)
 
     ok, message = try_save(raw, helper)
+    if not ok:
+        return redirect_with("/rules", error=message)
+    # Say it right away if the new rule trips the rule check (K2).
+    warnings = [f.message for f in rule_lint.lint(parse_config(raw), hits={})
+                if f.rule == name and f.severity == rule_lint.WARNING]
+    if warnings:
+        return redirect_with("/rules", error=f"Rule {name!r} saved, but it " + "; ".join(warnings))
+    return redirect_with("/rules", success=f"Rule {name!r} saved")
+
+
+@router.post("/rules/remove-expired")
+def remove_expired(
+    username: str = Depends(require_login),
+    raw: dict = Depends(get_raw_config),
+    helper: HelperClient = Depends(get_helper),
+):
+    """Temporary rules past their expiry (K2): the kernel already ignores
+    them; this tidies config.yaml."""
+    try:
+        config = parse_config(raw)
+    except ConfigError as exc:
+        return redirect_with("/rules", error=str(exc))
+    now = datetime.now().timestamp()
+    gone = {r.name for r in config.rules if r.expires is not None and r.expires <= now}
+    if not gone:
+        return redirect_with("/rules", success="No expired rules")
+    raw["rules"] = [r for r in raw.get("rules") or [] if r.get("name") not in gone]
+    ok, message = try_save(raw, helper)
     if ok:
-        return redirect_with("/rules", success=f"Rule {name!r} saved")
+        return redirect_with("/rules", success=f"Removed {len(gone)} expired rule(s): {', '.join(sorted(gone))}")
     return redirect_with("/rules", error=message)
+
+
+def _local(ts: float, tz_name: str | None) -> str:
+    try:
+        zone = zoneinfo.ZoneInfo(tz_name) if tz_name else None
+    except (zoneinfo.ZoneInfoNotFoundError, ValueError):
+        zone = None
+    moment = datetime.fromtimestamp(ts, zone) if zone else datetime.fromtimestamp(ts).astimezone()
+    return moment.strftime("%Y-%m-%d %H:%M")
 
 
 @router.post("/rules/delete/{name}")

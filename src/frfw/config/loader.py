@@ -8,6 +8,7 @@ library, since this code is meant to run on the target router itself.
 from __future__ import annotations
 
 import base64
+import datetime
 import ipaddress
 import re
 import zoneinfo
@@ -32,6 +33,7 @@ from frfw.config.schema import (
     Interface,
     IotConfig,
     IotIsolationMode,
+    LoggingConfig,
     ManagementConfig,
     Masquerade,
     MetricsConfig,
@@ -122,7 +124,7 @@ def parse_config(raw: Any) -> Config:
 
     zones = _parse_zones(raw.get("zones", {}))
     interfaces = _parse_interfaces(raw.get("interfaces", {}), zones, _tunnel_zones(raw.get("wireguard")))
-    rules = _parse_rules(raw.get("rules", []), zones)
+    rules = _parse_rules(raw.get("rules", []), zones, tz_name)
     nat = _parse_nat(raw.get("nat", {}) or {}, zones)
     dhcp = _parse_dhcp(raw.get("dhcp", {}) or {}, zones, interfaces)
     ai_ids = _parse_ai_ids(raw.get("ai_ids", {}) or {})
@@ -139,6 +141,7 @@ def parse_config(raw: Any) -> Config:
     metrics = _parse_metrics(raw.get("metrics", {}) or {})
     management = _parse_management(raw.get("management", {}) or {}, zones, nat)
     wireguard = _parse_wireguard(raw.get("wireguard", {}) or {}, zones, nat, interfaces)
+    logging_config = _parse_logging(raw.get("logging", {}) or {})
 
     return Config(
         version=version,
@@ -160,6 +163,7 @@ def parse_config(raw: Any) -> Config:
         metrics=metrics,
         management=management,
         wireguard=wireguard,
+        logging=logging_config,
         timezone=tz_name,
     )
 
@@ -227,8 +231,23 @@ def _parse_interfaces(
             address = _validate_interface_address(address, f"Interface {name!r} address")
 
         description = body.get("description", "")
+        vlan_parent = vlan_id = None
+        vlan = body.get("vlan")
+        if vlan is not None:
+            if not isinstance(vlan, dict):
+                raise ConfigError(f"Interface {name!r}: vlan must be a mapping with parent and id")
+            vlan_parent, vlan_id = vlan.get("parent"), vlan.get("id")
+            try:
+                validate.ifname(vlan_parent)
+            except validate.ArgumentError as exc:
+                raise ConfigError(f"Interface {name!r} vlan.parent: {exc}") from exc
+            if not isinstance(vlan_id, int) or isinstance(vlan_id, bool) or not 1 <= vlan_id <= 4094:
+                raise ConfigError(f"Interface {name!r}: vlan.id must be 1-4094")
+            if vlan_parent == device:
+                raise ConfigError(f"Interface {name!r}: a VLAN can't be its own parent")
         interfaces[name] = Interface(
-            name=name, device=device, zone=zone, address=address, description=description
+            name=name, device=device, zone=zone, address=address, description=description,
+            vlan_parent=vlan_parent, vlan_id=vlan_id,
         )
 
     used_zones = {iface.zone for iface in interfaces.values()} | set(tunnel_zones)
@@ -244,7 +263,7 @@ def _valid_zone_ref(zone: Any, zones: dict[str, Zone]) -> bool:
     return zone is None or zone == SELF_ZONE or zone in zones
 
 
-def _parse_rules(raw: Any, zones: dict[str, Zone]) -> list[Rule]:
+def _parse_rules(raw: Any, zones: dict[str, Zone], tz_name: str | None = None) -> list[Rule]:
     if not isinstance(raw, list):
         raise ConfigError("'rules' must be a list")
     rules: list[Rule] = []
@@ -313,6 +332,10 @@ def _parse_rules(raw: Any, zones: dict[str, Zone]) -> list[Rule]:
         if body.get("schedule") is not None:
             schedule = _parse_schedule(body["schedule"], f"Rule {name!r} schedule", action)
 
+        expires = None
+        if body.get("expires") is not None:
+            expires = parse_expiry(body["expires"], tz_name, f"Rule {name!r} expires")
+
         rules.append(
             Rule(
                 name=name,
@@ -327,9 +350,28 @@ def _parse_rules(raw: Any, zones: dict[str, Zone]) -> list[Rule]:
                 require_ztna=require_ztna,
                 src_mac=src_mac,
                 schedule=schedule,
+                expires=expires,
             )
         )
     return rules
+
+
+def parse_expiry(value: Any, tz_name: str | None, what: str = "expires") -> int:
+    """A rule's expiry (security-lessons K2) as Unix time: an ISO 8601
+    date and time ("2026-10-01T18:00", or YAML's own timestamp); without
+    an offset it is read in the config's `timezone` (else the router's)."""
+    if isinstance(value, datetime.datetime):
+        moment = value
+    elif isinstance(value, str):
+        try:
+            moment = datetime.datetime.fromisoformat(value.strip())
+        except ValueError as exc:
+            raise ConfigError(f"{what}: expected a date and time like 2026-10-01T18:00, got {value!r}") from exc
+    else:
+        raise ConfigError(f"{what}: expected a date and time like 2026-10-01T18:00, got {value!r}")
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=zoneinfo.ZoneInfo(tz_name)) if tz_name else moment.astimezone()
+    return int(moment.timestamp())
 
 
 def _validate_port_spec(value: Any, what: str) -> str:
@@ -668,6 +710,18 @@ def valid_wireguard_key(key: Any) -> bool:
         return len(base64.b64decode(key, validate=True)) == 32
     except ValueError:
         return False
+
+
+def _parse_logging(raw: Any) -> LoggingConfig:
+    if not isinstance(raw, dict):
+        raise ConfigError("'logging' must be a mapping")
+    drops = raw.get("drops", True)
+    if not isinstance(drops, bool):
+        raise ConfigError("logging.drops must be true or false")
+    rate = raw.get("drops_per_minute", 10)
+    if not isinstance(rate, int) or isinstance(rate, bool) or not 1 <= rate <= 10000:
+        raise ConfigError("logging.drops_per_minute must be 1-10000")
+    return LoggingConfig(drops=drops, drops_per_minute=rate)
 
 
 def _tunnel_zones(raw: Any) -> set[str]:

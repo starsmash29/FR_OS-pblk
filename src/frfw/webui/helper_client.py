@@ -38,6 +38,7 @@ class HelperClient(Protocol):
     def listening_sockets(self) -> dict: ...
     def audit_append(self, entry: dict) -> dict: ...
     def wireguard_status(self) -> dict: ...
+    def firewall_drops(self) -> dict: ...
 
 
 class SocketHelperClient:
@@ -100,6 +101,9 @@ class SocketHelperClient:
 
     def wireguard_status(self) -> dict:
         return helper_client.wireguard_status(self.socket_path)
+
+    def firewall_drops(self) -> dict:
+        return helper_client.firewall_drops(self.socket_path)
 
 
 class UpdateHelperClient(Protocol):

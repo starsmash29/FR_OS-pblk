@@ -750,6 +750,138 @@ root who rewrites `RECORD` too -- that needs a manifest signed with the
 release key -- and a development install (`pip install -e`) is reported
 as not verifiable, not as clean.
 
+### The security score (security-lessons K8)
+
+`frfw.security_score` pulls the lessons together into a checklist. Each
+item is worked out from what the router knows:
+
+- no account has a default name (K1/G1);
+- every admin has a second factor (G5);
+- management is closed to the WAN (F2/G4/K5);
+- no newer release is available (G10), and security releases install
+  themselves (J3);
+- the rule check finds no any-to-any, internet-wide or shadowed rules
+  (K2);
+- firewall drops are logged (K6);
+- IoT isolation or segments are on (K4);
+- nothing unneeded listens (K7);
+- FR_OS's own files are intact (G9).
+
+The Security score screen shows the score and every item, with a link to
+the screen that fixes it. The dashboard shows the score and what's still
+open. An item whose facts aren't available right now is "unknown" and
+counts neither way: say, no update check has run yet, or the helper
+didn't list the sockets.
+
+### Nothing listening that isn't needed (security-lessons K7)
+
+The attack-surface view (I3) shows what listens and who can reach it.
+K7 adds a verdict for each socket: what in the configuration needs it
+(`frfw.surface.needed_by`):
+
+- the webUI and SSH (sshd runs only while someone has a key);
+- the WAN's DHCP client;
+- the DNS filter, only with `adblocker` on;
+- the DHCP server, only with DHCP pools;
+- the IoT scan, only with `iot` on;
+- the WireGuard port, only with the VPN on;
+- anything on loopback, which no zone can reach anyway.
+
+A socket reachable from a zone with no such reason is flagged "not
+needed". It appears at the top of the Attack surface page, and
+`firewall-cli surface` exits 3 for it (2 still means reachable from the
+internet). An unneeded socket the firewall closes everywhere isn't
+flagged: it can't be attacked from any zone. The QEMU boot test opens
+the page on a freshly set-up router and expects nothing flagged, so a
+package that starts listening on its own fails the build.
+
+### Logging on by default (security-lessons K6)
+
+You can't investigate what nobody logged. Out of the box:
+
+- **Firewall drops.** Each chain's last rule, right before its `policy
+  drop`, logs what nothing accepted:
+  `limit rate 10/minute burst 10 packets log prefix "fr_os/drop/<chain>: "`.
+  The rate limit means a flood can't fill the disk. The lines go to the
+  kernel log (`nf_log_syslog` is loaded at boot, so the sandboxed apply
+  units never load it). The dashboard's "Recently dropped" card reads
+  the latest ones through the apply-helper (`firewall_drops`), since
+  the kernel log is root's. `logging.drops: false` turns it off.
+- **Admin sign-ins and changes.** The audit log (G9) has recorded every
+  sign-in and every change request since phase 18, root-owned since G9.
+- **Retention.** The journal is capped at 200 MB and 90 days (a
+  journald drop-in the image and the install script put in place),
+  instead of journald's percentage-of-the-disk default. The audit log
+  rotates at 1 MB, keeping one old generation.
+
+The QEMU boot test sends a packet to a LAN port nothing allows. It then
+finds the kernel's drop line for it in the persisted journal. Forwarding
+logs to a SIEM is still ROADMAP phase 34.
+
+### Segmentation by default (security-lessons K4)
+
+On a flat LAN, one hacked camera or a guest's infected laptop reaches
+every device. Two changes make segments the default path:
+
+- **New installs isolate IoT devices.** The first-boot config
+  (`frfw.skeleton`) turns IoT isolation (phase 14) on for the LAN with
+  `auto_isolate`. Devices classified as IoT reach the internet, but not
+  the rest of the LAN or the router's management. The IoT Devices
+  screen trusts one back with a click.
+- **The Segments screen** (`frfw.segments`) is offered right after
+  first-run setup, and stays in the sidebar. It adds an IoT segment
+  (VLAN 30, 192.168.30.0/24) and/or a guest segment (VLAN 40,
+  192.168.40.0/24) on the LAN port. Each gets:
+  - its own zone and DHCP;
+  - one rule to the internet and none towards the LAN or the router's
+    management;
+  - for IoT, isolation of the devices.
+  Adding them pins `management.zones` to the zones that manage the
+  router today, so a new segment never becomes a management zone. An
+  interface can now be a VLAN (`vlan: {parent, id}`), which apply
+  creates with `ip link add ... type vlan`. The access point or switch
+  tags the IoT and guest Wi-Fi or ports with those IDs.
+
+The QEMU boot test adds both segments through the webUI and applies them
+on Debian's kernel (the unit-test sandbox has no 802.1Q support).
+
+### The rule check and temporary rules (security-lessons K2)
+
+Firewall rule sets grow by accretion. A rule opened "for a moment" stays
+for years; a broad accept added above a narrow drop silently cancels
+it. `frfw.rule_lint` checks the rules the way a reviewer would and
+reports:
+
+- **any-to-any** accept rules;
+- accept rules that open all of a zone (or the router) to the internet,
+  without a port or a source address;
+- rules **shadowed** by an earlier rule in the same chain that matches
+  everything they do and decides differently, so they never match; with
+  the same decision, they are reported as **redundant**;
+- rules **unused** for 90 days;
+- **expired** temporary rules.
+
+"Matches everything" is decided field by field and conservatively
+(zones, protocol, port ranges, address containment, MAC, ZTNA,
+schedule, expiry): the check never calls a rule shadowed when it isn't,
+though a rule shadowed by a combination of others can slip through. It
+runs on the Rules screen (with a badge on each flagged rule), when a
+rule is added (a warning right away), and as `firewall-cli rule-check`.
+
+Every rule in the ruleset has an nft `counter`. The kernel resets them
+on each apply, so `fr-schedule-check.timer` (root, hourly) folds them
+into `/etc/fr_os/rule_hits.json`: when each rule was first seen and
+when its counter last went up. That record drives "unused for 90 days"
+and the Rules screen's "last match" column.
+
+A **temporary rule** has an `expires` time. The ruleset renders it with
+`meta time < <Unix time>`, so the kernel itself stops matching it at
+that second, without a reload or a timer. Tested in a network
+namespace: a client gets in before the expiry and not after. Rulesets
+built later leave it out. Its entry stays in config.yaml, marked
+expired, until the Rules screen's "Remove expired rules" clears it. The
+router never rewrites the admin's config on its own.
+
 ### Security updates are loud (security-lessons G10)
 
 `fr-update-check.timer` runs `firewall-cli update auto` ten minutes

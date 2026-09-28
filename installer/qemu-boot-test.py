@@ -45,6 +45,9 @@ from contextlib import contextmanager
 from pathlib import Path
 
 WEBUI_PORT = 8443
+#: Forwarded to a LAN port nothing allows: the default policy drops it,
+#: and the drop must be logged (security-lessons K6).
+CLOSED_PORT = 8444
 NEW_PASSWORD = "changed-in-boot-3"
 NEW_USERNAME = "netadmin"
 DISK_SIZE = 2 * 2**30
@@ -71,7 +74,8 @@ class Vm:
             "-drive", f"file={disk},format=raw,if=virtio",
             "-nic", "user,model=virtio-net-pci,mac=52:54:00:00:00:01",
             "-nic", ("user,model=virtio-net-pci,mac=52:54:00:00:00:02,net=192.168.1.0/24,"
-                     f"host=192.168.1.2,dhcpstart=192.168.1.50,hostfwd=tcp::{WEBUI_PORT}-192.168.1.1:443"),
+                     f"host=192.168.1.2,dhcpstart=192.168.1.50,hostfwd=tcp::{WEBUI_PORT}-192.168.1.1:443,"
+                     f"hostfwd=tcp::{CLOSED_PORT}-192.168.1.1:4444"),
             "-display", "none", "-serial", f"file:{self.serial}",
             "-monitor", f"unix:{self.monitor},server,nowait",
         ]
@@ -182,8 +186,13 @@ def wait_for_webui(opener, timeout: float) -> str | None:
     return None
 
 
+def get(opener, path: str) -> str:
+    with opener.open(f"https://127.0.0.1:{WEBUI_PORT}{path}", timeout=60) as resp:
+        return resp.read().decode()
+
+
 def post(opener, path: str, fields: dict) -> str:
-    data = urllib.parse.urlencode(fields).encode()
+    data = urllib.parse.urlencode(fields, doseq=True).encode()
     with opener.open(f"https://127.0.0.1:{WEBUI_PORT}{path}", data=data, timeout=30) as resp:
         return resp.geturl()
 
@@ -260,22 +269,45 @@ def main() -> int:
     check(landed.endswith("/setup"), "the admin password from boot 2 still works, and leads to first-run setup")
     done = post(opener, "/setup", {"username": NEW_USERNAME, "password": NEW_PASSWORD,
                                    "password_confirm": NEW_PASSWORD}) if landed else ""
-    check(done.endswith("/"), f"setup renamed the account to {NEW_USERNAME!r} with a new password")
-    if done.endswith("/"):
+    set_up = done.endswith("/segments?first_run=1")  # then the segments offer (security-lessons K4)
+    check(set_up, f"setup renamed the account to {NEW_USERNAME!r} with a new password")
+    if set_up:
+        # Security-lessons K7: a fresh FR_OS listens on nothing its config
+        # doesn't need.
+        surface_page = get(opener, "/surface")
+        clean = 'class="flash-success" id="unneeded"' in surface_page
+        found = re.search(r'id="unneeded">(.*?)</div>', surface_page, re.S)
+        check(clean, "nothing listens that the config doesn't need (security-lessons K7)"
+              + ("" if clean else ": " + " ".join((found.group(1) if found else surface_page[:300]).split())))
+        score_page = get(opener, "/security")
+        score = re.search(r'id="score">(\d+)%', score_page)
+        check(score is not None, "the security score page works on the real router (security-lessons K8)"
+              + (f": {score.group(1)}%" if score else ""))
         post(opener, "/rules/timezone", {"timezone": "Europe/Budapest"})
         # Security-lessons G8: the WireGuard VPN on Debian's own kernel
         # module (the unit tests use the userspace implementation).
         post(opener, "/vpn/settings", {"enabled": "true", "address": "10.99.0.1/24", "listen_port": "51820",
                                        "endpoint": "vpn.example.net"})
+        # Security-lessons K4: the segments offered after setup, on real
+        # VLAN devices (802.1Q on the LAN port).
+        post(opener, "/segments", {"segment": ["iot", "guest"]})
         device_key = base64.b64encode(os.urandom(32)).decode()
         post(opener, "/vpn/peers/add", {"name": "laptop", "public_key": device_key})
         applied = urllib.parse.unquote_plus(post(opener, "/apply", {}))
         check("WireGuard up: wg0 10.99.0.1/24, UDP 51820, 1 peer(s)" in applied,
               "the VPN came up on the kernel's WireGuard (security-lessons G8)"
               + ("" if "WireGuard up" in applied else f": {applied[:300]}"))
+        check(re.search(r"\.30=192\.168\.30\.1/24", applied) is not None
+              and re.search(r"\.40=192\.168\.40\.1/24", applied) is not None,
+              "the IoT and guest segments came up on VLANs of the LAN port (security-lessons K4)"
+              + ("" if ".30=" in applied else f": {applied[:300]}"))
         listen = re.search(r"webUI restarting to listen on ([0-9., ]+)", applied)
         check(listen is not None and "10.99.0.1" in listen.group(1),
               "the webUI also listens on the VPN's tunnel address (security-lessons K5)")
+        try:  # dropped by the default policy, so this times out
+            socket.create_connection(("127.0.0.1", CLOSED_PORT), timeout=3).recv(1)
+        except OSError:
+            pass
         time.sleep(5)  # fr-initial-password.path reacts to the account file
     check(vm.power_off(), "powered off")
     vm.kill()
@@ -301,6 +333,8 @@ def main() -> int:
               "the router's WireGuard key is root's (0600, 0700 directory) and not in config.yaml")
         check("WireGuard VPN turned on" in audit_log.read_text() and "new VPN device 'laptop'" in audit_log.read_text(),
               "turning the VPN on and adding a device are security alerts")
+        dropped = journal(upper, "-b", "-k", "--grep", "fr_os/drop/input")
+        check("DPT=4444" in dropped, "a packet the default policy dropped was logged (security-lessons K6)")
         timer = journal(upper, "-b", "-u", "fr-update-check.timer")
         check("Started" in timer, "the periodic update check (fr-update-check.timer) is armed (security-lessons G10)")
         check("IPv4 forwarding" in journal(upper, "-b", "-u", "fr-firewall.service"),
