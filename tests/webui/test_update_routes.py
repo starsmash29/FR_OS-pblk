@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from frfw import __version__
 from frfw import update as update_mod
 
 
@@ -30,7 +31,7 @@ def test_update_page_requires_login(client):
 def test_update_page_shows_installed_and_latest_version(logged_in_client):
     page = logged_in_client.get("/update")
     assert page.status_code == 200
-    assert "0.1.0 “Ice Breaker”" in page.text
+    assert f"{__version__} “Ice Breaker”" in page.text  # the installed version
     assert "Update available: 0.2.0 “Ice Breaker”" in page.text
     assert "release notes here" in page.text
 
