@@ -259,6 +259,12 @@ def main() -> int:
         check(bool(password) and password not in (upper / "etc" / "issue").read_text(),
               "...and not in the world-readable /etc/issue")
         check((upper / "etc" / "fr_os" / "config.yaml").exists(), "config.yaml is on the persistence partition")
+        # A DHCP client on the LAN port flushed the router's own address on
+        # the boots after this one (live-boot used to put one on every port).
+        wan_dhcp = upper / "etc" / "network" / "interfaces.d" / "fr_os-wan"
+        dhcp_text = wan_dhcp.read_text() if wan_dhcp.exists() else ""
+        check("iface ens3 inet dhcp" in dhcp_text and "ens4" not in dhcp_text,
+              "a DHCP client on the WAN port (ens3) only, never on the LAN port")
 
     print("boot 3: everything still there")
     vm = Vm(workdir, disk, 3, kvm)

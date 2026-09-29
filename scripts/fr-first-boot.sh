@@ -31,6 +31,20 @@ echo "fr-first-boot: running initial setup..."
 
 install-system-integration.sh
 
+# A DHCP client (ifupdown) on exactly the given ports, started now.
+write_dhcp_clients() {
+    local file=/etc/network/interfaces.d/fr_os-wan dev
+    mkdir -p /etc/network/interfaces.d
+    echo "# Written by fr-first-boot: the WAN port's DHCP client." > "$file"
+    for dev in "$@"; do
+        printf 'allow-hotplug %s\niface %s inet dhcp\n' "$dev" "$dev" >> "$file"
+    done
+    # In ifup@'s own unit (as on every later boot), not in this one.
+    for dev in "$@"; do
+        systemctl start --no-block "ifup@$dev.service" || true
+    done
+}
+
 # Naive zero-touch default: first detected NIC is WAN, second is LAN.
 # Matches the common homelab case (exactly two NICs) without requiring
 # an interactive wizard; anything more exotic (OPT zones, more than two
@@ -47,18 +61,18 @@ if [[ ${#DEVICES[@]} -ge 2 ]]; then
     chgrp fr_os-webui "$CONFIG_DIR/config.yaml"
     chmod 0640 "$CONFIG_DIR/config.yaml"
     echo "fr-first-boot: assigned WAN=$WAN LAN=$LAN (LAN 192.168.1.1/24 with DHCP)"
-    # live-boot sets every NIC to DHCP in /etc/network/interfaces. The WAN
-    # keeps that (addresses from the upstream network); on the LAN the
-    # router *is* the DHCP server, so its client is stopped and the port
-    # left to frfw's static address.
-    if grep -qx "iface $LAN inet dhcp" /etc/network/interfaces 2>/dev/null; then
-        ifdown "$LAN" || true
-        sed -i "s/^iface $LAN inet dhcp\$/iface $LAN inet manual/" /etc/network/interfaces
-    fi
+    # The WAN port gets its address from the upstream network: a DHCP
+    # client on it, and on it alone. On the LAN the router *is* the DHCP
+    # server, and a client there would flush frfw's static address
+    # (the image boots with ip=frommedia so live-boot doesn't put one
+    # back on every boot; see installer/live-build/auto/config).
+    write_dhcp_clients "$WAN"
     WEBUI_HINT="webUI: https://192.168.1.1/ from a computer on the LAN port ($LAN)"
 else
     echo "fr-first-boot: fewer than 2 network interfaces detected (${#DEVICES[@]});" >&2
     echo "  skipping auto-assignment -- run 'firewall-cli assign-interfaces' manually" >&2
+    # No LAN to protect: keep whatever there is reachable over DHCP.
+    write_dhcp_clients "${DEVICES[@]}"
 fi
 
 # The password goes on the console's login screen through a root-only

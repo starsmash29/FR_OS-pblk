@@ -195,3 +195,16 @@ def test_the_package_ships_the_release_keys_directory():
 
     pyproject = tomllib.loads((Path(__file__).resolve().parents[1] / "pyproject.toml").read_text())
     assert "release_keys/*.pem" in pyproject["tool"]["setuptools"]["package-data"]["frfw"]
+
+
+def test_the_shipped_release_keys_are_ed25519_public_keys():
+    """Review R13: the router trusts at least one key, and every shipped
+    file is an Ed25519 *public* key (a private key here would be a leak)."""
+    keys = release_signing.trusted_keys()
+    assert keys, "no release key shipped: every update would be refused"
+    for key in keys:
+        text = key.read_text()
+        assert "PRIVATE" not in text
+        out = subprocess.run(["openssl", "pkey", "-pubin", "-in", str(key), "-text", "-noout"],
+                             capture_output=True, text=True, check=True).stdout
+        assert out.startswith("ED25519 Public-Key")
