@@ -36,6 +36,9 @@ def test_boot_options():
     # ...and no tty1 autologin into it (which then fails in a restart loop)
     assert "live-config.noautologin" in options
     assert "console=ttyS0,115200n8" in options  # headless boxes
+    # live-boot keeps the image's /etc/network/interfaces instead of putting
+    # a DHCP client on every port -- the LAN one flushed the router's address.
+    assert "ip=frommedia" in options
 
 
 def test_uefi_menu_uses_the_same_options_as_bios():
@@ -110,3 +113,14 @@ def test_a_fresh_checkout_builds_the_tested_image():
     assert _auto_config_option("firmware-chroot") == "false"
     assert _auto_config_option("firmware-binary") == "false"
     assert _auto_config_option("initramfs") == "live-boot"
+
+
+def test_only_the_wan_port_gets_a_dhcp_client():
+    """The image's interfaces file is loopback only; fr-first-boot writes
+    the WAN port's DHCP client and never one for the LAN port."""
+    hook = (LB / "config" / "hooks" / "0100-install-frfw.hook.chroot").read_text()
+    interfaces = hook.split("cat > /etc/network/interfaces <<'CONF'", 1)[1].split("\nCONF\n", 1)[0]
+    assert "iface lo inet loopback" in interfaces and "inet dhcp" not in interfaces
+    script = (LB.parents[1] / "scripts" / "fr-first-boot.sh").read_text()
+    assert 'write_dhcp_clients "$WAN"' in script
+    assert 'write_dhcp_clients "$LAN"' not in script and "inet manual" not in script
