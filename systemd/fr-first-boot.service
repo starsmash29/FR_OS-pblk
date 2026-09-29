@@ -10,7 +10,7 @@ RemainAfterExit=yes
 ExecStart=fr-first-boot.sh
 # Sandbox (security-lessons I1; checked by tests/test_systemd_sandbox.py).
 # One-time machine setup: writes /etc (config, accounts, interfaces),
-# takes the LAN port's DHCP client down and starts every FR_OS unit --
+# gives the WAN port its DHCP client and starts every FR_OS unit --
 # too broad for a strict sandbox; what it never needs is shut.
 NoNewPrivileges=yes
 ProtectHome=read-only
