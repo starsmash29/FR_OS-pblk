@@ -114,6 +114,95 @@ def test_build_lpm_key_rejects_empty_and_too_long_hostnames():
         xdp_mod.build_lpm_key("a" * xdp_mod.MAX_SNI_LEN)
 
 
+# --- SNI normalization (review-triage B3) ---------------------------------------
+#
+# A blocklist entry only blocks a client if the key it is stored as is
+# the key the kernel program builds from the name the client actually
+# sends. These are the userspace half of that agreement; the kernel
+# half (bpf/xdp_sni_filter.c's normalize_sni) is exercised with real
+# packets in tests/test_xdp_live.py.
+
+
+def test_normalize_sni_folds_ascii_letters_only():
+    # DNS names are case-insensitive (RFC 4343), so case has to go. But
+    # only A-Z: the tempting one-liner `| 0x20` on every byte would turn
+    # '_' (0x5F) into DEL (0x7F) and '@' (0x40) into a backtick, i.e.
+    # mangle names the kernel side never mangles -- and produce a key
+    # that matches nothing.
+    assert xdp_mod.normalize_sni("Blocked.Example.COM") == "blocked.example.com"
+    assert xdp_mod.normalize_sni("A_B@C") == "a_b@c"
+    assert xdp_mod.normalize_sni("MiXeD-Case.Example.12") == "mixed-case.example.12"
+
+
+def test_normalize_sni_strips_a_run_of_trailing_dots():
+    # "example.com." is the fully-qualified spelling of "example.com"
+    # (RFC 1035 3.1) and clients do send it; a client must not be able
+    # to pad dots to slip one byte off the stored key either.
+    assert xdp_mod.normalize_sni("example.com.") == "example.com"
+    assert xdp_mod.normalize_sni("example.com...") == "example.com"
+    assert xdp_mod.normalize_sni("Example.COM..") == "example.com"
+
+
+def test_build_lpm_key_is_case_insensitive():
+    # The bypass: a blocklist entry of "blocked.example.com" never
+    # matched a client sending "Blocked.Example.COM", because the raw
+    # wire bytes were compared without folding.
+    assert (
+        xdp_mod.build_lpm_key("Blocked.Example.COM")
+        == xdp_mod.build_lpm_key("blocked.example.com")
+    )
+
+
+def test_build_lpm_key_ignores_a_trailing_dot():
+    assert (
+        xdp_mod.build_lpm_key("example.com.")
+        == xdp_mod.build_lpm_key("example.com")
+    )
+    assert (
+        xdp_mod.build_lpm_key("Blocked.Example.com..")
+        == xdp_mod.build_lpm_key("blocked.example.com")
+    )
+
+
+def test_build_lpm_key_of_a_trailing_dot_name_is_the_parent_key():
+    # Not just equal to the normalized key: the normalized key itself
+    # must be the one the parent's own entry uses, or "example.com" in
+    # the blocklist still misses "example.com." on the wire.
+    dotted = xdp_mod.build_lpm_key("example.com.")
+    plain = xdp_mod.build_lpm_key("example.com")
+    assert dotted == plain
+    content_len = struct.unpack_from("<I", plain, 0)[0] // 8
+    subdomain = xdp_mod.build_lpm_key("www.example.com.")
+    # And the label-boundary prefix property survives normalization, so
+    # the parent entry still covers subdomains spelled with a dot.
+    assert subdomain[4 : 4 + content_len] == plain[4 : 4 + content_len]
+
+
+def test_build_lpm_key_rejects_a_name_at_the_kernel_limit_even_with_a_trailing_dot():
+    # 31 'a' + '.' is 32 bytes *on the wire*, which is exactly what
+    # parse_sni_body() in bpf/xdp_sni_filter.c refuses (name_len_raw >=
+    # MAX_SNI_LEN) before it ever looks at a trailing dot. Normalizing
+    # it down to 31 bytes here would install a key the kernel side
+    # provably never builds -- the length check has to come first, on
+    # the raw name.
+    at_limit = "a" * (xdp_mod.MAX_SNI_LEN - 1) + "."
+    assert len(at_limit) == xdp_mod.MAX_SNI_LEN
+    with pytest.raises(xdp_mod.XdpError, match="NOT blocked"):
+        xdp_mod.build_lpm_key(at_limit)
+    # One byte shorter is fine, and the dot is simply dropped.
+    just_fits = "a" * (xdp_mod.MAX_SNI_LEN - 2) + "."
+    assert len(just_fits) == xdp_mod.MAX_SNI_LEN - 1
+    assert xdp_mod.build_lpm_key(just_fits) == xdp_mod.build_lpm_key(
+        "a" * (xdp_mod.MAX_SNI_LEN - 2)
+    )
+
+
+def test_build_lpm_key_rejects_a_name_of_only_dots():
+    for name in (".", "..", "..."):
+        with pytest.raises(xdp_mod.XdpError):
+            xdp_mod.build_lpm_key(name)
+
+
 # --- SniEvent decoding --------------------------------------------------------
 
 
@@ -268,6 +357,52 @@ def test_sync_blocklist_noop_when_already_matching(monkeypatch):
 
     xdp_mod.sync_blocklist(["same.example.com"])
 
+    assert not [c for c in calls if c[:2] in (["map", "update"], ["map", "delete"])]
+
+
+def test_sync_blocklist_installs_the_normalized_key(monkeypatch):
+    # The blocklist entry as written in the config and the name on the
+    # wire rarely agree on case or a trailing dot; what lands in the trie
+    # must be the normalized key, or the kernel's lookup (which
+    # normalizes) never finds it.
+    calls = []
+
+    def fake_bpftool(args):
+        calls.append(args)
+        if args[:2] == ["map", "dump"]:
+            return _bpftool_json([])
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(xdp_mod, "_bpftool", fake_bpftool)
+
+    xdp_mod.sync_blocklist(["Blocked.Example.COM."])
+
+    update_calls = [c for c in calls if c[:2] == ["map", "update"]]
+    assert len(update_calls) == 1
+    wanted = xdp_mod._key_hex_args(xdp_mod.build_lpm_key("blocked.example.com"))
+    assert update_calls[0][-len(wanted) - 2 : -2] == wanted  # before "value ..."
+
+
+def test_sync_blocklist_names_every_name_it_cannot_block(monkeypatch):
+    # Fails closed (the whole sync aborts, so nothing is half-applied)
+    # and says which entries are not blocked -- an operator who added a
+    # too-long name must not have to guess that it is silently absent.
+    calls = []
+
+    def fake_bpftool(args):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, stdout="[]", stderr="")
+
+    monkeypatch.setattr(xdp_mod, "_bpftool", fake_bpftool)
+
+    too_long = "a" * 28 + ".com"  # 32 bytes
+    with pytest.raises(xdp_mod.XdpError) as excinfo:
+        xdp_mod.sync_blocklist(["ok.example.com", too_long])
+
+    message = str(excinfo.value)
+    assert "NOT blocked" in message
+    assert too_long in message
+    # Nothing was written or deleted on the way to failing.
     assert not [c for c in calls if c[:2] in (["map", "update"], ["map", "delete"])]
 
 

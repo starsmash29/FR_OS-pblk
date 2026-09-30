@@ -883,9 +883,18 @@ def _parse_xdp_sni_filter(raw: Any, interfaces: dict[str, Interface]) -> XdpSniF
             raise ConfigError(
                 f"xdp_sni_filter.blocklist[{i}]: hostname {hostname!r} is "
                 f"{len(hostname)} bytes, must be under {_MAX_SNI_LEN} "
-                "(the kernel filter's MAX_SNI_LEN)"
+                "(the kernel filter's MAX_SNI_LEN) or it is NOT blocked"
             )
-        blocklist.append(hostname.lower())
+        # Stored in the canonical form the LPM trie's key is built from,
+        # and the one the kernel program produces for the name it
+        # extracts from the wire -- see frfw.xdp.normalize_sni (the same
+        # rules as bpf/xdp_sni_filter.c's normalize_sni). Spelled out
+        # here rather than imported: frfw.xdp imports this package, so
+        # importing it back would be a cycle.
+        # tests/test_xdp_schema.py pins the two against each other.
+        blocklist.append("".join(
+            chr(ord(c) | 0x20) if "A" <= c <= "Z" else c for c in hostname
+        ))
 
     return XdpSniFilterConfig(
         enabled=enabled,
