@@ -1,9 +1,10 @@
 // XDP TLS 1.3 ClientHello SNI filter -- kernel-space fast path, phase 4.
 //
 // Everything below runs in the kernel, before any context switch to
-// userspace: parse Ethernet/IPv4/TCP, find a TLS ClientHello, extract
-// the SNI (Server Name Indication) extension, and look it up in an
-// LPM trie blocklist. A match returns XDP_DROP; everything else (not
+// userspace: parse Ethernet (unwrapping 802.1Q/802.1ad VLAN tags), then
+// IPv4/TCP, find a TLS ClientHello, extract the SNI (Server Name
+// Indication) extension, and look it up in an LPM trie blocklist. A match
+// returns XDP_DROP; everything else (not
 // TLS, not a ClientHello, SNI absent, no match) returns XDP_PASS. Match
 // events are pushed to a ring buffer for userspace (frfw.xdp) to log --
 // userspace never touches the drop decision itself. With the
@@ -85,6 +86,20 @@
 // IMPORTANT -- IPv4 only. Matches the rest of frfw (frfw.nft, DHCP/Kea
 // etc. are all IPv4-only today); IPv6 support is a follow-up, not a
 // silent gap specific to this file.
+//
+// IMPORTANT -- VLAN tags. Frames this program can actually see carry at
+// most MAX_VLAN_TAGS tags (see the define): a FR_OS router terminates
+// VLANs on its own interfaces, and a device with XDP attached here sees
+// what arrives on that device, not what a further-upstream switch adds.
+// A frame with more tags than that limit, and a frame whose inner
+// EtherType is neither IP nor another tag, is passed unfiltered rather
+// than dropped -- the same deliberate fail-open as IMPORTANT 1 and 2,
+// chosen so a malformed or adversarially deep tag stack can never turn
+// into a black hole. The residual risk is stated in docs/review-triage.md
+// (B2): a client that can inject a third tag on a path the filter is
+// attached to bypasses it. Closing that means raising MAX_VLAN_TAGS or
+// dropping on tag-stack overflow, both of which need the deployment
+// picture QA-DevOps has, not a guess from inside this file.
 
 #include <linux/bpf.h>
 #include <linux/if_ether.h>
@@ -109,6 +124,26 @@
 #define MAX_SNI_LEN 32
 #define LPM_KEY_LEN (MAX_SNI_LEN + 1)  // + 1 for the leading '.' (see above)
 #define MAX_TLS_EXTENSIONS 32    // bounded-loop cap for the extension walk
+
+// 802.1Q (0x8100) and 802.1ad (0x88a8) tags this program unwraps between
+// the Ethernet header and IP, each 4 bytes: 2 bytes of tag control
+// information plus a 2-byte EtherType for the encapsulated protocol.
+// Two covers plain 802.1Q and ordinary QinQ (an S-tag plus a C-tag);
+// the walk is a `#pragma unroll` over this exact constant, so raising it
+// costs a fully unrolled copy of the bounds check per tag. A frame
+// carrying *more* tags than this is passed unfiltered, the same
+// deliberate fail-open this file already accepts for a segmented
+// ClientHello (IMPORTANT 1) and for ECH (IMPORTANT 2) -- see the
+// "VLAN tags" note above xdp_sni_filter() for the residual risk.
+#define MAX_VLAN_TAGS 2
+
+// 802.1Q/802.1ad tag, as it appears on the wire. The uapi
+// <linux/if_ether.h> ships both EtherType constants but not this struct
+// (it is kernel-internal there), so it is spelled out here.
+struct vlan_tag_hdr {
+	__be16 tci;   // priority(3) | DEI(1) | VLAN ID(12)
+	__be16 inner; // EtherType of the encapsulated protocol
+};
 
 // TLS wire constants (RFC 8446 / RFC 6066)
 #define TLS_CONTENT_TYPE_HANDSHAKE 22
@@ -823,10 +858,38 @@ int xdp_sni_filter(struct xdp_md *ctx)
 	struct ethhdr *eth = (struct ethhdr *)data;
 	if ((unsigned char *)(eth + 1) > data_end)
 		return XDP_PASS;
-	if (eth->h_proto != bpf_htons(ETH_P_IP))
+
+	// VLAN tags. An 802.1Q/802.1ad frame carries 4 bytes per tag between
+	// the Ethernet header and IP, so an untagged-only parse reads the tag
+	// as the EtherType, never matches ETH_P_IP, and returns XDP_PASS --
+	// i.e. every VLAN-tagged frame reached the internet unfiltered, on
+	// the very segments this router itself tags (see frfw.segments). Peel
+	// the tags first, then continue into the unchanged IPv4 path.
+	//
+	// l3_off is carried alongside the pointer because phase 19's hello
+	// copies address the TCP payload by absolute packet offset rather
+	// than by pointer (see emit_hello_segment); without the tag bytes
+	// added here those copies would start 4 (or 8) bytes into the TLS
+	// record. The same rule as everywhere else in this file: bounds check
+	// the whole 4-byte tag before reading its inner EtherType.
+	__u16 proto = eth->h_proto;
+	unsigned char *l3 = (unsigned char *)(eth + 1);
+	__u32 l3_off = sizeof(struct ethhdr);
+#pragma unroll
+	for (int i = 0; i < MAX_VLAN_TAGS; i++) {
+		if (proto != bpf_htons(ETH_P_8021Q) && proto != bpf_htons(ETH_P_8021AD))
+			break;
+		struct vlan_tag_hdr *vlan = (struct vlan_tag_hdr *)l3;
+		if ((unsigned char *)(vlan + 1) > data_end)
+			return XDP_PASS;
+		proto = vlan->inner;
+		l3 = (unsigned char *)(vlan + 1);
+		l3_off += sizeof(struct vlan_tag_hdr);
+	}
+	if (proto != bpf_htons(ETH_P_IP))
 		return XDP_PASS;
 
-	struct iphdr *ip = (struct iphdr *)(eth + 1);
+	struct iphdr *ip = (struct iphdr *)l3;
 	if ((unsigned char *)(ip + 1) > data_end)
 		return XDP_PASS;
 	if (ip->protocol != IPPROTO_TCP)
@@ -856,7 +919,7 @@ int xdp_sni_filter(struct xdp_md *ctx)
 	// would be rejected by the verifier once the compiler shifts them.
 	__u32 hdr_len = (__u32)ip->ihl * 4 + (__u32)tcp->doff * 4;
 	__u32 ip_len = bpf_ntohs(ip->tot_len);
-	__u32 payload_off = sizeof(struct ethhdr) + hdr_len;
+	__u32 payload_off = l3_off + hdr_len;
 	__u32 payload_len = ip_len > hdr_len ? ip_len - hdr_len : 0;
 	int report_hello = setting_flags() & SETTING_REPORT_HELLO;
 	struct hello_flow_key flow_key = {
