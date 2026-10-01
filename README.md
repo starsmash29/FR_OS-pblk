@@ -506,4 +506,12 @@ Full rationale for every phase: [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ---
 
-*Built for the homelab community. Contributions — especially real 10/40GbE hardware benchmarking and UEFI Secure Boot support — are welcome; see ROADMAP.md's open items.*
+## Contributing
+
+Open work is listed with stable IDs in [ROADMAP.md, "Planned work"](ROADMAP.md#planned-work-open-for-contributors) --
+from small security fixes to multi-WAN, QoS and HA. How to claim an item, the
+rules every change follows and what "done" means (for people and AI agents
+alike): [AGENTS.md](AGENTS.md). Security issues: [SECURITY.md](SECURITY.md),
+never a public issue.
+
+*Built for the homelab community. Contributions — especially real 10/40GbE hardware benchmarking (P4-2) and UEFI Secure Boot support (FND-3) — are welcome.*
