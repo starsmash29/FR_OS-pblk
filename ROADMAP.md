@@ -1341,15 +1341,19 @@ issues #17 and #18). The R-numbers are that record's.
 | SEC-4 | Narrower journal access for the webUI and the sensor daemons (R10) | medium | `systemd/fr-webui.service`, `fr-ai-ids`, `fr-appid` |
 | SEC-5 | Cross-subsystem apply: validate, stage and roll back beyond the firewall (R6) | medium | `frfw.provision` |
 | SEC-6 | ZTNA: document it as source-address authorization, or move to per-client credentials (R12); see THR-5 | medium | `frfw.ztna`, `routes/ztna.py` |
-| SEC-7 | XDP parser bounded by IPv4 `tot_len` and the TLS record length (R9) | low | `bpf/xdp_sni_filter.c` |
+| SEC-7 | XDP parser bounded by IPv4 `tot_len` and the TLS record length (R9). Builds on SEC-16, which moves the IPv4 header offset behind the VLAN tags -- land SEC-16 first | low | `bpf/xdp_sni_filter.c` |
 | SEC-8 | First boot assigns WAN/LAN by NIC order: link-state or confirmed assignment (R14) | low | `frfw.netdetect`, `scripts/fr-first-boot.sh`, see OPS-6 |
 | SEC-9 | Explicit CSRF tokens and security headers (CSP, `frame-ancestors`, `Referrer-Policy`) (R15) | low | `frfw.webui.app`, templates |
-| SEC-10 | Regression tests still missing: XDP bounds, CSRF, metrics (R16) | low | `tests/` |
+| SEC-10 | **Superseded** (kept so references stay valid). The missing regression tests (R16) belong to the items that change the behaviour: XDP bounds to SEC-7, CSRF to SEC-9; `/metrics` is covered as it behaves today by `tests/webui/test_metrics_routes.py`, and the protected-by-default test comes with SEC-3 | -- | `tests/` |
 | SEC-11 | Sensor daemons read `config.yaml` with ZTNA password hashes: give them a secrets-free copy, drop the `fr_os-webui` group (R17, security-lessons G3) | low | `frfw.accounts`, `systemd/fr-ai-ids.service` and peers |
 | SEC-12 | Update helper refuses downgrades (only `rollback` goes back) (R18) | low | `frfw.update.apply_update` |
 | SEC-13 | One live-log stream per session, a global cap, process ended on disconnect (R19) | low | `routes/xdp.py` |
 | SEC-14 | Kernel fixes without a new image: update the kernel on the boot medium (R3; today kernel fixes ship as a new image, SECURITY.md) | medium | `frfw.persistence`, `frfw.update`, see OPS-10 |
 | SEC-15 | Integrity manifest signed with the release key, so a root attacker can't rewrite the record too (security-lessons G9) | low | `frfw.integrity`, `frfw.release_signing` |
+| SEC-16 | The XDP SNI filter parses only untagged IPv4 (`ETH_P_IP`), so every 802.1Q/802.1ad-tagged frame -- including the segments FR_OS tags itself -- passes unfiltered: unwrap the VLAN tags before the IPv4 parse (review-triage B2). In progress on branch `claude/xdp-vlan-sni` | medium | `bpf/xdp_sni_filter.c`, `tests/test_xdp_live.py` |
+| SEC-17 | SNI blocklist bypasses: the name's case, a trailing dot, names of 32 bytes or more (the key's limit), a ClientHello split across segments (review-triage B3). Work in progress on branch `kernel/UMB-3-sni-bypass` (case, trailing dot, length) | medium | `bpf/xdp_sni_filter.c`, `frfw.xdp`, `frfw.config.loader` |
+| SEC-18 | Debian's `nftables.service` is neither ordered against nor kept away from `fr-firewall.service`: both start before `network-pre.target`, and if it is ever enabled, its `/etc/nftables.conf` (`flush ruleset`) can replace the FR_OS ruleset, and stopping it flushes the ruleset. Keep the `nftables` package (it provides `nft`) and mask the unit in the image; boot-test that it stays masked (review-triage B5) | medium | `installer/live-build/config/hooks/`, `systemd/fr-firewall.service`, `installer/qemu-boot-test.py` |
+| SEC-19 | XDP lifecycle: a partial apply leaves attachments unrecorded, the event logger loses events after disable/enable, a stale pinned program is reused after an upgrade (`load_and_pin` does nothing when a pin exists), and root compiles BPF with whatever `clang` is first on `PATH` (review-triage B6; the compile goes away with P4-1) | medium | `frfw.xdp` (`ensure_compiled`, `load_and_pin`, `apply`), see P4-1 |
 
 ### Foundations every organisation will ask about first
 
@@ -1457,6 +1461,12 @@ issues #17 and #18). The R-numbers are that record's.
 | KEY-2 | Key rotation and zeroization with audit receipts | Planned rotation and emergency destruction of keys, with evidence | Release-key rotation documented (docs/RELEASING.md) | Ephemeral Root Key Rotation; Force Zeroize; Zeroization Attestation |
 | KEY-3 | Disaster-recovery key escrow (M-of-N Shamir shares) | No single person can restore -- or lose -- the recovery key | -- | DR Key Export (Shamir); Shard Handover Manifest; M-of-N Reassembly; Recovery Attestation |
 | KEY-4 | Measured boot with TPM 2.0 and Secure Boot attestation | Proof the router booted unmodified software | -- (see FND-3) | Platform Integrity, TPM 2.0 & Secure Boot Attestation |
+
+### Documentation
+
+| ID | Item | Status | Where it plugs in |
+|---|---|---|---|
+| DOC-1 | English translation of the Stitch screen inventory (it is in Hungarian today); keep the screen names as Stitch has them, so the "Stitch design" columns above still match | Planned | `docs/stitch-screens.md` |
 
 Some Stitch screens show sample data and certification claims (FIPS
 140-3, CAVP): those are design placeholders -- FR_OS will not claim a

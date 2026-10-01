@@ -33,11 +33,11 @@ in this batch.
 | ID | Final sev | Finding | Status | Sources |
 |---|---|---|---|---|
 | B1 | high | XDP SNI filter never re-attaches after reboot: `xdp_state.json` persists, kernel attachments don't, and `apply` skips any device listed in the state file; the UI shows "attached" from the same file | Verified (`xdp.py:565-567`) | MiMo H4 |
-| B2 | medium | SNI filter only parses untagged IPv4 (`ETH_P_IP`), so 802.1Q-tagged frames pass unfiltered; only TCP/443 | Verified (`bpf/xdp_sni_filter.c:826,843`) | BP2 (high) |
-| B3 | medium | SNI blocklist bypasses: case / trailing dot, names ≥32 bytes, split ClientHello | Reported | MiMo M1, BP9 |
+| B2 | medium | SNI filter only parses untagged IPv4 (`ETH_P_IP`), so 802.1Q-tagged frames pass unfiltered; only TCP/443 | Verified (`bpf/xdp_sni_filter.c:826,843`) – ROADMAP SEC-16 | BP2 (high) |
+| B3 | medium | SNI blocklist bypasses: case / trailing dot, names ≥32 bytes, split ClientHello | Reported – ROADMAP SEC-17 | MiMo M1, BP9 |
 | B4 | medium | First-boot WAN/LAN assignment is alphabetical (first two NICs), LAN can land on the WAN port | Verified (`netdetect.py:50`, `fr-first-boot.sh`) – also ROADMAP SEC-8 | MiMo M4 |
-| B5 | medium | No ordering/masking against Debian's `nftables.service` | Needs verification | MiMo M3 |
-| B6 | medium | XDP: partial apply leaves attachments unrecorded, logger loses events after disable/enable, stale pinned program reused after upgrade, root compiles BPF from a PATH-resolved clang | Reported | MiMo M11–M14 |
+| B5 | medium | No ordering/masking against Debian's `nftables.service` | Verified (no ordering in `fr-firewall.service`, no mask in the image hooks) – ROADMAP SEC-18 | MiMo M3 |
+| B6 | medium | XDP: partial apply leaves attachments unrecorded, logger loses events after disable/enable, stale pinned program reused after upgrade, root compiles BPF from a PATH-resolved clang | Reported – ROADMAP SEC-19 | MiMo M11–M14 |
 | B7 | medium | nft backups: non-atomic, name collisions, rollback without `nft -c`; rollback restores only the ruleset, not config.yaml | Reported | MiMo M10, BP14 |
 
 ## Batch C – update pipeline (P1)
