@@ -4,13 +4,17 @@ Phase-by-phase development plan. At the end of every phase the system must
 be in a working, testable state on a plain Debian VM before the next phase
 starts. For the architecture decisions, see: [ARCHITECTURE.md](ARCHITECTURE.md).
 
+**What's next:** [Planned work](#planned-work-open-for-contributors) at
+the end of this file lists every open item with a stable ID; how to
+contribute one (people and AI agents alike): [AGENTS.md](AGENTS.md).
+
 ## 🗺️ Release cycle & codenames
 
 FR_OS releases follow a thematic "I"-codename convention:
 
 | Versions | Codename | Status |
 |---|---|---|
-| v0.1.0 – v1.0.0 | **Ice Breaker** 🧊 | **Current.** v0.1.0 is the first release: everything in phases 1–20 below. |
+| v0.1.0 – v1.0.0 | **Ice Breaker** 🧊 | **Current.** v0.1.0 was the first release (phases 1–20 below); v0.2.0 is the first signed one. |
 | v1.x.x | **Idun** 🍏 | Planned |
 | v2.x.x | **Ivar** ⚡ | Planned |
 | v3.x.x | **Inari** 🌌 | Planned |
@@ -238,7 +242,8 @@ BPF verifier:
       the kernel ring buffer), with plain vanilla JS `EventSource` on the
       frontend, no SPA framework.
 - [ ] **Live-build integration**: precompiling the `.o` file and
-      packaging it into the image as part of the build pipeline.
+      packaging it into the image as part of the build pipeline
+      (**P4-1** in Planned work -- the image has no `clang`).
 - [ ] Performance testing (iperf3-style, with real TLS traffic) on
       10G/40GbE hardware, in native (`xdpdrv`) mode — this sandbox isn't
       suited for this (no suitable NIC/traffic generator); the program's
@@ -247,7 +252,9 @@ BPF verifier:
       hardware.
 - [ ] Decision: is XDP enough, or is DPDK needed (depends on the
       performance measurement above)
-- [ ] **Real AI IDS data collection**: replacing the mock `frfw.ai_ids`
+- [x] ~~**Real AI IDS data collection**~~ -- superseded by phase 11 (a
+      real, pure-stdlib engine on conntrack and SNI features; no
+      scikit-learn). The original note: replacing the mock `frfw.ai_ids`
       engine with detection built on real per-device flow features
       (packet size/timing distribution, protocol mix, destination
       diversity), using scikit-learn's `IsolationForest`
@@ -1282,24 +1289,175 @@ still passes. ✅
 ### Stitch screens for features FR_OS doesn't have yet
 
 The Stitch project also designs screens for features that aren't built.
-They are **not** in the product (no mock-ups with sample data); they are
-candidates for later releases:
+They are **not** in the product (no mock-ups with sample data). Each of
+them is a row in [Planned work](#planned-work-open-for-contributors)
+below, with its Stitch screen names; the screen-by-screen inventory is in
+[docs/stitch-screens.md](docs/stitch-screens.md).
 
-- **Networking**: VLAN provisioning and a port matrix, LACP link
-  aggregation, policy-based routing and multi-WAN failover, BGP/OSPF
-  peering, Dynamic DNS,
-  DNS static overrides, encrypted DoH/DoT upstreams, DHCP lease inventory
-  with static-lease pinning, ARP/NDP neighbour table.
-- **Traffic shaping**: CAKE/fq_codel smart queue management, HTB tree
-  editor, `tc qdisc` inspector, bufferbloat benchmark.
-- **Diagnostics**: path analyzer, MTR/packet loss, iPerf3 speed test, DNS
-  leak test, live packet capture (PCAP), live sessions explorer, client
-  deep-dive inspector, geo-IP lookup and a Geo-IP country filter.
-- **Security and identity**: FIDO2/WebAuthn sign-in, hardware HSM /
-  security-token keystore and key rotation, time-limited privilege
-  elevation, signed compliance/attestation reports, threat-intel feeds.
-- **Operations**: first-run setup wizard, configuration backup with git
-  history and rollback, alert rules and an incident dispatcher, syslog /
-  SIEM forwarding, a live system log console, command palette (Cmd+K),
-  rescue shell.
+---
 
+## Planned work (open for contributors)
+
+Everything FR_OS doesn't do yet but is designed, asked for, or left open
+by a finished phase -- in one list, so an organisation can see whether
+what it needs is on the way, and so contributors (people and AI agents)
+can pick something up. **How to take an item, the rules, and what
+"done" means: [AGENTS.md](AGENTS.md).**
+
+Nothing here is scheduled to a release yet; the order follows demand and
+dependencies (release codenames: see the top of this file). Each item has
+a stable **ID** -- use it in the branch name, the PR title and the claim
+issue, and refer to it from other documents instead of a phase number.
+
+**Status:** **Planned** -- nothing exists yet. **Extends** -- the core
+exists; the item adds to it. **Partly** -- part of it is built (the row
+says which). **Done** -- built; kept here so references stay valid.
+**Claimed** -- someone is working on it (see the linked issue).
+
+Columns: what it gives an organisation; what FR_OS already has; where it
+plugs into the code (start reading there); the Stitch design, if any.
+
+### Open items from finished phases
+
+| ID | Item | Status | Where it plugs in |
+|---|---|---|---|
+| P4-1 | **Precompiled XDP program in the image.** `frfw.xdp.ensure_compiled` expects the image to ship `paths.XDP_BPF_OBJ_PATH` precompiled, but the image build doesn't make it, removes the bundled source and has no `clang` -- so turning the SNI filter on on a router fails. Compile the `.o` in the image build (and in release tarballs for updates) and boot-test the filter on. | Planned | `frfw.xdp.ensure_compiled`, `installer/live-build/config/hooks/0100-install-frfw.hook.chroot`, `installer/qemu-boot-test.py` |
+| P4-2 | XDP performance measurement on 10G/40G hardware in native (`xdpdrv`) mode, XDP on vs. off, documented | Planned (needs hardware) | `bpf/`, `tests/test_xdp_live.py` |
+| P4-3 | Decision: is XDP enough, or is DPDK needed (after P4-2) | Planned | ARCHITECTURE.md |
+| P5-1 | Install and boot on physical hardware; a reference hardware list | Planned (VM-verified today) | `installer/`, see FND-2 |
+| P8-1 | Test the hybrid post-quantum key exchange against a real PQC-enabled OpenSSL build | Planned | `frfw.pqc`, `tests/test_pqc*.py` |
+
+### Open security work
+
+From [docs/security-lessons.md](docs/security-lessons.md) and the
+adversarial review of v0.2.0 ([docs/reviews/v0.2.0.md](docs/reviews/v0.2.0.md);
+issues #17 and #18). The R-numbers are that record's.
+
+| ID | Item | Severity | Where it plugs in |
+|---|---|---|---|
+| SEC-1 | QUIC/HTTP3 (UDP/443) bypasses the SNI blocklist and XDP app blocking: reject UDP/443 from filtered zones while the filter is on; show the remaining gaps (ECH, IPv6) on the XDP screen (R8) | medium | `frfw.nft.builder`, `routes/xdp.py` |
+| SEC-2 | AI IDS: score only internal-zone sources and never quarantine infrastructure (gateway, upstream DNS) -- the helper-side guard is done (R7) | medium | `frfw.ai_ids.daemon`, `frfw.ai_ids.engine` |
+| SEC-3 | `/metrics` protected by default (token generated at first boot), helper-backed values cached (R11) | medium | `frfw.metrics`, `routes/metrics.py`, `scripts/fr-first-boot.sh` |
+| SEC-4 | Narrower journal access for the webUI and the sensor daemons (R10) | medium | `systemd/fr-webui.service`, `fr-ai-ids`, `fr-appid` |
+| SEC-5 | Cross-subsystem apply: validate, stage and roll back beyond the firewall (R6) | medium | `frfw.provision` |
+| SEC-6 | ZTNA: document it as source-address authorization, or move to per-client credentials (R12); see THR-5 | medium | `frfw.ztna`, `routes/ztna.py` |
+| SEC-7 | XDP parser bounded by IPv4 `tot_len` and the TLS record length (R9) | low | `bpf/xdp_sni_filter.c` |
+| SEC-8 | First boot assigns WAN/LAN by NIC order: link-state or confirmed assignment (R14) | low | `frfw.netdetect`, `scripts/fr-first-boot.sh`, see OPS-6 |
+| SEC-9 | Explicit CSRF tokens and security headers (CSP, `frame-ancestors`, `Referrer-Policy`) (R15) | low | `frfw.webui.app`, templates |
+| SEC-10 | Regression tests still missing: XDP bounds, CSRF, metrics (R16) | low | `tests/` |
+| SEC-11 | Sensor daemons read `config.yaml` with ZTNA password hashes: give them a secrets-free copy, drop the `fr_os-webui` group (R17, security-lessons G3) | low | `frfw.accounts`, `systemd/fr-ai-ids.service` and peers |
+| SEC-12 | Update helper refuses downgrades (only `rollback` goes back) (R18) | low | `frfw.update.apply_update` |
+| SEC-13 | One live-log stream per session, a global cap, process ended on disconnect (R19) | low | `routes/xdp.py` |
+| SEC-14 | Kernel fixes without a new image: update the kernel on the boot medium (R3; today kernel fixes ship as a new image, SECURITY.md) | medium | `frfw.persistence`, `frfw.update`, see OPS-10 |
+| SEC-15 | Integrity manifest signed with the release key, so a root attacker can't rewrite the record too (security-lessons G9) | low | `frfw.integrity`, `frfw.release_signing` |
+
+### Foundations every organisation will ask about first
+
+| ID | Capability | What it gives an organisation | Status |
+|---|---|---|---|
+| FND-1 | IPv6 (rules, NAT66/NPTv6 where needed, DHCPv6/RA, XDP) | Dual-stack networks; today FR_OS is IPv4-only (the generated ruleset drops IPv6 neighbour discovery) | Planned |
+| FND-2 | Validation on physical hardware (reference boxes) | A tested hardware list to buy from | Planned (= P5-1) |
+| FND-3 | Signed Secure Boot chain (shim + signed GRUB/kernel) | Boots with Secure Boot on, as corporate policy requires | Planned |
+| FND-4 | Non-free NIC firmware in the image | Realtek and other NICs that need firmware work out of the box | Planned |
+| FND-5 | Install to disk (besides live + persistence) | A conventional installed system on an internal SSD; also lets the kernel update in place (SEC-14) | Planned (persistence on an internal disk exists) |
+
+### Connectivity and routing
+
+| ID | Capability | What it gives an organisation | Today in FR_OS | Stitch design |
+|---|---|---|---|---|
+| NET-1 | Multi-WAN with gateway monitoring and failover | Stays online when one ISP link fails; load sharing | One WAN | PBR & Multi-WAN Manager; Gateway Watchdog & Failover |
+| NET-2 | Policy-based routing | Send chosen traffic (by source, app, destination) over a chosen link or tunnel | -- | Create PBR Rule |
+| NET-3 | BGP and OSPF (dynamic routing) | Fits into multi-site and provider networks | -- | BGP Routing Table & Peering Explorer; BGP & OSPF Peering Configuration |
+| NET-4 | WireGuard site-to-site tunnels | Branch offices on the internal network | **Partly**: remote access with per-device keys and QR codes is done (`frfw.wireguard`, VPN screen, security-lessons G8/K5); site-to-site is open | VPN & WireGuard Tunnels; Add Peer & QR Provisioning |
+| NET-5 | VLAN provisioning UI and 802.1Q port matrix | Segment departments, guests and IoT on one uplink from the UI | **Partly**: VLAN interfaces in the config and the one-step IoT/guest segments (`frfw.segments`, security-lessons K4); a general VLAN editor and port matrix are open | Interfaces & VLAN Port Matrix; Create & Provision VLAN Interface |
+| NET-6 | LACP link aggregation | Redundant, faster uplinks to the core switch | -- | Create & Provision LACP Link Aggregation |
+| NET-7 | Reverse proxy with Let's Encrypt | Publish internal web services with valid certificates | Port forwarding (DNAT) | Reverse Proxy & Let's Encrypt; Add Ingress Proxy Host |
+| NET-8 | Captive portal and guest vouchers | Guest Wi-Fi with terms, time-limited vouchers, printable cards. Must follow security-lessons I1: guest VLAN only, never root, never on the WAN | Guest segment (K4) and rules | Captive Portal & Guest Voucher Engine; Splash Portal Customizer; Voucher Batch Print |
+| NET-9 | mDNS repeater and IGMP proxy | AirPlay/printers/Chromecast across VLANs; IPTV multicast | -- | mDNS Repeater & Multicast Router; Add Repeating Rule |
+| NET-10 | Dynamic DNS client | Reach a site on a changing public IP by name | -- | Dynamic DNS Client & Multi-Provider Sync; Create DDNS Profile |
+| NET-11 | WAN addressing in the config (DHCP client, static, PPPoE) instead of ifupdown | One place for every port's addressing; reassigning the WAN in the webUI moves its DHCP client too | First boot writes the WAN's DHCP client for ifupdown (`/etc/network/interfaces.d/fr_os-wan`) | -- |
+
+### DNS
+
+| ID | Capability | What it gives an organisation | Today in FR_OS | Stitch design |
+|---|---|---|---|---|
+| DNS-1 | Local DNS records and overrides | Internal names (`nas.office.lan`) and split-horizon without a separate DNS server | Filtering resolver (dnsmasq, `frfw.adblock`) | DNS Static Override & Host Record |
+| DNS-2 | Encrypted upstream DNS (DoH/DoT) | Upstream queries can't be read or altered on the way | Plain upstream; DoT bypass *blocking* exists | Configure Encrypted DoH/DoT Upstream DNS |
+| DNS-3 | DNS leak and hijack test | Proof that clients really use the company resolver | Forced-DNS option | DNS Leak Test & Resolver Telemetry |
+
+### Traffic shaping (QoS)
+
+| ID | Capability | What it gives an organisation | Today in FR_OS | Stitch design |
+|---|---|---|---|---|
+| QOS-1 | Smart queue management (CAKE, fq_codel) | Calls and video stay smooth on a saturated link | -- | Traffic Control & Smart Queue Management; FQ_CoDel Tuning |
+| QOS-2 | Hierarchical bandwidth classes (HTB) | Guaranteed and capped bandwidth per department, app or VLAN | -- | HTB Tree Editor |
+| QOS-3 | Bufferbloat benchmark, `tc` inspector | Measure the result; expert access to the kernel's queues | -- | Bufferbloat Saturation Benchmark; tc qdisc Inspector |
+
+### Visibility and diagnostics
+
+| ID | Capability | What it gives an organisation | Today in FR_OS | Stitch design |
+|---|---|---|---|---|
+| VIS-1 | Live traffic graphs and top talkers | See at a glance what uses the link | Dashboard, Prometheus/Grafana history; **rule hit counters are done** (`frfw.rule_hits`, security-lessons K2) | Node Dashboard (extends) |
+| VIS-2 | Live sessions explorer | Find and cut a specific connection | Conntrack sampling for the AI IDS (`frfw.conntrack`) | Live Sessions Explorer |
+| VIS-3 | Client deep-dive | One page per device: traffic, apps, fingerprints, DHCP/DNS, isolation | IoT inventory, apps, TLS fingerprints (separate screens) | Client Deep-Dive Device Inspector |
+| VIS-4 | ARP/NDP neighbour table | Troubleshoot address conflicts and stale entries | -- | ARP & NDP Neighbor Discovery Table |
+| VIS-5 | Diagnostics toolbox (ping, traceroute/MTR, TCP probe, iPerf3) | Troubleshoot from the router, without a laptop on site | -- | Network Diagnostics & Path Analyzer; MTR; iPerf3 Speedtest |
+| VIS-6 | Packet capture (PCAP, live to Wireshark) | Evidence for a vendor or an incident | -- | Live Packet Capture |
+| VIS-7 | "Which rule would match?" simulator with IP geo lookup | Check a policy change before it hits production | The attack-surface evaluator answers this for the router's own ports (`frfw.surface`) | IP Geo-Lookup & Packet Trajectory Simulator |
+| VIS-8 | DHCP lease inventory with static-lease pinning | Every lease with its device, in one table | Reservations per zone; leases read for the IoT inventory | DHCP Leases & Client Inventory (extends) |
+
+### Threat protection
+
+| ID | Capability | What it gives an organisation | Today in FR_OS | Stitch design |
+|---|---|---|---|---|
+| THR-1 | Signature-based IDS/IPS (Suricata or Snort rules) | Known-attack detection next to the anomaly engine | AI IDS/IPS (behavioural) with kernel quarantine | AI IDS/IPS (extends) |
+| THR-2 | Geo-IP country filtering | Block or allow whole countries at the perimeter | -- | Geo-IP Country Filter & Perimeter Policy |
+| THR-3 | Threat-intel feeds (IP/domain reputation) | Drop known-bad infrastructure automatically | DNS malware/phishing categories, DGA heuristics | Threat Intel & DNS Sinkhole (extends) |
+| THR-4 | Deeper application control (L7 DPI) | Per-app policy beyond name-based identification | App-ID lite (DNS names, TLS SNI) with blocking | Applications & L7 DPI (extends) |
+| THR-5 | ZTNA with device posture and per-client credentials | Access depends on who *and* what device | ZTNA gate (identity, per source IP; see SEC-6) | ZTNA Gate (extends) |
+
+### Identity and access
+
+| ID | Capability | What it gives an organisation | Today in FR_OS | Stitch design |
+|---|---|---|---|---|
+| IDN-1 | FIDO2 / WebAuthn sign-in | Phishing-resistant admin login | **Done** (`frfw.webui.mfa`, security-lessons G5): security keys/passkeys and TOTP for every account. Open: FIDO2 for the ZTNA gate (THR-5) | Login & FIDO2 WebAuthn Authentication Gate |
+| IDN-2 | Directory sign-in (LDAP / Active Directory), optional SSO (SAML/OIDC) | Accounts from the company directory; leavers lose access at once. Opt-in, off by default, a maintained library (security-lessons G11) | Local accounts | Centralized Directory & RADIUS Gate; Add Authentication Server |
+| IDN-3 | RADIUS server and 802.1X with dynamic VLANs | Port authentication; a user's group decides their VLAN | -- | NAS Client matrix; Group-to-VLAN Mapping; 802.1X Policy Simulator |
+| IDN-4 | Internal certificate authority (PKI) | EAP-TLS device certificates, internal TLS, SCEP/EST | Self-signed webUI certificate | 802.1X EAP & PKI Certificate Manager; Issue Certificate & Sign CSR; Certificate Export |
+| IDN-5 | Fine-grained roles | Per-area permissions (network team vs. security team) | `admin` and read-only `viewer` roles, audit log | User Management & Access Control; Add New User & RBAC Provisioning |
+| IDN-6 | Just-in-time privilege elevation | Admins work read-only and request time-limited write access, audited | -- | Request / Extend / Revoke Elevated Privileges; Active Operator View; Privilege Lease Expired |
+
+### Operations and compliance
+
+| ID | Capability | What it gives an organisation | Today in FR_OS | Stitch design |
+|---|---|---|---|---|
+| OPS-1 | Configuration history with diff and rollback (git-backed); encrypted full backups | Who changed what and when; one-click return to a known-good config. Backups must follow security-lessons G3: `frfw.config.export.redacted()` or encryption with a user passphrase | Ruleset backup + rollback of the last apply; audit log; redacted `firewall-cli config-export` | Configuration Backup & Git Rollback; Create Manual Snapshot |
+| OPS-2 | Syslog / SIEM forwarding (TLS) | Logs in Splunk, Elastic, Graylog, Sentinel... | Journal on the box (drop log, security-lessons K6); audit log; Prometheus metrics | Syslog & Remote SIEM Forwarder; Add Target Forwarder |
+| OPS-3 | Alert rules and notification channels | E-mail/webhook/chat alerts on link loss, attacks, failed services | Dashboard security alerts (G9); metrics for external alerting | Alert Rules & Incident Dispatcher; Create Alert Rule |
+| OPS-4 | SNMP | Fits existing NMS tools | Prometheus `/metrics` with token | Telemetry, SNMP & Prometheus Exporter (extends) |
+| OPS-5 | Compliance reports (signed PDF) | Evidence for auditors | Audit log (JSON lines); security score (K8) | Cryptographic Audit Receipt; PDF Compliance Certificate |
+| OPS-6 | First-run setup wizard (WAN/LAN choice, admin, baseline) | Guided setup | Automatic first boot with safe defaults; first-run account setup; segments offer (K4) | Out-of-Box First-Run Setup Wizard (steps 1-5) |
+| OPS-7 | Live log console | All services' logs in one place in the webUI | Live XDP drop log; recent firewall drops on the dashboard | Live System Log & XDP Kernel Console |
+| OPS-8 | Command palette (Cmd+K) | Fast navigation and search for any IP, MAC or rule | -- | Command Palette & Quick Action Engine; Entity Deep Search |
+| OPS-9 | Rescue console and recovery runbooks | Recover a misconfigured router from the browser | Serial console; CLI rollback | Emergency Rescue Shell & Fail-Safe Console; Post-Recovery Re-Attestation; Incident Post-Mortem |
+| OPS-10 | Update management with A/B boot | Safe upgrades with automatic fallback, including the kernel (SEC-14) | Signed update + rollback of the Python package; daily Debian security updates (userspace) | Firmware & eBPF Bytecode Updates (extends) |
+
+### High availability and scale
+
+| ID | Capability | What it gives an organisation | Today in FR_OS | Stitch design |
+|---|---|---|---|---|
+| HA-1 | Two-node HA cluster (VRRP-style failover with state sync) | No single point of failure | -- | Multi-Node Cluster & HA Failover Manager |
+| HA-2 | Central management of many routers | Push policy to every site from one place | Read-only multi-site monitoring (Prometheus + Grafana) | -- |
+
+### Key management and platform integrity
+
+| ID | Capability | What it gives an organisation | Today in FR_OS | Stitch design |
+|---|---|---|---|---|
+| KEY-1 | Hardware keystore (HSM / security tokens, PKCS#11) | Router keys that can't be copied off the box | Keys on disk (root-only) | Hardware HSM & Cryptographic Keystore; Enroll Security Token; Generate Keypair; Sign Test & Benchmark |
+| KEY-2 | Key rotation and zeroization with audit receipts | Planned rotation and emergency destruction of keys, with evidence | Release-key rotation documented (docs/RELEASING.md) | Ephemeral Root Key Rotation; Force Zeroize; Zeroization Attestation |
+| KEY-3 | Disaster-recovery key escrow (M-of-N Shamir shares) | No single person can restore -- or lose -- the recovery key | -- | DR Key Export (Shamir); Shard Handover Manifest; M-of-N Reassembly; Recovery Attestation |
+| KEY-4 | Measured boot with TPM 2.0 and Secure Boot attestation | Proof the router booted unmodified software | -- (see FND-3) | Platform Integrity, TPM 2.0 & Secure Boot Attestation |
+
+Some Stitch screens show sample data and certification claims (FIPS
+140-3, CAVP): those are design placeholders -- FR_OS will not claim a
+certification it hasn't got.
