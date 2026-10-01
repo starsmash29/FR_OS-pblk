@@ -357,6 +357,13 @@ read-side (it can never influence the drop decision).
   before it ever looks at case or dots -- so a >= 32-byte entry is refused
   at configuration time (`build_lpm_key` raises, `sync_blocklist` names
   every offending entry) instead of installing a key nothing will look up.
+  Both new loops are `#pragma unroll` over the constant `MAX_SNI_LEN`, so
+  the canonicalization costs no verifier loop-bound reasoning (the failure
+  mode described above, where a packet-pointer bound accumulates across
+  iterations, applies to unrolled loops too); the emitted program's deepest
+  stack access is unchanged at 248 of 512 bytes, and clang compiles the
+  range test as `c - 'A'`, mask, branch if `< 26`, `|= 0x20`, which keeps the
+  "mask underflow first" rule from the section above intact.
 - **`frfw.provision.apply_all`**: calls `frfw.xdp.sync_sni_filter` as the
   fourth (last) step, in address → nftables → DHCP → XDP order -- neither
   the CLI nor the webUI needs to know about XDP separately.
