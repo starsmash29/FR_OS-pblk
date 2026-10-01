@@ -26,6 +26,8 @@ import glob
 import json
 import os
 import shutil
+import socket
+import struct
 import subprocess
 import sys
 import time
@@ -337,3 +339,189 @@ def test_split_client_hello_is_fingerprinted_after_dropping_privileges(lab):
     assert {"pq.example", "py.example"} <= set(result["sni"][CLIENT_IP])
     assert result["stats"]["parse_errors"] == 0
     assert any(fp.startswith("t13d") for fp in result["clients"][CLIENT_IP] if fp != expected)
+
+
+# --- SEC-16: VLAN-tagged frames (review-triage B2) ---------------------------------
+#
+# These go in as raw Ethernet frames from the client's side of the veth,
+# so the tags are on the wire exactly as written (a VLAN device would
+# hand them to the veth as offload metadata instead, which XDP never
+# sees). Nothing has to be routed: the program's counters, its events and
+# its hello copies show what it made of each frame.
+
+_INJECT = """
+import socket, sys
+s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW)
+s.bind((sys.argv[1], 0))
+s.send(bytes.fromhex(sys.argv[2]))
+"""
+
+ETH_P_8021Q, ETH_P_8021AD, ETH_P_IP = 0x8100, 0x88A8, 0x0800
+
+
+def _mac(dev: str, ns: str) -> bytes:
+    out = subprocess.run(["ip", "-n", ns, "-j", "link", "show", dev],
+                         check=True, capture_output=True, text=True).stdout
+    return bytes.fromhex(json.loads(out)[0]["address"].replace(":", ""))
+
+
+def _ipv4_checksum(header: bytes) -> int:
+    total = sum(int.from_bytes(header[i:i + 2], "big") for i in range(0, len(header), 2))
+    while total >> 16:
+        total = (total & 0xFFFF) + (total >> 16)
+    return ~total & 0xFFFF
+
+
+def _tls_frame(sni: str, tags: list[tuple[int, int]], dst_mac: bytes, src_mac: bytes) -> tuple[bytes, bytes]:
+    """An Ethernet frame carrying one TCP segment to SERVER_IP:443 with a
+    ClientHello for `sni`, behind `tags` ((TPID, VLAN id) pairs, outermost
+    first). Returns the frame and its TCP payload (the TLS record)."""
+    import tlsfp_samples as samples
+
+    payload = samples.tls_records(samples.client_hello(samples.default_extensions(sni=sni, pq=False)))
+    tcp = struct.pack("!HHIIBBHHH", 40443, 443, 1000, 0, 5 << 4, 0x18, 64240, 0, 0)
+    ip = bytearray(struct.pack("!BBHHHBBH4s4s", 0x45, 0, 20 + len(tcp) + len(payload), 1, 0x4000, 64, 6, 0,
+                               socket.inet_aton(CLIENT_IP), socket.inet_aton(SERVER_IP)))
+    ip[10:12] = _ipv4_checksum(bytes(ip)).to_bytes(2, "big")
+    ethertypes = [tpid for tpid, _ in tags] + [ETH_P_IP]
+    frame = dst_mac + src_mac + ethertypes[0].to_bytes(2, "big")
+    for (_, vid), inner in zip(tags, ethertypes[1:]):
+        frame += vid.to_bytes(2, "big") + inner.to_bytes(2, "big")
+    return frame + bytes(ip) + tcp + payload, payload
+
+
+def _inject(lab, frame: bytes) -> None:
+    script = lab["tmp"] / "inject.py"
+    if not script.exists():
+        script.write_text(_INJECT)
+    subprocess.run(["ip", "netns", "exec", CLIENT_NS, sys.executable, str(script), "frx-c", frame.hex()],
+                   check=True, capture_output=True, timeout=10)
+
+
+@pytest.fixture()
+def lan_attached(lab):
+    _attach(ROUTER_LAN_DEV)
+    try:
+        yield {"dst": _mac(ROUTER_LAN_DEV, ROUTER_NS), "src": _mac("frx-c", CLIENT_NS)}
+    finally:
+        _detach(ROUTER_LAN_DEV)
+
+
+@pytest.mark.parametrize("tags", [
+    [],
+    [(ETH_P_8021Q, 30)],                         # one 802.1Q tag: FR_OS's own segments (frfw.segments)
+    [(ETH_P_8021AD, 100), (ETH_P_8021Q, 30)],    # QinQ: an 802.1ad S-tag around a C-tag
+    [(ETH_P_8021Q, 100), (ETH_P_8021Q, 30)],     # two 802.1Q tags
+], ids=["untagged", "802.1q", "qinq-802.1ad", "double-802.1q"])
+def test_blocklisted_sni_is_dropped_behind_vlan_tags(lab, lan_attached, tags):
+    events: list[xdp.SniEvent] = []
+    frame, _ = _tls_frame("www.blocked.example", tags, lan_attached["dst"], lan_attached["src"])
+    with xdp.RingBufferReader(events.append) as reader:
+        _drain(reader)
+        events.clear()
+        before = xdp.get_stats()
+        _inject(lab, frame)
+        reader.poll(500)
+        after = xdp.get_stats()
+    assert after["drop_match"] == before["drop_match"] + 1
+    drops = [e for e in events if e.action == "drop"]
+    assert drops and drops[0].hostname == "www.blocked.example"
+    assert drops[0].saddr == CLIENT_IP and drops[0].dport == 443
+
+
+def test_allowed_sni_behind_a_vlan_tag_is_parsed_and_passed(lab, lan_attached):
+    frame, _ = _tls_frame("allowed.example", [(ETH_P_8021Q, 30)], lan_attached["dst"], lan_attached["src"])
+    before = xdp.get_stats()
+    _inject(lab, frame)
+    after = xdp.get_stats()
+    assert after["pass_no_match"] == before["pass_no_match"] + 1
+    assert after["drop_match"] == before["drop_match"]
+
+
+def test_hello_copy_behind_a_vlan_tag_starts_at_the_tls_record(lab, lan_attached):
+    """Phase 19's hello copies address the TCP payload by packet offset,
+    so the tag bytes have to be counted in it; off by 4 the copy would
+    start inside the TCP header and every fingerprint would fail."""
+    segments: list[xdp.HelloSegment] = []
+    frame, payload = _tls_frame("fp.example", [(ETH_P_8021AD, 100), (ETH_P_8021Q, 30)],
+                                lan_attached["dst"], lan_attached["src"])
+    xdp.set_settings(xdp.SETTING_REPORT_HELLO)
+    try:
+        with xdp.RingBufferReader(segments.append, xdp.PIN_HELLO_PKTS_PATH,
+                                  decode=xdp.HelloSegment.from_bytes) as reader:
+            while reader.poll(50) > 0:
+                pass
+            segments.clear()
+            _inject(lab, frame)
+            reader.poll(500)
+    finally:
+        xdp.set_settings(0)
+    assert len(segments) == 1 and segments[0].first
+    assert segments[0].saddr == CLIENT_IP and segments[0].dport == 443
+    assert segments[0].payload == payload[:len(segments[0].payload)]
+    assert segments[0].payload[:1] == b"\x16"
+
+
+def _ip_in_receives(ns: str) -> int:
+    snmp = subprocess.run(["ip", "netns", "exec", ns, "cat", "/proc/net/snmp"],
+                          check=True, capture_output=True, text=True).stdout.splitlines()
+    names, values = [line.split() for line in snmp if line.startswith("Ip:")][:2]
+    return int(values[names.index("InReceives")])
+
+
+_THREE_TAGS = [(ETH_P_8021Q, 30), (ETH_P_8021Q, 31), (ETH_P_8021Q, 32)]
+
+
+def test_a_tag_stack_deeper_than_the_filter_unwraps_passes_unparsed(lab, lan_attached):
+    """The documented fail-open (MAX_VLAN_TAGS in bpf/xdp_sni_filter.c):
+    a frame with more tags than the program unwraps is passed without
+    being parsed or counted -- never dropped as malformed."""
+    frame, _ = _tls_frame("www.blocked.example", _THREE_TAGS, lan_attached["dst"], lan_attached["src"])
+    before = xdp.get_stats()
+    _inject(lab, frame)
+    assert xdp.get_stats() == before
+
+
+def _vlan_devices_supported() -> bool:
+    probe = "frx-probe"
+    subprocess.run(["ip", "netns", "add", probe], capture_output=True)
+    try:
+        subprocess.run(["ip", "-n", probe, "link", "add", "frx-p0", "type", "veth", "peer", "name", "frx-p1"],
+                       capture_output=True)
+        return subprocess.run(["ip", "-n", probe, "link", "add", "link", "frx-p0", "name", "frx-p0.30",
+                               "type", "vlan", "id", "30"], capture_output=True).returncode == 0
+    finally:
+        subprocess.run(["ip", "netns", "del", probe], capture_output=True)
+
+
+def _ip_in_receives(ns: str) -> int:
+    snmp = subprocess.run(["ip", "netns", "exec", ns, "cat", "/proc/net/snmp"],
+                          check=True, capture_output=True, text=True).stdout.splitlines()
+    names, values = [line.split() for line in snmp if line.startswith("Ip:")][:2]
+    return int(values[names.index("InReceives")])
+
+
+def test_a_tag_stack_deeper_than_the_filter_unwraps_is_not_routed_either(lab, lan_attached):
+    """Why that fail-open is safe: the router's IP layer never sees such a
+    frame. The kernel strips one tag per VLAN device configured for it,
+    and the router has no device for the extra tags. Shown with the
+    router's own VLAN 30 device present: the frame with one tag reaches
+    IP, the frame with three tags never does."""
+    if not _vlan_devices_supported():
+        pytest.skip("this kernel has no 802.1Q VLAN devices (8021q)")
+    _sh("ip", "link", "add", "link", ROUTER_LAN_DEV, "name", "frx-rl.30", "type", "vlan", "id", "30", ns=ROUTER_NS)
+    _sh("ip", "addr", "add", "10.81.30.1/24", "dev", "frx-rl.30", ns=ROUTER_NS)
+    _sh("ip", "link", "set", "frx-rl.30", "up", ns=ROUTER_NS)
+    try:
+        one_tag, _ = _tls_frame("allowed.example", [(ETH_P_8021Q, 30)], lan_attached["dst"], lan_attached["src"])
+        three_tags, _ = _tls_frame("www.blocked.example", _THREE_TAGS, lan_attached["dst"], lan_attached["src"])
+
+        ip_before = _ip_in_receives(ROUTER_NS)
+        _inject(lab, one_tag)
+        assert _ip_in_receives(ROUTER_NS) == ip_before + 1
+
+        ip_before = _ip_in_receives(ROUTER_NS)
+        _inject(lab, three_tags)
+        assert _ip_in_receives(ROUTER_NS) == ip_before
+    finally:
+        _sh("ip", "link", "del", "frx-rl.30", ns=ROUTER_NS)
