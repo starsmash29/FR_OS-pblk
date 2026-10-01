@@ -212,7 +212,7 @@ than a raw IP list would.
 
 ### The kernel-side program: `bpf/xdp_sni_filter.c`
 
-The file's own header comment (three separately highlighted "IMPORTANT"
+The file's own header comment (four separately highlighted "IMPORTANT"
 sections) documents the real, deliberate limits — these are not gaps,
 they're documented design decisions:
 
@@ -234,6 +234,16 @@ they're documented design decisions:
    the "block the connection" goal.
 4. IPv4 only — consistent with the rest of the project (`frfw.nft`, Kea
    DHCP are IPv4-only today too).
+5. **VLAN tags: up to two (ROADMAP SEC-16).** 802.1Q and 802.1ad tags
+   are unwrapped before the IPv4 parse, so the IoT and guest segments
+   (VLANs on the LAN port, `frfw.segments`) are filtered like untagged
+   traffic; before this, every tagged frame that reached the program
+   with its tag still in the packet (generic XDP, or a NIC without VLAN
+   receive offload) passed unfiltered. A deeper tag stack passes
+   unparsed: the router has no VLAN device for the extra tags, so it
+   never routes such a frame either. `tests/test_xdp_live.py` sends
+   tagged frames through the real program (802.1Q, QinQ, the hello copy
+   offset, and the deeper stack).
 
 The actual kernel-space parser (TLS record → handshake → ClientHello
 fields → extension list → server_name extension → reading the SNI bytes)

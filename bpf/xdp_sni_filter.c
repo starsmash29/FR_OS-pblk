@@ -21,7 +21,7 @@
 // LAN clients send out, attach this to the LAN-side interfaces -- on
 // the WAN interface it only sees connections arriving from the internet.
 //
-// Read this file's three "IMPORTANT" comments before touching the
+// Read this file's four "IMPORTANT" comments before touching the
 // parsing logic or the LPM key construction; they document real
 // correctness/security properties, not style preferences.
 //
@@ -87,19 +87,19 @@
 // etc. are all IPv4-only today); IPv6 support is a follow-up, not a
 // silent gap specific to this file.
 //
-// IMPORTANT -- VLAN tags. Frames this program can actually see carry at
-// most MAX_VLAN_TAGS tags (see the define): a FR_OS router terminates
-// VLANs on its own interfaces, and a device with XDP attached here sees
-// what arrives on that device, not what a further-upstream switch adds.
-// A frame with more tags than that limit, and a frame whose inner
-// EtherType is neither IP nor another tag, is passed unfiltered rather
-// than dropped -- the same deliberate fail-open as IMPORTANT 1 and 2,
-// chosen so a malformed or adversarially deep tag stack can never turn
-// into a black hole. The residual risk is stated in docs/review-triage.md
-// (B2): a client that can inject a third tag on a path the filter is
-// attached to bypasses it. Closing that means raising MAX_VLAN_TAGS or
-// dropping on tag-stack overflow, both of which need the deployment
-// picture QA-DevOps has, not a guess from inside this file.
+// IMPORTANT -- VLAN tags (ROADMAP SEC-16). Up to MAX_VLAN_TAGS 802.1Q /
+// 802.1ad tags are unwrapped before the IPv4 parse, so a tagged frame --
+// FR_OS's own IoT and guest segments are VLANs on the LAN port
+// (frfw.segments) -- is filtered like an untagged one. Whether a frame
+// still carries its tag when it gets here depends on the driver: a NIC
+// with VLAN receive offload hands it over untagged, generic XDP on a
+// software device sees the tag in the packet. A frame with more tags
+// than that, or whose inner EtherType is neither IPv4 nor a tag, is
+// passed unparsed, never dropped. That fail-open is safe because the
+// router never routes such a frame either: the kernel strips one tag per
+// VLAN device configured for it, and FR_OS configures one level (QinQ
+// would need a device per level). tests/test_xdp_live.py covers 802.1Q,
+// QinQ and the deeper-stack case.
 
 #include <linux/bpf.h>
 #include <linux/if_ether.h>
@@ -133,8 +133,8 @@
 // costs a fully unrolled copy of the bounds check per tag. A frame
 // carrying *more* tags than this is passed unfiltered, the same
 // deliberate fail-open this file already accepts for a segmented
-// ClientHello (IMPORTANT 1) and for ECH (IMPORTANT 2) -- see the
-// "VLAN tags" note above xdp_sni_filter() for the residual risk.
+// ClientHello and for ECH ("does NOT do", points 1 and 2) -- see
+// "IMPORTANT -- VLAN tags" at the top of this file for why it is safe.
 #define MAX_VLAN_TAGS 2
 
 // 802.1Q/802.1ad tag, as it appears on the wire. The uapi
@@ -869,8 +869,8 @@ int xdp_sni_filter(struct xdp_md *ctx)
 	// l3_off is carried alongside the pointer because phase 19's hello
 	// copies address the TCP payload by absolute packet offset rather
 	// than by pointer (see emit_hello_segment); without the tag bytes
-	// added here those copies would start 4 (or 8) bytes into the TLS
-	// record. The same rule as everywhere else in this file: bounds check
+	// added here those copies would start 4 (or 8) bytes early, inside
+	// the TCP header. The same rule as everywhere else in this file: bounds check
 	// the whole 4-byte tag before reading its inner EtherType.
 	__u16 proto = eth->h_proto;
 	unsigned char *l3 = (unsigned char *)(eth + 1);
