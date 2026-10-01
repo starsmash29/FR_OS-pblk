@@ -1347,7 +1347,7 @@ issues #17 and #18). The R-numbers are that record's.
 | SEC-10 | Regression tests still missing: XDP bounds, CSRF, metrics (R16) | low | `tests/` |
 | SEC-11 | Sensor daemons read `config.yaml` with ZTNA password hashes: give them a secrets-free copy, drop the `fr_os-webui` group (R17, security-lessons G3) | low | `frfw.accounts`, `systemd/fr-ai-ids.service` and peers |
 | SEC-12 | Update helper refuses downgrades (only `rollback` goes back) (R18) | low | `frfw.update.apply_update` |
-| SEC-13 | One live-log stream per session, a global cap, process ended on disconnect (R19; done in the SEC-13 PR: one `journalctl` per session and `LOG_STREAM_LIMIT` of them per webUI process, the child ends when the session's last tab disconnects) | low | `routes/xdp.py` (`_LogStream`, `stream_logs`), `tests/webui/test_xdp_routes.py` |
+| SEC-13 | One live-log stream per session, a global cap, process ended on disconnect (R19; done in the SEC-13 PR: one `journalctl` per session and `LOG_STREAM_LIMIT` of them per webUI process, the child ends when the session's last tab disconnects; a failing shared stream also ends itself so a dead one never holds a cap slot) | low | `routes/xdp.py` (`_LogStream`, `_session_stream_key`, `stream_logs`), `tests/webui/test_xdp_routes.py` |
 | SEC-14 | Kernel fixes without a new image: update the kernel on the boot medium (R3; today kernel fixes ship as a new image, SECURITY.md) | medium | `frfw.persistence`, `frfw.update`, see OPS-10 |
 | SEC-15 | Integrity manifest signed with the release key, so a root attacker can't rewrite the record too (security-lessons G9) | low | `frfw.integrity`, `frfw.release_signing` |
 

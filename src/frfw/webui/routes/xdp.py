@@ -42,7 +42,7 @@ import threading
 from collections.abc import Iterator
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Form, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 
 from frfw import xdp as xdp_mod
@@ -221,7 +221,13 @@ def _iter_journal_lines(cmd: list[str]) -> Iterator[str]:
 #: child, so this bounds how many an admin can leave running; a tab
 #: past the cap gets a clear error frame instead of a stream. The value
 #: is a proposal (see "Not done" in the roadmap note), not a measured
-#: limit.
+#: limit: 8 leaves room for the realistic case -- an admin with a few
+#: live-log tabs open on more than one device -- while keeping the worst
+#: case an authenticated admin can cause to 8 `journalctl` children,
+#: far below any process limit a router hits (a router that cannot run
+#: 8 idle journald readers cannot usefully show a live log at all).
+#: Deliberately a module constant, not a config key: a knob here would
+#: only tune a resource bound the platform already enforces.
 LOG_STREAM_LIMIT = 8
 
 #: Frames a tab's queue may hold. A tab that stops reading loses the
@@ -231,8 +237,11 @@ LOG_STREAM_LIMIT = 8
 _LOG_QUEUE_MAX = 256
 
 #: `Condition.wait` bound while a tab holds out for a frame. The driver
-#: notifies on every line, so this only fires when the stream died
-#: without its wake-up -- a last-resort re-check, not a poll loop.
+#: notifies on every line and `_finish` notifies every waiting tab, so
+#: this only fires if a tab died between the two -- a last-resort
+#: re-check, never a poll loop, which is why it is not short: it must
+#: not cost anything on the normal path, and a second of latency on the
+#: pathological one is irrelevant next to a leaked tab.
 _LOG_DRIVE_WAIT_SECONDS = 1.0
 
 
@@ -262,8 +271,15 @@ def _session_stream_key(request: Request) -> str:
     `require_login` has already validated the cookie by the time the
     route runs, so it is present and bound to this browser's session.
     The cookie value itself is a bearer secret: it is never stored or
-    logged, only its digest is kept."""
-    cookie = request.cookies.get(COOKIE_NAME) or ""
+    logged, only its digest is kept.
+
+    A missing cookie fails closed rather than digesting to the constant
+    hash of the empty string: that constant is a key every such caller
+    would share, so one stream slot (and, at the cap, the whole
+    stream) would be held by callers that are not one session."""
+    cookie = request.cookies.get(COOKIE_NAME)
+    if not cookie:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
     return hashlib.sha256(cookie.encode()).hexdigest()
 
 
@@ -292,11 +308,19 @@ class _LogStream:
 
     @property
     def finished(self) -> bool:
-        """No tab may stream from this object any more. Read without this
-        object's own lock: the only reader is the registry lookup, which
-        holds the registry lock and is what drops a finished stream's
-        entry anyway."""
-        return self._finished
+        """No tab may stream from this object any more.
+
+        Read under this object's own lock, which is where `_finish`
+        writes the flag: a lock-free read of a plain `bool` is a data
+        race in the Python memory model, and a reader that saw a stale
+        `False` would hand a new tab a stream that can only end (E.D.I.T.H.,
+        PR #31). The only caller is the registry lookup, which already
+        holds `_log_streams_lock`, so this nests `_log_streams_lock` ->
+        `_cond`; that is safe because `_finish` and `_close_source` both
+        release `_cond` before taking `_log_streams_lock`, so no path
+        holds the two at once in the other order."""
+        with self._cond:
+            return self._finished
 
     def subscribe(self) -> Iterator[str]:
         """This tab's view of the shared stream: already-formatted SSE
@@ -338,7 +362,18 @@ class _LogStream:
                     continue
                 self._driving = True
                 source = self._source
-            self._drive(source)
+            try:
+                self._drive(source)
+            except BaseException:
+                # Any failure of the driving pull -- a dead journal, a
+                # refused FD, a cancelled tab thread -- leaves the shared
+                # source undrawable for every tab. Without ending the
+                # stream here the session's entry stays in the registry
+                # with a dead source and holds its cap slot: a later tab
+                # joins the same broken stream instead of getting a fresh
+                # one, and the child never restarts (E.D.I.T.H., PR #31).
+                self._finish()
+                raise
 
     def _drive(self, source: Iterator[str]) -> None:
         """Pull one line from the shared source and hand it to every
