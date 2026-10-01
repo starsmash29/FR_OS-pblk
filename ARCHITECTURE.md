@@ -816,7 +816,7 @@ You can't investigate what nobody logged. Out of the box:
 
 The QEMU boot test sends a packet to a LAN port nothing allows. It then
 finds the kernel's drop line for it in the persisted journal. Forwarding
-logs to a SIEM is still ROADMAP phase 34.
+logs to a SIEM is still ROADMAP OPS-2.
 
 ### Segmentation by default (security-lessons K4)
 
