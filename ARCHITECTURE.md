@@ -616,10 +616,14 @@ Canonical paths (`frfw.paths`):
 
 systemd units (`systemd/`):
 
-- `fr-firewall.service` — applies the canonical config at boot, ordered
-  after Debian's own `nftables.service` (early boot, before
-  `network-pre.target`, so the rules are already in effect before
-  networking comes up). It fails closed (`firewall-cli apply
+- `fr-firewall.service` — applies the canonical config at boot (early
+  boot, before `network-pre.target`, so the rules are already in effect
+  before networking comes up). It is *not* ordered against Debian's own
+  `nftables.service`, which also starts before `network-pre.target`:
+  Debian ships that unit disabled, but if it is ever enabled, its
+  `/etc/nftables.conf` (`flush ruleset`) can replace the FR_OS ruleset.
+  The `nftables` package stays (it provides `nft`); the image is to mask
+  the unit (ROADMAP SEC-18). It fails closed (`firewall-cli apply
   --fail-closed`): with no `config.yaml`, or when an apply fails while no
   FR_OS ruleset is loaded, it loads a baseline that lets in only
   loopback, replies to the router's own connections and IPv6 neighbour
