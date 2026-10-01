@@ -675,10 +675,50 @@ static int extract_sni(unsigned char *p, unsigned char *end, char *out_sni)
 	}
 
 	if (found) {
+		// Canonicalize the name before build_lpm_key() turns it into a
+		// lookup key (review-triage B3, ROADMAP SEC-17, security-lessons
+		// H1). DNS names are case-insensitive (RFC 4343) and
+		// "example.com." is just "example.com" written in full
+		// (RFC 1035 3.1), so the bytes the client sends and the bytes a
+		// blocklist entry is stored as have to collapse to the same key
+		// on both sides -- otherwise a blocklisted name stays reachable
+		// just by changing its case or padding it with a trailing dot.
+		// Only A-Z is folded, and with a range test, never a blind
+		// `| 0x20` (that would turn '_' 0x5F into DEL 0x7F and mangle
+		// names the userspace mirror does not mangle). This is exactly
+		// what frfw.xdp.normalize_sni() does in userspace, so both sides
+		// build the same key for the same name.
+		//
+		// `n` is the length after trimming, and it is what the caller's
+		// prefixlen and build_lpm_key's barrel shift must both use; the
+		// trimmed tail is zeroed so the shift carries only real bytes.
+		// The (int) casts below are exact, not truncating: parse_sni_body()
+		// already refused anything >= MAX_SNI_LEN, so found_len and n are
+		// both in [1, MAX_SNI_LEN-1].
+		//
+		// Verifier: parse_sni_body() has also proven the full MAX_SNI_LEN
+		// bytes readable from found_sp (see its contract above), both loops
+		// read packet memory only under a length guard, and every stack
+		// write goes to a compile-time-constant index -- the same shape as
+		// the copy loop this replaces, and no new stack space.
+		__u32 n = 0;
+
 #pragma unroll
 		for (int j = 0; j < MAX_SNI_LEN; j++)
-			out_sni[j] = (j < found_len) ? found_sp[j] : 0;
-		return (int)found_len;
+			if (j < (int)found_len && found_sp[j] != '.')
+				n = (__u32)j + 1;
+
+#pragma unroll
+		for (int j = 0; j < MAX_SNI_LEN; j++) {
+			unsigned char c = (j < (int)n) ? found_sp[j] : 0;
+
+			if (c >= 'A' && c <= 'Z')
+				c = (unsigned char)(c + 32);
+			out_sni[j] = c;
+		}
+		// 0 -- a name of nothing but dots -- is what the caller already
+		// maps to STAT_PASS_NO_SNI: an empty name must not build a key.
+		return (int)n;
 	}
 
 	return -2; // walked all visible extensions, found no server_name

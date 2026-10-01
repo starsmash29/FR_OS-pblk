@@ -6,6 +6,8 @@ orchestration, not re-proving each subsystem."""
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
 from frfw import apply as apply_mod
@@ -18,6 +20,7 @@ from frfw import ztna as ztna_mod
 from frfw.adblock import dns_service as adblock_dns_mod
 from frfw.adblock import write_hosts_file
 from frfw.config import parse_config
+from frfw.config.schema import AppControlConfig
 from frfw.provision import apply_all
 
 
@@ -235,6 +238,63 @@ def test_apply_all_does_not_touch_xdp_blocklist_when_critical_limit_is_zero(
     )
 
     assert captured["config"].xdp_sni_filter.blocklist == ["manual.example.com"]
+
+
+def test_apply_all_reports_names_it_could_not_put_in_the_xdp_blocklist(
+    minimal_config_dict, tmp_path, monkeypatch
+):
+    """B3 (review triage): a merged-in name of MAX_SNI_LEN bytes or more
+    can never match in the kernel filter, so it is left out of the trie --
+    but it used to be left out *silently*, and app-level DNS blocking is a
+    completely different (and much later) layer. The operator has to be
+    told which names are covered by that layer only."""
+    monkeypatch.setattr(
+        adblock_dns_mod, "sync_dns_resolver", lambda *a, **kw: adblock_dns_mod.DnsSyncResult(False, "fake")
+    )
+    too_long = "a" * 28 + ".com"  # exactly 32 bytes
+    assert len(too_long) == xdp_mod.MAX_SNI_LEN
+    monkeypatch.setattr(
+        adblock_dns_mod,
+        "blocked_app_names",
+        lambda config: ["short.example.com", too_long],
+    )
+
+    captured = {}
+
+    def fake_sync_sni_filter(config, *, dry_run=False, state_path):
+        captured["config"] = config
+        return xdp_mod.SyncResult(applied=False, message="fake xdp sync")
+
+    monkeypatch.setattr(xdp_mod, "sync_sni_filter", fake_sync_sni_filter)
+
+    minimal_config_dict["xdp_sni_filter"] = {
+        "enabled": True,
+        "interfaces": ["wan"],
+        "blocklist": ["manual.example.com"],
+    }
+    config = parse_config(minimal_config_dict)
+    # Set on the parsed object rather than through the raw dict: the
+    # config loader (rightly) demands a DNS resolver with a DHCP pool
+    # before it accepts blocked_apps, and none of that is what this test
+    # is about -- the merge and the report in apply_all are.
+    config = dataclasses.replace(
+        config,
+        app_control=AppControlConfig(
+            enabled=True, blocked_apps=["tiktok"], block_via_xdp=True
+        ),
+    )
+
+    result = apply_all(config, **_apply_kwargs(tmp_path))
+
+    # Dropped from the trie's input (it could never match there)...
+    assert captured["config"].xdp_sni_filter.blocklist == [
+        "manual.example.com",
+        "short.example.com",
+    ]
+    # ...and named in apply's own output, so "not blocked" is never silent.
+    reported = [m for m in result.messages if "NOT blocked in XDP" in m]
+    assert len(reported) == 1
+    assert too_long in reported[0]
 
 
 def test_a_missing_interface_does_not_stop_the_ruleset_from_loading(minimal_config_dict, tmp_path, monkeypatch):

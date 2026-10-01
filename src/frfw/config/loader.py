@@ -875,7 +875,11 @@ def _parse_xdp_sni_filter(raw: Any, interfaces: dict[str, Interface]) -> XdpSniF
         raise ConfigError("xdp_sni_filter.blocklist must be a list")
     blocklist = []
     for i, hostname in enumerate(blocklist_raw):
-        if not isinstance(hostname, str) or not _HOSTNAME_RE.match(hostname):
+        # A trailing dot just marks the name as already fully qualified
+        # (RFC 1035 3.1) and is stripped before the syntax check, the same
+        # way adblocker.allowlist is parsed below -- so "example.com." in
+        # the config is the same entry as "example.com", not a config error.
+        if not isinstance(hostname, str) or not _HOSTNAME_RE.match(hostname.rstrip(".")):
             raise ConfigError(
                 f"xdp_sni_filter.blocklist[{i}]: invalid hostname {hostname!r}"
             )
@@ -883,9 +887,18 @@ def _parse_xdp_sni_filter(raw: Any, interfaces: dict[str, Interface]) -> XdpSniF
             raise ConfigError(
                 f"xdp_sni_filter.blocklist[{i}]: hostname {hostname!r} is "
                 f"{len(hostname)} bytes, must be under {_MAX_SNI_LEN} "
-                "(the kernel filter's MAX_SNI_LEN)"
+                "(the kernel filter's MAX_SNI_LEN) or it is NOT blocked"
             )
-        blocklist.append(hostname.lower())
+        # Stored in the canonical form the LPM trie's key is built from,
+        # and the one the kernel program produces for the name it extracts
+        # from the wire -- see frfw.xdp.normalize_sni (the same rules as
+        # bpf/xdp_sni_filter.c's normalize_sni). Spelled out here rather
+        # than imported: frfw.xdp imports this package, so importing it back
+        # would be a cycle. tests/test_xdp_schema.py pins the two copies
+        # against each other instead of relying on this staying in step.
+        blocklist.append("".join(
+            chr(ord(c) | 0x20) if "A" <= c <= "Z" else c for c in hostname
+        ).rstrip("."))
 
     return XdpSniFilterConfig(
         enabled=enabled,

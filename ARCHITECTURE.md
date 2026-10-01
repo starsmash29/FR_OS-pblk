@@ -342,6 +342,21 @@ read-side (it can never influence the drop decision).
 - **Blocklist sync** (`sync_blocklist`): reconciles the pinned LPM trie's
   contents with the config's desired state (add/remove), without
   clearing and rebuilding it on every `apply`.
+- **Name canonicalization** (`normalize_sni`, ROADMAP `SEC-17`): both
+  sides fold ASCII `A-Z` to lower case and strip trailing dots *before*
+  building the LPM key, because DNS names are case-insensitive (RFC 4343)
+  and `example.com.` is the same name as `example.com` written in full
+  (RFC 1035 3.1). Without it the kernel keyed on the bytes the client
+  happened to send and the userspace keyed on the bytes the operator
+  happened to type, so a blocklisted name was reachable by changing its
+  case or padding it with a dot. The kernel copy lives in `extract_sni()`
+  (`bpf/xdp_sni_filter.c`), the mirror in `frfw.xdp.normalize_sni()`; the
+  two are pinned against each other by tests rather than by convention.
+  Normalization runs *after* the `MAX_SNI_LEN` length check, because that
+  check is about the wire name and the kernel refuses an over-long name
+  before it ever looks at case or dots -- so a >= 32-byte entry is refused
+  at configuration time (`build_lpm_key` raises, `sync_blocklist` names
+  every offending entry) instead of installing a key nothing will look up.
 - **`frfw.provision.apply_all`**: calls `frfw.xdp.sync_sni_filter` as the
   fourth (last) step, in address → nftables → DHCP → XDP order -- neither
   the CLI nor the webUI needs to know about XDP separately.

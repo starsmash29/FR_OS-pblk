@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from frfw import xdp
 from frfw.config import ConfigError, parse_config
 
 
@@ -23,6 +24,31 @@ def test_xdp_sni_filter_round_trips(minimal_config_dict):
     assert config.xdp_sni_filter.interfaces == ["wan"]
     # lowercased, matching the kernel program's case-sensitive byte match
     assert config.xdp_sni_filter.blocklist == ["ads.example.com", "tracker.example.net"]
+
+
+def test_xdp_sni_filter_stored_form_is_the_one_the_key_is_built_from(minimal_config_dict):
+    # B3: the loader folds the case itself (it cannot import
+    # frfw.xdp.normalize_sni -- that would be an import cycle), so the
+    # two copies of the rule are pinned against each other here instead
+    # of by convention.
+    names = ["Ads.Example.com", "TRACKER.EXAMPLE.NET", "Mixed-Case.Example.12"]
+    minimal_config_dict["xdp_sni_filter"] = {"blocklist": list(names)}
+    config = parse_config(minimal_config_dict)
+    assert config.xdp_sni_filter.blocklist == [xdp.normalize_sni(n) for n in names]
+
+
+def test_xdp_sni_filter_stored_form_matches_the_key_the_kernel_would_build(minimal_config_dict):
+    """The stronger version of the pin above: whatever spelling an
+    operator writes, the stored name must produce the LPM key the kernel
+    program builds for the name it extracts from the wire. A trailing dot
+    is a spelling, not a different name (RFC 1035 3.1), so it has to
+    collapse too -- as does a run of them."""
+    names = ["Example.COM.", "Tracker.net...", "ads.example.com", "WWW.Example.NET."]
+    minimal_config_dict["xdp_sni_filter"] = {"blocklist": list(names)}
+    config = parse_config(minimal_config_dict)
+    assert config.xdp_sni_filter.blocklist == [xdp.normalize_sni(n) for n in names]
+    for stored, written in zip(config.xdp_sni_filter.blocklist, names):
+        assert xdp.build_lpm_key(stored) == xdp.build_lpm_key(written)
 
 
 def test_xdp_sni_filter_rejects_non_mapping(minimal_config_dict):
@@ -66,6 +92,24 @@ def test_xdp_sni_filter_rejects_hostname_too_long_for_kernel_program(minimal_con
     minimal_config_dict["xdp_sni_filter"] = {"blocklist": [too_long]}
     with pytest.raises(ConfigError, match="must be under 32"):
         parse_config(minimal_config_dict)
+
+
+def test_xdp_sni_filter_says_a_too_long_hostname_is_not_blocked(minimal_config_dict):
+    # B3: refusing the name is only half of it -- the operator has to be
+    # told the name is *not* blocked, not just that it doesn't fit.
+    minimal_config_dict["xdp_sni_filter"] = {"blocklist": ["a" * 28 + ".com"]}
+    with pytest.raises(ConfigError, match="NOT blocked"):
+        parse_config(minimal_config_dict)
+
+
+def test_xdp_sni_filter_stores_hostnames_in_the_canonical_lower_case(minimal_config_dict):
+    # B3 (case): the stored entry is what the LPM trie's key is built
+    # from, and the kernel program looks up the name it extracted from the
+    # wire in that same canonical form, so "Blocked.Example.COM" has to be
+    # stored folded or the entry matches nothing.
+    minimal_config_dict["xdp_sni_filter"] = {"blocklist": ["Blocked.Example.COM"]}
+    config = parse_config(minimal_config_dict)
+    assert config.xdp_sni_filter.blocklist == ["blocked.example.com"]
 
 
 def test_xdp_sni_filter_accepts_hostname_just_under_the_limit(minimal_config_dict):
