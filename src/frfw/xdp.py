@@ -208,13 +208,41 @@ class HelloSegment:
 # --- LPM key construction ---------------------------------------------------
 
 
+def normalize_sni(name: str) -> str:
+    """Canonical blocklist form of an SNI hostname, byte for byte what
+    the normalization block in bpf/xdp_sni_filter.c's extract_sni()
+    produces for the same wire bytes (the C side has no function by this
+    name; the two `#pragma unroll` loops at the end of extract_sni()'s
+    `if (found)` branch are it). tests/test_xdp.py compiles that exact
+    text and compares its output against this function's, so the two
+    copies cannot drift apart unnoticed.
+
+    - ASCII A-Z folded to lower case. DNS names are case-insensitive
+      (RFC 4343), so `Blocked.Example.COM` and `blocked.example.com`
+      must produce the *same* LPM key on both sides, or a name added to
+      the blocklist in any case but the one a client happens to send is
+      not blocked at all. Only A-Z is folded (with the same range test
+      the C side does), never a blind `| 0x20`, which would corrupt
+      other bytes (`_` 0x5F -> 0x7F DEL, `@` -> backtick).
+    - Trailing dots removed. `example.com.` is the same name as
+      `example.com` written in full (RFC 1035 3.1: a trailing dot just
+      marks the name as already fully qualified), and clients do send
+      it. A whole run of them is stripped, so the key cannot be steered
+      one byte off the blocklist entry by padding dots either.
+    """
+    folded = "".join(
+        chr(ord(ch) | 0x20) if "A" <= ch <= "Z" else ch for ch in name
+    )
+    return folded.rstrip(".")
+
+
 def build_lpm_key(hostname: str) -> bytes:
     """Python port of build_lpm_key() in xdp_sni_filter.c: the LPM trie
     lookup/insert key for `hostname`, matching the kernel program's
-    reverse("." + hostname) scheme exactly (see that file's "LPM trie key
-    construction" header comment for why this blocks subdomains
-    correctly without also matching unrelated domains that merely share
-    trailing characters).
+    reverse("." + normalized hostname) scheme exactly (see that file's
+    "LPM trie key construction" header comment for why this blocks
+    subdomains correctly without also matching unrelated domains that
+    merely share trailing characters).
 
     Confirmed byte-for-byte against the kernel's own computed key for a
     real extracted SNI via a temporary bpf_printk during development,
@@ -223,13 +251,28 @@ def build_lpm_key(hostname: str) -> bytes:
     build_lpm_key()'s two-phase construction, before its post-barrel-
     shift result) produced a right-aligned key that silently never
     matched anything.
+
+    The length is checked on the *raw* name, before normalization, and
+    that ordering is not cosmetic: the kernel program rejects a wire
+    name of MAX_SNI_LEN bytes or more inside parse_sni_body(), before
+    it ever looks at case or a trailing dot, so such a name can never
+    match no matter what is in the trie. Accepting one here would
+    install a key the kernel side provably never builds.
     """
-    sni_len = len(hostname)
-    if not (0 < sni_len < MAX_SNI_LEN):
+    raw_len = len(hostname)
+    if not (0 < raw_len < MAX_SNI_LEN):
         raise XdpError(
-            f"hostname length must be in (0, {MAX_SNI_LEN}): {hostname!r} is {sni_len}"
+            f"hostname length must be in (0, {MAX_SNI_LEN}): {hostname!r} is "
+            f"{raw_len} bytes, so it is NOT blocked by the kernel filter"
         )
-    content = ("." + hostname)[::-1].encode("ascii")
+    normalized = normalize_sni(hostname)
+    if not normalized:
+        raise XdpError(f"hostname is only dots after normalization: {hostname!r}")
+    sni_len = len(normalized)
+    try:
+        content = ("." + normalized)[::-1].encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise XdpError(f"hostname is not ASCII: {hostname!r}") from exc
     reversed_buf = content + b"\x00" * (LPM_KEY_LEN - len(content))
     prefixlen = (sni_len + 1) * 8
     key = struct.pack("<I", prefixlen) + reversed_buf
@@ -402,11 +445,51 @@ def detach(device: str, mode: AttachMode) -> None:
 # --- blocklist reconciliation -------------------------------------------------
 
 
+def sample_names(names, limit: int = 5) -> str:
+    """Up to `limit` names for an error message, plus an explicit count of
+    what was left out -- never a silent truncation, because an operator
+    reading a sample has to be able to tell that the list they are shown
+    is not the whole list of names at fault."""
+    ordered = sorted(names)
+    shown = ", ".join(repr(n) for n in ordered[:limit])
+    if len(ordered) > limit:
+        shown += f", ... ({len(ordered) - limit} more not shown)"
+    return shown
+
+
 def sync_blocklist(hostnames: list[str]) -> None:
     """Make the pinned LPM trie's contents exactly match `hostnames`:
     add whatever's missing, remove whatever's no longer wanted, touch
-    nothing else. Safe to call repeatedly (e.g. on every `apply`)."""
-    desired = {build_lpm_key(h) for h in hostnames}
+    nothing else. Safe to call repeatedly (e.g. on every `apply`).
+
+    Names are normalized first (see `normalize_sni`), so a blocklist
+    entry is enforced regardless of the case or trailing dot a client
+    uses to spell it.
+
+    Fails closed and says which name is at fault: a name the kernel
+    filter can never match (>= MAX_SNI_LEN on the wire) aborts the whole
+    sync rather than quietly installing a key nothing will ever look up,
+    and the error names every such entry (or a counted sample of them),
+    not just the first.
+    """
+    desired: set[bytes] = set()
+    rejected: list[str] = []
+    for hostname in hostnames:
+        try:
+            desired.add(build_lpm_key(hostname))
+        except XdpError:
+            rejected.append(hostname)
+    if rejected:
+        raise XdpError(
+            f"{len(rejected)} blocklist name(s) cannot be enforced by the kernel "
+            f"SNI filter and are NOT blocked: {sample_names(rejected)}. Nothing was "
+            f"applied -- the whole sync is refused rather than left half done. A name "
+            f"of {MAX_SNI_LEN} bytes or more is refused by the filter before it ever "
+            f"builds a key, and that cap comes from the kernel's 512-byte BPF stack "
+            f"limit rather than from a choice here, so the fix is on this side: "
+            f"shorten these names to under {MAX_SNI_LEN} bytes, or block them in the "
+            f"DNS/adblock layer instead."
+        )
     existing = _dump_lpm_keys(PIN_BLOCKLIST_PATH)
     for key in existing - desired:
         _map_delete(PIN_BLOCKLIST_PATH, key)

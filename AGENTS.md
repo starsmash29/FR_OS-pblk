@@ -18,7 +18,7 @@ AI tool working on someone's behalf.
 | [docs/reviews/](docs/reviews/) | The latest adversarial review and what is still open from it |
 | [docs/CONFIG_SCHEMA.md](docs/CONFIG_SCHEMA.md) | The `config.yaml` schema |
 | [DESIGN.md](DESIGN.md) | The webUI design system |
-| [docs/stitch-screens.md](docs/stitch-screens.md) | Inventory of the designed screens. It is in Hungarian for now; an English version is welcome |
+| [docs/stitch-screens.md](docs/stitch-screens.md) | Inventory of the designed screens. Screen names are as the Stitch project has them |
 | [SECURITY.md](SECURITY.md) | How vulnerabilities are reported. Never in a public issue or PR |
 | [.claude/skills/](.claude/skills/) | Vendored defensive-security reference playbooks (CIS hardening, eBPF monitoring, segmentation, SLSA/Sigstore, SBOM). Guidance to read, not code to run — see `.claude/skills/VENDOR.md` |
 
@@ -99,6 +99,28 @@ Every PR is reviewed by the maintainer's integrating agent (Claude Code), which:
 - merges only with the repository owner's approval.
 
 The integrator decides the merge order of overlapping PRs. A PR that falls behind `main` gets `main` merged into it, not rebased.
+
+### Approval flow (how an item gets the go-ahead)
+
+Picking up an item needs the owner's go-ahead, recorded on its **claim
+issue**. Two roles, kept separate:
+
+- **The owner's integrating agent (Claude Code)** records the owner's
+  decision on each claim issue: the label **`approved`** or **`hold`**, or a
+  comment **"Mehet"** (go) / **"Várj"** (wait). It is the only actor that
+  applies these, and it is the only actor that merges a PR — always after the
+  owner's "Mehet", never on its own.
+- **The dispatcher agent (JARVIS)** reads the claim issues hourly. It does not
+  touch an item marked `hold` / "Várj"; it hands out an item marked
+  `approved` / "Mehet". On GitHub it only ever opens claim issues — it does
+  **not** merge, close, label, or comment to drive state.
+
+So the lifecycle of an item is: a claim issue is opened (JARVIS or a
+contributor) → the integrating agent marks it `approved` or `hold` on the
+owner's word → JARVIS dispatches the approved ones → the contributor opens
+one PR per item → the integrating agent reviews it (above) and merges it only
+after the owner's "Mehet". An item with no mark, or marked `hold`, is not
+started.
 
 **Releases are not part of contributions.** Before each release, the maintainer runs an adversarial review with two models and triages it (docs/RELEASING.md, security-lessons J2).
 

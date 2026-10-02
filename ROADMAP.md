@@ -1347,11 +1347,11 @@ issues #17 and #18). The R-numbers are that record's.
 | SEC-10 | **Superseded** (kept so references stay valid). The missing regression tests (R16) belong to the items that change the behaviour: XDP bounds to SEC-7, CSRF to SEC-9; `/metrics` is covered as it behaves today by `tests/webui/test_metrics_routes.py`, and the protected-by-default test comes with SEC-3 | -- | `tests/` |
 | SEC-11 | Sensor daemons read `config.yaml` with ZTNA password hashes: give them a secrets-free copy, drop the `fr_os-webui` group (R17, security-lessons G3) | low | `frfw.accounts`, `systemd/fr-ai-ids.service` and peers |
 | SEC-12 | Update helper refuses downgrades (only `rollback` goes back) (R18) | low | `frfw.update.apply_update` |
-| SEC-13 | One live-log stream per session, a global cap, process ended on disconnect (R19) | low | `routes/xdp.py` |
+| SEC-13 | One live-log stream per session, a global cap, process ended on disconnect (R19; done in the SEC-13 PR: one `journalctl` per session and `LOG_STREAM_LIMIT` of them per webUI process, the child ends when the session's last tab disconnects; a failing shared stream also ends itself so a dead one never holds a cap slot) | low | `routes/xdp.py` (`_LogStream`, `_session_stream_key`, `stream_logs`), `tests/webui/test_xdp_routes.py` |
 | SEC-14 | Kernel fixes without a new image: update the kernel on the boot medium (R3; today kernel fixes ship as a new image, SECURITY.md) | medium | `frfw.persistence`, `frfw.update`, see OPS-10 |
 | SEC-15 | Integrity manifest signed with the release key, so a root attacker can't rewrite the record too (security-lessons G9) | low | `frfw.integrity`, `frfw.release_signing` |
 | SEC-16 | The XDP SNI filter parses only untagged IPv4 (`ETH_P_IP`), so every 802.1Q/802.1ad-tagged frame -- including the segments FR_OS tags itself -- passes unfiltered: unwrap the VLAN tags before the IPv4 parse (review-triage B2). **Done:** up to two tags (802.1Q, QinQ) are unwrapped and the hello copies count them; a deeper stack passes unparsed, as the router doesn't route it either (`tests/test_xdp_live.py`, ARCHITECTURE.md phase 4, limit 5) | medium | `bpf/xdp_sni_filter.c`, `tests/test_xdp_live.py` |
-| SEC-17 | SNI blocklist bypasses: the name's case, a trailing dot, names of 32 bytes or more (the key's limit), a ClientHello split across segments (review-triage B3). Work in progress on branch `kernel/UMB-3-sni-bypass` (case, trailing dot, length) | medium | `bpf/xdp_sni_filter.c`, `frfw.xdp`, `frfw.config.loader` |
+| SEC-17 | SNI blocklist bypasses: the name's case, a trailing dot, names of 32 bytes or more (the key's limit), a ClientHello split across segments (review-triage B3) | medium | `bpf/xdp_sni_filter.c`, `frfw.xdp`, `frfw.config.loader`, `frfw.provision`, `tests/test_xdp_live.py` |
 | SEC-18 | Debian's `nftables.service` is neither ordered against nor kept away from `fr-firewall.service`: both start before `network-pre.target`, and if it is ever enabled, its `/etc/nftables.conf` (`flush ruleset`) can replace the FR_OS ruleset, and stopping it flushes the ruleset. Keep the `nftables` package (it provides `nft`) and mask the unit in the image; boot-test that it stays masked (review-triage B5) | medium | `installer/live-build/config/hooks/`, `systemd/fr-firewall.service`, `installer/qemu-boot-test.py` |
 | SEC-19 | XDP lifecycle: a partial apply leaves attachments unrecorded, the event logger loses events after disable/enable, a stale pinned program is reused after an upgrade (`load_and_pin` does nothing when a pin exists), and root compiles BPF with whatever `clang` is first on `PATH` (review-triage B6; the compile goes away with P4-1) | medium | `frfw.xdp` (`ensure_compiled`, `load_and_pin`, `apply`), see P4-1 |
 
@@ -1466,7 +1466,7 @@ issues #17 and #18). The R-numbers are that record's.
 
 | ID | Item | Status | Where it plugs in |
 |---|---|---|---|
-| DOC-1 | English translation of the Stitch screen inventory (it is in Hungarian today); keep the screen names as Stitch has them, so the "Stitch design" columns above still match | Planned | `docs/stitch-screens.md` |
+| DOC-1 | English translation of the Stitch screen inventory. **Done:** the prose in `docs/stitch-screens.md` is in English; the screen names, screen IDs, the mark symbols and the summary numbers are unchanged, so the "Stitch design" columns above still match | Done | `docs/stitch-screens.md`, `AGENTS.md` |
 
 Some Stitch screens show sample data and certification claims (FIPS
 140-3, CAVP): those are design placeholders -- FR_OS will not claim a

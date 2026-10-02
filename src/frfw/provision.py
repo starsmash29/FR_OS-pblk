@@ -179,11 +179,30 @@ def apply_all(
         )
     # Phase 16: blocked apps' catalog names, same in-memory-only merge.
     if config.app_control.block_via_xdp:
-        extra_xdp_names.update(
-            name
-            for name in adblock_dns.blocked_app_names(config)
-            if len(name) < xdp.MAX_SNI_LEN
+        extra_xdp_names.update(adblock_dns.blocked_app_names(config))
+    # A name of MAX_SNI_LEN bytes or more can never match in the kernel
+    # filter (bpf/xdp_sni_filter.c's parse_sni_body() refuses it before it
+    # builds a key), so it is dropped here rather than handed to
+    # sync_blocklist, which would abort the whole apply on it. Dropping it
+    # silently is not an option: the operator asked for these names to be
+    # blocked, and the app-level DNS blocking that still covers them is a
+    # different, much later layer. Report the names that only that other
+    # layer covers, once, in apply's own output.
+    #
+    # The names are shown in full, not abbreviated and not moved to debug
+    # level: they come from this router's own app catalog, so they are the
+    # operator's own configuration being echoed back to them, and naming
+    # them *is* the finding -- a name not named is a name the operator
+    # believes is blocked and is not (review finding L1).
+    too_long = sorted(n for n in extra_xdp_names if len(n) >= xdp.MAX_SNI_LEN)
+    if too_long:
+        messages.append(
+            f"XDP blocklist: {len(too_long)} name(s) are {xdp.MAX_SNI_LEN} bytes or "
+            f"longer and are NOT blocked in XDP (the kernel filter's MAX_SNI_LEN "
+            f"limit): {xdp.sample_names(too_long)}. They are still blocked at the "
+            f"app-level DNS layer, which is a later and coarser one."
         )
+        extra_xdp_names.difference_update(too_long)
     xdp_config = config
     if extra_xdp_names:
         merged_blocklist = sorted(set(config.xdp_sni_filter.blocklist) | extra_xdp_names)

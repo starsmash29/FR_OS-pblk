@@ -342,6 +342,28 @@ read-side (it can never influence the drop decision).
 - **Blocklist sync** (`sync_blocklist`): reconciles the pinned LPM trie's
   contents with the config's desired state (add/remove), without
   clearing and rebuilding it on every `apply`.
+- **Name canonicalization** (`normalize_sni`, ROADMAP `SEC-17`): both
+  sides fold ASCII `A-Z` to lower case and strip trailing dots *before*
+  building the LPM key, because DNS names are case-insensitive (RFC 4343)
+  and `example.com.` is the same name as `example.com` written in full
+  (RFC 1035 3.1). Without it the kernel keyed on the bytes the client
+  happened to send and the userspace keyed on the bytes the operator
+  happened to type, so a blocklisted name was reachable by changing its
+  case or padding it with a dot. The kernel copy lives in `extract_sni()`
+  (`bpf/xdp_sni_filter.c`), the mirror in `frfw.xdp.normalize_sni()`; the
+  two are pinned against each other by tests rather than by convention.
+  Normalization runs *after* the `MAX_SNI_LEN` length check, because that
+  check is about the wire name and the kernel refuses an over-long name
+  before it ever looks at case or dots -- so a >= 32-byte entry is refused
+  at configuration time (`build_lpm_key` raises, `sync_blocklist` names
+  every offending entry) instead of installing a key nothing will look up.
+  Both new loops are `#pragma unroll` over the constant `MAX_SNI_LEN`, so
+  the canonicalization costs no verifier loop-bound reasoning (the failure
+  mode described above, where a packet-pointer bound accumulates across
+  iterations, applies to unrolled loops too); the emitted program's deepest
+  stack access is unchanged at 248 of 512 bytes, and clang compiles the
+  range test as `c - 'A'`, mask, branch if `< 26`, `|= 0x20`, which keeps the
+  "mask underflow first" rule from the section above intact.
 - **`frfw.provision.apply_all`**: calls `frfw.xdp.sync_sni_filter` as the
   fourth (last) step, in address → nftables → DHCP → XDP order -- neither
   the CLI nor the webUI needs to know about XDP separately.
@@ -375,7 +397,14 @@ already-decoded JSON lines that `fr-xdp-sni-logger` has already written
 to journald (`journalctl -u fr-xdp-sni-logger.service -f -o cat`) --
 `fr-webui.service` was given a `SupplementaryGroups=systemd-journal`
 line for this, which is the usual, minimal-privilege way for a non-root
-process to read the journal without root. On the frontend side, a native
+process to read the journal without root. Because each of those is a
+child process, the route bounds them: one per webUI session -- every
+live-log tab of a session reads the *same* child through the process-wide
+`_LogStream` registry in `routes/xdp.py`, so N tabs mean one child, not N
+-- and at most `LOG_STREAM_LIMIT` (8) live streams per webUI process, past
+which a tab gets one `text/event-stream` error frame instead of a process
+(review R19). The child is terminated when the session's last tab
+disconnects. On the frontend side, a native
 `EventSource` (no WebSocket, no library) connects to this endpoint, and
 appends every incoming JSON line to the bottom of the "terminal"
 container, with auto-scroll and a cap of 300 lines (so the DOM doesn't

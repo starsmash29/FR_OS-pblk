@@ -494,6 +494,90 @@ def _vlan_devices_supported() -> bool:
         subprocess.run(["ip", "netns", "del", probe], capture_output=True)
 
 
+# --- SEC-17: the name's case and a trailing dot (review-triage B3) -------------
+#
+# The blocklist entry here is stored the way an operator would type it, and
+# the wire name is spelled the way a client happens to send it. Before
+# extract_sni() normalized, every spelling below that differed from the
+# stored entry's bytes built a different LPM key and reached the server.
+
+
+@pytest.mark.parametrize("wire_sni", [
+    "www.blocked.example",      # the stored spelling, unchanged
+    "WWW.BLOCKED.EXAMPLE",      # case only
+    "Www.Blocked.Example",      # mixed case
+    "www.blocked.example.",     # one trailing dot (RFC 1035 3.1)
+    "www.blocked.example...",   # a run of trailing dots
+    "WWW.Blocked.Example...",   # both at once
+], ids=["exact", "upper", "mixed", "trailing-dot", "dot-run", "case-and-dots"])
+def test_a_blocklisted_name_is_dropped_whatever_case_and_dots_the_client_uses(
+    lab, lan_attached, wire_sni
+):
+    """The kernel must build the same key for every spelling of one name,
+    and that key is the one the userspace mirror installed for the blocklist
+    entry 'blocked.example' (see the lab fixture)."""
+    events: list[xdp.SniEvent] = []
+    frame, _ = _tls_frame(wire_sni, [], lan_attached["dst"], lan_attached["src"])
+    with xdp.RingBufferReader(events.append) as reader:
+        _drain(reader)
+        events.clear()
+        before = xdp.get_stats()
+        _inject(lab, frame)
+        reader.poll(500)
+        after = xdp.get_stats()
+    assert after["drop_match"] == before["drop_match"] + 1
+    assert after["pass_no_match"] == before["pass_no_match"]
+    drops = [e for e in events if e.action == "drop"]
+    assert drops and drops[0].hostname == xdp.normalize_sni(wire_sni)
+
+
+@pytest.mark.parametrize("wire_sni", [
+    "notblocked.example",       # shares the tail, not a label boundary
+    "www.blocked.example.evil.test",  # the blocked name as a left-hand label
+    "xblocked.example",         # the blocked name as a right-hand label
+], ids=["prefix", "suffix-chain", "suffix-label"])
+def test_normalization_does_not_widen_a_name_to_its_neighbours(lab, lan_attached, wire_sni):
+    """Folding case and trimming dots must not turn the LPM key's label
+    boundary into a plain substring match: a name that merely contains
+    'blocked.example' as bytes, but not as a whole label, still passes."""
+    frame, _ = _tls_frame(wire_sni, [], lan_attached["dst"], lan_attached["src"])
+    before = xdp.get_stats()
+    _inject(lab, frame)
+    after = xdp.get_stats()
+    assert after["drop_match"] == before["drop_match"]
+    assert after["pass_no_match"] == before["pass_no_match"] + 1
+
+
+def test_a_subdomain_of_a_blocklisted_name_is_still_dropped(lab, lan_attached):
+    """Normalizing must not cost the subdomain coverage the key scheme
+    exists for: reverse("." + name) blocks a parent and everything under it."""
+    frame, _ = _tls_frame("deep.www.blocked.example", [], lan_attached["dst"], lan_attached["src"])
+    before = xdp.get_stats()
+    _inject(lab, frame)
+    assert xdp.get_stats()["drop_match"] == before["drop_match"] + 1
+
+
+def test_a_name_at_the_kernel_limit_is_counted_as_a_pass_not_dropped(lab, lan_attached):
+    """The third B3 bypass, made explicit: a wire name of MAX_SNI_LEN or
+    more is refused by parse_sni_body() before normalization, so it cannot
+    match -- it is passed and *counted*, not dropped and not silently lost.
+    parse_sni_body() rejecting the over-long name leaves found_len == 0, which
+    the caller buckets as pass_no_sni (a server_name was present but no usable
+    name came out of it), so that is the counter that moves. sync_blocklist()
+    refuses such an entry at configuration time (tests/test_xdp.py), so an
+    operator never gets one into the trie either."""
+    wire_sni = "a" * 40 + ".example"
+    frame, _ = _tls_frame(wire_sni, [], lan_attached["dst"], lan_attached["src"])
+    before = xdp.get_stats()
+    _inject(lab, frame)
+    after = xdp.get_stats()
+    # The security property: the over-long name is never dropped (so it can
+    # never be made to match a blocklist entry) ...
+    assert after["drop_match"] == before["drop_match"]
+    # ... and it is accounted for, not silently dropped on the floor.
+    assert after["pass_no_sni"] == before["pass_no_sni"] + 1
+
+
 def _ip_in_receives(ns: str) -> int:
     snmp = subprocess.run(["ip", "netns", "exec", ns, "cat", "/proc/net/snmp"],
                           check=True, capture_output=True, text=True).stdout.splitlines()
