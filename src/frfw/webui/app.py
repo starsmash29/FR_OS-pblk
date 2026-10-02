@@ -55,11 +55,16 @@ from frfw.webui.routes import (
 
 STATIC_DIR = Path(__file__).parent / "static"
 
-#: App-wide HTTP security headers (security-lessons R15).
+#: App-wide HTTP security headers (review v0.2.0 R15, security-lessons H1).
 SECURITY_HEADERS: dict[str, str] = {
     "Content-Security-Policy": (
         "default-src 'self'; "
-        "script-src 'self' 'unsafe-inline'; "
+        # No 'unsafe-inline' for scripts: every script is a static file
+        # (forms.js, xdp.js, webauthn.js) and no template carries an inline
+        # <script> or on*= handler -- tests/webui/test_csrf.py keeps it so.
+        # Inline `style` attributes remain, hence 'unsafe-inline' for styles
+        # only; a style can't run code.
+        "script-src 'self'; "
         "style-src 'self' 'unsafe-inline'; "
         "img-src 'self' data:; "
         "font-src 'self'; "

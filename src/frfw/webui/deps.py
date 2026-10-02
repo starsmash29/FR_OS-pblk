@@ -96,7 +96,7 @@ VIEWER_ALLOWED_PATHS = frozenset({
 #: All an account with a generated password can reach (security-lessons G1).
 SETUP_PATHS = frozenset({"/setup", "/logout"})
 
-#: Where a CSRF token may travel (security-lessons R15). Browsers can't set a
+#: Where a CSRF token may travel (review v0.2.0 R15). Browsers can't set a
 #: header on a plain HTML form submit, so the hidden field in `csrf_input` is
 #: the path every form uses; the header and the JSON body are for fetch().
 CSRF_FIELD = "csrf_token"
@@ -153,7 +153,7 @@ async def require_login(
     each request (so a deleted account, a changed role or password counts
     immediately), records it on `request.state.user` for templates and the
     audit log, verifies the session's explicit CSRF token on every
-    state-changing request (security-lessons R15), and enforces the role in
+    state-changing request (review v0.2.0 R15), and enforces the role in
     one place: a viewer may only use safe methods, plus VIEWER_ALLOWED_PATHS.
     Keeping the check here, not in each route, is what makes it impossible to
     forget on a new POST route -- tests/webui/test_rbac.py walks every

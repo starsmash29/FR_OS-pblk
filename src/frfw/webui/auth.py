@@ -138,7 +138,7 @@ class SessionManager:
         return self._serializer.dumps({"username": account.username, "v": account.session_version(), "sid": sid})
 
     def csrf_token_for(self, cookie_value: str | None) -> str:
-        """Derive the session's explicit CSRF token (security-lessons R15)."""
+        """Derive the session's explicit CSRF token (review v0.2.0 R15)."""
         data = self._load(cookie_value)
         if data is None or not self.sessions.valid(data["sid"], data["username"]):
             return ""

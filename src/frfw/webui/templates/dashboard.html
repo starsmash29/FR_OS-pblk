@@ -39,7 +39,7 @@
       {{ csrf_input(request) }}
       <button type="submit" class="secondary">{{ icon("science", "icon-sm") }}Dry-run only</button>
     </form>
-    <form method="post" action="/rollback" class="inline" onsubmit="return confirm('Roll back to the previous firewall ruleset?')">
+    <form method="post" action="/rollback" class="inline" data-confirm="Roll back to the previous firewall ruleset?">
       {{ csrf_input(request) }}
       <button type="submit" class="danger">{{ icon("undo", "icon-sm") }}Rollback firewall ruleset</button>
     </form>

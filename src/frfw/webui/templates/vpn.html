@@ -51,7 +51,7 @@
       <td><code>{{ p.public_key[:12] }}...</code></td>
       <td>{% if p.handshake %}{{ p.handshake }}{% if p.endpoint_seen %} from {{ p.endpoint_seen }}{% endif %}{% else %}<span class="muted">never</span>{% endif %}</td>
       <td>
-        <form class="inline" method="post" action="/vpn/peers/remove/{{ p.name }}" onsubmit="return confirm('Remove VPN device {{ p.name }}?')">
+        <form class="inline" method="post" action="/vpn/peers/remove/{{ p.name }}" data-confirm="Remove VPN device {{ p.name }}?">
           {{ csrf_input(request) }}
           <button type="submit" class="danger">Remove</button>
         </form>

@@ -52,7 +52,7 @@ Scheduled drop/reject rules that cut open connections are evaluated before all o
     <td>{{ "yes" if rule.log else "-" }}</td>
     <td>{{ "yes" if rule.require_ztna else "-" }}</td>
     <td>
-      <form class="inline" method="post" action="/rules/delete/{{ rule.name }}" onsubmit="return confirm('Delete rule {{ rule.name }}?')">
+      <form class="inline" method="post" action="/rules/delete/{{ rule.name }}" data-confirm="Delete rule {{ rule.name }}?">
         {{ csrf_input(request) }}
         <button type="submit" class="danger">Delete</button>
       </form>

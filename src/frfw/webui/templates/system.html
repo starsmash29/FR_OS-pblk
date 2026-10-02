@@ -95,7 +95,7 @@
     webUI and SSH to the internet.{% endif %}
   </p>
   <form method="post" action="/system/management"
-        onsubmit="return !this.allow_wan.checked || confirm('Make the webUI and SSH reachable from the internet? The VPN (WireGuard, VPN screen) is the safer way to manage the router remotely.')">
+        data-confirm="Make the webUI and SSH reachable from the internet? The VPN (WireGuard, VPN screen) is the safer way to manage the router remotely." data-confirm-when-checked="allow_wan">
     {{ csrf_input(request) }}
     <label class="checkbox-row"><input type="checkbox" name="allow_wan" value="true" {{ "checked" if management.allow_wan }}> Allow management from the internet (WAN) -- not recommended</label>
     <button type="submit">Save</button>

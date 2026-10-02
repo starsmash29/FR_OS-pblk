@@ -24,7 +24,7 @@
     <button type="submit">{{ "Save" if z.pool else "Enable DHCP" }}</button>
   </form>
   {% if z.pool %}
-  <form method="post" action="/dhcp/{{ z.zone }}/delete" style="display:inline" onsubmit="return confirm('Disable DHCP on {{ z.zone }}?')">
+  <form method="post" action="/dhcp/{{ z.zone }}/delete" style="display:inline" data-confirm="Disable DHCP on {{ z.zone }}?">
     {{ csrf_input(request) }}
     <button type="submit" class="danger">Disable DHCP on this zone</button>
   </form>
