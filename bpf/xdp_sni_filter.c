@@ -1014,7 +1014,8 @@ int xdp_sni_filter(struct xdp_md *ctx)
 	}
 
 	char sni[MAX_SNI_LEN] = {};
-	int sni_len = extract_sni(hs + 4, data_end, sni);
+	unsigned char *ip_end = data + l3_off + ip_len;
+	int sni_len = extract_sni(hs + 4, (data_end < ip_end ? data_end : ip_end), sni);
 
 	if (sni_len == -1) {
 		bump(STAT_PASS_TRUNCATED);
