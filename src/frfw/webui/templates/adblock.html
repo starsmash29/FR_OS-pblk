@@ -22,6 +22,7 @@
 </div>
 
 <form method="post" action="/adblock/settings">
+{{ csrf_input(request) }}
 <div class="card">
   <h3>Base list</h3>
   <label class="checkbox-row"><input type="checkbox" name="enabled" value="true" {{ "checked" if enabled }}> Enabled</label>
@@ -82,6 +83,7 @@
     while depending on list size and network speed.
   </p>
   <form method="post" action="/adblock/refresh">
+    {{ csrf_input(request) }}
     <button type="submit">Refresh now</button>
   </form>
 </div>

@@ -19,6 +19,7 @@ takes effect on that account's open sessions at once.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import secrets
@@ -31,7 +32,7 @@ from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from frfw import paths
 from frfw.admin_account import AdminAccount, AdminStore
 
-__all__ = ["AdminAccount", "AdminStore", "SessionManager", "COOKIE_NAME"]
+__all__ = ["AdminAccount", "AdminStore", "SessionManager", "COOKIE_NAME", "generate_csrf_token", "verify_csrf_token"]
 
 SECRET_KEY_PATH = paths.WEBUI_SECRET_KEY_PATH
 
@@ -115,14 +116,42 @@ class SessionStore:
             return len(data) - len(kept)
 
 
+def generate_csrf_token(sid: str, secret_key: bytes) -> str:
+    return hmac.new(secret_key, f"csrf:{sid}".encode(), hashlib.sha256).hexdigest()
+
+
+def verify_csrf_token(token: str, sid: str, secret_key: bytes) -> bool:
+    if not token or not sid:
+        return False
+    expected = generate_csrf_token(sid, secret_key)
+    return secrets.compare_digest(token, expected)
+
+
 class SessionManager:
     def __init__(self, secret_key_path: Path = SECRET_KEY_PATH, sessions_path: Path | None = None) -> None:
-        self._serializer = URLSafeTimedSerializer(_load_or_create_secret_key(secret_key_path))
+        self._secret_key = _load_or_create_secret_key(secret_key_path)
+        self._serializer = URLSafeTimedSerializer(self._secret_key)
         self.sessions = SessionStore(sessions_path or secret_key_path.with_name("sessions.json"))
 
     def create_cookie_value(self, account: AdminAccount) -> str:
         sid = self.sessions.add(account.username)
         return self._serializer.dumps({"username": account.username, "v": account.session_version(), "sid": sid})
+
+    def csrf_token_for(self, cookie_value: str | None) -> str:
+        """Derive the session's explicit CSRF token (security-lessons R15)."""
+        data = self._load(cookie_value)
+        if data is None or not self.sessions.valid(data["sid"], data["username"]):
+            return ""
+        return generate_csrf_token(data["sid"], self._secret_key)
+
+    def verify_csrf(self, cookie_value: str | None, token: str | None) -> bool:
+        """Verify the CSRF token against the cookie's active session."""
+        if not cookie_value or not token:
+            return False
+        data = self._load(cookie_value)
+        if data is None or not self.sessions.valid(data["sid"], data["username"]):
+            return False
+        return verify_csrf_token(token, data["sid"], self._secret_key)
 
     def _load(self, cookie_value: str | None) -> dict | None:
         if not cookie_value:

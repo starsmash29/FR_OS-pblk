@@ -18,6 +18,7 @@
 <div class="card">
   <h3>Settings</h3>
   <form method="post" action="/iot/settings">
+    {{ csrf_input(request) }}
     <label class="checkbox-row"><input type="checkbox" name="enabled" value="true" {{ "checked" if enabled }}> Enabled</label>
 
     <label>Zones to scan</label>
@@ -45,7 +46,10 @@
     {% if scanned_at %}Last scan: {{ scanned_at }}.{% else %}No scan has run yet.{% endif %}
   </p>
   {% if scan_messages %}<p class="muted">{{ scan_messages|join("; ") }}</p>{% endif %}
-  <form method="post" action="/iot/scan"><button type="submit">Scan now</button></form>
+  <form method="post" action="/iot/scan">
+    {{ csrf_input(request) }}
+    <button type="submit">Scan now</button>
+  </form>
 </div>
 
 <div class="card">
@@ -88,17 +92,20 @@
       </td>
       <td>
         <form method="post" action="/iot/device" class="inline">
+          {{ csrf_input(request) }}
           <input type="hidden" name="mac" value="{{ d.mac }}">
           <input type="hidden" name="action" value="trust">
           <button type="submit" class="secondary">Trust</button>
         </form>
         <form method="post" action="/iot/device" class="inline">
+          {{ csrf_input(request) }}
           <input type="hidden" name="mac" value="{{ d.mac }}">
           <input type="hidden" name="action" value="isolate">
           <button type="submit" class="danger">Isolate</button>
         </form>
         {% if d.mac in trusted_macs or d.mac in isolated_macs %}
         <form method="post" action="/iot/device" class="inline">
+          {{ csrf_input(request) }}
           <input type="hidden" name="mac" value="{{ d.mac }}">
           <input type="hidden" name="action" value="clear">
           <button type="submit" class="secondary">Clear</button>

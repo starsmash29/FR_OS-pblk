@@ -31,9 +31,16 @@
     </div>
   </div>
   <div class="actions">
-    <form method="post" action="/apply" class="inline"><button type="submit">{{ icon("play_arrow", "icon-sm") }}Apply now</button></form>
-    <form method="post" action="/apply?dry_run=1" class="inline"><button type="submit" class="secondary">{{ icon("science", "icon-sm") }}Dry-run only</button></form>
+    <form method="post" action="/apply" class="inline">
+      {{ csrf_input(request) }}
+      <button type="submit">{{ icon("play_arrow", "icon-sm") }}Apply now</button>
+    </form>
+    <form method="post" action="/apply?dry_run=1" class="inline">
+      {{ csrf_input(request) }}
+      <button type="submit" class="secondary">{{ icon("science", "icon-sm") }}Dry-run only</button>
+    </form>
     <form method="post" action="/rollback" class="inline" onsubmit="return confirm('Roll back to the previous firewall ruleset?')">
+      {{ csrf_input(request) }}
       <button type="submit" class="danger">{{ icon("undo", "icon-sm") }}Rollback firewall ruleset</button>
     </form>
   </div>
@@ -43,6 +50,7 @@
 <section class="card" style="border-color: var(--error);">
   <div class="card-head"><h3>{{ icon("warning") }}Security alerts ({{ alerts|length }} new)</h3>
     <form method="post" action="/alerts/seen" class="inline">
+      {{ csrf_input(request) }}
       <input type="hidden" name="until" value="{{ alerts[0].ts }}">
       <button type="submit" class="secondary">Mark as seen</button>
     </form>

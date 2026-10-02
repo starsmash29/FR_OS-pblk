@@ -12,6 +12,7 @@
       <td>{{ m.out_zone }}</td>
       <td>
         <form class="inline" method="post" action="/nat/masquerade/delete/{{ m.out_zone }}">
+          {{ csrf_input(request) }}
           <button type="submit" class="danger">Remove</button>
         </form>
       </td>
@@ -19,6 +20,7 @@
     {% endfor %}
   </table>
   <form method="post" action="/nat/masquerade/add">
+    {{ csrf_input(request) }}
     <label>Out zone</label>
     <select name="out_zone" required>
       {% for z in zones %}<option value="{{ z }}">{{ z }}</option>{% endfor %}
@@ -40,6 +42,7 @@
       <td>{{ pf.to_address }}:{{ pf.to_port }}</td>
       <td>
         <form class="inline" method="post" action="/nat/portforward/delete/{{ pf.name }}" onsubmit="return confirm('Delete port forward {{ pf.name }}?')">
+          {{ csrf_input(request) }}
           <button type="submit" class="danger">Delete</button>
         </form>
       </td>
@@ -47,6 +50,7 @@
     {% endfor %}
   </table>
   <form method="post" action="/nat/portforward/add">
+    {{ csrf_input(request) }}
     <label>Name</label>
     <input type="text" name="name" pattern="[a-z][a-z0-9_-]*" required>
     <label>In zone</label>

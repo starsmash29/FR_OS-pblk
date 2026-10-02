@@ -17,6 +17,7 @@
 <div class="card">
   <h3>Settings</h3>
   <form method="post" action="/tls/settings">
+    {{ csrf_input(request) }}
     <label class="checkbox-row"><input type="checkbox" name="enabled" value="true" {{ "checked" if enabled }}> Enabled (needs the XDP SNI filter, attached to the LAN-side interfaces)</label>
     <label class="checkbox-row"><input type="checkbox" name="quarantine_on_match" value="true" {{ "checked" if quarantine_on_match }}> Quarantine a device that presents a blocklisted fingerprint (AI IDS quarantine set)</label>
     <button type="submit">Save</button>
@@ -69,6 +70,7 @@
       <td>
         {% if not r.blocked %}
         <form class="inline" method="post" action="/tls/block">
+          {{ csrf_input(request) }}
           <input type="hidden" name="fingerprint" value="{{ r.ja4 }}">
           <input type="hidden" name="label" value="blocked from {{ r.client }}">
           <button type="submit" class="danger">Block</button>
@@ -94,6 +96,7 @@
       <td>{{ e.label or "-" }}</td>
       <td>
         <form class="inline" method="post" action="/tls/unblock">
+          {{ csrf_input(request) }}
           <input type="hidden" name="fingerprint" value="{{ e.fingerprint }}">
           <button type="submit" class="secondary">Remove</button>
         </form>
@@ -103,6 +106,7 @@
   </table>
   {% endif %}
   <form method="post" action="/tls/block">
+    {{ csrf_input(request) }}
     <label>Fingerprint</label>
     <input type="text" name="fingerprint" placeholder="t13d1516h2_8daaf6152771_e5627efa2ab1" required>
     <label>Label (optional)</label>

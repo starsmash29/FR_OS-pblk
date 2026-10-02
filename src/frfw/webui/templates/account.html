@@ -7,6 +7,7 @@
   <h3>Change password</h3>
   <p class="muted">Every session of this account ends when the password changes (this browser stays signed in).</p>
   <form method="post" action="/account/password" class="allow-viewer">
+    {{ csrf_input(request) }}
     <label>Current password</label>
     <input type="password" name="current_password" required>
     <label>New password (at least 8 characters)</label>
@@ -31,6 +32,7 @@
   <p class="muted">End every session of this account, on every device -- this one too. Use it after signing in
     on a shared computer or if a device went missing.</p>
   <form method="post" action="/account/logout-everywhere" class="allow-viewer">
+    {{ csrf_input(request) }}
     <button type="submit" class="danger">Log out everywhere</button>
   </form>
 </div>

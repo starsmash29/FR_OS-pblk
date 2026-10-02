@@ -20,6 +20,7 @@
 <div class="card">
   <h3>Settings</h3>
   <form method="post" action="/vpn/settings">
+    {{ csrf_input(request) }}
     <label><input type="checkbox" name="enabled" value="true" {{ "checked" if enabled else "" }} style="display:inline;width:auto;"> VPN on</label>
     <label>Router's address in the tunnel</label>
     <input type="text" name="address" value="{{ address }}" required>
@@ -51,6 +52,7 @@
       <td>{% if p.handshake %}{{ p.handshake }}{% if p.endpoint_seen %} from {{ p.endpoint_seen }}{% endif %}{% else %}<span class="muted">never</span>{% endif %}</td>
       <td>
         <form class="inline" method="post" action="/vpn/peers/remove/{{ p.name }}" onsubmit="return confirm('Remove VPN device {{ p.name }}?')">
+          {{ csrf_input(request) }}
           <button type="submit" class="danger">Remove</button>
         </form>
       </td>
@@ -61,6 +63,7 @@
 
   <h3 style="margin-top:1.2rem;">Add a device</h3>
   <form method="post" action="/vpn/peers/add">
+    {{ csrf_input(request) }}
     <label>Name</label>
     <input type="text" name="name" pattern="[A-Za-z0-9][A-Za-z0-9_.\-]{0,31}" required placeholder="phone">
     <label>Its public key (leave empty to have the router make a key pair and show the device's configuration once)</label>

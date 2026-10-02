@@ -68,6 +68,7 @@
 <div class="card">
   <h3>Settings</h3>
   <form method="post" action="/system/pqc/settings">
+    {{ csrf_input(request) }}
     <label class="checkbox-row"><input type="checkbox" name="enabled" value="true" {{ "checked" if status.enabled_in_config }}> Enable PQC hybrid key exchange</label>
     <button type="submit">Save</button>
   </form>
@@ -95,6 +96,7 @@
   </p>
   <form method="post" action="/system/management"
         onsubmit="return !this.allow_wan.checked || confirm('Make the webUI and SSH reachable from the internet? The VPN (WireGuard, VPN screen) is the safer way to manage the router remotely.')">
+    {{ csrf_input(request) }}
     <label class="checkbox-row"><input type="checkbox" name="allow_wan" value="true" {{ "checked" if management.allow_wan }}> Allow management from the internet (WAN) -- not recommended</label>
     <button type="submit">Save</button>
   </form>
@@ -143,17 +145,20 @@
     and the fleet dashboard in <code>telemetry/</code>.
   </p>
   <form method="post" action="/system/metrics/site">
+    {{ csrf_input(request) }}
     <label>Site name (shown in fleet dashboards; empty = hostname "{{ metrics_hostname }}")</label>
     <input type="text" name="site" value="{{ metrics_site }}" placeholder="budapest-office" pattern="[a-z0-9][a-z0-9_.\-]{0,62}">
     <button type="submit">Save site name</button>
   </form>
   <p>Token: {% if metrics_token_set %}<span class="badge badge-green">required</span>{% else %}<span class="badge badge-yellow">none -- /metrics is public</span>{% endif %}</p>
   <form class="inline" method="post" action="/system/metrics/token">
+    {{ csrf_input(request) }}
     <input type="hidden" name="action" value="generate">
     <button type="submit">{{ "Replace token" if metrics_token_set else "Generate token" }}</button>
   </form>
   {% if metrics_token_set %}
   <form class="inline" method="post" action="/system/metrics/token">
+    {{ csrf_input(request) }}
     <input type="hidden" name="action" value="disable">
     <button type="submit" class="secondary">Remove token</button>
   </form>

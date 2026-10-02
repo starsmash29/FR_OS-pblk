@@ -21,10 +21,16 @@
   }
 
   async function postJSON(url, body) {
+    const csrfMeta = document.querySelector('meta[name="csrf-token"]');
+    const csrfToken = csrfMeta ? csrfMeta.getAttribute("content") : "";
+    const headers = { "Content-Type": "application/json" };
+    if (csrfToken) {
+      headers["X-CSRF-Token"] = csrfToken;
+    }
     const response = await fetch(url, {
       method: "POST",
       credentials: "same-origin",
-      headers: { "Content-Type": "application/json" },
+      headers: headers,
       body: JSON.stringify(body || {}),
     });
     let data = {};

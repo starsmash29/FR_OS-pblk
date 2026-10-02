@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from fastapi.templating import Jinja2Templates
+from markupsafe import Markup
 
 from frfw import __codename__, __version__, codename_for
 from frfw.webui.config_store import load_raw
@@ -88,12 +89,30 @@ def update_notice(request) -> dict | None:
     return data
 
 
+def csrf_token(request) -> str:
+    """Return the CSRF token for the current session."""
+    if not request:
+        return ""
+    state = getattr(request, "state", None)
+    return getattr(state, "csrf_token", "") or ""
+
+
+def csrf_input(request) -> Markup:
+    """Return a hidden form input containing the CSRF token."""
+    token = csrf_token(request)
+    if not token:
+        return Markup("")
+    return Markup(f'<input type="hidden" name="csrf_token" value="{token}">')
+
+
 templates.env.globals.update(
     NAV=NAV,
     nav_matches=_matches,
     nav_location=nav_location,
     shell_hostname=shell_hostname,
     update_notice=update_notice,
+    csrf_token=csrf_token,
+    csrf_input=csrf_input,
     FROS_VERSION=__version__,
     FROS_CODENAME=__codename__,
 )

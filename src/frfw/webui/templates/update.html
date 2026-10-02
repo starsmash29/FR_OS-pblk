@@ -20,6 +20,7 @@
     <pre>{{ check_result.latest.notes }}</pre>
     {% endif %}
     <form method="post" action="/update/apply" onsubmit="return confirm('Update to {{ check_result.latest.version }} now? The webUI will restart afterwards.')">
+      {{ csrf_input(request) }}
       <input type="hidden" name="version" value="{{ check_result.latest.version }}">
       <button type="submit">Update to {{ check_result.latest.version }}</button>
     </form>
@@ -36,6 +37,7 @@
   {% if periodic and periodic.error %}<div class="flash-error">The last periodic check failed: {{ periodic.error }}</div>{% endif %}
   {% if periodic and periodic.auto_install_error %}<div class="flash-error">Installing security release {{ periodic.latest_version }} automatically failed: {{ periodic.auto_install_error }}</div>{% endif %}
   <form method="post" action="/update/auto-security">
+    {{ csrf_input(request) }}
     <label><input type="checkbox" name="enabled" value="true"{% if auto_install_security %} checked{% endif %}>
       Install security updates automatically</label>
     <p class="muted">Only releases marked as security releases, and only after their signature verifies. The webUI restarts
@@ -49,6 +51,7 @@
   {% if state.previous_version %}
   <p class="muted">Previously running: {{ state.previous_version }}</p>
   <form method="post" action="/update/rollback" onsubmit="return confirm('Roll back to {{ state.previous_version }} now? The webUI will restart afterwards.')">
+    {{ csrf_input(request) }}
     <button type="submit" class="danger">Roll back to {{ state.previous_version }}</button>
   </form>
   {% else %}

@@ -47,6 +47,7 @@
 <div class="card">
   <h3>Settings</h3>
   <form method="post" action="/xdp/settings">
+    {{ csrf_input(request) }}
     <label>
       <input type="checkbox" name="enabled" value="true" {{ "checked" if enabled else "" }} style="display:inline;width:auto;">
       Enabled
@@ -100,6 +101,7 @@
         <td>{{ domain }}</td>
         <td>
           <form class="inline" method="post" action="/xdp/blocklist/remove">
+            {{ csrf_input(request) }}
             <input type="hidden" name="domain" value="{{ domain }}">
             <button type="submit" class="danger">Remove</button>
           </form>

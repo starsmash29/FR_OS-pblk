@@ -17,6 +17,7 @@
 <div class="card">
   <h3>Settings</h3>
   <form method="post" action="/apps/settings">
+    {{ csrf_input(request) }}
     <label class="checkbox-row"><input type="checkbox" name="enabled" value="true" {{ "checked" if enabled }}> Enabled (identify apps and enforce the blocked list)</label>
     <label class="checkbox-row"><input type="checkbox" name="observe_sni" value="true" {{ "checked" if observe_sni }}> Also observe TLS server names with the XDP filter (one journal line per TLS connection)</label>
     <label class="checkbox-row"><input type="checkbox" name="block_via_xdp" value="true" {{ "checked" if block_via_xdp }}> Also block apps in the XDP SNI filter (catches clients using their own DNS-over-HTTPS)</label>
@@ -40,6 +41,7 @@
 <div class="card">
   <h3>Apps (last 24 hours)</h3>
   <form method="post" action="/apps/block">
+  {{ csrf_input(request) }}
   <div class="scroll-table" style="max-height: 640px;">
   <table>
     <tr><th>Block</th><th>App</th><th>Category</th><th>Active clients (15 min)</th><th>Hits</th><th>Last seen</th><th>Clients</th></tr>

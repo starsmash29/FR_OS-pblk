@@ -39,6 +39,7 @@
 <div class="card">
   <h3>Settings</h3>
   <form method="post" action="/ai-ids/settings">
+    {{ csrf_input(request) }}
     <label><input type="checkbox" name="enabled" value="true" {{ "checked" if enabled else "" }} style="display:inline;width:auto;"> Enabled</label>
     <label>Quarantine duration (seconds)</label>
     <input type="number" name="quarantine_duration_seconds" value="{{ quarantine_duration_seconds }}" min="1" max="604800" required>
