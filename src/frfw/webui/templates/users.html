@@ -20,7 +20,7 @@
       <td>
         {% if u.has_mfa %}
         <span class="badge badge-green">on</span>
-        <form class="inline" method="post" action="/users/{{ u.username }}/mfa-reset" onsubmit="return confirm('Remove every second factor of {{ u.username }} and end their sessions?')">
+        <form class="inline" method="post" action="/users/{{ u.username }}/mfa-reset" data-confirm="Remove every second factor of {{ u.username }} and end their sessions?">
           {{ csrf_input(request) }}
           <button type="submit" class="secondary">Reset</button>
         </form>
@@ -43,7 +43,7 @@
         </form>
       </td>
       <td>
-        <form class="inline" method="post" action="/users/{{ u.username }}/delete" onsubmit="return confirm('Delete user {{ u.username }}?')">
+        <form class="inline" method="post" action="/users/{{ u.username }}/delete" data-confirm="Delete user {{ u.username }}?">
           {{ csrf_input(request) }}
           <button type="submit" class="danger">Delete</button>
         </form>

@@ -11,6 +11,7 @@ field fails before it reaches a browser.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 import pytest
 import yaml
@@ -371,16 +372,52 @@ def test_the_csp_names_no_remote_source_and_forbids_framing(env):
     assert client.get("/").headers["X-Content-Type-Options"] == "nosniff"
 
 
-def test_the_csp_still_allows_what_the_ui_actually_uses(env):
-    """The UI has inline `style` attributes, inline `onsubmit` handlers and
-    one inline <script> (xdp.html), all served by this app. If a future
-    change tightens the policy, this says what would break."""
+def test_the_csp_allows_only_same_origin_scripts(env):
+    """script-src is exactly 'self': no 'unsafe-inline', no 'unsafe-eval'.
+    Every script is a static file (forms.js, xdp.js, webauthn.js), so an
+    injected inline <script> or on*= handler would not run. Styles keep
+    'unsafe-inline' for inline `style` attributes, which can't run code."""
     csp = SECURITY_HEADERS["Content-Security-Policy"]
-    assert "style-src 'self' 'unsafe-inline'" in csp
-    assert "script-src 'self' 'unsafe-inline'" in csp
+    directives = {d.split()[0]: d.split()[1:] for d in csp.split(";") if d.strip()}
+    assert directives["script-src"] == ["'self'"]
+    assert "'unsafe-eval'" not in csp
+    assert directives["style-src"] == ["'self'", "'unsafe-inline'"]
     assert "img-src 'self' data:" in csp  # the inline SVG favicon
     assert "font-src 'self'" in csp  # the bundled woff2 files
     assert "connect-src 'self'" in csp  # EventSource on /xdp/logs/stream
+
+
+def test_no_template_has_inline_script_or_event_handlers():
+    """What lets script-src stay 'self': no template carries code. A
+    `<script>` must have a src, and no element an on*= attribute; a
+    confirmation prompt is `data-confirm` text, handled by static/forms.js."""
+    templates = Path(TEMPLATES_DIR)
+    inline_script = re.compile(r"<script(?![^>]*\bsrc=)[^>]*>", re.IGNORECASE)
+    handler = re.compile(r"\son[a-z]+\s*=", re.IGNORECASE)
+    for template in sorted(templates.glob("*.html")):
+        text = template.read_text()
+        assert not inline_script.search(text), template.name
+        assert not handler.search(text), template.name
+
+
+def test_destructive_forms_still_ask_for_confirmation():
+    """Moving the prompts out of onsubmit must not drop any: every one of
+    them is now a data-confirm attribute (the allow-WAN one only while its
+    checkbox is ticked)."""
+    templates = Path(TEMPLATES_DIR)
+    text = "".join(t.read_text() for t in templates.glob("*.html"))
+    assert text.count("data-confirm=") == 12
+    assert 'data-confirm-when-checked="allow_wan"' in text
+
+
+def test_the_page_scripts_are_served_and_linked(env):
+    client = _signed_in(env)
+    for script in ("/static/forms.js", "/static/xdp.js"):
+        response = client.get(script)
+        assert response.status_code == 200, script
+        assert "javascript" in response.headers["content-type"], script
+    assert "/static/forms.js" in client.get("/").text
+    assert "/static/xdp.js" in client.get("/xdp").text
 
 
 def test_a_page_never_loads_a_resource_from_a_remote_source(env):
