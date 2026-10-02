@@ -891,8 +891,9 @@ def _parse_xdp_sni_filter(raw: Any, interfaces: dict[str, Interface]) -> XdpSniF
             )
         # Stored in the canonical form the LPM trie's key is built from,
         # and the one the kernel program produces for the name it extracts
-        # from the wire -- see frfw.xdp.normalize_sni (the same rules as
-        # bpf/xdp_sni_filter.c's normalize_sni). Spelled out here rather
+        # from the wire -- see frfw.xdp.normalize_sni (the same rules as the
+        # normalization block at the end of extract_sni() in
+        # bpf/xdp_sni_filter.c). Spelled out here rather
         # than imported: frfw.xdp imports this package, so importing it back
         # would be a cycle. tests/test_xdp_schema.py pins the two copies
         # against each other instead of relying on this staying in step.

@@ -188,15 +188,19 @@ def apply_all(
     # blocked, and the app-level DNS blocking that still covers them is a
     # different, much later layer. Report the names that only that other
     # layer covers, once, in apply's own output.
+    #
+    # The names are shown in full, not abbreviated and not moved to debug
+    # level: they come from this router's own app catalog, so they are the
+    # operator's own configuration being echoed back to them, and naming
+    # them *is* the finding -- a name not named is a name the operator
+    # believes is blocked and is not (review finding L1).
     too_long = sorted(n for n in extra_xdp_names if len(n) >= xdp.MAX_SNI_LEN)
     if too_long:
-        shown = ", ".join(too_long[:5])
-        if len(too_long) > 5:
-            shown += f", ... (+{len(too_long) - 5} more)"
         messages.append(
             f"XDP blocklist: {len(too_long)} name(s) are {xdp.MAX_SNI_LEN} bytes or "
             f"longer and are NOT blocked in XDP (the kernel filter's MAX_SNI_LEN "
-            f"limit): {shown}"
+            f"limit): {xdp.sample_names(too_long)}. They are still blocked at the "
+            f"app-level DNS layer, which is a later and coarser one."
         )
         extra_xdp_names.difference_update(too_long)
     xdp_config = config

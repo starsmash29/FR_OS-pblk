@@ -119,8 +119,10 @@ def test_build_lpm_key_rejects_empty_and_too_long_hostnames():
 # A blocklist entry only blocks a client if the key it is stored as is
 # the key the kernel program builds from the name the client actually
 # sends. These are the userspace half of that agreement; the kernel
-# half (bpf/xdp_sni_filter.c's normalize_sni) is exercised with real
-# packets in tests/test_xdp_live.py.
+# half (the normalization block in bpf/xdp_sni_filter.c's extract_sni)
+# is exercised with real packets in tests/test_xdp_live.py, and compared
+# against this module's normalize_sni() directly by the
+# `kernel_normalizer` tests below.
 
 
 def test_normalize_sni_folds_ascii_letters_only():
@@ -201,6 +203,197 @@ def test_build_lpm_key_rejects_a_name_of_only_dots():
     for name in (".", "..", "..."):
         with pytest.raises(xdp_mod.XdpError):
             xdp_mod.build_lpm_key(name)
+
+
+# --- kernel/userspace drift (SEC-17, review finding M1) ------------------------
+#
+# normalize_sni() above and the two #pragma unroll loops inside
+# extract_sni() are two copies of one rule, in two languages. Nothing
+# about writing them twice keeps them equal: editing either side alone
+# leaves every other test in this file green while the filter keys on
+# something the trie does not contain, and a blocklisted name becomes
+# reachable again -- which is the whole bug SEC-17 exists to close.
+#
+# So instead of asserting the properties of a *transcribed* copy (which
+# only tests the transcription), these tests compile the real text out of
+# bpf/xdp_sni_filter.c and compare its output against normalize_sni()'s,
+# byte for byte, over a corpus. Change one side without the other and
+# this fails; there is no third copy left to drift.
+#
+# The comparison runs the C with the host compiler, not with clang for
+# the BPF target: the normalization loops are plain C over an unsigned
+# char buffer, and the question here is what *bytes they produce*, not
+# whether the verifier accepts the program (that stays with the live
+# tests and the integrator's load). A compiler that is not clang simply
+# ignores #pragma unroll, which does not change the emitted bytes.
+
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_KERNEL_SOURCE = os.path.join(_REPO_ROOT, "bpf", "xdp_sni_filter.c")
+
+# The C block, as it appears in extract_sni(). Anchored on the two
+# statements that open and close it so the extraction cannot silently
+# widen to the wrong region if the file is edited: if either anchor is
+# gone, the tests below fail loudly instead of comparing nothing.
+_KERNEL_BLOCK_START = "__u32 n = 0;"
+_KERNEL_BLOCK_END = "return (int)n;"
+
+
+def _extract_kernel_normalizer() -> str:
+    """The exact C text between the two anchors, or a failure explaining
+    which one moved. Extracted by text, not by a hand-kept copy, because
+    a kept copy is a third implementation to keep in step."""
+    with open(_KERNEL_SOURCE, encoding="utf-8") as fh:
+        source = fh.read()
+    start = source.find(_KERNEL_BLOCK_START)
+    assert start != -1, f"{_KERNEL_BLOCK_START!r} not found in {_KERNEL_SOURCE}"
+    end = source.find(_KERNEL_BLOCK_END, start)
+    assert end != -1, f"{_KERNEL_BLOCK_END!r} not found after the start anchor"
+    return source[start:end + len(_KERNEL_BLOCK_END)]
+
+
+#: C harness: runs the extracted block over names fed as hex on stdin and
+#: prints, one per line, the normalized length and the normalized bytes.
+#: (fp -> int) is the only shape extract_sni()'s block needs -- the loops
+#: read found_sp[j] under `j < found_len` and write out_sni[j].
+_HARNESS = """\
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define MAX_SNI_LEN 32
+typedef unsigned int __u32;
+
+static int normalize(const unsigned char *found_sp, int found_len,
+                     unsigned char *out_sni)
+{
+%s
+}
+
+int main(void)
+{
+\tstatic char line[4096];
+\twhile (fgets(line, sizeof line, stdin)) {
+\t\tunsigned char in[MAX_SNI_LEN] = {0};
+\t\tunsigned char out[MAX_SNI_LEN] = {0};
+\t\tint len = 0;
+\t\tfor (size_t k = 0; line[k] && line[k] != '\\n' && len < MAX_SNI_LEN; k += 2) {
+\t\t\tunsigned int byte = 0;
+\t\t\tif (sscanf(line + k, "%%2x", &byte) != 1)
+\t\t\t\tbreak;
+\t\t\tin[len++] = (unsigned char)byte;
+\t\t}
+\t\tint n = normalize(in, len, out);
+\t\tprintf("%%d ", n);
+\t\tfor (int j = 0; j < n; j++)
+\t\t\tprintf("%%02x", out[j]);
+\t\tprintf("\\n");
+\t}
+\treturn 0;
+}
+"""
+
+
+def _run_kernel_normalizer(tmp_path, names):
+    """Normalized (length, bytes) for each name, from the real C."""
+    harness = tmp_path / "normalize_harness.c"
+    binary = tmp_path / "normalize_harness"
+    harness.write_text(_HARNESS % _extract_kernel_normalizer(), encoding="utf-8")
+
+    compile_proc = subprocess.run(
+        ["cc", "-O1", "-std=gnu99", "-w", "-o", str(binary), str(harness)],
+        capture_output=True, text=True,
+    )
+    assert compile_proc.returncode == 0, f"harness did not compile:\n{compile_proc.stderr}"
+
+    stdin = "".join(name.encode("ascii").hex() + "\n" for name in names)
+    run_proc = subprocess.run(
+        [str(binary)], input=stdin, capture_output=True, text=True, check=True,
+    )
+    results = []
+    for line in run_proc.stdout.splitlines():
+        length, _, hexed = line.partition(" ")
+        results.append((int(length), bytes.fromhex(hexed)))
+    assert len(results) == len(names)
+    return results
+
+
+#: Every byte value that can reach the fold, so the range test is checked
+#: against its whole neighbourhood and not just the letters: '@' (0x40) and
+#: '[' (0x5B) bracket 'A'-'Z', and '_' (0x5F) is the byte a blind `| 0x20`
+#: would corrupt into DEL. Length 1 keeps every byte isolated.
+_FOLD_ALPHABET = (
+    "".join(chr(b) for b in range(0x21, 0x7F) if chr(b) not in "abcdefghijklmnopqrstuvwxyz0123456789.-")
+)
+
+
+def test_the_kernel_normalizer_and_the_userspace_mirror_agree_byte_for_byte(tmp_path):
+    """The drift detector. Every printable ASCII byte is folded in every
+    position of a short name, plus the bypass spellings, and the C's
+    output must equal normalize_sni()'s for every one of them."""
+    names = [
+        # every non-alphanumeric printable byte, alone and around a letter:
+        # this is where a `| 0x20` and a range test disagree.
+        *(b for b in _FOLD_ALPHABET),
+        *(f"a{b}c" for b in _FOLD_ALPHABET),
+        *(f"WWW{b}EXAMPLE" for b in _FOLD_ALPHABET),
+        # the spellings the bypass was written with
+        "Blocked.Example.COM", "BLOCKED.EXAMPLE.COM", "ExAmPlE.CoM",
+        "example.com.", "example.com..", "example.com.....",
+        "Blocked.Example.COM...", "...", "..", ".",
+        "A", "Z", "a", "z", "0", "9", "-", "_",
+        "a" * (xdp_mod.MAX_SNI_LEN - 1),
+        "a" * (xdp_mod.MAX_SNI_LEN - 2) + ".",
+        # dots in the middle must survive (only a *trailing* run is trimmed)
+        "a.b.c", ".a.b", "a..b", "A.B.C.D",
+    ]
+    kernel = _run_kernel_normalizer(tmp_path, names)
+
+    mismatches = [
+        (name, klen, kbytes, xdp_mod.normalize_sni(name).encode("ascii"))
+        for name, (klen, kbytes) in zip(names, kernel)
+        if kbytes != xdp_mod.normalize_sni(name).encode("ascii")
+        or klen != len(xdp_mod.normalize_sni(name))
+    ]
+    assert not mismatches, f"kernel and userspace normalize differently: {mismatches}"
+
+
+def test_the_kernel_normalizer_agrees_with_the_mirror_on_every_name_of_a_short_alphabet(tmp_path):
+    """Exhaustive over a small alphabet up to length 5 -- every case and
+    every dot pattern those four letters can spell, which is where a
+    trim-the-wrong-run or fold-the-wrong-side bug would show up. Cheap
+    enough to run in full (1365 names), unlike the 32-byte space."""
+    alphabet = "aA.1_"
+    names = []
+    for length in range(1, 6):
+        stack = [""]
+        for _ in range(length):
+            stack = [prefix + ch for prefix in stack for ch in alphabet]
+        names.extend(stack)
+
+    kernel = _run_kernel_normalizer(tmp_path, names)
+    for name, (klen, kbytes) in zip(names, kernel):
+        expected = xdp_mod.normalize_sni(name).encode("ascii")
+        assert (klen, kbytes) == (len(expected), expected), (
+            f"{name!r}: kernel gave {klen}/{kbytes.hex()}, "
+            f"userspace gave {len(expected)}/{expected.hex()}"
+        )
+
+
+def test_the_kernel_normalizer_refuses_a_name_at_the_length_limit_on_both_sides(tmp_path):
+    """The length refusal is the third bypass, and it is the *same*
+    refusal on both sides: parse_sni_body() drops a wire name of
+    MAX_SNI_LEN or more before extract_sni()'s block ever runs, and
+    build_lpm_key() raises on the raw length. If either side ever moved
+    its check after normalization, a 32-byte name would fold to 31 and
+    install a key the kernel never builds -- so this pins the order."""
+    at_limit = "a" * xdp_mod.MAX_SNI_LEN
+    with pytest.raises(xdp_mod.XdpError, match="NOT blocked"):
+        xdp_mod.build_lpm_key(at_limit)
+    # The C block itself would happily fold it, which is exactly why the
+    # check in front of it matters: assert that, so the test does not
+    # accidentally start asserting the block refuses it.
+    (klen, kbytes), = _run_kernel_normalizer(tmp_path, [at_limit])
+    assert (klen, kbytes) == (xdp_mod.MAX_SNI_LEN, at_limit.encode("ascii"))
 
 
 # --- SniEvent decoding --------------------------------------------------------

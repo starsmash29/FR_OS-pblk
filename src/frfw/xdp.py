@@ -210,8 +210,12 @@ class HelloSegment:
 
 def normalize_sni(name: str) -> str:
     """Canonical blocklist form of an SNI hostname, byte for byte what
-    bpf/xdp_sni_filter.c's normalize_sni() produces for the same wire
-    bytes:
+    the normalization block in bpf/xdp_sni_filter.c's extract_sni()
+    produces for the same wire bytes (the C side has no function by this
+    name; the two `#pragma unroll` loops at the end of extract_sni()'s
+    `if (found)` branch are it). tests/test_xdp.py compiles that exact
+    text and compares its output against this function's, so the two
+    copies cannot drift apart unnoticed.
 
     - ASCII A-Z folded to lower case. DNS names are case-insensitive
       (RFC 4343), so `Blocked.Example.COM` and `blocked.example.com`
@@ -441,6 +445,18 @@ def detach(device: str, mode: AttachMode) -> None:
 # --- blocklist reconciliation -------------------------------------------------
 
 
+def sample_names(names, limit: int = 5) -> str:
+    """Up to `limit` names for an error message, plus an explicit count of
+    what was left out -- never a silent truncation, because an operator
+    reading a sample has to be able to tell that the list they are shown
+    is not the whole list of names at fault."""
+    ordered = sorted(names)
+    shown = ", ".join(repr(n) for n in ordered[:limit])
+    if len(ordered) > limit:
+        shown += f", ... ({len(ordered) - limit} more not shown)"
+    return shown
+
+
 def sync_blocklist(hostnames: list[str]) -> None:
     """Make the pinned LPM trie's contents exactly match `hostnames`:
     add whatever's missing, remove whatever's no longer wanted, touch
@@ -453,7 +469,8 @@ def sync_blocklist(hostnames: list[str]) -> None:
     Fails closed and says which name is at fault: a name the kernel
     filter can never match (>= MAX_SNI_LEN on the wire) aborts the whole
     sync rather than quietly installing a key nothing will ever look up,
-    and the error names every such entry, not just the first.
+    and the error names every such entry (or a counted sample of them),
+    not just the first.
     """
     desired: set[bytes] = set()
     rejected: list[str] = []
@@ -463,12 +480,15 @@ def sync_blocklist(hostnames: list[str]) -> None:
         except XdpError:
             rejected.append(hostname)
     if rejected:
-        shown = ", ".join(repr(h) for h in sorted(rejected)[:5])
-        if len(rejected) > 5:
-            shown += f", ... (+{len(rejected) - 5} more)"
         raise XdpError(
             f"{len(rejected)} blocklist name(s) cannot be enforced by the kernel "
-            f"SNI filter and are NOT blocked: {shown}"
+            f"SNI filter and are NOT blocked: {sample_names(rejected)}. Nothing was "
+            f"applied -- the whole sync is refused rather than left half done. A name "
+            f"of {MAX_SNI_LEN} bytes or more is refused by the filter before it ever "
+            f"builds a key, and that cap comes from the kernel's 512-byte BPF stack "
+            f"limit rather than from a choice here, so the fix is on this side: "
+            f"shorten these names to under {MAX_SNI_LEN} bytes, or block them in the "
+            f"DNS/adblock layer instead."
         )
     existing = _dump_lpm_keys(PIN_BLOCKLIST_PATH)
     for key in existing - desired:
