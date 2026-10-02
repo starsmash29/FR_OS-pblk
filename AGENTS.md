@@ -100,6 +100,28 @@ Every PR is reviewed by the maintainer's integrating agent (Claude Code), which:
 
 The integrator decides the merge order of overlapping PRs. A PR that falls behind `main` gets `main` merged into it, not rebased.
 
+### Approval flow (how an item gets the go-ahead)
+
+Picking up an item needs the owner's go-ahead, recorded on its **claim
+issue**. Two roles, kept separate:
+
+- **The owner's integrating agent (Claude Code)** records the owner's
+  decision on each claim issue: the label **`approved`** or **`hold`**, or a
+  comment **"Mehet"** (go) / **"Várj"** (wait). It is the only actor that
+  applies these, and it is the only actor that merges a PR — always after the
+  owner's "Mehet", never on its own.
+- **The dispatcher agent (JARVIS)** reads the claim issues hourly. It does not
+  touch an item marked `hold` / "Várj"; it hands out an item marked
+  `approved` / "Mehet". On GitHub it only ever opens claim issues — it does
+  **not** merge, close, label, or comment to drive state.
+
+So the lifecycle of an item is: a claim issue is opened (JARVIS or a
+contributor) → the integrating agent marks it `approved` or `hold` on the
+owner's word → JARVIS dispatches the approved ones → the contributor opens
+one PR per item → the integrating agent reviews it (above) and merges it only
+after the owner's "Mehet". An item with no mark, or marked `hold`, is not
+started.
+
 **Releases are not part of contributions.** Before each release, the maintainer runs an adversarial review with two models and triages it (docs/RELEASING.md, security-lessons J2).
 
 ## Repository map
