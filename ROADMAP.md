@@ -1466,7 +1466,7 @@ issues #17 and #18). The R-numbers are that record's.
 
 | ID | Item | Status | Where it plugs in |
 |---|---|---|---|
-| DOC-1 | English translation of the Stitch screen inventory (it is in Hungarian today); keep the screen names as Stitch has them, so the "Stitch design" columns above still match | Planned | `docs/stitch-screens.md` |
+| DOC-1 | English translation of the Stitch screen inventory. **Done:** the prose in `docs/stitch-screens.md` is in English; the screen names, screen IDs, the mark symbols and the summary numbers are unchanged, so the "Stitch design" columns above still match | Done | `docs/stitch-screens.md`, `AGENTS.md` |
 
 Some Stitch screens show sample data and certification claims (FIPS
 140-3, CAVP): those are design placeholders -- FR_OS will not claim a
