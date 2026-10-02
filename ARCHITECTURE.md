@@ -397,7 +397,14 @@ already-decoded JSON lines that `fr-xdp-sni-logger` has already written
 to journald (`journalctl -u fr-xdp-sni-logger.service -f -o cat`) --
 `fr-webui.service` was given a `SupplementaryGroups=systemd-journal`
 line for this, which is the usual, minimal-privilege way for a non-root
-process to read the journal without root. On the frontend side, a native
+process to read the journal without root. Because each of those is a
+child process, the route bounds them: one per webUI session -- every
+live-log tab of a session reads the *same* child through the process-wide
+`_LogStream` registry in `routes/xdp.py`, so N tabs mean one child, not N
+-- and at most `LOG_STREAM_LIMIT` (8) live streams per webUI process, past
+which a tab gets one `text/event-stream` error frame instead of a process
+(review R19). The child is terminated when the session's last tab
+disconnects. On the frontend side, a native
 `EventSource` (no WebSocket, no library) connects to this endpoint, and
 appends every incoming JSON line to the bottom of the "terminal"
 container, with auto-scroll and a cap of 300 lines (so the DOM doesn't
