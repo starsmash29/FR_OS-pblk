@@ -24,6 +24,13 @@ AI tool working on someone's behalf.
 
 ## Taking an item
 
+> **External contributions are paused (owner's decision, 2026-10-02).**
+> Until this notice is removed, do not open claim issues, branches or pull
+> requests. Every open claim issue is marked `hold`; the integrating agent
+> (Claude Code) implements the open roadmap items itself. The steps below
+> describe how contributions work once the pause is lifted.
+
+
 1. **Pick an item.** Choose an item from **Planned work** in ROADMAP.md. Its status must be *Planned*, *Extends* or *Partly*, not *Claimed*.
 2. **Claim it.** Open an issue using the *Roadmap item* template, titled `<ID>: <short title>`. If an open issue already claims the ID, pick something else or offer to help in that issue.
 3. **Propose a design first for large items.** Write a short design in the issue (approach, files, risks) and wait for a reply before writing code. This applies to anything that touches:
