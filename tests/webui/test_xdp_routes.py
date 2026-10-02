@@ -1,18 +1,22 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
+import socket
 import sys
 import threading
 import time
 
 import pytest
+import uvicorn
 from fastapi import HTTPException
 from starlette.requests import Request
 
 from frfw import xdp as xdp_mod
 from frfw.config import load_config
+from frfw.webui.auth import COOKIE_NAME
 from frfw.webui.routes import xdp as xdp_route
 
 
@@ -167,14 +171,30 @@ def test_logs_stream_requires_login(client):
     assert response.headers["location"] == "/login"
 
 
-def test_logs_stream_relays_valid_json_lines_and_drops_garbage(logged_in_client, monkeypatch):
+def _fake_journal(monkeypatch, code: str) -> None:
+    """Stand a real child process in for `journalctl -f`: the stream
+    code runs exactly as on a router, only the argv differs."""
+    monkeypatch.setattr(xdp_route, "_JOURNALCTL_CMD", [sys.executable, "-c", code])
+
+
+@pytest.fixture
+def fresh_streams(monkeypatch):
+    """A clean per-process registry, so no test sees another's streams."""
+    streams: dict = {}
+    monkeypatch.setattr(xdp_route, "_log_streams", streams)
+    return streams
+
+
+def test_logs_stream_relays_valid_json_lines_and_drops_garbage(
+    logged_in_client, monkeypatch, fresh_streams
+):
     lines = [
         '{"ts": 1.0, "saddr": "1.2.3.4", "sport": 111, "daddr": "5.6.7.8", "dport": 443, "sni": "bad.example.com"}',
         "not json, should be dropped",
         "",
         '{"ts": 2.0, "saddr": "9.9.9.9", "sport": 222, "daddr": "8.8.8.8", "dport": 443, "sni": "also-bad.example.com"}',
     ]
-    monkeypatch.setattr(xdp_route, "_iter_journal_lines", lambda cmd: iter(lines))
+    _fake_journal(monkeypatch, f"print('\\n'.join({lines!r}))")
 
     with logged_in_client.stream("GET", "/xdp/logs/stream") as response:
         assert response.status_code == 200
@@ -185,142 +205,52 @@ def test_logs_stream_relays_valid_json_lines_and_drops_garbage(logged_in_client,
     assert "also-bad.example.com" in body
     assert "not json" not in body
     assert body.count("data: ") == 2
+    # The journal ended, so the session's stream ended with it and gave
+    # its cap slot back (review v0.2.0 R19).
+    assert fresh_streams == {}
 
 
-def test_two_tabs_of_one_session_share_one_journalctl(logged_in_client, monkeypatch):
-    """SEC-13: every live-log tab of a session shares one `journalctl`,
-    not one child per HTTP request (docs/reviews/v0.2.0.md R19).
+def test_a_missing_journalctl_is_an_error_frame(logged_in_client, monkeypatch, fresh_streams):
+    monkeypatch.setattr(xdp_route, "_JOURNALCTL_CMD", ["/nonexistent/journalctl", "-f"])
 
-    The two requests run concurrently in threads: Starlette's TestClient
-    drains a response body before it returns it, so an open SSE stream can
-    only be observed while another request is still in flight. The fake
-    source blocks on `release` after its first line, which keeps the
-    first tab (and the session's stream) alive while the second one joins.
-    """
-    calls = []
-    started = threading.Event()
-    release = threading.Event()
+    with logged_in_client.stream("GET", "/xdp/logs/stream") as response:
+        assert response.status_code == 200
+        body = "".join(response.iter_text())
 
-    def fake_journal(cmd):
-        calls.append(list(cmd))
-        started.set()
-        yield '{"ts": 1.0, "sni": "first.example.com"}'
-        release.wait(10)
-        yield '{"ts": 2.0, "sni": "second.example.com"}'
-
-    monkeypatch.setattr(xdp_route, "_iter_journal_lines", fake_journal)
-    monkeypatch.setattr(xdp_route, "_log_streams", {})
-
-    bodies: dict[str, str] = {}
-
-    def read_tab(name):
-        with logged_in_client.stream("GET", "/xdp/logs/stream") as response:
-            assert response.status_code == 200
-            bodies[name] = "".join(response.iter_text())
-
-    first = threading.Thread(target=read_tab, args=("first",))
-    second = threading.Thread(target=read_tab, args=("second",))
-    first.start()
-    try:
-        assert started.wait(5), "the first tab never started a journalctl"
-        second.start()
-        # Wait for the second tab to join the session's stream rather than
-        # guessing with a sleep: the session's stream object is the one in
-        # the registry, and it counts its subscribers.
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline:
-            streams = list(xdp_route._log_streams.values())
-            if streams and len(streams[0]._subscribers) == 2:
-                break
-            time.sleep(0.01)
-        assert len(calls) == 1, "the second tab started its own journalctl"
-    finally:
-        release.set()
-        first.join(20)
-        second.join(20)
-
-    assert not first.is_alive() and not second.is_alive()
-    # One child for the session, both tabs fed from it: the second tab
-    # joins before the last line, so it sees that line and not the first.
-    assert "first.example.com" in bodies["first"]
-    assert "second.example.com" in bodies["second"]
-    assert len(calls) == 1, "a second journalctl was spawned for one session"
+    assert json.loads(body.removeprefix("data: "))["error"].startswith("journalctl not found")
+    assert fresh_streams == {}
 
 
 def test_stream_past_the_cap_is_an_error_frame_and_spawns_nothing(
-    logged_in_client, monkeypatch
+    logged_in_client, monkeypatch, fresh_streams, tmp_path
 ):
     """SEC-13: at `LOG_STREAM_LIMIT` live streams, the next session gets
     one clear `text/event-stream` error frame and no child process
-    (R19)."""
-    calls = []
-
-    def fake_journal(cmd):
-        calls.append(list(cmd))
-        yield '{"ts": 1.0, "sni": "a.example.com"}'
-
-    monkeypatch.setattr(xdp_route, "_iter_journal_lines", fake_journal)
-    # Fill the process-wide registry with streams that are still live.
-    monkeypatch.setattr(
-        xdp_route,
-        "_log_streams",
-        {f"other-session-{n}": xdp_route._LogStream(f"other-session-{n}")
-         for n in range(xdp_route.LOG_STREAM_LIMIT)},
-    )
+    (review v0.2.0 R19)."""
+    spawned = tmp_path / "spawned"
+    _fake_journal(monkeypatch, f"open({str(spawned)!r}, 'w').close()")
+    # Fill the process-wide registry with other sessions' live streams.
+    for n in range(xdp_route.LOG_STREAM_LIMIT):
+        fresh_streams[f"other-session-{n}"] = xdp_route._LogStream(f"other-session-{n}")
 
     with logged_in_client.stream("GET", "/xdp/logs/stream") as response:
         assert response.status_code == 200
         assert response.headers["content-type"].startswith("text/event-stream")
         body = "".join(response.iter_text())
 
-    assert calls == [], "a journalctl was spawned past the cap"
-    assert "error" in body
+    assert not spawned.exists(), "a journalctl was spawned past the cap"
+    assert "limit reached" in json.loads(body.removeprefix("data: "))["error"]
     assert str(xdp_route.LOG_STREAM_LIMIT) in body
+    assert len(fresh_streams) == xdp_route.LOG_STREAM_LIMIT
 
 
-def test_last_tab_leaving_terminates_the_journal_child(monkeypatch):
-    """SEC-13: the `journalctl` child is gone once the session's last tab
-    disconnects, which is what frees the registry entry and the cap slot
-    (R19).
-
-    `_iter_journal_lines` already terminates the child in its `finally`
-    (see its docstring), and the sharing code closes that generator when
-    the last tab goes. This drives the real function with a real child
-    process that prints its own pid, so the assertion is about the
-    process, not a fake's bookkeeping.
-
-    Driven on the stream object rather than through a request: the
-    TestClient drains a response body before returning it, and a
-    `journalctl -f` never ends, so a live stream cannot be observed from
-    outside a request."""
-    monkeypatch.setattr(xdp_route, "_log_streams", {})
-    real_iter = xdp_route._iter_journal_lines
-
-    def fake_journal(cmd):
-        yield from real_iter([
-            sys.executable,
-            "-c",
-            "import json, os, time; "
-            "print(json.dumps({'pid': os.getpid()}), flush=True); time.sleep(30)",
-        ])
-
-    monkeypatch.setattr(xdp_route, "_iter_journal_lines", fake_journal)
-
-    stream = xdp_route._LogStream("session-a")
-    xdp_route._log_streams["session-a"] = stream
-    tab = stream.subscribe()
-    try:
-        frame = next(tab)
-        pid = json.loads(frame.removeprefix("data: "))["pid"]
-        assert _alive(pid), "the test's journal child never started"
-    finally:
-        tab.close()  # the browser tab disconnected
-
-    deadline = time.monotonic() + 10
-    while time.monotonic() < deadline and _alive(pid):
-        time.sleep(0.05)
-    assert not _alive(pid), "the journalctl child outlived its last tab"
-    assert xdp_route._log_streams == {}, "the session kept its cap slot"
+def test_a_queue_that_is_not_read_drops_its_oldest_frame_not_the_end():
+    """A tab that stops reading must neither block the session's stream
+    nor grow without bound; the end marker always gets through."""
+    queue: asyncio.Queue = asyncio.Queue(maxsize=2)
+    for frame in ("one", "two", "three", None):
+        xdp_route._offer(queue, frame)
+    assert [queue.get_nowait() for _ in range(queue.qsize())] == ["three", None]
 
 
 def _request_with_cookie(cookie: str | None) -> Request:
@@ -328,12 +258,11 @@ def _request_with_cookie(cookie: str | None) -> Request:
 
     `Request.cookies` is derived from the `Cookie` header, so callers
     only pass the value of `COOKIE_NAME`. A `None` cookie means no
-    header at all: a request with no session cookie (e.g. an
-    unauthenticated caller, or the edge E.D.I.T.H. flagged in PR #31).
+    header at all: a request with no session cookie.
     """
     headers: list[tuple[bytes, bytes]] = []
     if cookie is not None:
-        headers.append((b"cookie", f"fr_os_session={cookie}".encode()))
+        headers.append((b"cookie", f"{COOKIE_NAME}={cookie}".encode()))
     return Request(
         {
             "type": "http",
@@ -346,102 +275,147 @@ def _request_with_cookie(cookie: str | None) -> Request:
 
 
 def test_session_stream_key_fails_closed_without_a_cookie():
-    """E.D.I.T.H., PR #31: a missing cookie must not map to the constant
-    hash of the empty string (`sha256('')`): every unauthenticated caller
-    would share that `LOG_STREAM_LIMIT` slot. The route is already gated
-    by `require_login`, so a 401 is unreachable here today -- but calling
-    `_session_stream_key` with an absent cookie must fail rather than hand
-    back a shared slot."""
+    """A missing cookie must not map to the constant hash of the empty
+    string: every such caller would share one registry entry. The route
+    is gated by `require_login`, so this is defence in depth."""
     with pytest.raises(HTTPException) as exc:
         xdp_route._session_stream_key(_request_with_cookie(None))
     assert exc.value.status_code == 401
 
 
 def test_session_stream_key_is_the_digest_not_the_cookie_itself():
-    """The registry never keeps the raw cookie: it keeps only its
-    `sha256` hex digest (`routes/xdp.py:_session_stream_key`)."""
+    """The registry never keeps the raw cookie, a bearer secret: it
+    keeps only its sha256 hex digest."""
     key = xdp_route._session_stream_key(_request_with_cookie("secret-value"))
     assert key == hashlib.sha256(b"secret-value").hexdigest()
     assert "secret-value" not in key
 
 
-def test_a_broken_source_ends_the_stream_and_frees_the_cap_slot(monkeypatch):
-    """E.D.I.T.H., PR #31: any driving failure (a journal read error, or
-    a cancelled tab mid-read) must not leave a session's `_LogStream`
-    with a dead source registered under `LOG_STREAM_LIMIT`. The whole
-    session's stream must end, its child closed, and the slot released,
-    rather than the next tab re-driving a broken source."""
-    monkeypatch.setattr(xdp_route, "_log_streams", {})
-
-    class JournalBoom(RuntimeError):
-        pass
-
-    def failing_journal(cmd):
-        yield '{"ts": 1.0, "sni": "first.example.com"}'
-        raise JournalBoom("journal read failed")
-
-    monkeypatch.setattr(xdp_route, "_iter_journal_lines", failing_journal)
-
-    stream = xdp_route._acquire_stream("session-boom")
-    assert stream is not None
-    watcher = stream.subscribe()
-    driver = stream.subscribe()
-    try:
-        assert "first.example.com" in next(driver)
-        with pytest.raises(JournalBoom):
-            next(driver)
-    finally:
-        driver.close()
-        watcher.close()
-
-    assert xdp_route._log_streams == {}
-    assert stream.finished
-    assert next(watcher, None) is None
-
-    fresh = xdp_route._acquire_stream("session-boom")
-    assert fresh is not None and fresh is not stream
+# --- Against a real server ------------------------------------------------
+#
+# The TestClient drains a response body before it hands it over, and it
+# never disconnects mid-stream, so it can't show what happens when a
+# browser tab is closed on a quiet journal -- the case R19 is about. These
+# tests run the app under uvicorn, as on the router, and talk to it over
+# real sockets.
 
 
-def test_a_finished_flag_is_read_under_the_streams_own_lock(monkeypatch):
-    """E.D.I.T.H., PR #31: `_finish` writes `_finished = True` under
-    `_cond`, so `_acquire_stream` must read it under the same lock --
-    otherwise the CPython memory-model race lets a new tab be handed a
-    dead stream. Assert deterministically: replacing `_cond` with a stub
-    that counts enters proves the property actually takes it."""
-    monkeypatch.setattr(xdp_route, "_log_streams", {})
-    stream = xdp_route._LogStream("session-race")
-    xdp_route._log_streams["session-race"] = stream
+@pytest.fixture
+def live_server(app):
+    """The app under a real uvicorn, on an ephemeral loopback port."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(("127.0.0.1", 0))
+    server = uvicorn.Server(uvicorn.Config(app, log_level="warning", lifespan="off"))
+    thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 10
+    while not server.started and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert server.started, "uvicorn did not start"
+    yield sock.getsockname()
+    server.should_exit = True
+    thread.join(10)
+    sock.close()
 
-    class _CountingCondition:
-        def __init__(self, inner):
-            self._inner = inner
-            self.count = 0
 
-        def __enter__(self):
-            self.count += 1
-            return self._inner.__enter__()
+def _open_tab(address, cookie: str) -> socket.socket:
+    """A browser tab on the live-log page: an open SSE request."""
+    tab = socket.create_connection(address, timeout=10)
+    tab.sendall(
+        b"GET /xdp/logs/stream HTTP/1.1\r\nHost: router\r\n"
+        + f"Cookie: {COOKIE_NAME}={cookie}\r\n\r\n".encode()
+    )
+    return tab
 
-        def __exit__(self, *a):
-            return self._inner.__exit__(*a)
 
-        def wait(self, *a, **kw):
-            return self._inner.wait(*a, **kw)
+def _read_until(tab: socket.socket, marker: bytes) -> bytes:
+    received = b""
+    while marker not in received:
+        chunk = tab.recv(4096)
+        assert chunk, f"the stream ended before {marker!r}: {received!r}"
+        received += chunk
+    return received
 
-        def notify_all(self):
-            return self._inner.notify_all()
 
-    inner = stream._cond
-    counting = _CountingCondition(inner)
-    stream._cond = counting
+def _wait_for(condition, timeout: float = 10) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if condition():
+            return True
+        time.sleep(0.05)
+    return condition()
 
-    _ = stream.finished
-    assert counting.count == 1, "`finished` must take the stream's own lock"
 
-    assert stream._finished is False  # accessed directly -- still not finished
-    stream._cond = inner
-    stream._finish()
-    counting = _CountingCondition(inner)
-    stream._cond = counting
+#: A quiet journal: one line naming the child, then nothing for a minute.
+#: Every child it starts also appends its pid to a file, so a test counts
+#: the children that really ran, not a fake's bookkeeping.
+_QUIET_JOURNAL = (
+    "import json, os, sys, time; "
+    "open(sys.argv[1], 'a').write(f'{os.getpid()}\\n'); "
+    "print(json.dumps({'pid': os.getpid()}), flush=True); "
+    "time.sleep(60)"
+)
 
-    assert stream.finished is True
-    assert counting.count == 1, "a finished flag read must be under the lock too"
+
+def _children(pids_file) -> list[int]:
+    return [int(pid) for pid in pids_file.read_text().split()] if pids_file.exists() else []
+
+
+def test_closing_the_last_tab_on_a_quiet_journal_ends_the_child(
+    logged_in_client, live_server, monkeypatch, fresh_streams, tmp_path
+):
+    """SEC-13 / review v0.2.0 R19: the `journalctl` child of a closed tab
+    is gone, and the session's cap slot free, even when the journal never
+    writes another line -- the case where a server is never told its
+    client left."""
+    pids_file = tmp_path / "pids"
+    monkeypatch.setattr(
+        xdp_route, "_JOURNALCTL_CMD", [sys.executable, "-c", _QUIET_JOURNAL, str(pids_file)]
+    )
+    monkeypatch.setattr(xdp_route, "LOG_HEARTBEAT_SECONDS", 0.2)
+    cookie = logged_in_client.cookies[COOKIE_NAME]
+
+    tab = _open_tab(live_server, cookie)
+    _read_until(tab, b'"pid"')
+    [pid] = _children(pids_file)
+    assert _alive(pid)
+
+    tab.close()  # the browser tab is closed
+
+    assert _wait_for(lambda: not _alive(pid)), "the journalctl child outlived its last tab"
+    assert _wait_for(lambda: fresh_streams == {}), "the session kept its cap slot"
+
+
+def test_tabs_of_one_session_share_one_child_until_the_last_one_leaves(
+    logged_in_client, live_server, monkeypatch, fresh_streams, tmp_path
+):
+    """SEC-13 / review v0.2.0 R19: every live-log tab of a session reads
+    one `journalctl`, not one child per request; closing one tab leaves
+    the others streaming, and the last one to leave ends the child."""
+    pids_file = tmp_path / "pids"
+    monkeypatch.setattr(
+        xdp_route, "_JOURNALCTL_CMD", [sys.executable, "-c", _QUIET_JOURNAL, str(pids_file)]
+    )
+    monkeypatch.setattr(xdp_route, "LOG_HEARTBEAT_SECONDS", 0.2)
+    cookie = logged_in_client.cookies[COOKIE_NAME]
+
+    first = _open_tab(live_server, cookie)
+    _read_until(first, b'"pid"')
+    second = _open_tab(live_server, cookie)
+    # The second tab joined after the only line: it gets keep-alives.
+    _read_until(second, b": keepalive")
+
+    [pid] = _children(pids_file)
+    [stream] = fresh_streams.values()
+    assert len(stream.subscribers) == 2
+
+    first.close()
+    assert _wait_for(lambda: len(stream.subscribers) == 1)
+    assert _alive(pid), "closing one tab ended the session's other tab"
+    _read_until(second, b": keepalive")  # still streaming
+
+    second.close()
+    assert _wait_for(lambda: not _alive(pid)), "the journalctl child outlived its last tab"
+    assert _wait_for(lambda: fresh_streams == {})
+    assert _children(pids_file) == [pid], "a second journalctl was spawned for one session"
