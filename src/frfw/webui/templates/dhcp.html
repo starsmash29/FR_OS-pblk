@@ -12,6 +12,7 @@
 <div class="card">
   <h3>{{ z.zone }} <span class="muted">({{ z.interface_address }})</span></h3>
   <form method="post" action="/dhcp/{{ z.zone }}/save">
+    {{ csrf_input(request) }}
     <label>Range start</label>
     <input type="text" name="range_start" value="{{ z.pool.range_start if z.pool else '' }}" required>
     <label>Range end</label>
@@ -24,6 +25,7 @@
   </form>
   {% if z.pool %}
   <form method="post" action="/dhcp/{{ z.zone }}/delete" style="display:inline" onsubmit="return confirm('Disable DHCP on {{ z.zone }}?')">
+    {{ csrf_input(request) }}
     <button type="submit" class="danger">Disable DHCP on this zone</button>
   </form>
 
@@ -37,6 +39,7 @@
       <td>{{ r.hostname or "-" }}</td>
       <td>
         <form class="inline" method="post" action="/dhcp/{{ z.zone }}/reservations/delete/{{ r.mac }}">
+          {{ csrf_input(request) }}
           <button type="submit" class="danger">Delete</button>
         </form>
       </td>
@@ -44,6 +47,7 @@
     {% endfor %}
   </table>
   <form method="post" action="/dhcp/{{ z.zone }}/reservations/add">
+    {{ csrf_input(request) }}
     <label>MAC address</label>
     <input type="text" name="mac" placeholder="aa:bb:cc:dd:ee:ff" required>
     <label>Address</label>

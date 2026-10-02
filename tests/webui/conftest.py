@@ -10,8 +10,9 @@ import pytest
 from frfw.config import parse_config
 from frfw.iot.scanner import run_scan
 from frfw.webui.app import create_app
-from frfw.webui.auth import AdminStore, SessionManager
+from frfw.webui.auth import COOKIE_NAME, AdminStore, SessionManager
 from frfw.webui.auth_rate_limiter import BruteforceGuard
+from frfw.webui.deps import CSRF_FIELD, _SAFE_METHODS
 
 
 class FakeHelper:
@@ -236,6 +237,49 @@ def webui_env(tmp_path):
 @pytest.fixture
 def app(webui_env):
     return create_app(**webui_env)
+
+
+@pytest.fixture(autouse=True)
+def csrf_tokens_on_test_requests(monkeypatch):
+    """Make every test request carry its session's CSRF token.
+
+    Real browsers submit the token from the rendered form (`csrf_input`) or
+    from the page's meta tag (`webauthn.js`). The test files call
+    `client.post(...)` directly, so without this every one of them would
+    have to fetch and resubmit the token by hand -- and eighteen of them
+    build their own `TestClient` rather than using the `client` fixture.
+
+    So the substitution happens on `TestClient.request` itself: it derives
+    the token of the session cookie the client is about to send, and adds
+    it as `X-CSRF-Token`. A request that already carries a token is left
+    alone -- including a deliberately wrong one, which is how
+    tests/webui/test_csrf.py proves the check bites. The `x-test-skip-csrf`
+    marker drops the token entirely for those tests.
+    """
+    original = TestClient.request
+
+    def request_with_csrf(self, method, url, **kwargs):
+        headers = {k.lower(): v for k, v in (kwargs.get("headers") or {}).items()}
+        explicit = any(h in headers for h in ("x-csrf-token", "x-csrftoken"))
+        explicit = explicit or _carries_csrf_field(kwargs.get("data"), kwargs.get("json"))
+        if (
+            not explicit
+            and "x-test-skip-csrf" not in headers
+            and str(method).upper() not in _SAFE_METHODS
+        ):
+            cookie = self.cookies.get(COOKIE_NAME)
+            token = self.app.state.session_manager.csrf_token_for(cookie) if cookie else ""
+            if token:
+                headers = dict(kwargs.get("headers") or {})
+                headers["X-CSRF-Token"] = token
+                kwargs["headers"] = headers
+        return original(self, method, url, **kwargs)
+
+    monkeypatch.setattr(TestClient, "request", request_with_csrf)
+
+
+def _carries_csrf_field(data, json_body) -> bool:
+    return isinstance(data, dict) and CSRF_FIELD in data or isinstance(json_body, dict) and CSRF_FIELD in json_body
 
 
 @pytest.fixture

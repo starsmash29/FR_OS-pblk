@@ -19,7 +19,10 @@ Scheduled drop/reject rules that cut open connections are evaluated before all o
     {% endfor %}
   </table>
   {% if findings | selectattr("kind", "equalto", "expired") | list %}
-  <form method="post" action="/rules/remove-expired"><button type="submit">Remove expired rules</button></form>
+  <form method="post" action="/rules/remove-expired">
+    {{ csrf_input(request) }}
+    <button type="submit">Remove expired rules</button>
+  </form>
   {% endif %}
   {% endif %}
   <p class="muted">Rule hit counters are recorded hourly (<code>fr-schedule-check.timer</code>); "unused" means no match for 90 days.</p>
@@ -50,6 +53,7 @@ Scheduled drop/reject rules that cut open connections are evaluated before all o
     <td>{{ "yes" if rule.require_ztna else "-" }}</td>
     <td>
       <form class="inline" method="post" action="/rules/delete/{{ rule.name }}" onsubmit="return confirm('Delete rule {{ rule.name }}?')">
+        {{ csrf_input(request) }}
         <button type="submit" class="danger">Delete</button>
       </form>
     </td>
@@ -60,6 +64,7 @@ Scheduled drop/reject rules that cut open connections are evaluated before all o
 <div class="card">
   <h3>Add rule</h3>
   <form method="post" action="/rules/add">
+    {{ csrf_input(request) }}
     <label>Name</label>
     <input type="text" name="name" pattern="[a-z][a-z0-9_-]*" required>
     <label>Action</label>
@@ -121,6 +126,7 @@ Scheduled drop/reject rules that cut open connections are evaluated before all o
   <p class="muted">Rule schedules are in this zone.{% if router_time %} Router time now: <strong>{{ router_time }}</strong>.{% endif %}
   Daylight-saving changes are picked up automatically within the hour (<code>fr-schedule-check.timer</code>).</p>
   <form method="post" action="/rules/timezone">
+    {{ csrf_input(request) }}
     <label>IANA time zone (empty = the router's system time zone)</label>
     <input type="text" name="timezone" value="{{ timezone }}" placeholder="Europe/Budapest">
     <button type="submit">Save time zone</button>

@@ -55,6 +55,25 @@ from frfw.webui.routes import (
 
 STATIC_DIR = Path(__file__).parent / "static"
 
+#: App-wide HTTP security headers (security-lessons R15).
+SECURITY_HEADERS: dict[str, str] = {
+    "Content-Security-Policy": (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; "
+        "font-src 'self'; "
+        "connect-src 'self'; "
+        "frame-ancestors 'none'; "
+        "base-uri 'self'; "
+        "form-action 'self';"
+    ),
+    "X-Frame-Options": "DENY",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "Permissions-Policy": "geolocation=(), camera=(), microphone=(), payment=(), usb=()",
+}
+
 
 def create_app(
     *,
@@ -103,6 +122,13 @@ def create_app(
     app.state.update_check_path = update_check_path
     app.state.tlsfp_state_path = tlsfp_state_path
     app.state.webui_cert_path = webui_cert_path
+
+    @app.middleware("http")
+    async def add_security_headers(request: Request, call_next):
+        response = await call_next(request)
+        for header, value in SECURITY_HEADERS.items():
+            response.headers[header] = value
+        return response
 
     @app.middleware("http")
     async def audit_changes(request: Request, call_next):

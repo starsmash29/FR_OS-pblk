@@ -24,6 +24,7 @@
         disappears from the console.</p>
       {% if error %}<div class="flash-error">{{ error }}</div>{% endif %}
       <form method="post" action="/setup">
+        {{ csrf_input(request) }}
         <label for="username">New username</label>
         <input type="text" id="username" name="username" autocomplete="username" autofocus required
                pattern="[a-z_][a-z0-9_.\-]{0,31}" placeholder="not admin or root">
@@ -33,7 +34,10 @@
         <input type="password" id="password_confirm" name="password_confirm" autocomplete="new-password" minlength="8" required>
         <button type="submit"><svg class="icon icon-sm"><use href="/static/icons.svg#lock"/></svg>Save and continue</button>
       </form>
-      <form method="post" action="/logout"><button type="submit" class="secondary">Sign out</button></form>
+      <form method="post" action="/logout">
+        {{ csrf_input(request) }}
+        <button type="submit" class="secondary">Sign out</button>
+      </form>
     </section>
   </div>
 </main>

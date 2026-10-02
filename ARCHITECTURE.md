@@ -1030,6 +1030,35 @@ change removes all of them (the browser that made the change gets a new
 one), and so do an admin's password reset and deleting the account.
 Role changes need no revocation: every request re-reads the account.
 
+### An explicit CSRF token and app-wide security headers (review R15)
+
+`SameSite=Lax` on the session cookie blunts cross-site form posts, but
+that is a side effect of the cookie, not a decision, and it doesn't help
+if the router is opened by name (the token does: it is derived from the
+session id with the webUI's secret key, so an attacker on another origin
+can't compute it even if they can read the page). The token travels as a
+hidden field in every POST form (`csrf_input(request)`), as the
+`X-CSRF-Token` header (used by `webauthn.js` for its `fetch()` calls)
+or in a JSON body, and is verified on every state-changing request in
+`require_login` -- that is in one place, so a new POST route can't
+forget it. The three public sign-in forms have no session, so they
+carry no token. A URL query string is not one of the carriers on
+purpose: a token in a query lands in the access log, in the browser
+history and in the outgoing `Referer` of every link on the page, so it
+stays in the body or the header, and `tests/webui/test_no_secret_leaks.py`
+walks every page and the audit log to prove it appears nowhere else.
+HTTP responses all carry `Content-Security-Policy`,
+`frame-ancestors 'none'` with `X-Frame-Options: DENY`,
+`Referrer-Policy`, `X-Content-Type-Options` and `Permissions-Policy` from
+one app-level middleware; the policy names only `'self'` (and `data:` for
+the inline SVG favicon) and `unsafe-inline` for the inline `style`
+attributes and the one inline `<script>` on the XDP page -- the UI itself
+serves the assets, no CDN (security-lessons G11). The other half is a
+test: one walk proves every state-changing route behind the session
+answers a token-free request with 403 "CSRF", and a template check
+proves every POST form in every template that has a session carries the
+hidden field (`tests/webui/test_csrf.py`).
+
 ### Second factor (security-lessons G5)
 
 Every account (viewers too) can add **security keys / passkeys**

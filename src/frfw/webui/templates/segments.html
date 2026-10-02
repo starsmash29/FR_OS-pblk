@@ -12,6 +12,7 @@
 </p>
 <div class="card">
   <form method="post" action="/segments">
+    {{ csrf_input(request) }}
     <table>
       <tr><th></th><th>Segment</th><th>VLAN</th><th>Network</th><th>Device</th><th></th></tr>
       {% for s in segments %}
@@ -29,6 +30,11 @@
       router's management. IoT devices are also inventoried and isolated (see <a href="/iot">IoT Devices</a>).</p>
     <button type="submit">Add the ticked segments</button>
   </form>
-  {% if first_run %}<form method="post" action="/segments"><button type="submit" class="secondary">Skip for now</button></form>{% endif %}
+  {% if first_run %}
+  <form method="post" action="/segments">
+    {{ csrf_input(request) }}
+    <button type="submit" class="secondary">Skip for now</button>
+  </form>
+  {% endif %}
 </div>
 {% endblock %}

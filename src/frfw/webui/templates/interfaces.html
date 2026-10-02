@@ -14,6 +14,7 @@
     <td>
       <a href="/interfaces?edit={{ iface.name }}">Edit</a>
       <form class="inline" method="post" action="/interfaces/delete/{{ iface.name }}" onsubmit="return confirm('Delete interface {{ iface.name }}?')">
+        {{ csrf_input(request) }}
         <button type="submit" class="danger">Delete</button>
       </form>
     </td>
@@ -24,6 +25,7 @@
 <div class="card">
   <h3>{{ "Edit interface" if edit else "Add interface" }}</h3>
   <form method="post" action="/interfaces/save">
+    {{ csrf_input(request) }}
     <label>Name</label>
     <input type="text" name="name" value="{{ edit.name if edit else '' }}" {{ "readonly" if edit else "" }} pattern="[a-z][a-z0-9_-]*" required>
     <label>Device</label>

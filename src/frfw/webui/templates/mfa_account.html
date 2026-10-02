@@ -21,6 +21,7 @@
       <td><code>{{ k.rp_id }}</code></td>
       <td>
         <form class="inline allow-viewer" method="post" action="/account/mfa/remove">
+          {{ csrf_input(request) }}
           <input type="hidden" name="kind" value="webauthn">
           <input type="hidden" name="key_id" value="{{ k.id }}">
           <input type="password" name="password" required placeholder="Current password"
@@ -56,6 +57,7 @@
   <div style="background:#fff;display:inline-block;padding:8px;border-radius:6px;">{{ new_totp.qr|safe }}</div>
   <p>Key: <code>{{ new_totp.secret }}</code></p>
   <form method="post" action="/account/mfa/totp" class="allow-viewer">
+    {{ csrf_input(request) }}
     <input type="hidden" name="tid" value="{{ new_totp.tid }}">
     <label>6-digit code</label>
     <input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]{6,7}"
@@ -67,6 +69,7 @@
   {% elif totp %}
   <p><span class="badge badge-green">on</span> Codes from an authenticator app are accepted.</p>
   <form method="post" action="/account/mfa/remove" class="allow-viewer">
+    {{ csrf_input(request) }}
     <input type="hidden" name="kind" value="totp">
     <label>Current password</label>
     <input type="password" name="password" required autocomplete="current-password">

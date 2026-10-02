@@ -35,6 +35,7 @@
 <div class="card">
   <h3>Settings</h3>
   <form method="post" action="/ztna/settings">
+    {{ csrf_input(request) }}
     <label>
       <input type="checkbox" name="enabled" value="true" {{ "checked" if enabled else "" }} style="display:inline;width:auto;">
       Enabled
@@ -64,6 +65,7 @@
       <td>{{ u }}</td>
       <td>
         <form class="inline" method="post" action="/ztna/users/remove/{{ u }}" onsubmit="return confirm('Remove ZTNA user {{ u }}?')">
+          {{ csrf_input(request) }}
           <button type="submit" class="danger">Remove</button>
         </form>
       </td>
@@ -74,6 +76,7 @@
 
   <h3 style="margin-top:1.2rem;">Add account</h3>
   <form method="post" action="/ztna/users/add">
+    {{ csrf_input(request) }}
     <label>Username</label>
     <input type="text" name="new_username" required>
     <label>Password</label>
