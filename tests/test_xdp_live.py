@@ -557,19 +557,25 @@ def test_a_subdomain_of_a_blocklisted_name_is_still_dropped(lab, lan_attached):
     assert xdp.get_stats()["drop_match"] == before["drop_match"] + 1
 
 
-def test_a_name_at_the_kernel_limit_is_counted_as_truncated_not_dropped(lab, lan_attached):
+def test_a_name_at_the_kernel_limit_is_counted_as_a_pass_not_dropped(lab, lan_attached):
     """The third B3 bypass, made explicit: a wire name of MAX_SNI_LEN or
     more is refused by parse_sni_body() before normalization, so it cannot
-    match -- and it is *counted*, as pass_truncated, rather than silently
-    passed. sync_blocklist() refuses such an entry at configuration time
-    (tests/test_xdp.py), so an operator never gets one into the trie."""
+    match -- it is passed and *counted*, not dropped and not silently lost.
+    parse_sni_body() rejecting the over-long name leaves found_len == 0, which
+    the caller buckets as pass_no_sni (a server_name was present but no usable
+    name came out of it), so that is the counter that moves. sync_blocklist()
+    refuses such an entry at configuration time (tests/test_xdp.py), so an
+    operator never gets one into the trie either."""
     wire_sni = "a" * 40 + ".example"
     frame, _ = _tls_frame(wire_sni, [], lan_attached["dst"], lan_attached["src"])
     before = xdp.get_stats()
     _inject(lab, frame)
     after = xdp.get_stats()
+    # The security property: the over-long name is never dropped (so it can
+    # never be made to match a blocklist entry) ...
     assert after["drop_match"] == before["drop_match"]
-    assert after["pass_truncated"] == before["pass_truncated"] + 1
+    # ... and it is accounted for, not silently dropped on the floor.
+    assert after["pass_no_sni"] == before["pass_no_sni"] + 1
 
 
 def _ip_in_receives(ns: str) -> int:
