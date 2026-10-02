@@ -372,22 +372,35 @@ def _ipv4_checksum(header: bytes) -> int:
     return ~total & 0xFFFF
 
 
-def _tls_frame(sni: str, tags: list[tuple[int, int]], dst_mac: bytes, src_mac: bytes) -> tuple[bytes, bytes]:
-    """An Ethernet frame carrying one TCP segment to SERVER_IP:443 with a
-    ClientHello for `sni`, behind `tags` ((TPID, VLAN id) pairs, outermost
-    first). Returns the frame and its TCP payload (the TLS record)."""
-    import tlsfp_samples as samples
+def _tcp_frame(payload: bytes, tags: list[tuple[int, int]], dst_mac: bytes, src_mac: bytes,
+               *, datagram_payload: int | None = None, sport: int = 40443) -> bytes:
+    """An Ethernet frame carrying one TCP segment to SERVER_IP:443, behind
+    `tags` ((TPID, VLAN id) pairs, outermost first).
 
-    payload = samples.tls_records(samples.client_hello(samples.default_extensions(sni=sni, pq=False)))
-    tcp = struct.pack("!HHIIBBHHH", 40443, 443, 1000, 0, 5 << 4, 0x18, 64240, 0, 0)
-    ip = bytearray(struct.pack("!BBHHHBBH4s4s", 0x45, 0, 20 + len(tcp) + len(payload), 1, 0x4000, 64, 6, 0,
+    The IPv4 total length counts `datagram_payload` bytes of TCP payload
+    (default: all of `payload`); whatever of `payload` lies past that is
+    still on the wire, after the end of the datagram -- where Ethernet
+    padding goes (SEC-7)."""
+    if datagram_payload is None:
+        datagram_payload = len(payload)
+    tcp = struct.pack("!HHIIBBHHH", sport, 443, 1000, 0, 5 << 4, 0x18, 64240, 0, 0)
+    ip = bytearray(struct.pack("!BBHHHBBH4s4s", 0x45, 0, 20 + len(tcp) + datagram_payload, 1, 0x4000, 64, 6, 0,
                                socket.inet_aton(CLIENT_IP), socket.inet_aton(SERVER_IP)))
     ip[10:12] = _ipv4_checksum(bytes(ip)).to_bytes(2, "big")
     ethertypes = [tpid for tpid, _ in tags] + [ETH_P_IP]
     frame = dst_mac + src_mac + ethertypes[0].to_bytes(2, "big")
     for (_, vid), inner in zip(tags, ethertypes[1:]):
         frame += vid.to_bytes(2, "big") + inner.to_bytes(2, "big")
-    return frame + bytes(ip) + tcp + payload, payload
+    return frame + bytes(ip) + tcp + payload
+
+
+def _tls_frame(sni: str, tags: list[tuple[int, int]], dst_mac: bytes, src_mac: bytes) -> tuple[bytes, bytes]:
+    """A frame with a ClientHello for `sni` (see `_tcp_frame`). Returns the
+    frame and its TCP payload (the TLS record)."""
+    import tlsfp_samples as samples
+
+    payload = samples.tls_records(samples.client_hello(samples.default_extensions(sni=sni, pq=False)))
+    return _tcp_frame(payload, tags, dst_mac, src_mac), payload
 
 
 def _inject(lab, frame: bytes) -> None:
@@ -609,3 +622,114 @@ def test_a_tag_stack_deeper_than_the_filter_unwraps_is_not_routed_either(lab, la
         assert _ip_in_receives(ROUTER_NS) == ip_before
     finally:
         _sh("ip", "link", "del", "frx-rl.30", ns=ROUTER_NS)
+
+
+# --- SEC-7: the parse ends where the IPv4 datagram ends (review v0.2.0 R9) ---
+#
+# Bytes on the wire after the IPv4 total length are not part of the
+# datagram: Ethernet padding on a short frame, or anything a sender puts
+# there. The router never forwards them, so the filter must not read a
+# ClientHello -- or the rest of one -- out of them.
+
+
+def _counted(lab, frame: bytes) -> dict[str, int]:
+    """Inject `frame`; return how much each counter moved."""
+    before = xdp.get_stats()
+    _inject(lab, frame)
+    after = xdp.get_stats()
+    return {name: after[name] - before[name] for name in after}
+
+
+def test_a_client_hello_after_the_end_of_the_datagram_is_not_parsed(lab, lan_attached):
+    """A segment with no payload, followed on the wire by a ClientHello for
+    a blocklisted name: the datagram carries no TLS at all."""
+    _, hello = _tls_frame("www.blocked.example", [], lan_attached["dst"], lan_attached["src"])
+    frame = _tcp_frame(hello, [], lan_attached["dst"], lan_attached["src"], datagram_payload=0)
+    moved = _counted(lab, frame)
+    assert moved["drop_match"] == 0
+    assert moved["pass_not_tls"] == 1
+
+
+def _hello_with_sni_last(sni: str) -> tuple[bytes, int]:
+    """A ClientHello record whose server_name is its last extension, and
+    the offset in it just past the name's last byte."""
+    import tlsfp_samples as samples
+
+    sni_ext = samples.default_extensions(sni=sni, pq=False)[0]
+    exts = samples.default_extensions(sni=None, pq=False) + [sni_ext]
+    record = samples.tls_records(samples.client_hello(exts))
+    assert record.endswith(sni.encode())
+    return record, len(record)
+
+
+@pytest.mark.parametrize("cut, dropped", [
+    (-len("example"), False),  # the datagram ends inside the name
+    (-1, False),               # ... one byte before the name ends
+    (0, True),                 # ... exactly where the name ends
+], ids=["mid-name", "one-short", "at-name-end"])
+def test_a_name_is_matched_only_when_the_datagram_holds_all_of_it(lab, lan_attached, cut, dropped):
+    """The datagram's end, not the frame's, bounds the name. The rest of
+    the hello and MAX_SNI_LEN bytes of padding follow on the wire, so
+    the frame itself always holds the whole name: before SEC-7 every case
+    here was dropped. A name cut by the datagram's end can't be told from
+    a different, shorter name, so it is passed (as no usable server_name),
+    never matched on bytes the router doesn't forward."""
+    record, name_end = _hello_with_sni_last("www.blocked.example")
+    frame = _tcp_frame(record + bytes(xdp.MAX_SNI_LEN), [], lan_attached["dst"], lan_attached["src"],
+                       datagram_payload=name_end + cut)
+    moved = _counted(lab, frame)
+    assert moved["drop_match"] == (1 if dropped else 0)
+    if not dropped:
+        assert moved["pass_no_sni"] == 1
+
+
+def test_a_datagram_ending_inside_the_client_hello_is_truncated(lab, lan_attached):
+    """Cut before the extensions even start: the hello is incomplete in
+    this datagram, which is the truncated case, whatever the frame holds."""
+    _, hello = _tls_frame("www.blocked.example", [], lan_attached["dst"], lan_attached["src"])
+    frame = _tcp_frame(hello, [], lan_attached["dst"], lan_attached["src"], datagram_payload=60)
+    moved = _counted(lab, frame)
+    assert moved["drop_match"] == 0
+    assert moved["pass_truncated"] == 1
+
+
+def test_ethernet_padding_after_a_complete_client_hello_changes_nothing(lab, lan_attached):
+    """The ordinary case the bound must not break: a whole hello, then
+    padding past the datagram."""
+    _, hello = _tls_frame("www.blocked.example", [], lan_attached["dst"], lan_attached["src"])
+    frame = _tcp_frame(hello + bytes(18), [], lan_attached["dst"], lan_attached["src"],
+                       datagram_payload=len(hello))
+    assert _counted(lab, frame)["drop_match"] == 1
+
+
+def test_padding_on_a_pure_ack_does_not_use_up_a_split_hellos_segments(lab, lan_attached):
+    """Phase 19 follows a split ClientHello for HELLO_MAX_EXTRA_SEGMENTS
+    more segments of its flow. The client's pure ACKs in between carry no
+    payload, but a short frame is padded on the wire: read as payload,
+    each one used up a segment, and the hello's real second half was
+    never copied, so it could not be fingerprinted."""
+    import tlsfp_samples as samples
+
+    dst, src, sport = lan_attached["dst"], lan_attached["src"], 40777
+    record = samples.tls_records(samples.client_hello(samples.default_extensions(sni="fp.example")))
+    first, rest = record[:1000], record[1000:]
+    padded_ack = _tcp_frame(bytes(6), [], dst, src, datagram_payload=0, sport=sport)
+
+    segments: list[xdp.HelloSegment] = []
+    xdp.set_settings(xdp.SETTING_REPORT_HELLO)
+    try:
+        with xdp.RingBufferReader(segments.append, xdp.PIN_HELLO_PKTS_PATH,
+                                  decode=xdp.HelloSegment.from_bytes) as reader:
+            while reader.poll(50) > 0:
+                pass
+            segments.clear()
+            _inject(lab, _tcp_frame(first, [], dst, src, sport=sport))
+            for _ in range(3):  # HELLO_MAX_EXTRA_SEGMENTS
+                _inject(lab, padded_ack)
+            _inject(lab, _tcp_frame(rest, [], dst, src, sport=sport))
+            reader.poll(500)
+    finally:
+        xdp.set_settings(0)
+    ours = [s for s in segments if s.sport == sport]
+    assert [s.first for s in ours] == [True, False]
+    assert ours[1].payload == rest
