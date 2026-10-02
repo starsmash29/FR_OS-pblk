@@ -103,7 +103,10 @@ The integrator decides the merge order of overlapping PRs. A PR that falls behin
 ### Approval flow (how an item gets the go-ahead)
 
 Picking up an item needs the owner's go-ahead, recorded on its **claim
-issue**. Two roles, kept separate:
+issue**. The `approved` and `hold` labels now exist in the repository and are
+the machine-readable signal; the `Mehet` / `Várj` comment says the same thing
+in words. Read the label first, the comment as the fallback. Two roles, kept
+separate:
 
 - **The owner's integrating agent (Claude Code)** records the owner's
   decision on each claim issue: the label **`approved`** or **`hold`**, or a
