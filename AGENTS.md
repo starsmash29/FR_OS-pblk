@@ -18,7 +18,7 @@ AI tool working on someone's behalf.
 | [docs/reviews/](docs/reviews/) | The latest adversarial review and what is still open from it |
 | [docs/CONFIG_SCHEMA.md](docs/CONFIG_SCHEMA.md) | The `config.yaml` schema |
 | [DESIGN.md](DESIGN.md) | The webUI design system |
-| [docs/stitch-screens.md](docs/stitch-screens.md) | Inventory of the designed screens. It is in Hungarian for now; an English version is welcome |
+| [docs/stitch-screens.md](docs/stitch-screens.md) | Inventory of the designed screens. Screen names are as the Stitch project has them |
 | [SECURITY.md](SECURITY.md) | How vulnerabilities are reported. Never in a public issue or PR |
 | [.claude/skills/](.claude/skills/) | Vendored defensive-security reference playbooks (CIS hardening, eBPF monitoring, segmentation, SLSA/Sigstore, SBOM). Guidance to read, not code to run — see `.claude/skills/VENDOR.md` |
 
