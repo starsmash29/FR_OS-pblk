@@ -117,14 +117,15 @@ async def submitted_csrf_token(request: Request) -> str:
     Reads the body at most once: Starlette caches the parsed form and the
     parsed JSON on the request, so a route that declares `Form(...)` fields
     still sees its own values afterwards.
+
+    A URL query string is deliberately not one of the carriers: a token in a
+    query lands in the access log, in the browser history and in the outgoing
+    `Referer` of every link on the page, so it stays in the body or the header.
     """
     for header in CSRF_HEADERS:
         value = request.headers.get(header)
         if value:
             return value
-    query = request.query_params.get(CSRF_FIELD)
-    if query:
-        return query
     content_type = request.headers.get("content-type", "").lower()
     try:
         if "application/json" in content_type:

@@ -248,6 +248,18 @@ def test_the_token_travels_in_a_form_field_and_a_json_body_too(env):
     assert "CSRF" not in _detail(as_json), as_json.text
 
 
+def test_a_token_in_the_query_string_is_not_accepted(env):
+    """A query string is not a carrier: it lands in the access log, in the
+    browser history and in the `Referer` of every link on the page."""
+    admin = _signed_in(env)
+    token = _token(admin)
+
+    refused = admin.post(f"/adblock/refresh?{CSRF_FIELD}={token}",
+                         headers={"x-test-skip-csrf": "1"})
+    assert refused.status_code == 403, refused.text
+    assert "CSRF" in _detail(refused)
+
+
 def test_the_role_check_still_answers_before_anything_is_written(env):
     """R15 must not have displaced phase 18: a viewer's own allowed paths
     still work, and a viewer still cannot reach an admin route."""

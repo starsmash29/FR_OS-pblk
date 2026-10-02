@@ -262,7 +262,6 @@ def csrf_tokens_on_test_requests(monkeypatch):
         headers = {k.lower(): v for k, v in (kwargs.get("headers") or {}).items()}
         explicit = any(h in headers for h in ("x-csrf-token", "x-csrftoken"))
         explicit = explicit or _carries_csrf_field(kwargs.get("data"), kwargs.get("json"))
-        explicit = explicit or CSRF_FIELD in str(url).partition("?")[2]
         if (
             not explicit
             and "x-test-skip-csrf" not in headers

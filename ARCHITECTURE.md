@@ -1013,7 +1013,12 @@ hidden field in every POST form (`csrf_input(request)`), as the
 or in a JSON body, and is verified on every state-changing request in
 `require_login` -- that is in one place, so a new POST route can't
 forget it. The three public sign-in forms have no session, so they
-carry no token. HTTP responses all carry `Content-Security-Policy`,
+carry no token. A URL query string is not one of the carriers on
+purpose: a token in a query lands in the access log, in the browser
+history and in the outgoing `Referer` of every link on the page, so it
+stays in the body or the header, and `tests/webui/test_no_secret_leaks.py`
+walks every page and the audit log to prove it appears nowhere else.
+HTTP responses all carry `Content-Security-Policy`,
 `frame-ancestors 'none'` with `X-Frame-Options: DENY`,
 `Referrer-Policy`, `X-Content-Type-Options` and `Permissions-Policy` from
 one app-level middleware; the policy names only `'self'` (and `data:` for

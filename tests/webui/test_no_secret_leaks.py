@@ -105,6 +105,35 @@ def test_the_certificate_download_is_only_the_certificate(webui_env, secrets_eve
     assert "BEGIN CERTIFICATE" in body and "PRIVATE KEY" not in body
 
 
+def test_the_csrf_token_stays_in_the_form_and_the_meta_tag(webui_env, secrets_everywhere):
+    """R15: the token is a session credential, so it belongs in the hidden
+    field and the page's own meta tag and nowhere else. An access log, an
+    audit line or an error page that carries it would hand it to whoever can
+    read those files."""
+    from frfw.webui.auth import COOKIE_NAME
+
+    app = create_app(**webui_env)
+    client = _signed_in(app, "boss", "adminpass1")
+    token = app.state.session_manager.csrf_token_for(client.cookies.get(COOKIE_NAME))
+    assert token
+
+    carriers = (f'name="csrf_token" value="{token}"', f'content="{token}"')
+
+    # Every page the admin can reach, not just one: the token may only ever
+    # sit inside the meta tag or a hidden field of a form that posts.
+    for path in _get_routes(app):
+        body = client.get(path, headers={"X-CSRF-Token": token}).text
+        if token in body:
+            assert body.count(token) == body.count(carriers[0]) + body.count(carriers[1]), path
+
+    # Not in the audit log of a change request that carried it in the header.
+    client.post("/adblock/refresh", headers={"X-CSRF-Token": token})
+    assert token not in webui_env["audit_log_path"].read_text()
+
+    # And not in a response that has no form to put it in.
+    assert token not in client.get("/no-such-page").text
+
+
 # -- files and exports ------------------------------------------------------------------
 
 
