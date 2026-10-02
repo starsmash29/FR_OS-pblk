@@ -404,7 +404,22 @@ live-log tab of a session reads the *same* child through the process-wide
 -- and at most `LOG_STREAM_LIMIT` (8) live streams per webUI process, past
 which a tab gets one `text/event-stream` error frame instead of a process
 (review R19). The child is terminated when the session's last tab
-disconnects. On the frontend side, a native
+disconnects, and *noticing* that disconnect is the part that needs care:
+a server that has nothing to write to a closed tab is never told it is
+gone, and a quiet journal gives it nothing to write. So the stream is
+asyncio end to end -- `journalctl` runs under
+`asyncio.create_subprocess_exec`, one pump task per session reads it and
+fans each frame out to the tabs' bounded queues -- and each tab, between
+frames and at least every `LOG_HEARTBEAT_SECONDS` (15 s, when it sends an
+SSE keep-alive comment), asks Starlette whether its client is still
+there. The last tab to leave cancels the pump task, whose own `finally`
+terminates the child (SIGTERM, SIGKILL after 5 s) and frees the cap
+slot; that cleanup runs in the pump's task rather than the cancelled
+request's, which could not `await` it. (A first version drove the child
+from a synchronous generator in Starlette's thread pool; it was never
+closed on disconnect while the journal was quiet, so a closed tab kept
+its child and its cap slot. `tests/webui/test_xdp_routes.py` now proves
+the behaviour against a real uvicorn over real sockets.) On the frontend side, a native
 `EventSource` (no WebSocket, no library) connects to this endpoint, and
 appends every incoming JSON line to the bottom of the "terminal"
 container, with auto-scroll and a cap of 300 lines (so the DOM doesn't

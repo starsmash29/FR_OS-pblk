@@ -34,12 +34,10 @@ disconnects.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
-import queue
-import subprocess
-import threading
-from collections.abc import Iterator
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
@@ -199,50 +197,29 @@ def remove_domain(
     return redirect_with("/xdp", error=message)
 
 
-def _iter_journal_lines(cmd: list[str]) -> Iterator[str]:
-    """Runs `cmd` (a `journalctl -f ...` invocation) and yields its
-    stdout line by line as it's produced, forever (until the process
-    ends or the generator is closed by the client disconnecting).
-    Separated out from the route so tests can monkeypatch this one
-    function with a fake, finite line source instead of needing a real
-    systemd journal."""
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True, bufsize=1)
-    try:
-        assert proc.stdout is not None
-        for line in proc.stdout:
-            yield line.rstrip("\n")
-    finally:
-        proc.terminate()
-        proc.wait(timeout=5)
-
-
 #: Ceiling on live journal streams per webUI process, across all
 #: sessions (review v0.2.0 R19). Every stream is one `journalctl`
 #: child, so this bounds how many an admin can leave running; a tab
-#: past the cap gets a clear error frame instead of a stream. The value
-#: is a proposal (see "Not done" in the roadmap note), not a measured
-#: limit: 8 leaves room for the realistic case -- an admin with a few
-#: live-log tabs open on more than one device -- while keeping the worst
-#: case an authenticated admin can cause to 8 `journalctl` children,
-#: far below any process limit a router hits (a router that cannot run
-#: 8 idle journald readers cannot usefully show a live log at all).
-#: Deliberately a module constant, not a config key: a knob here would
-#: only tune a resource bound the platform already enforces.
+#: past the cap gets a clear error frame instead of a stream. 8 leaves
+#: room for an admin with a few live-log tabs on more than one device
+#: while keeping the worst case far below any process limit a router
+#: hits. A module constant, not a config key: it bounds a resource,
+#: it is not a preference.
 LOG_STREAM_LIMIT = 8
 
 #: Frames a tab's queue may hold. A tab that stops reading loses the
-#: oldest frames rather than blocking the stream or growing the
-#: webUI's memory without bound (the viewer trims its own DOM to 300
-#: lines anyway).
+#: oldest frames rather than blocking the session's stream or growing
+#: the webUI's memory without bound (the viewer trims its own DOM to
+#: 300 lines anyway).
 _LOG_QUEUE_MAX = 256
 
-#: `Condition.wait` bound while a tab holds out for a frame. The driver
-#: notifies on every line and `_finish` notifies every waiting tab, so
-#: this only fires if a tab died between the two -- a last-resort
-#: re-check, never a poll loop, which is why it is not short: it must
-#: not cost anything on the normal path, and a second of latency on the
-#: pathological one is irrelevant next to a leaked tab.
-_LOG_DRIVE_WAIT_SECONDS = 1.0
+#: Seconds between SSE keep-alive comments while the journal is quiet.
+#: It is also the bound on noticing a gone browser: a tab checks for a
+#: disconnect at least this often, so a quiet journal can't keep a
+#: closed tab's `journalctl` alive (and its cap slot taken) forever.
+LOG_HEARTBEAT_SECONDS = 15.0
+
+_KEEPALIVE = ": keepalive\n\n"
 
 
 def _sse_frame(line: str) -> str | None:
@@ -269,229 +246,110 @@ def _session_stream_key(request: Request) -> str:
     """The webUI session behind this request, as a registry key.
 
     `require_login` has already validated the cookie by the time the
-    route runs, so it is present and bound to this browser's session.
-    The cookie value itself is a bearer secret: it is never stored or
-    logged, only its digest is kept.
-
-    A missing cookie fails closed rather than digesting to the constant
-    hash of the empty string: that constant is a key every such caller
-    would share, so one stream slot (and, at the cap, the whole
-    stream) would be held by callers that are not one session."""
+    route runs. The cookie value is a bearer secret: only its digest is
+    kept. A missing cookie fails closed rather than digesting to the
+    hash of the empty string, a key every such caller would share."""
     cookie = request.cookies.get(COOKIE_NAME)
     if not cookie:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
     return hashlib.sha256(cookie.encode()).hexdigest()
 
 
-class _LogStream:
-    """One `journalctl -f` child, shared by every live-log tab of one
-    session (review v0.2.0 R19).
+def _offer(subscriber: asyncio.Queue, frame: str | None) -> None:
+    """Queue a frame without blocking: a tab that stopped reading loses
+    its oldest frame. The end marker (None) is never the one dropped."""
+    while True:
+        try:
+            subscriber.put_nowait(frame)
+            return
+        except asyncio.QueueFull:
+            try:
+                subscriber.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
 
-    `main` started a child per HTTP request, so N tabs meant N children
-    for the same lines. Here the first tab of a session pulls the
-    journal and hands every frame to all of its tabs; later tabs read
-    from the running stream and start no process of their own. There is
-    no background thread: the tab that finds nobody driving takes the
-    wheel and pulls the next line in its own request thread. When the
-    last tab leaves, its `release` closes the generator -- whose own
-    `finally` terminates the child -- so "process ended on
-    disconnect" keeps working with one stream per session.
+
+class _LogStream:
+    """One `journalctl -f` child per webUI session, fanned out to every
+    live-log tab of that session (review v0.2.0 R19).
+
+    A single asyncio task (`_pump`) owns the child: it reads the journal
+    and puts each frame into every tab's queue. The last tab to leave
+    cancels the task, and the task's own `finally` ends the child -- the
+    cleanup runs in the pump's task, not in the cancelled request's, so
+    a client disconnect can't interrupt it halfway. Everything here runs
+    on the event loop, so no lock is needed.
     """
 
     def __init__(self, session_key: str) -> None:
         self.session_key = session_key
-        self._cond = threading.Condition()
-        self._subscribers: list[queue.Queue] = []
-        self._source: Iterator[str] | None = None
-        self._driving = False
-        self._finished = False
+        self.subscribers: set[asyncio.Queue] = set()
+        self.finished = False
+        self._task: asyncio.Task | None = None
 
-    @property
-    def finished(self) -> bool:
-        """No tab may stream from this object any more.
+    def subscribe(self) -> asyncio.Queue:
+        subscriber: asyncio.Queue = asyncio.Queue(maxsize=_LOG_QUEUE_MAX)
+        self.subscribers.add(subscriber)
+        if self._task is None:
+            self._task = asyncio.get_running_loop().create_task(self._pump())
+        return subscriber
 
-        Read under this object's own lock, which is where `_finish`
-        writes the flag: a lock-free read of a plain `bool` is a data
-        race in the Python memory model, and a reader that saw a stale
-        `False` would hand a new tab a stream that can only end (E.D.I.T.H.,
-        PR #31). The only caller is the registry lookup, which already
-        holds `_log_streams_lock`, so this nests `_log_streams_lock` ->
-        `_cond`; that is safe because `_finish` and `_close_source` both
-        release `_cond` before taking `_log_streams_lock`, so no path
-        holds the two at once in the other order."""
-        with self._cond:
-            return self._finished
-
-    def subscribe(self) -> Iterator[str]:
-        """This tab's view of the shared stream: already-formatted SSE
-        frames, ending when the journal does."""
-        subscriber: queue.Queue = queue.Queue(maxsize=_LOG_QUEUE_MAX)
-        with self._cond:
-            if self._finished:
-                subscriber.put_nowait(None)
-            else:
-                if self._source is None:
-                    # The generator body does not run yet, so this
-                    # starts no process: the child spawns on the first
-                    # pull further below.
-                    self._source = _iter_journal_lines(_JOURNALCTL_CMD)
-                self._subscribers.append(subscriber)
-        try:
-            while True:
-                frame = self._next_frame(subscriber)
-                if frame is None:
-                    return
-                yield frame
-        finally:
-            self._release(subscriber)
-
-    def _next_frame(self, subscriber: queue.Queue) -> str | None:
-        """The next frame for one tab. Takes the wheel (pulls one line
-        out of the journal for everybody) when nobody is driving."""
-        while True:
-            with self._cond:
-                if not subscriber.empty():
-                    return subscriber.get()
-                if self._finished:
-                    return None
-                if self._driving or self._source is None:
-                    # Another tab is inside the blocking read, or the
-                    # stream died between subscribe and now: wait for
-                    # its wake-up (or the timeout) and look again.
-                    self._cond.wait(timeout=_LOG_DRIVE_WAIT_SECONDS)
-                    continue
-                self._driving = True
-                source = self._source
-            try:
-                self._drive(source)
-            except BaseException:
-                # Any failure of the driving pull -- a dead journal, a
-                # refused FD, a cancelled tab thread -- leaves the shared
-                # source undrawable for every tab. Without ending the
-                # stream here the session's entry stays in the registry
-                # with a dead source and holds its cap slot: a later tab
-                # joins the same broken stream instead of getting a fresh
-                # one, and the child never restarts (E.D.I.T.H., PR #31).
-                self._finish()
-                raise
-
-    def _drive(self, source: Iterator[str]) -> None:
-        """Pull one line from the shared source and hand it to every
-        tab. Runs in the driving tab's own request thread -- never in a
-        background thread and never while holding the lock -- so
-        closing that request is what closes the generator."""
-        frame: str | None = None
-        finished = False
-        try:
-            try:
-                line = next(source)
-            except StopIteration:
-                self._finish()
-                finished = True
-            except FileNotFoundError:
-                # Same frame `main` sent: the route is unprivileged and
-                # the journal is simply absent here. Queued before
-                # `_finish`, which ends every tab.
-                with self._cond:
-                    self._broadcast(
-                        _sse_error("journalctl not found -- is systemd installed?")
-                    )
-                self._finish()
-                finished = True
-            else:
-                frame = _sse_frame(line)
-        finally:
-            with self._cond:
-                if frame is not None:
-                    self._broadcast(frame)
-                self._driving = False
-                self._cond.notify_all()
-            if finished:
-                self._close_source()
+    def unsubscribe(self, subscriber: asyncio.Queue) -> None:
+        """One tab went away; the last one ends the session's stream."""
+        self.subscribers.discard(subscriber)
+        if self.subscribers or self.finished:
+            return
+        if self._task is not None and not self._task.done():
+            self._task.cancel()  # the pump's `finally` ends the child
+        else:
+            self._end()
 
     def _broadcast(self, frame: str) -> None:
-        """Put one frame in every tab's queue and wake them. Called with
-        `_cond` held, and only ever from the tab that is driving: another
-        tab may not take the wheel until the line it just pulled is in
-        every queue, so two tabs can't see two lines out of order. It
-        only queues (dropping the oldest frame of a tab that stopped
-        reading), so it never blocks."""
-        subscribers = list(self._subscribers)
-        for subscriber in subscribers:
-            try:
-                subscriber.put_nowait(frame)
-            except queue.Full:
-                # A tab that stopped reading loses the oldest frame
-                # rather than blocking the rest of the session.
-                try:
-                    subscriber.get_nowait()
-                except queue.Empty:
-                    pass
-                try:
-                    subscriber.put_nowait(frame)
-                except queue.Full:
-                    pass
-        self._cond.notify_all()
+        for subscriber in list(self.subscribers):
+            _offer(subscriber, frame)
 
-    def _release(self, subscriber: queue.Queue) -> None:
-        """One tab went away. The last one ends the stream for the
-        session: that is what removes the registry entry and frees the
-        cap slot, and what terminates the child."""
-        with self._cond:
-            if subscriber in self._subscribers:
-                self._subscribers.remove(subscriber)
-            last = not self._subscribers
-        if last:
-            self._finish()
-
-    def _finish(self) -> None:
-        """End the stream for every tab: marker into every queue, the
-        child closed, the registry entry dropped."""
-        with self._cond:
-            if self._finished:
-                return
-            self._finished = True
-            subscribers = list(self._subscribers)
-        for subscriber in subscribers:
-            _offer_end(subscriber)
-        with self._cond:
-            self._cond.notify_all()
-        self._close_source()
-        with _log_streams_lock:
-            if _log_streams.get(self.session_key) is self:
-                del _log_streams[self.session_key]
-
-    def _close_source(self) -> None:
-        """Close the journal generator, which runs its `finally` (`proc.
-        terminate()` + `proc.wait(timeout=5)`), unless a tab is inside
-        the blocking `next()` on it right now -- then that tab's own
-        `_drive`/`_finish` path closes it instead. Never closing from
-        outside the driving thread is what makes the child shutdown
-        deterministic (no cross-thread `close()`)."""
-        with self._cond:
-            if self._driving:
-                return
-            source, self._source = self._source, None
-        close = getattr(source, "close", None)
-        if close is not None:
-            close()
-
-
-def _offer_end(subscriber: queue.Queue) -> None:
-    """The end-of-stream marker must never be dropped for a full queue
-    -- a slow tab would otherwise hang behind a finished stream."""
-    while True:
-        try:
-            subscriber.put_nowait(None)
+    def _end(self) -> None:
+        """No tab may stream from this object any more: wake every tab
+        with the end marker and give the session's cap slot back."""
+        if self.finished:
             return
-        except queue.Full:
+        self.finished = True
+        for subscriber in list(self.subscribers):
+            _offer(subscriber, None)
+        if _log_streams.get(self.session_key) is self:
+            del _log_streams[self.session_key]
+
+    async def _pump(self) -> None:
+        proc: asyncio.subprocess.Process | None = None
+        try:
             try:
-                subscriber.get_nowait()
-            except queue.Empty:
-                pass
+                proc = await asyncio.create_subprocess_exec(
+                    *_JOURNALCTL_CMD,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.DEVNULL,
+                    stdin=asyncio.subprocess.DEVNULL,
+                )
+            except FileNotFoundError:
+                self._broadcast(_sse_error("journalctl not found -- is systemd installed?"))
+                return
+            assert proc.stdout is not None
+            while True:
+                raw = await proc.stdout.readline()
+                if not raw:
+                    return  # the journal ended (or the child died)
+                frame = _sse_frame(raw.decode("utf-8", "replace").rstrip("\n"))
+                if frame is not None:
+                    self._broadcast(frame)
+        finally:
+            if proc is not None and proc.returncode is None:
+                proc.terminate()
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=5)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    proc.kill()
+            self._end()
 
 
-_log_streams_lock = threading.Lock()
 _log_streams: dict[str, _LogStream] = {}
 
 
@@ -499,15 +357,52 @@ def _acquire_stream(session_key: str) -> _LogStream | None:
     """The session's stream, creating it when there is none. None means
     the process-wide cap (`LOG_STREAM_LIMIT`) is reached: the caller
     sends one error frame and spawns nothing."""
-    with _log_streams_lock:
-        stream = _log_streams.get(session_key)
-        if stream is not None and not stream.finished:
-            return stream
-        if len(_log_streams) >= LOG_STREAM_LIMIT:
-            return None
-        stream = _LogStream(session_key)
-        _log_streams[session_key] = stream
+    stream = _log_streams.get(session_key)
+    if stream is not None and not stream.finished:
         return stream
+    if len(_log_streams) >= LOG_STREAM_LIMIT:
+        return None
+    stream = _LogStream(session_key)
+    _log_streams[session_key] = stream
+    return stream
+
+
+async def _tab(session_key: str, request: Request) -> AsyncIterator[str]:
+    """One browser tab's view of its session's stream.
+
+    The stream is looked up (or started) and subscribed to here, in the
+    body Starlette iterates, not in the route: a response that is never
+    started -- the client gone before the first byte -- then holds no
+    cap slot and no subscription. Lookup and subscribe run with no
+    `await` between them, so the stream can't finish in the gap.
+
+    Between frames -- and at least every LOG_HEARTBEAT_SECONDS on a
+    quiet journal, when it sends a keep-alive comment -- the tab asks
+    whether its client is still there. That check is what ends a closed
+    tab: a server writing to a gone client is not told so, and a quiet
+    journal gives it nothing to write."""
+    stream = _acquire_stream(session_key)
+    if stream is None:
+        # At the cap (review v0.2.0 R19): one clear frame, no process.
+        yield _sse_error(
+            f"live log stream limit reached ({LOG_STREAM_LIMIT}) -- "
+            "close a stream and reconnect"
+        )
+        return
+    subscriber = stream.subscribe()
+    try:
+        while True:
+            try:
+                frame = await asyncio.wait_for(subscriber.get(), timeout=LOG_HEARTBEAT_SECONDS)
+            except asyncio.TimeoutError:
+                frame = _KEEPALIVE
+            if frame is None or await request.is_disconnected():
+                return
+            yield frame
+    finally:
+        # Synchronous on purpose: a cancelled request can't run an
+        # `await` here, so the child's shutdown belongs to the pump task.
+        stream.unsubscribe(subscriber)
 
 
 _SSE_HEADERS = {
@@ -517,23 +412,9 @@ _SSE_HEADERS = {
 
 
 @router.get("/xdp/logs/stream")
-def stream_logs(request: Request, username: str = Depends(require_login)):
-    stream = _acquire_stream(_session_stream_key(request))
-    if stream is None:
-        # At the cap (review v0.2.0 R19): one clear frame, no process.
-        return StreamingResponse(
-            iter([
-                _sse_error(
-                    f"live log stream limit reached ({LOG_STREAM_LIMIT}) -- "
-                    "close a stream and reconnect"
-                )
-            ]),
-            media_type="text/event-stream",
-            headers=_SSE_HEADERS,
-        )
-
+async def stream_logs(request: Request, username: str = Depends(require_login)):
     return StreamingResponse(
-        stream.subscribe(),
+        _tab(_session_stream_key(request), request),
         media_type="text/event-stream",
         headers=_SSE_HEADERS,
     )
