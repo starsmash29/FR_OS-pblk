@@ -193,7 +193,7 @@ def apply_all(
     # level: they come from this router's own app catalog, so they are the
     # operator's own configuration being echoed back to them, and naming
     # them *is* the finding -- a name not named is a name the operator
-    # believes is blocked and is not (review finding L1).
+    # believes is blocked and is not (ROADMAP SEC-17).
     too_long = sorted(n for n in extra_xdp_names if len(n) >= xdp.MAX_SNI_LEN)
     if too_long:
         messages.append(

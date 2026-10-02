@@ -205,7 +205,7 @@ def test_build_lpm_key_rejects_a_name_of_only_dots():
             xdp_mod.build_lpm_key(name)
 
 
-# --- kernel/userspace drift (SEC-17, review finding M1) ------------------------
+# --- kernel/userspace drift (SEC-17) -------------------------------------------
 #
 # normalize_sni() above and the two #pragma unroll loops inside
 # extract_sni() are two copies of one rule, in two languages. Nothing
@@ -223,9 +223,10 @@ def test_build_lpm_key_rejects_a_name_of_only_dots():
 # The comparison runs the C with the host compiler, not with clang for
 # the BPF target: the normalization loops are plain C over an unsigned
 # char buffer, and the question here is what *bytes they produce*, not
-# whether the verifier accepts the program (that stays with the live
-# tests and the integrator's load). A compiler that is not clang simply
-# ignores #pragma unroll, which does not change the emitted bytes.
+# whether the verifier accepts the program (tests/test_xdp_live.py
+# loads the real object into the kernel for that). A compiler that is
+# not clang simply ignores #pragma unroll, which does not change the
+# emitted bytes.
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _KERNEL_SOURCE = os.path.join(_REPO_ROOT, "bpf", "xdp_sni_filter.c")
