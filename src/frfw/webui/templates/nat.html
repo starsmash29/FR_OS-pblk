@@ -41,7 +41,7 @@
       <td>{{ pf.dst_port }}</td>
       <td>{{ pf.to_address }}:{{ pf.to_port }}</td>
       <td>
-        <form class="inline" method="post" action="/nat/portforward/delete/{{ pf.name }}" onsubmit="return confirm('Delete port forward {{ pf.name }}?')">
+        <form class="inline" method="post" action="/nat/portforward/delete/{{ pf.name }}" data-confirm="Delete port forward {{ pf.name }}?">
           {{ csrf_input(request) }}
           <button type="submit" class="danger">Delete</button>
         </form>

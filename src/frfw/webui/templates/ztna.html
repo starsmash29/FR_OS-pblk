@@ -64,7 +64,7 @@
     <tr>
       <td>{{ u }}</td>
       <td>
-        <form class="inline" method="post" action="/ztna/users/remove/{{ u }}" onsubmit="return confirm('Remove ZTNA user {{ u }}?')">
+        <form class="inline" method="post" action="/ztna/users/remove/{{ u }}" data-confirm="Remove ZTNA user {{ u }}?">
           {{ csrf_input(request) }}
           <button type="submit" class="danger">Remove</button>
         </form>

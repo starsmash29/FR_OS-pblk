@@ -1051,9 +1051,15 @@ HTTP responses all carry `Content-Security-Policy`,
 `frame-ancestors 'none'` with `X-Frame-Options: DENY`,
 `Referrer-Policy`, `X-Content-Type-Options` and `Permissions-Policy` from
 one app-level middleware; the policy names only `'self'` (and `data:` for
-the inline SVG favicon) and `unsafe-inline` for the inline `style`
-attributes and the one inline `<script>` on the XDP page -- the UI itself
-serves the assets, no CDN (security-lessons G11). The other half is a
+the inline SVG favicon) -- the UI itself serves the assets, no CDN
+(security-lessons G11). `script-src` is exactly `'self'`: every script is
+a static file (`forms.js`, `xdp.js`, `webauthn.js`), and no template
+carries an inline `<script>` or an `on*=` handler, so an injected one
+would not run. A destructive form asks first through a
+`data-confirm="..."` attribute that `forms.js` turns into the prompt
+(with `data-confirm-when-checked` for the allow-WAN switch) -- the text
+is an attribute value, never JavaScript. Only `style-src` keeps
+`'unsafe-inline'`, for inline `style` attributes, which can't run code. The other half is a
 test: one walk proves every state-changing route behind the session
 answers a token-free request with 403 "CSRF", and a template check
 proves every POST form in every template that has a session carries the

@@ -7,6 +7,7 @@
 <meta name="csrf-token" content="{{ csrf_token(request) }}">
 <title>{% block title %}FR_OS{% endblock %}</title>
 <link rel="stylesheet" href="/static/fros.css?v={{ FROS_VERSION }}">
+<script src="/static/forms.js?v={{ FROS_VERSION }}" defer></script>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23070f19'/%3E%3Cpath d='M16 5l9 3.5v6.8c0 5.6-3.8 10.1-9 11.7-5.2-1.6-9-6.1-9-11.7V8.5z' fill='none' stroke='%234cd7f6' stroke-width='2.2'/%3E%3C/svg%3E">
 </head>
 {% set current_user = request.state.user if (request is defined and request.state.user is defined) else none %}
