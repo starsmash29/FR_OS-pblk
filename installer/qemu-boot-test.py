@@ -134,26 +134,45 @@ def persistence_partition(disk: Path):
         mountpoint.rmdir()
 
 
+def _unmount(mountpoint: Path) -> None:
+    """Unmount and remove a temporary mount point. The loop device under a
+    squashfs mounted from a file on another mount is released
+    asynchronously, so that other mount reports "target is busy" for a
+    moment after the squashfs is gone: retry for a few seconds, then
+    detach it lazily rather than fail the boot test over its cleanup."""
+    for _ in range(20):
+        if subprocess.run(["umount", str(mountpoint)], capture_output=True).returncode == 0:
+            break
+        time.sleep(0.5)
+    else:
+        subprocess.run(["umount", "--lazy", str(mountpoint)], check=False)
+    mountpoint.rmdir()
+
+
 @contextmanager
 def image_root(iso: Path):
     """The image's root filesystem (live/filesystem.squashfs), mounted
     read-only -- what every boot starts from before persistence."""
     iso_mount = Path(tempfile.mkdtemp(prefix="fros-iso-"))
-    root = Path(tempfile.mkdtemp(prefix="fros-root-"))
     try:
         subprocess.run(["mount", "-o", "loop,ro", str(iso), str(iso_mount)], check=True)
+    except subprocess.CalledProcessError:
+        iso_mount.rmdir()
+        raise
+    try:
+        root = Path(tempfile.mkdtemp(prefix="fros-root-"))
         try:
             subprocess.run(["mount", "-t", "squashfs", "-o", "loop,ro",
                             str(iso_mount / "live" / "filesystem.squashfs"), str(root)], check=True)
-            try:
-                yield root
-            finally:
-                subprocess.run(["umount", str(root)], check=False)
+        except subprocess.CalledProcessError:
+            root.rmdir()
+            raise
+        try:
+            yield root
         finally:
-            subprocess.run(["umount", str(iso_mount)], check=False)
+            _unmount(root)
     finally:
-        root.rmdir()
-        iso_mount.rmdir()
+        _unmount(iso_mount)
 
 
 #: Debian's own ruleset loader (ROADMAP SEC-18).

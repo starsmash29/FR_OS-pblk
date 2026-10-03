@@ -13,6 +13,9 @@ from __future__ import annotations
 import configparser
 import importlib.util
 import os
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -72,3 +75,47 @@ def test_the_boot_tests_mask_check(boot_test, tmp_path, image, upper, masked):
     root = _tree(tmp_path / "root", image)
     persistence = _tree(tmp_path / "upper", upper)
     assert boot_test.nftables_unit_masked(root, persistence) is masked
+
+
+def _kernel_mounts(*filesystems: str) -> bool:
+    try:
+        known = {line.split()[-1] for line in open("/proc/filesystems") if line.strip()}
+    except OSError:
+        return False
+    return all(fs in known for fs in filesystems)
+
+
+@pytest.mark.skipif(
+    os.geteuid() != 0 or not all(shutil.which(t) for t in ("mksquashfs", "xorriso", "mount"))
+    or not _kernel_mounts("iso9660", "squashfs"),
+    reason="needs root, mksquashfs, xorriso and a kernel that mounts iso9660 and squashfs",
+)
+def test_the_boot_test_reads_the_mask_out_of_a_real_image_and_cleans_up(boot_test, tmp_path):
+    """image_root() against a real ISO with a real squashfs inside, laid
+    out as live-build lays it out -- and both mounts gone afterwards (the
+    first CI run failed on "target is busy" while unmounting the ISO)."""
+    tree = _tree(tmp_path / "rootfs", "/dev/null")
+    iso_tree = tmp_path / "iso"
+    (iso_tree / "live").mkdir(parents=True)
+    subprocess.run(["mksquashfs", str(tree), str(iso_tree / "live" / "filesystem.squashfs"), "-quiet"],
+                   check=True, capture_output=True)
+    iso = tmp_path / "image.iso"
+    subprocess.run(["xorriso", "-as", "mkisofs", "-quiet", "-o", str(iso), str(iso_tree)],
+                   check=True, capture_output=True)
+
+    with boot_test.image_root(iso) as root:
+        mounted = root
+        assert boot_test.nftables_unit_masked(root, _tree(tmp_path / "upper", None))
+
+    assert not mounted.exists()
+    with open("/proc/mounts") as mounts:
+        assert str(mounted) not in mounts.read()
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason="needs root to mount")
+def test_image_root_leaves_no_mount_point_behind_when_a_mount_fails(boot_test, tmp_path):
+    before = set(Path(tempfile.gettempdir()).glob("fros-*"))
+    with pytest.raises(subprocess.CalledProcessError):
+        with boot_test.image_root(tmp_path / "not-an-image.iso"):
+            pass
+    assert set(Path(tempfile.gettempdir()).glob("fros-*")) == before
