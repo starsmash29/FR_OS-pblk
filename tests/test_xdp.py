@@ -772,3 +772,124 @@ def test_live_attachment_and_status_against_a_real_kernel(tmp_path):
         assert xdp_mod.get_attached(state_path=state_path) == {dev: "xdpgeneric"}
     finally:
         sp.run(["ip", "link", "del", dev], check=False)
+
+
+# --- SEC-19: lifecycle -------------------------------------------------------
+
+
+def _fake_kernel(monkeypatch, tmp_path, *, loaded, fail_attach=(), obj=b"object-v2"):
+    """The module's kernel-facing calls, recorded. `fail_attach` names
+    devices whose attach fails, as for an interface that is gone."""
+    calls = []
+    obj_path = tmp_path / "xdp_sni_filter.o"
+    obj_path.write_bytes(obj)
+    live: dict[str, tuple] = {}
+
+    def attach(device):
+        calls.append(("attach", device))
+        if device in fail_attach:
+            raise xdp_mod.XdpError(f"cannot attach {device}")
+        live[device] = (xdp_mod.AttachMode.NATIVE, 7)
+        return xdp_mod.AttachMode.NATIVE
+
+    def detach(device, mode):
+        calls.append(("detach", device))
+        live.pop(device, None)
+
+    monkeypatch.setattr(xdp_mod, "ensure_compiled", lambda: obj_path)
+    monkeypatch.setattr(xdp_mod, "is_loaded", lambda: loaded)
+    monkeypatch.setattr(xdp_mod, "load_and_pin", lambda p: (calls.append(("load",)), not loaded)[1])
+    monkeypatch.setattr(xdp_mod, "replace_pinned", lambda p: calls.append(("replace",)))
+    monkeypatch.setattr(xdp_mod, "unload", lambda: calls.append(("unload",)))
+    monkeypatch.setattr(xdp_mod, "restart_readers", lambda: (calls.append(("restart",)), [])[1])
+    monkeypatch.setattr(xdp_mod, "sync_blocklist", lambda hosts: calls.append(("blocklist",)))
+    monkeypatch.setattr(xdp_mod, "attach", attach)
+    monkeypatch.setattr(xdp_mod, "detach", detach)
+    monkeypatch.setattr(xdp_mod, "live_attachment", lambda device: live.get(device))
+    monkeypatch.setattr(xdp_mod, "pinned_prog_id", lambda: 7)
+    return calls, live, obj_path
+
+
+def test_a_failed_attach_still_records_the_interfaces_it_attached(monkeypatch, tmp_path):
+    """SEC-19: eth0 attaches, eth1 fails. eth0 must be in the state file,
+    or a later disable finds "nothing to do" and leaves it filtering."""
+    state_path = tmp_path / "xdp_state.json"
+    calls, live, _ = _fake_kernel(monkeypatch, tmp_path, loaded=False, fail_attach={"eth1"})
+
+    with pytest.raises(xdp_mod.XdpError):
+        xdp_mod.sync_sni_filter(_config(enabled=True, interfaces=["wan", "lan"]), state_path=state_path)
+    assert json.loads(state_path.read_text())["attached"] == {"eth0": "xdpdrv"}
+    assert "eth0" in live
+
+    result = xdp_mod.sync_sni_filter(_config(enabled=False), state_path=state_path)
+    assert result.applied
+    assert ("detach", "eth0") in calls
+    assert live == {}
+
+
+def test_the_blocklist_is_in_the_map_before_any_interface_runs_the_program(monkeypatch, tmp_path):
+    calls, _, _ = _fake_kernel(monkeypatch, tmp_path, loaded=False)
+    xdp_mod.sync_sni_filter(_config(enabled=True, interfaces=["wan"]), state_path=tmp_path / "s.json")
+    assert calls.index(("blocklist",)) < calls.index(("attach", "eth0"))
+
+
+def test_a_pinned_program_from_another_object_is_replaced(monkeypatch, tmp_path):
+    """SEC-19: after an upgrade the pinned program is the previous
+    release's; it is replaced, the interfaces move to the new one, and
+    the readers are restarted onto the new maps."""
+    state_path = tmp_path / "xdp_state.json"
+    state_path.write_text(json.dumps({"attached": {"eth0": "xdpdrv"}, "program": "0" * 64}))
+    calls, _, obj_path = _fake_kernel(monkeypatch, tmp_path, loaded=True)
+
+    xdp_mod.sync_sni_filter(_config(enabled=True, interfaces=["wan"]), state_path=state_path)
+
+    assert ("replace",) in calls and ("load",) not in calls
+    assert ("restart",) in calls
+    assert json.loads(state_path.read_text())["program"] == xdp_mod.object_digest(obj_path)
+
+
+def test_a_pinned_program_of_unknown_origin_is_replaced(monkeypatch, tmp_path):
+    """A state file written before SEC-19 records no program: the pinned
+    one may be anything, so the first apply after the upgrade replaces it."""
+    state_path = tmp_path / "xdp_state.json"
+    state_path.write_text(json.dumps({"attached": {"eth0": "xdpdrv"}}))
+    calls, _, _ = _fake_kernel(monkeypatch, tmp_path, loaded=True)
+    xdp_mod.sync_sni_filter(_config(enabled=True, interfaces=["wan"]), state_path=state_path)
+    assert ("replace",) in calls
+
+
+def test_the_pinned_program_from_this_object_is_kept_and_readers_left_alone(monkeypatch, tmp_path):
+    state_path = tmp_path / "xdp_state.json"
+    calls, _, obj_path = _fake_kernel(monkeypatch, tmp_path, loaded=True)
+    state_path.write_text(json.dumps({"attached": {}, "program": xdp_mod.object_digest(obj_path)}))
+    xdp_mod.sync_sni_filter(_config(enabled=True, interfaces=["wan"]), state_path=state_path)
+    assert ("replace",) not in calls
+    assert ("restart",) not in calls
+
+
+def test_a_fresh_load_restarts_the_readers(monkeypatch, tmp_path):
+    """Disable unpins the maps; a reader that opened them keeps reading
+    the old, silent ones after re-enable unless it is restarted."""
+    calls, _, _ = _fake_kernel(monkeypatch, tmp_path, loaded=False)
+    xdp_mod.sync_sni_filter(_config(enabled=True, interfaces=["wan"]), state_path=tmp_path / "s.json")
+    assert ("load",) in calls and ("restart",) in calls
+
+
+def test_restart_readers_try_restarts_each_reader_and_reports_failures(monkeypatch):
+    seen = []
+
+    def fake_systemctl(action, unit, *, timeout=None):
+        seen.append((action, unit))
+        return subprocess.CompletedProcess([], 1 if unit == "fr-tls-fp.service" else 0, "", "")
+
+    monkeypatch.setattr(xdp_mod.svc, "systemctl", fake_systemctl)
+    assert xdp_mod.restart_readers() == ["fr-tls-fp.service"]
+    assert seen == [("try-restart", "fr-xdp-sni-logger.service"), ("try-restart", "fr-tls-fp.service")]
+
+
+def test_restart_readers_without_systemctl_reports_rather_than_raises(monkeypatch):
+    def missing(action, unit, *, timeout=None):
+        raise FileNotFoundError("systemctl")
+
+    monkeypatch.setattr(xdp_mod.svc, "systemctl", missing)
+    assert xdp_mod.restart_readers() == list(xdp_mod.READER_UNITS)
