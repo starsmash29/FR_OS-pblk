@@ -257,6 +257,18 @@ they're documented design decisions:
    variable offset bounds nothing the verifier can use. The TLS record
    length bounds nothing: a ClientHello may legally span records, so it
    stays only the signal that a hello continues in the next segment.
+7. **The name is copied at its own length (ROADMAP SEC-20).**
+   `extract_sni()` walks the ClientHello and returns only where the
+   server_name is (an offset and a length); the program then copies
+   exactly that many bytes with `bpf_xdp_load_bytes()` and normalizes
+   the copy on the stack (`normalize_name()`). The earlier code read a
+   fixed `MAX_SNI_LEN` window from the name's start, so a short name at
+   the very end of a frame -- the last extension, nothing after it --
+   failed open. A frame that ends inside the name is counted as
+   truncated, never matched as a shorter name. A per-byte bounds-checked
+   copy was tried first; its 32 unrolled iterations took the program past
+   the 512-byte stack limit and to 98% of the verifier's instruction
+   budget, the helper costs neither.
 
 The actual kernel-space parser (TLS record → handshake → ClientHello
 fields → extension list → server_name extension → reading the SNI bytes)
