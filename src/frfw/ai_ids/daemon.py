@@ -8,14 +8,12 @@ apply pipeline attaches/detaches like the XDP filter or starts/stops
 like the ad-block resolver. It only ever *reads* two things and, on a
 decision, makes exactly one kind of privileged request:
 
-1. `fr-xdp-sni-logger.service`'s journald output (one JSON line per TLS
-   ClientHello the phase 4 XDP filter dropped for matching the SNI
-   blocklist; with phase 16's `app_control.observe_sni` also one per
-   passed SNI, which this daemon ignores) -- tailed via
-   `journalctl -f -o cat`, the identical
-   mechanism and identical `SupplementaryGroups=systemd-journal`
-   permission model the webUI's own `/xdp/logs/stream` route already
-   uses to read the same daemon's output without needing root.
+1. `fr-xdp-sni-logger.service`'s event file (paths.SNI_EVENTS_PATH: one
+   JSON line per TLS ClientHello the phase 4 XDP filter dropped for
+   matching the SNI blocklist; with phase 16's `app_control.observe_sni`
+   also one per passed SNI, which this daemon ignores) -- followed with
+   `tail -F`, as the webUI's `/xdp/logs/stream` route does. Reading it
+   takes the file's group, not the whole journal (ROADMAP SEC-4).
 2. A periodic snapshot of the kernel's connection-tracking table
    (`frfw.conntrack`, via the privileged apply-helper's
    "conntrack_sample" command -- `/proc/net/nf_conntrack` is root-only,
@@ -52,7 +50,7 @@ from frfw.ai_ids.engine import AnomalyEngine, AnomalyEvent
 from frfw.config.schema import Config
 from frfw.helper import client as helper_client
 from frfw.helper.client import HelperError
-from frfw.journal import tail_journal_forever
+from frfw.journal import follow_file_forever, tail_journal_forever
 
 #: How often to poll conntrack and check whether a window has elapsed.
 #: Independent of frfw.ai_ids.engine.WINDOW_SECONDS (the *scoring*
@@ -377,9 +375,12 @@ class IDSDaemon:
     def run_forever(self) -> None:  # pragma: no cover -- thin composition, see class docstring
         import threading
 
+        # The SNI events come from the logger's event file, not its
+        # journal (ROADMAP SEC-4): that file's group is all this needs.
         threading.Thread(
-            target=self._tail_journal_forever,
-            args=("fr-xdp-sni-logger.service", self.handle_sni_event_line),
+            target=follow_file_forever,
+            args=(paths.SNI_EVENTS_PATH, self.handle_sni_event_line),
+            kwargs={"program": "fr-ai-ids"},
             daemon=True,
         ).start()
         adblocker = self.config.adblocker

@@ -242,3 +242,35 @@ def test_the_units_that_apply_can_turn_routing_on(name):
     """An apply writes /proc/sys/net/ipv4/ip_forward (frfw.forwarding):
     ProtectKernelTunables would make that read-only."""
     assert one(service_section(name), "ProtectKernelTunables") != "yes"
+
+
+#: The only units that may read the whole journal (the systemd-journal
+#: group: every unit's log and the kernel's), and why (ROADMAP SEC-4,
+#: review v0.2.0 R10). The XDP SNI events have a file of their own; the
+#: resolver's query log doesn't yet.
+JOURNAL_READERS = {
+    "fr-ai-ids.service": "the resolver's query log (adblocker.query_logging), until it has a file of its own",
+    "fr-appid.service": "the resolver's query log (adblocker.query_logging), until it has a file of its own",
+}
+
+
+@pytest.mark.parametrize("name", SERVICES)
+def test_only_the_listed_units_can_read_the_whole_journal(name):
+    groups = set(" ".join(service_section(name).get("SupplementaryGroups", [])).split())
+    assert ("systemd-journal" in groups) == (name in JOURNAL_READERS), name
+
+
+def test_the_sni_event_file_is_written_by_its_logger_and_read_by_one_group():
+    """The logger creates paths.SNI_EVENTS_PATH as root, in a directory
+    systemd makes root:fr_os-webui 0750, under a umask that leaves the
+    file 0640: its readers (fr_os-webui, and fr_os-sensor through that
+    group) read it, none of them can write it (ROADMAP SEC-4)."""
+    settings = service_section("fr-xdp-sni-logger.service")
+    assert "User" not in settings  # root until it has opened the map and the file
+    assert one(settings, "Group") == paths.WEBUI_USER
+    assert Path("/var/log") / one(settings, "LogsDirectory") == paths.SNI_EVENTS_DIR
+    assert one(settings, "LogsDirectoryMode") == "0750"
+    assert one(settings, "UMask") == "0027"
+    for reader in ("fr-ai-ids.service", "fr-appid.service"):
+        assert paths.WEBUI_USER in one(service_section(reader), "SupplementaryGroups").split()
+    assert one(service_section("fr-webui.service"), "Group") == paths.WEBUI_USER

@@ -15,15 +15,14 @@ the next apply -- the same "config vs. running state can drift until
 you apply" reality every other screen already lives with.
 
 The live log stream (`GET /xdp/logs/stream`) is the one part of this
-screen that isn't config-editing: it tails the fr-xdp-sni-logger
-systemd unit's own journal via `journalctl -f`, not the kernel ring
-buffer directly. The ring buffer's pinned map is root-only (see
+screen that isn't config-editing: it follows the fr-xdp-sni-logger
+unit's event file (paths.SNI_EVENTS_PATH) with `tail -F`, not the kernel
+ring buffer directly. The ring buffer's pinned map is root-only (see
 frfw.xdp.RingBufferReader's docstring), and this webUI process
-deliberately runs as an unprivileged user (see systemd/fr-webui.service)
--- reading already-logged, already-decoded JSON lines back out of the
-journal (systemd/fr-webui.service grants read-only journal access via
-`SupplementaryGroups=systemd-journal`, the standard low-privilege way to
-do this) avoids needing to widen that at all.
+deliberately runs as an unprivileged user (see systemd/fr-webui.service).
+The event file is the logger's own, readable by the fr_os-webui group:
+this process needs no journal access at all, so it can't read every
+other unit's log either (ROADMAP SEC-4, review v0.2.0 R10).
 
 Each stream is a child process, so the route bounds them: one per webUI
 session (every live-log tab of a session reads the same child, see
@@ -43,6 +42,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 
+from frfw import paths
 from frfw import xdp as xdp_mod
 from frfw.webui.actions import try_save
 from frfw.webui.auth import COOKIE_NAME
@@ -53,17 +53,11 @@ from frfw.webui.templating import templates
 
 router = APIRouter()
 
-#: The unit fr-xdp-sni-logger.service runs as (see that file) -- `-o cat`
-#: strips journald's own prefix (timestamp/hostname/unit), leaving
-#: exactly the JSON line frfw.xdp.format_event_json wrote; `-n 50` seeds
-#: the stream with recent history before following live.
-_JOURNALCTL_CMD = [
-    "journalctl",
-    "-u", "fr-xdp-sni-logger.service",
-    "-o", "cat",
-    "-f",
-    "-n", "50",
-]
+#: Follow the SNI event file: `-n 50` seeds the stream with recent
+#: history, `-F` follows on through the logger emptying it at its size
+#: cap and waits for it if it doesn't exist yet. Each line is already the
+#: JSON frfw.xdp.format_event_json wrote.
+_EVENTS_CMD = ["tail", "-n", "50", "-F", "--", str(paths.SNI_EVENTS_PATH)]
 
 
 def _device_to_name(raw: dict) -> dict[str, str]:
@@ -197,8 +191,8 @@ def remove_domain(
     return redirect_with("/xdp", error=message)
 
 
-#: Ceiling on live journal streams per webUI process, across all
-#: sessions (review v0.2.0 R19). Every stream is one `journalctl`
+#: Ceiling on live log streams per webUI process, across all
+#: sessions (review v0.2.0 R19). Every stream is one `tail`
 #: child, so this bounds how many an admin can leave running; a tab
 #: past the cap gets a clear error frame instead of a stream. 8 leaves
 #: room for an admin with a few live-log tabs on more than one device
@@ -213,17 +207,17 @@ LOG_STREAM_LIMIT = 8
 #: 300 lines anyway).
 _LOG_QUEUE_MAX = 256
 
-#: Seconds between SSE keep-alive comments while the journal is quiet.
+#: Seconds between SSE keep-alive comments while the log is quiet.
 #: It is also the bound on noticing a gone browser: a tab checks for a
-#: disconnect at least this often, so a quiet journal can't keep a
-#: closed tab's `journalctl` alive (and its cap slot taken) forever.
+#: disconnect at least this often, so a quiet log can't keep a
+#: closed tab's `tail` alive (and its cap slot taken) forever.
 LOG_HEARTBEAT_SECONDS = 15.0
 
 _KEEPALIVE = ": keepalive\n\n"
 
 
 def _sse_frame(line: str) -> str | None:
-    """One journal line as an SSE frame, or None if it must be dropped.
+    """One event-log line as an SSE frame, or None if it must be dropped.
 
     Each line is already a JSON object (frfw.xdp.format_event_json);
     forward it verbatim as the SSE payload rather than re-encoding, but
@@ -270,10 +264,10 @@ def _offer(subscriber: asyncio.Queue, frame: str | None) -> None:
 
 
 class _LogStream:
-    """One `journalctl -f` child per webUI session, fanned out to every
+    """One `tail -F` child per webUI session, fanned out to every
     live-log tab of that session (review v0.2.0 R19).
 
-    A single asyncio task (`_pump`) owns the child: it reads the journal
+    A single asyncio task (`_pump`) owns the child: it reads the log
     and puts each frame into every tab's queue. The last tab to leave
     cancels the task, and the task's own `finally` ends the child -- the
     cleanup runs in the pump's task, not in the cancelled request's, so
@@ -319,28 +313,47 @@ class _LogStream:
         if _log_streams.get(self.session_key) is self:
             del _log_streams[self.session_key]
 
+    async def _watch_errors(self, stderr: asyncio.StreamReader) -> None:
+        """`tail -F` keeps retrying a file it can't open and says why on
+        stderr. A missing file is normal before the logger first starts;
+        one this process may not read is a broken install, and the
+        stream says so once instead of staying silent."""
+        reported = False
+        while True:
+            raw = await stderr.readline()
+            if not raw:
+                return
+            if not reported and b"Permission denied" in raw:
+                self._broadcast(_sse_error("cannot read the SNI event log (permission denied)"))
+                reported = True
+
     async def _pump(self) -> None:
         proc: asyncio.subprocess.Process | None = None
+        watcher: asyncio.Task | None = None
         try:
             try:
                 proc = await asyncio.create_subprocess_exec(
-                    *_JOURNALCTL_CMD,
+                    *_EVENTS_CMD,
                     stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.PIPE,
                     stdin=asyncio.subprocess.DEVNULL,
                 )
             except FileNotFoundError:
-                self._broadcast(_sse_error("journalctl not found -- is systemd installed?"))
+                self._broadcast(_sse_error("tail not found -- is coreutils installed?"))
                 return
+            assert proc.stderr is not None
+            watcher = asyncio.get_running_loop().create_task(self._watch_errors(proc.stderr))
             assert proc.stdout is not None
             while True:
                 raw = await proc.stdout.readline()
                 if not raw:
-                    return  # the journal ended (or the child died)
+                    return  # the child died
                 frame = _sse_frame(raw.decode("utf-8", "replace").rstrip("\n"))
                 if frame is not None:
                     self._broadcast(frame)
         finally:
+            if watcher is not None:
+                watcher.cancel()
             if proc is not None and proc.returncode is None:
                 proc.terminate()
                 try:
@@ -377,10 +390,10 @@ async def _tab(session_key: str, request: Request) -> AsyncIterator[str]:
     `await` between them, so the stream can't finish in the gap.
 
     Between frames -- and at least every LOG_HEARTBEAT_SECONDS on a
-    quiet journal, when it sends a keep-alive comment -- the tab asks
+    quiet log, when it sends a keep-alive comment -- the tab asks
     whether its client is still there. That check is what ends a closed
     tab: a server writing to a gone client is not told so, and a quiet
-    journal gives it nothing to write."""
+    log gives it nothing to write."""
     stream = _acquire_stream(session_key)
     if stream is None:
         # At the cap (review v0.2.0 R19): one clear frame, no process.

@@ -157,6 +157,43 @@ def persistence_partition(disk: Path):
         mountpoint.rmdir()
 
 
+def group_id(upper: Path, name: str) -> int | None:
+    """A group's id, from the router's own /etc/group (FR_OS creates its
+    accounts at boot, so the file is on the persistence layer)."""
+    group_file = upper / "etc" / "group"
+    for line in group_file.read_text().splitlines() if group_file.exists() else []:
+        fields = line.split(":")
+        if len(fields) >= 3 and fields[0] == name:
+            return int(fields[2])
+    return None
+
+
+def check_sni_event_file(check, upper: Path) -> None:
+    """ROADMAP SEC-4: fr-xdp-sni-logger's event file, which the webUI and
+    the sensor daemons read instead of the journal, is root's and
+    readable by the fr_os-webui group only -- no reader can write it."""
+    directory = upper / "var" / "log" / "fr_os-sni"
+    events = directory / "events.jsonl"
+    webui_gid = group_id(upper, "fr_os-webui")
+    ok = (events.exists() and webui_gid is not None
+          and events.stat().st_uid == 0 and events.stat().st_gid == webui_gid
+          and events.stat().st_mode & 0o777 == 0o640
+          and directory.stat().st_uid == 0 and directory.stat().st_gid == webui_gid
+          and directory.stat().st_mode & 0o777 == 0o750)
+    detail = ""
+    if not ok and events.exists():
+        st = events.stat()
+        detail = f": {st.st_uid}:{st.st_gid} {oct(st.st_mode & 0o777)} (fr_os-webui is {webui_gid})"
+    check(ok, "the XDP SNI event file is root:fr_os-webui 0640 (ROADMAP SEC-4)" + detail)
+
+
+def first_stream_line(opener) -> str:
+    """The first line of the webUI's live XDP log stream: recent events,
+    or the keep-alive the stream sends within 15 s on a quiet log."""
+    with opener.open(f"https://{WEBUI_HOST}:{WEBUI_PORT}/xdp/logs/stream", timeout=40) as resp:
+        return resp.readline().decode()
+
+
 def _unmount(mountpoint: Path) -> None:
     """Unmount and remove a temporary mount point. The loop device under a
     squashfs mounted from a file on another mount is released
@@ -220,6 +257,14 @@ def journal(upper: Path, *args: str) -> str:
     ).stdout
 
 
+def print_journal(upper: Path, unit: str, *boot: str) -> None:
+    """The unit's last journal lines, timestamped, into the CI log: the
+    QEMU artifacts are not always at hand when a check fails."""
+    print(f"    --- journal of {unit} ---")
+    for line in journal(upper, *boot, "-u", unit, "-o", "short-monotonic").splitlines()[-25:]:
+        print(f"    {line}")
+
+
 #: FR_OS services that must be running after a boot, each in its systemd
 #: sandbox (security-lessons I1).
 #: (fr-apply-helper is socket-activated: it starts on first use.)
@@ -236,6 +281,10 @@ def check_sandboxed_services(check, upper: Path, *boot: str) -> None:
                                 text)))
     check(not bad, "no FR_OS service crashed or was killed in its sandbox"
           + (f": {', '.join(bad)}" if bad else ""))
+    # Say why, right here in the CI log. fr-webui-rebind only restarts
+    # fr-webui, so its failure is told by fr-webui's own journal.
+    for unit in bad + (["fr-webui"] if "fr-webui-rebind" in bad else []):
+        print_journal(upper, f"{unit}.service", *boot)
     check("status=31/SYS" not in text, "no seccomp kill")
     for unit in LONG_RUNNING:
         check("Started" in journal(upper, *boot, "-u", f"{unit}.service"), f"{unit} started")
@@ -358,10 +407,9 @@ def run(args: argparse.Namespace) -> int:
         failed = sorted(set(re.findall(r"Failed to start (\S+)", journal(upper))))
         check(not failed, f"no unit failed to start{': ' + ', '.join(failed) if failed else ''}")
         for unit in failed:  # say why, right here in the CI log
-            print(f"    --- journal of {unit} ---")
-            for line in journal(upper, "-u", unit).splitlines()[-25:]:
-                print(f"    {line}")
+            print_journal(upper, unit)
         check_sandboxed_services(check, upper)
+        check_sni_event_file(check, upper)
         console = upper / "etc" / "issue.d" / "fr_os-initial-admin.issue"
         shown = console.read_text() if console.exists() else ""
         match = re.search(r"login is 'admin' / '([^']+)'", shown)
@@ -398,6 +446,12 @@ def run(args: argparse.Namespace) -> int:
         found = re.search(r'id="unneeded">(.*?)</div>', surface_page, re.S)
         check(clean, "nothing listens that the config doesn't need (security-lessons K7)"
               + ("" if clean else ": " + " ".join((found.group(1) if found else surface_page[:300]).split())))
+        # ROADMAP SEC-4: the webUI has no journal access any more; its
+        # live XDP log reads the logger's event file from its sandbox.
+        first = first_stream_line(opener)
+        check(first.startswith((":", "data: {")) and '"error"' not in first,
+              "the webUI's live XDP log stream works without journal access (ROADMAP SEC-4)"
+              + ("" if '"error"' not in first and first else f": {first.strip()[:200]!r}"))
         score_page = get(opener, "/security")
         score = re.search(r'id="score">(\d+)%', score_page)
         check(score is not None, "the security score page works on the real router (security-lessons K8)"
