@@ -60,6 +60,7 @@ def router_webui(app, webui_env, tmp_path, boot_test, monkeypatch, minimal_confi
     while not server.started and time.monotonic() < deadline:
         time.sleep(0.01)
     assert server.started, "uvicorn did not start"
+    monkeypatch.setattr(boot_test, "WEBUI_HOST", "127.0.0.1")
     monkeypatch.setattr(boot_test, "WEBUI_PORT", sock.getsockname()[1])
     yield
     server.should_exit = True
