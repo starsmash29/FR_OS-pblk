@@ -413,6 +413,10 @@ def run(args: argparse.Namespace) -> int:
         # ROADMAP SEC-4: the resolver's query log has a size cap of its own.
         check("Started" in journal(upper, "-u", "fr-dns-log-trim.timer"),
               "the hourly query-log size cap (fr-dns-log-trim.timer) is running")
+        # ROADMAP SEC-21: the daily block-list refresh is armed (it fetches
+        # nothing while ad-blocking is off).
+        check("Started" in journal(upper, "-u", "fr-adblock-refresh.timer"),
+              "the daily ad-block list refresh (fr-adblock-refresh.timer) is armed")
         console = upper / "etc" / "issue.d" / "fr_os-initial-admin.issue"
         shown = console.read_text() if console.exists() else ""
         match = re.search(r"login is 'admin' / '([^']+)'", shown)

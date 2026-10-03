@@ -1638,6 +1638,22 @@ by contrast, only reconciles whether the dnsmasq instance is running (or
 stopped) to match the config, and serves whatever was already
 downloaded -- it never touches the network.
 
+### The daily refresh is armed everywhere, and fetches only while on (ROADMAP SEC-21)
+
+`fr-adblock-refresh.timer` was installed in the image but never enabled
+(`fr-first-boot.sh` starts every other timer), so on a real router the
+lists -- the malware and phishing categories included -- were only ever
+as fresh as the admin's last "Refresh now". First boot now enables it on
+every router, ad-blocking on or not, so turning ad-blocking on later
+needs no unit change. The timer's run is `firewall-cli adblock-refresh
+--scheduled`, which fetches nothing while `adblocker.enabled` is off:
+FR_OS makes no internet call the admin didn't turn on (security-lessons
+G11). An admin's own run -- the command without `--scheduled`, or "Refresh
+now" -- still fetches whenever lists are configured, so the lists can be
+looked at before ad-blocking is switched on.
+`tests/test_system_units.py` now checks that every timer in `systemd/` is
+enabled by both `fr-first-boot.sh` and `install-system-integration.sh`.
+
 ### Downloading: `urllib.request`, not a new dependency
 
 The project's only existing "download something from the internet"

@@ -227,8 +227,8 @@ Local DNS-level blocking (phase 9, extended in phase 15; see
 [ARCHITECTURE.md](../ARCHITECTURE.md#categorized-dns-filtering-and-dns-threat-signals-phase-15)).
 A dedicated dnsmasq instance (`fr-adblock-dns.service`) answers blocked
 names with `0.0.0.0`. Lists are downloaded only by `firewall-cli
-adblock-refresh` (daily timer) or the webUI's "Refresh now", never by
-`apply`.
+adblock-refresh` (daily timer, only while `enabled` is true) or the webUI's
+"Refresh now", never by `apply`.
 
 ```yaml
 adblocker:
