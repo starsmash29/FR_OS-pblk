@@ -61,6 +61,8 @@ for unit in \
     fr-adblock-dns.service \
     fr-adblock-refresh.service \
     fr-adblock-refresh.timer \
+    fr-dns-log-trim.service \
+    fr-dns-log-trim.timer \
     fr-appid.service \
     fr-schedule-check.service \
     fr-schedule-check.timer \

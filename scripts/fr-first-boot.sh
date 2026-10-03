@@ -112,6 +112,7 @@ for unit in \
     fr-appid \
     fr-schedule-check.timer \
     fr-update-check.timer \
+    fr-dns-log-trim.timer \
     fr-tls-fp \
     fr-update-helper.socket
 do

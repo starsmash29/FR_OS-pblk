@@ -20,10 +20,10 @@ Group=fr_os-sensor
 # action) goes through fr-apply-helper's Unix socket -- this process
 # never touches `nft` or /proc/net/nf_conntrack itself, and never gains
 # any capability beyond journal read.
-# systemd-journal only for the resolver's query log (fr-adblock-dns's
-# journal, adblocker.query_logging): the XDP SNI events come from the
-# logger's event file, readable through fr_os-webui (ROADMAP SEC-4).
-SupplementaryGroups=fr_os-webui systemd-journal
+# No journal access (ROADMAP SEC-4, review v0.2.0 R10): the XDP SNI
+# events and the resolver's query log come from their writers' own
+# files, readable through the fr_os-webui group.
+SupplementaryGroups=fr_os-webui
 ExecStart=fr-ai-ids
 Restart=on-failure
 RestartSec=5

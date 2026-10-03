@@ -28,6 +28,7 @@
     firewall-cli update rollback [--repo OWNER/REPO]
     firewall-cli xdp-status
     firewall-cli adblock-refresh [config.yaml]
+    firewall-cli dns-log-trim
     firewall-cli persistence status
     firewall-cli persistence auto [--reboot]
     firewall-cli persistence create DISK [--wipe] --yes
@@ -379,6 +380,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     add_config_arg(p_adblock_refresh)
     p_adblock_refresh.set_defaults(handler=_cmd_adblock_refresh)
+
+    p_dns_log_trim = sub.add_parser(
+        "dns-log-trim",
+        help="empty the resolver's query log once it is too big (hourly, by fr-dns-log-trim.timer)",
+    )
+    p_dns_log_trim.set_defaults(handler=_cmd_dns_log_trim)
 
     return parser
 
@@ -901,6 +908,14 @@ def _cmd_xdp_status(args: argparse.Namespace) -> int:
     print("\nPacket counters:")
     for name, count in stats.items():
         print(f"  {name}: {count}")
+    return 0
+
+
+def _cmd_dns_log_trim(args: argparse.Namespace) -> int:
+    from frfw.adblock.dns_service import QUERY_LOG_MAX_BYTES, trim_query_log
+
+    if trim_query_log():
+        print(f"emptied {paths.DNS_QUERY_LOG_PATH} (it was over {QUERY_LOG_MAX_BYTES} bytes)")
     return 0
 
 

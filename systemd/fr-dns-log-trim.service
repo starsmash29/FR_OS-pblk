@@ -1,0 +1,38 @@
+[Unit]
+Description=FR_OS resolver query log size cap (frfw.adblock.dns_service.trim_query_log)
+Documentation=https://github.com/starsmash29/FR_OS-pblk
+
+[Service]
+Type=oneshot
+# ROADMAP SEC-4: dnsmasq writes its query log to a file of its own,
+# nobody:fr_os-webui 0640 (see fr-adblock-dns.service), and appends to it
+# forever; this empties it once it is past its cap. Root with one
+# capability: the file is dnsmasq's (nobody's), and emptying it takes
+# writing it. No network, nothing writable but that directory.
+ExecStart=firewall-cli dns-log-trim
+CapabilityBoundingSet=CAP_DAC_OVERRIDE
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=-/var/log/fr_os-dns
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+SystemCallErrorNumber=EPERM
+RestrictAddressFamilies=AF_UNIX

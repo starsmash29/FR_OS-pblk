@@ -11,6 +11,7 @@ the DoH canary, the query log, and the AI IDS consuming that log.
 from __future__ import annotations
 
 import copy
+import os
 import random
 import shutil
 import socket
@@ -22,7 +23,7 @@ import time
 
 import pytest
 
-from frfw import adblock
+from frfw import adblock, paths
 from frfw.adblock import dga, dns_service
 from frfw.adblock.categories import PRESETS, THREAT_CATEGORIES
 from frfw.ai_ids.daemon import IDSDaemon
@@ -392,15 +393,17 @@ def test_real_dnsmasq_blocks_logs_and_feeds_the_ai_ids(dhcp_config_dict, tmp_pat
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
-    text = dns_service.render_dnsmasq_config(config, hosts_path=tmp_path / "h", category_dir=tmp_path / "d")
+    log = tmp_path / "dnsmasq.log"
+    text = dns_service.render_dnsmasq_config(config, hosts_path=tmp_path / "h", category_dir=tmp_path / "d",
+                                             query_log_path=log)
     text = text.replace("port=53\n", f"port={port}\n").replace("server=1.1.1.1", f"server=127.0.0.1#{up_port}")
     # dnsmasq drops to `nobody` by default, which can't read pytest's 0700
     # tmp dir (production lists live in world-readable /etc/fr_os paths).
     text = text.replace("user=nobody\ngroup=nogroup\n", "user=root\n")
     text = "\n".join(l for l in text.splitlines() if not l.startswith("interface=")) + "\nlisten-address=127.0.0.1\n"
-    log = tmp_path / "dnsmasq.log"
+    # The generated config already names the query log file (ROADMAP SEC-4).
     conf = tmp_path / "dnsmasq.conf"
-    conf.write_text(text + f"log-facility={log}\n")
+    conf.write_text(text + "\n")
 
     proc = subprocess.Popen(["dnsmasq", "--keep-in-foreground", f"--conf-file={conf}"])
     try:
@@ -431,9 +434,97 @@ def test_real_dnsmasq_blocks_logs_and_feeds_the_ai_ids(dhcp_config_dict, tmp_pat
     lan["interfaces"]["lan"]["address"] = "127.0.0.1/8"
     del lan["dhcp"]
     daemon = _daemon(lan, tmp_path, ["malware", "doh-bypass"])
-    for m in messages:
-        daemon.handle_dns_log_line(m)
+    # The file's own lines, dnsmasq's timestamp prefix and all: the reader
+    # follows this file now, not the journal (ROADMAP SEC-4).
+    for line in log.read_text().splitlines():
+        daemon.handle_dns_log_line(line)
     (event,) = daemon.evaluate_and_enforce()
     assert event.ip == CLIENT
     assert "DGA-like NXDOMAIN lookups" in event.reasons
     assert event.dns_threat_count == 1
+
+
+# --- SEC-4: the query log is a file of the resolver's own -------------------
+
+
+def test_query_logging_writes_to_the_query_log_file(dhcp_config_dict, tmp_path):
+    on = _config(dhcp_config_dict, query_logging=True)
+    text = dns_service.render_dnsmasq_config(on, hosts_path=tmp_path / "h", category_dir=tmp_path / "d",
+                                             query_log_path=tmp_path / "q.log")
+    assert f"log-facility={tmp_path / 'q.log'}\n" in text
+    off = _config(dhcp_config_dict)
+    assert "log-facility" not in dns_service.render_dnsmasq_config(off, hosts_path=tmp_path / "h",
+                                                                   category_dir=tmp_path / "d")
+    assert f"log-facility={paths.DNS_QUERY_LOG_PATH}\n" in dns_service.render_dnsmasq_config(
+        on, hosts_path=tmp_path / "h", category_dir=tmp_path / "d")
+
+
+@pytest.mark.parametrize("line, message", [
+    ("Oct  3 17:25:19 dnsmasq[489]: 1 127.0.0.1/40608 query[A] x.example from 127.0.0.1",
+     "1 127.0.0.1/40608 query[A] x.example from 127.0.0.1"),
+    ("Dec 13 09:01:02 dnsmasq[12]: 3 10.0.0.5/46443 reply a.example is NXDOMAIN",
+     "3 10.0.0.5/46443 reply a.example is NXDOMAIN"),
+    ("3 10.0.0.5/46443 reply a.example is NXDOMAIN", "3 10.0.0.5/46443 reply a.example is NXDOMAIN"),
+    ("Oct  3 17:25:19 kea[1]: not dnsmasq", "Oct  3 17:25:19 kea[1]: not dnsmasq"),
+])
+def test_dnsmasq_message_drops_only_dnsmasqs_own_prefix(line, message):
+    assert dns_service.dnsmasq_message(line) == message
+
+
+def test_trim_query_log_empties_it_only_past_the_cap(tmp_path):
+    log = tmp_path / "queries.log"
+    assert dns_service.trim_query_log(log, max_bytes=10) is False  # not there yet
+    log.write_text("12345")
+    assert dns_service.trim_query_log(log, max_bytes=10) is False
+    assert log.read_text() == "12345"
+    log.write_text("x" * 11)
+    assert dns_service.trim_query_log(log, max_bytes=10) is True
+    assert log.read_text() == ""
+
+
+def test_trim_query_log_never_follows_a_symlink(tmp_path):
+    target = tmp_path / "elsewhere"
+    target.write_text("x" * 100)
+    (tmp_path / "queries.log").symlink_to(target)
+    with pytest.raises(OSError):
+        dns_service.trim_query_log(tmp_path / "queries.log", max_bytes=10)
+    assert target.read_text() == "x" * 100
+
+
+@requires_dnsmasq
+@pytest.mark.skipif(os.geteuid() != 0 or not shutil.which("setpriv"), reason="needs root and setpriv")
+def test_real_dnsmasq_hands_the_query_log_to_itself_and_the_readers_group(tmp_path):
+    """What fr-adblock-dns.service relies on, with the real dnsmasq: started
+    as root under the unit's group (Group=, here setpriv --regid), it opens
+    the log before dropping to `nobody`, leaving it nobody:<group> 0640 --
+    writable by dnsmasq alone, readable by the readers' group -- and keeps
+    logging queries after the drop."""
+    group = 4321  # any group: it stands for fr_os-webui
+    log_dir = tmp_path / "fr_os-dns"
+    log_dir.mkdir()
+    os.chown(log_dir, 0, group)
+    log_dir.chmod(0o750)
+    log = log_dir / "queries.log"
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    conf = tmp_path / "dnsmasq.conf"
+    conf.write_text(f"port={port}\nlisten-address=127.0.0.1\nbind-interfaces\nno-resolv\n"
+                    "user=nobody\ngroup=nogroup\nlog-queries=extra\n"
+                    f"log-facility={log}\naddress=/x.example/192.0.2.1\n")
+    proc = subprocess.Popen(["setpriv", f"--regid={group}", "--clear-groups", "--reuid=0",
+                             "dnsmasq", "--keep-in-foreground", f"--conf-file={conf}"])
+    try:
+        deadline = time.time() + 5
+        while time.time() < deadline and "started" not in (log.read_text() if log.exists() else ""):
+            time.sleep(0.1)
+        assert _query(port, "x.example") == 0
+        time.sleep(0.3)
+    finally:
+        proc.terminate()
+        proc.wait(timeout=5)
+    st = log.stat()
+    assert st.st_uid == 65534 and st.st_gid == group and st.st_mode & 0o777 == 0o640
+    assert any(dns_service.dnsmasq_message(line).endswith("query[A] x.example from 127.0.0.1")
+               for line in log.read_text().splitlines())
+

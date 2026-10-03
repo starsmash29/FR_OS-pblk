@@ -1,0 +1,10 @@
+[Unit]
+Description=Hourly FR_OS resolver query log size cap
+Documentation=https://github.com/starsmash29/FR_OS-pblk
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+
+[Install]
+WantedBy=timers.target

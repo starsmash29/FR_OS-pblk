@@ -3,9 +3,9 @@ systemd/fr-appid.service).
 
 Reads two logs, never the network or the kernel directly:
 
-1. fr-adblock-dns.service's journal (only when `adblocker.query_logging`
-   is on): every "query[...]" line names a client and the name it
-   looked up;
+1. the resolver's query log, paths.DNS_QUERY_LOG_PATH (only when
+   `adblocker.query_logging` is on): every "query[...]" line names a
+   client and the name it looked up;
 2. fr-xdp-sni-logger.service's event file, paths.SNI_EVENTS_PATH (only
    when `app_control.observe_sni` is on, which makes the XDP program
    report *passed* SNIs as well as drops; ROADMAP SEC-4).
@@ -39,7 +39,8 @@ from frfw import paths
 from frfw.appid import AppMatcher, Catalog, load_catalog
 from frfw.appid.usage import UsageTracker
 from frfw.config.schema import Config
-from frfw.journal import follow_file_forever, tail_journal_forever
+from frfw.adblock.dns_service import dnsmasq_message
+from frfw.journal import follow_file_forever
 
 FLUSH_SECONDS = 30.0
 CONFIG_POLL_SECONDS = 30.0
@@ -100,7 +101,7 @@ class AppIdDaemon:
         return app_id
 
     def handle_dns_log_line(self, line: str) -> None:
-        match = _DNS_QUERY_RE.match(line)
+        match = _DNS_QUERY_RE.match(dnsmasq_message(line))
         if not match or match.group("qtype").upper() in _IGNORED_QTYPES:
             return
         self.observe(match.group("client"), match.group("name"), "dns")
@@ -143,14 +144,10 @@ class AppIdDaemon:
     ) -> None:  # pragma: no cover -- thin composition of tested parts
         units = source_units(self.config)
         for unit, handler in self.sources():
-            # The SNI events have a file of their own (ROADMAP SEC-4); the
-            # resolver's query log is still read from its journal.
-            if unit == XDP_LOGGER_UNIT:
-                target, source = follow_file_forever, paths.SNI_EVENTS_PATH
-            else:
-                target, source = tail_journal_forever, unit
+            # Each source's own file (ROADMAP SEC-4), not its journal.
+            source = paths.SNI_EVENTS_PATH if unit == XDP_LOGGER_UNIT else paths.DNS_QUERY_LOG_PATH
             threading.Thread(
-                target=target, args=(source, handler), kwargs={"program": "fr-appid"},
+                target=follow_file_forever, args=(source, handler), kwargs={"program": "fr-appid"},
                 daemon=True,
             ).start()
         while True:

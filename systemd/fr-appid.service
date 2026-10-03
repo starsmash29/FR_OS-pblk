@@ -18,10 +18,10 @@ Group=fr_os-sensor
 # apply-helper and never changes any enforcement state: it only writes
 # its display-only usage summary under /etc/fr_os/sensors. While
 # app_control is off it idles, re-reading config.yaml periodically.
-# systemd-journal only for the resolver's query log (fr-adblock-dns's
-# journal, adblocker.query_logging): the XDP SNI events come from the
-# logger's event file, readable through fr_os-webui (ROADMAP SEC-4).
-SupplementaryGroups=fr_os-webui systemd-journal
+# No journal access (ROADMAP SEC-4, review v0.2.0 R10): the XDP SNI
+# events and the resolver's query log come from their writers' own
+# files, readable through the fr_os-webui group.
+SupplementaryGroups=fr_os-webui
 ExecStart=fr-appid
 Restart=on-failure
 RestartSec=5

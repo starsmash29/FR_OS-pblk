@@ -265,9 +265,12 @@ adblocker:
   DoH canary answers NXDOMAIN so Firefox keeps using the system resolver.
   DoH to arbitrary servers on port 443 can't be stopped this way -- the
   `doh-bypass` category blocks the well-known DoH server names instead.
-- `query_logging`: dnsmasq logs every query (`log-queries=extra`) to the
-  system journal, where `fr-ai-ids` reads it. This records which client
-  looked up which name, for as long as the journal keeps it.
+- `query_logging`: dnsmasq logs every query (`log-queries=extra`) to
+  `/var/log/fr_os-dns/queries.log` (nobody:fr_os-webui 0640), where
+  `fr-ai-ids` and `fr-appid` read it. This records which client looked up
+  which name; the file is emptied once it is past 16 MiB (checked hourly
+  by `fr-dns-log-trim.timer`). With it, dnsmasq's other messages go to
+  that file too instead of the journal.
 
 ## `iot`
 
@@ -330,7 +333,8 @@ app_control:
   repeated id is rejected.
 - Observation sources: the resolver's query log (`adblocker.enabled` and
   `adblocker.query_logging`) and, with `observe_sni`, every SNI the XDP
-  program sees (one journal line per TLS connection). With neither, the
+  program sees (one line per TLS connection in the logger's event file,
+  `/var/log/fr_os-sni/events.jsonl`). With neither, the
   daemon idles.
 - `blocked_apps` are answered NXDOMAIN by the resolver for every catalog
   name of those apps and their subdomains, so blocking requires
