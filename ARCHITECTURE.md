@@ -244,6 +244,19 @@ they're documented design decisions:
    never routes such a frame either. `tests/test_xdp_live.py` sends
    tagged frames through the real program (802.1Q, QinQ, the hello copy
    offset, and the deeper stack).
+6. **The parse ends where the IPv4 datagram ends (ROADMAP SEC-7).**
+   Bytes on the wire past the IP total length -- Ethernet padding on a
+   short frame, or anything a sender appends -- are not part of the
+   datagram and are never forwarded, so they are not parsed: a
+   ClientHello there is not TLS, a name cut by the datagram's end is not
+   matched, and a padded pure ACK does not count as a segment of a split
+   hello for phase 19. Two bounds are kept apart: `data_end` is the
+   memory-safety bound every read is checked against, for the verifier;
+   the datagram's end is a plain scalar (`payload_len`, then `limit` and
+   `room` inside `extract_sni()`), because a second packet pointer with a
+   variable offset bounds nothing the verifier can use. The TLS record
+   length bounds nothing: a ClientHello may legally span records, so it
+   stays only the signal that a hello continues in the next segment.
 
 The actual kernel-space parser (TLS record → handshake → ClientHello
 fields → extension list → server_name extension → reading the SNI bytes)

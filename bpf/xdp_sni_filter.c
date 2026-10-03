@@ -463,24 +463,47 @@ static int parse_sni_body(unsigned char *p, unsigned char *end,
 // is 672. Too large". Giving extract_sni() its own frame removes
 // xdp_sni_filter()'s locals from that sum entirely, since they are no
 // longer live in the same frame as the call.
+//
+// Two bounds, kept apart on purpose (ROADMAP SEC-7, review v0.2.0 R9).
+// `end` (data_end) is the memory-safety bound, the one the verifier
+// checks every read against. `limit` is where the IPv4 datagram ends:
+// the bytes of it from `p` on, from the IP total length. Past it the
+// frame holds Ethernet padding or whatever else a sender appended --
+// bytes the router never forwards, so a name read out of them is not
+// a name the server will see. `limit` is a plain scalar, and so is
+// `off`, the parse position counted against it: a second packet
+// pointer for the datagram's end would have a variable offset the
+// verifier can't use to bound anything, and comparing two packet
+// pointers disturbs its tracking of `p` (see the extension walk's
+// comments). Each step checks `end` first, exactly as before, and
+// `limit` after it, as a separate statement.
 __attribute__((noinline))
-static int extract_sni(unsigned char *p, unsigned char *end, char *out_sni)
+static int extract_sni(unsigned char *p, unsigned char *end, char *out_sni, __u32 limit)
 {
 	// client_version(2) + random(32)
 	if (p + 34 > end)
 		return -1;
+	if (34 > limit)
+		return -1;
 	p += 34;
+	__u32 off = 34;
 
 	// session_id: 1-byte length (RFC 8446 caps this at 32) + variable body
 	if (p + 1 > end)
 		return -1;
+	if (off + 1 > limit)
+		return -1;
 	__u32 session_id_len = p[0];
 	p += 1;
+	off += 1;
 	if (session_id_len > 32)
 		return -1;
 	if (p + session_id_len > end)
 		return -1;
+	if (off + session_id_len > limit)
+		return -1;
 	p += session_id_len;
+	off += session_id_len;
 
 	// cipher_suites: 2-byte length (in bytes) + variable body. The
 	// verifier's ability to keep tracking `p` as a bounds-checkable
@@ -495,24 +518,36 @@ static int extract_sni(unsigned char *p, unsigned char *end, char *out_sni)
 	// clamp is load-bearing, not defensive styling.
 	if (p + 2 > end)
 		return -1;
+	if (off + 2 > limit)
+		return -1;
 	__u32 cipher_suites_len = read_u16(p);
 	p += 2;
+	off += 2;
 	if (cipher_suites_len > 512)
 		return -1;
 	if (p + cipher_suites_len > end)
 		return -1;
+	if (off + cipher_suites_len > limit)
+		return -1;
 	p += cipher_suites_len;
+	off += cipher_suites_len;
 
 	// compression_methods: 1-byte length (practically always 1) + variable body
 	if (p + 1 > end)
 		return -1;
+	if (off + 1 > limit)
+		return -1;
 	__u32 compression_len = p[0];
 	p += 1;
+	off += 1;
 	if (compression_len > 16)
 		return -1;
 	if (p + compression_len > end)
 		return -1;
+	if (off + compression_len > limit)
+		return -1;
 	p += compression_len;
+	off += compression_len;
 
 	// extensions: 2-byte total length, then a sequence of
 	// {type(2), length(2), data[length]} -- if this length field is
@@ -520,8 +555,15 @@ static int extract_sni(unsigned char *p, unsigned char *end, char *out_sni)
 	// there's no SNI to find; that's a normal "no match", not truncation.
 	if (p + 2 > end)
 		return -2; // signal "no extensions block" separately from malformed
+	if (off + 2 > limit)
+		return -2;
 	__u32 ext_total = read_u16(p);
 	p += 2;
+	off += 2;
+	// The datagram's bytes from here on (`off` <= `limit` was checked
+	// at every step above). One scalar for the walk below to compare
+	// `consumed` against, rather than two.
+	__u32 room = limit - off;
 	if (ext_total > 4095)
 		ext_total = 4095;
 	// Where to stop walking extensions is tracked as a plain integer
@@ -626,7 +668,10 @@ static int extract_sni(unsigned char *p, unsigned char *end, char *out_sni)
 		// entirely.
 		__u16 ext_type = 0;
 		__u32 ext_len_raw = 0;
-		int have_header = !done && read_ext_header(p, end, &ext_type, &ext_len_raw);
+		// The header must lie inside the datagram (`room`) as well as
+		// inside the frame (`end`, checked by read_ext_header()).
+		int have_header = !done && (consumed + 4 <= room) &&
+				  read_ext_header(p, end, &ext_type, &ext_len_raw);
 		// Once `consumed` has reached/passed the declared extensions
 		// length, stop walking further extensions -- purely a
 		// correctness bound (see the comment above `ext_total`'s
@@ -644,6 +689,12 @@ static int extract_sni(unsigned char *p, unsigned char *end, char *out_sni)
 		__u32 name_len = 0;
 		unsigned char *name_ptr = p; // dummy init, meaningful only when ok4
 		int ok4 = is_sni && parse_sni_body(p + 4, end, &name_len, &name_ptr);
+		// ... and so must the whole name: list length(2), name type(1)
+		// and name length(2) after the 4-byte header, then the name. A
+		// name cut by the datagram's end is not matched on the bytes
+		// after it (parse_sni_body()'s MAX_SNI_LEN window is checked
+		// against the frame only, for the verifier's sake).
+		ok4 = ok4 && (consumed + 9 + name_len <= room);
 
 		// Track only a pointer + length through the loop, not the
 		// bytes themselves: the alternative (copying MAX_SNI_LEN bytes
@@ -968,7 +1019,12 @@ int xdp_sni_filter(struct xdp_md *ctx)
 	};
 	// (A pointer comparison, not payload_len > 0: the verifier only
 	// accepts a packet read it can prove in bounds that way.)
-	if (report_hello && payload + 1 <= data_end && payload[0] != TLS_CONTENT_TYPE_HANDSHAKE) {
+	// payload_len, from the IP total length, is what tells a segment
+	// with data from a pure ACK whose short frame was padded on the
+	// wire: the padding must not count as one of the flow's segments
+	// (ROADMAP SEC-7).
+	if (report_hello && payload_len > 0 && payload + 1 <= data_end &&
+	    payload[0] != TLS_CONTENT_TYPE_HANDSHAKE) {
 		struct hello_flow *flow = bpf_map_lookup_elem(&hello_flows, &flow_key);
 		if (flow) {
 			emit_hello_segment(ctx, ip, tcp, payload_off, payload_len, 0);
@@ -983,7 +1039,16 @@ int xdp_sni_filter(struct xdp_md *ctx)
 	// ClientHello -- a mid-stream continuation segment never starts
 	// with byte 0x16, so this check alone gives us statelessness (see
 	// this file's header comment, point 1).
+	//
+	// Every check below tests the frame (data_end, for the verifier)
+	// and then the datagram (payload_len, from the IP total length):
+	// bytes past the datagram are Ethernet padding or junk the router
+	// never forwards, not TLS (ROADMAP SEC-7, review v0.2.0 R9).
 	if (payload + 5 > data_end) {
+		bump(STAT_PASS_NOT_TLS);
+		return XDP_PASS;
+	}
+	if (payload_len < 5) {
 		bump(STAT_PASS_NOT_TLS);
 		return XDP_PASS;
 	}
@@ -994,6 +1059,10 @@ int xdp_sni_filter(struct xdp_md *ctx)
 
 	unsigned char *hs = payload + 5;
 	if (hs + 4 > data_end) {
+		bump(STAT_PASS_TRUNCATED);
+		return XDP_PASS;
+	}
+	if (payload_len < 9) {
 		bump(STAT_PASS_TRUNCATED);
 		return XDP_PASS;
 	}
@@ -1014,7 +1083,11 @@ int xdp_sni_filter(struct xdp_md *ctx)
 	}
 
 	char sni[MAX_SNI_LEN] = {};
-	int sni_len = extract_sni(hs + 4, data_end, sni);
+	// The record length (payload[3..4]) bounds nothing here: a
+	// ClientHello may legally span records, and a short one is already
+	// caught by the datagram bound. It stays what it is above, the
+	// signal that the hello continues in the flow's next segments.
+	int sni_len = extract_sni(hs + 4, data_end, sni, payload_len - 9);
 
 	if (sni_len == -1) {
 		bump(STAT_PASS_TRUNCATED);
