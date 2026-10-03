@@ -49,7 +49,8 @@ from frfw.ai_ids.engine import AnomalyEngine, AnomalyEvent
 from frfw.config.schema import Config
 from frfw.helper import client as helper_client
 from frfw.helper.client import HelperError
-from frfw.journal import follow_file_forever, tail_journal_forever
+from frfw.adblock.dns_service import dnsmasq_message
+from frfw.journal import follow_file_forever
 
 #: How often to poll conntrack and check whether a window has elapsed.
 #: Independent of frfw.ai_ids.engine.WINDOW_SECONDS (the *scoring*
@@ -69,7 +70,8 @@ RECENT_EVENTS_LIMIT = 50
 AI_IDS_SERVICE_NAME = "fr-ai-ids.service"
 
 #: One line of the ad-block resolver's query log (dnsmasq with
-#: `log-queries=extra`, phase 15), as journald's `-o cat` hands it over.
+#: `log-queries=extra`, phase 15), once frfw.adblock.dns_service.dnsmasq_message
+#: has removed dnsmasq's timestamp prefix.
 #: Format checked against real dnsmasq 2.91 output:
 #:   "3 10.0.0.5/46443 reply www.nxtest.example is NXDOMAIN"
 #:   "1 10.0.0.5/33904 /etc/fr_os/adblock.d/malware.hosts bad.example is 0.0.0.0"
@@ -104,7 +106,7 @@ class IDSDaemon:
     quarantine actions. Split into small, independently callable methods
     (`handle_sni_event_line`, `poll_conntrack_once`, `evaluate_and_enforce`)
     specifically so tests can drive each one directly with synthetic
-    input and a fake helper/clock, without a real journald, conntrack
+    input and a fake helper/clock, without real log files, a conntrack
     table, or Unix socket -- only `run_forever` is the actual blocking
     entry point, and it is intentionally a thin composition of those
     pieces rather than where any real logic lives.
@@ -138,7 +140,7 @@ class IDSDaemon:
     # -- ingestion ---------------------------------------------------------
 
     def handle_sni_event_line(self, line: str) -> None:
-        """One line of fr-xdp-sni-logger's journald output (see
+        """One line of fr-xdp-sni-logger's event file (see
         `frfw.xdp.format_event_json`). Malformed/unrelated lines are
         ignored rather than raising -- a log stream occasionally carrying
         an unexpected line (e.g. a systemd-injected notice) must never
@@ -154,14 +156,15 @@ class IDSDaemon:
             self.engine.observe_sni_block(src_ip, now=self._clock())
 
     def handle_dns_log_line(self, line: str) -> None:
-        """One line of fr-adblock-dns.service's journald output (only
-        produced with `adblocker.query_logging`). NXDOMAIN answers feed the
+        """One line of the resolver's query log (paths.DNS_QUERY_LOG_PATH,
+        only produced with `adblocker.query_logging`), with or without
+        dnsmasq's own timestamp prefix. NXDOMAIN answers feed the
         NXDOMAIN/DGA counters; an answer served from a malware/phishing
         category file feeds the threat-lookup counter. Everything else --
         the query itself, forwarding, ordinary answers, dnsmasq's own
         start-up notices, the DoH canary's "config ... is NXDOMAIN" -- is
         ignored."""
-        match = _DNS_LINE_RE.match(line)
+        match = _DNS_LINE_RE.match(dnsmasq_message(line))
         if not match:
             return
         client, rest = match.group("client"), match.group("rest")
@@ -272,9 +275,11 @@ class IDSDaemon:
         ).start()
         adblocker = self.config.adblocker
         if adblocker.enabled and adblocker.query_logging:
+            # The resolver's query log, from its own file (ROADMAP SEC-4).
             threading.Thread(
-                target=self._tail_journal_forever,
-                args=(f"{paths.ADBLOCK_DNS_SERVICE_NAME}.service", self.handle_dns_log_line),
+                target=follow_file_forever,
+                args=(paths.DNS_QUERY_LOG_PATH, self.handle_dns_log_line),
+                kwargs={"program": "fr-ai-ids"},
                 daemon=True,
             ).start()
 
@@ -286,8 +291,6 @@ class IDSDaemon:
                 self.evaluate_and_enforce()
                 next_eval_at = self._clock() + self.engine.window_seconds
 
-    def _tail_journal_forever(self, unit: str, handler: Callable[[str], None]) -> None:  # pragma: no cover
-        tail_journal_forever(unit, handler, program="fr-ai-ids")
 
 
 def is_daemon_active() -> bool:

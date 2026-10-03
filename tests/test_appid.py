@@ -423,14 +423,16 @@ def test_real_dnsmasq_blocks_apps_and_its_log_is_attributed(dhcp_config_dict, tm
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
-    text = dns_service.render_dnsmasq_config(config, hosts_path=tmp_path / "h", category_dir=tmp_path / "d")
+    log = tmp_path / "dnsmasq.log"
+    text = dns_service.render_dnsmasq_config(config, hosts_path=tmp_path / "h", category_dir=tmp_path / "d",
+                                             query_log_path=log)
     text = text.replace("port=53\n", f"port={port}\n").replace("server=1.1.1.1", f"server=127.0.0.1#{up_port}")
     text = text.replace("user=nobody\ngroup=nogroup\n", "user=root\n")
     text = "\n".join(l for l in text.splitlines() if not l.startswith("interface=")) + "\nlisten-address=127.0.0.1\n"
     (tmp_path / "h").write_text("")
-    log = tmp_path / "dnsmasq.log"
+    # The generated config already names the query log file (ROADMAP SEC-4).
     conf = tmp_path / "dnsmasq.conf"
-    conf.write_text(text + f"log-facility={log}\n")
+    conf.write_text(text + "\n")
 
     proc = subprocess.Popen(["dnsmasq", "--keep-in-foreground", f"--conf-file={conf}"])
     try:
@@ -448,9 +450,9 @@ def test_real_dnsmasq_blocks_apps_and_its_log_is_attributed(dhcp_config_dict, tm
         upstream.close()
 
     daemon = AppIdDaemon(config, usage_path=tmp_path / "usage.json")
+    # The file's own lines, dnsmasq's timestamp prefix and all (ROADMAP SEC-4).
     for line in log.read_text().splitlines():
-        if ": " in line:
-            daemon.handle_dns_log_line(line.split(": ", 1)[1])
+        daemon.handle_dns_log_line(line)
     apps = daemon.write_snapshot()["apps"]
     assert set(apps) == {"tiktok", "netflix"}
     assert apps["tiktok"]["hits_24h"] == 2  # blocked lookups are still attempts

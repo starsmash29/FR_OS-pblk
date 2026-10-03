@@ -217,6 +217,16 @@ IOT_INVENTORY_PATH = SENSOR_STATE_DIR / "iot_inventory.json"
 SNI_EVENTS_DIR = Path("/var/log/fr_os-sni")
 SNI_EVENTS_PATH = SNI_EVENTS_DIR / "events.jsonl"
 
+#: The resolver's query log (with adblocker.query_logging), for fr-ai-ids
+#: and fr-appid instead of fr-adblock-dns's journal (ROADMAP SEC-4).
+#: dnsmasq opens it as root under the unit's Group=fr_os-webui and hands
+#: it to its own unprivileged user: nobody:fr_os-webui 0640 in a
+#: root:fr_os-webui 0750 directory. dnsmasq writes it, the readers can
+#: only read it. fr-dns-log-trim.timer keeps it under
+#: frfw.adblock.dns_service.QUERY_LOG_MAX_BYTES.
+DNS_QUERY_LOG_DIR = Path("/var/log/fr_os-dns")
+DNS_QUERY_LOG_PATH = DNS_QUERY_LOG_DIR / "queries.log"
+
 #: App identification usage summary (phase 16, see frfw.appid.daemon):
 #: which apps each client used recently, written by the unprivileged
 #: fr-appid daemon and read by the webUI and the metrics exporter.

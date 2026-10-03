@@ -101,6 +101,7 @@ ROOT = {
     "fr-update-check.service": "checks for releases; may install a verified security release (opt-in)",
     "fr-tls-fp.service": "opens a pinned BPF map, then drops to fr_os-sensor (frfw.privdrop)",
     "fr-xdp-sni-logger.service": "opens a pinned BPF map, then drops to fr_os-sensor (frfw.privdrop)",
+    "fr-dns-log-trim.service": "empties dnsmasq's (nobody's) query log; CAP_DAC_OVERRIDE only, no network",
 }
 
 UNPRIVILEGED = {
@@ -246,12 +247,9 @@ def test_the_units_that_apply_can_turn_routing_on(name):
 
 #: The only units that may read the whole journal (the systemd-journal
 #: group: every unit's log and the kernel's), and why (ROADMAP SEC-4,
-#: review v0.2.0 R10). The XDP SNI events have a file of their own; the
-#: resolver's query log doesn't yet.
-JOURNAL_READERS = {
-    "fr-ai-ids.service": "the resolver's query log (adblocker.query_logging), until it has a file of its own",
-    "fr-appid.service": "the resolver's query log (adblocker.query_logging), until it has a file of its own",
-}
+#: review v0.2.0 R10). None: the XDP SNI events and the resolver's query
+#: log have files of their own.
+JOURNAL_READERS: dict[str, str] = {}
 
 
 @pytest.mark.parametrize("name", SERVICES)
@@ -274,3 +272,22 @@ def test_the_sni_event_file_is_written_by_its_logger_and_read_by_one_group():
     for reader in ("fr-ai-ids.service", "fr-appid.service"):
         assert paths.WEBUI_USER in one(service_section(reader), "SupplementaryGroups").split()
     assert one(service_section("fr-webui.service"), "Group") == paths.WEBUI_USER
+
+
+def test_the_query_log_is_written_by_dnsmasq_and_read_by_one_group():
+    """dnsmasq opens paths.DNS_QUERY_LOG_PATH as root under the unit's
+    Group= and hands it to its own user (nobody:fr_os-webui 0640, checked
+    against real dnsmasq in tests/test_dns_filtering.py); the directory is
+    root:fr_os-webui 0750 (ROADMAP SEC-4)."""
+    settings = service_section("fr-adblock-dns.service")
+    assert one(settings, "Group") == paths.WEBUI_USER
+    assert Path("/var/log") / one(settings, "LogsDirectory") == paths.DNS_QUERY_LOG_DIR
+    assert one(settings, "LogsDirectoryMode") == "0750"
+
+
+def test_the_query_log_trim_can_do_nothing_but_empty_that_file():
+    settings = service_section("fr-dns-log-trim.service")
+    assert one(settings, "CapabilityBoundingSet") == "CAP_DAC_OVERRIDE"
+    assert one(settings, "ReadWritePaths") == f"-{paths.DNS_QUERY_LOG_DIR}"
+    assert one(settings, "PrivateNetwork") == "yes"
+    assert one(settings, "RestrictAddressFamilies") == "AF_UNIX"

@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import ipaddress
 import os
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -125,11 +126,46 @@ def blocked_app_names(config: Config) -> list[str]:
     return blocking_names(app_control.blocked_apps)
 
 
+#: Past this size fr-dns-log-trim empties the query log (hourly): its
+#: readers only follow new lines, and a router's log partition is small.
+QUERY_LOG_MAX_BYTES = 16 * 1024 * 1024
+
+#: dnsmasq's own prefix on every line of its log file, e.g.
+#: "Oct  3 17:25:19 dnsmasq[489]: " (format checked against real dnsmasq).
+_LOG_PREFIX_RE = re.compile(r"^[A-Z][a-z]{2} [ \d]\d \d\d:\d\d:\d\d dnsmasq\[\d+\]: (?P<message>.*)\Z", re.S)
+
+
+def dnsmasq_message(line: str) -> str:
+    """A query-log line without dnsmasq's timestamp/pid prefix -- the
+    same text journald's `-o cat` used to hand the readers -- or the
+    line itself when it has no such prefix."""
+    match = _LOG_PREFIX_RE.match(line)
+    return match.group("message") if match else line
+
+
+def trim_query_log(path: Path = paths.DNS_QUERY_LOG_PATH, *, max_bytes: int = QUERY_LOG_MAX_BYTES) -> bool:
+    """Empty the query log once it is past `max_bytes`; returns whether it
+    did. dnsmasq appends (O_APPEND), so it carries on at the new end, and
+    the readers' `tail -F` notices the truncation. Never follows a symlink."""
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except FileNotFoundError:
+        return False
+    try:
+        if os.fstat(fd).st_size <= max_bytes:
+            return False
+        os.ftruncate(fd, 0)
+        return True
+    finally:
+        os.close(fd)
+
+
 def render_dnsmasq_config(
     config: Config,
     *,
     hosts_path: Path = paths.ADBLOCK_HOSTS_PATH,
     category_dir: Path = paths.ADBLOCK_CATEGORY_DIR,
+    query_log_path: Path = paths.DNS_QUERY_LOG_PATH,
 ) -> str:
     adblocker = config.adblocker
     hosts_files = [hosts_path] + [category_path(n, category_dir) for n in sorted(adblocker.categories)]
@@ -143,6 +179,9 @@ def render_dnsmasq_config(
         # what lets frfw.ai_ids attribute NXDOMAINs and threat-category
         # blocks to a host (format checked against real dnsmasq output).
         extra.append("log-queries=extra")
+        # Into a file of its own, not the journal (ROADMAP SEC-4): its
+        # readers need that file's group, not every unit's log.
+        extra.append(f"log-facility={query_log_path}")
     if adblocker.force_dns:
         extra.append(f"address=/{FIREFOX_DOH_CANARY}/")
     # Phase 16 app blocking: the same NXDOMAIN form, which also covers

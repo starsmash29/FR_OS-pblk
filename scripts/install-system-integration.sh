@@ -90,6 +90,8 @@ if [[ -d "$REPO_ROOT/systemd" ]]; then
     install -m 0644 "$REPO_ROOT/systemd/fr-update-helper.service" "$SYSTEMD_DIR/"
     install -m 0644 "$REPO_ROOT/systemd/fr-adblock-refresh.service" "$SYSTEMD_DIR/"
     install -m 0644 "$REPO_ROOT/systemd/fr-adblock-refresh.timer" "$SYSTEMD_DIR/"
+    install -m 0644 "$REPO_ROOT/systemd/fr-dns-log-trim.service" "$SYSTEMD_DIR/"
+    install -m 0644 "$REPO_ROOT/systemd/fr-dns-log-trim.timer" "$SYSTEMD_DIR/"
     install -m 0644 "$REPO_ROOT/systemd/fr-adblock-dns.service" "$SYSTEMD_DIR/"
     install -m 0644 "$REPO_ROOT/systemd/fr-xdp-sni-logger.service" "$SYSTEMD_DIR/"
     install -m 0644 "$REPO_ROOT/systemd/fr-appid.service" "$SYSTEMD_DIR/"
@@ -122,6 +124,7 @@ Done. Next steps:
   systemctl enable --now fr-tls-fp                # TLS fingerprinting (idles until tls_fingerprint.enabled)
   systemctl enable --now fr-update-helper.socket   # webUI's Update screen
   systemctl enable --now fr-adblock-refresh.timer  # daily ad-block list refresh (needs 'dnsmasq' installed)
+  systemctl enable --now fr-dns-log-trim.timer     # hourly size cap for the resolver's query log
 
 The webUI's self-signed TLS cert is generated on its first start
 (stored under $WEBUI_STATE_DIR); your browser will warn about it until

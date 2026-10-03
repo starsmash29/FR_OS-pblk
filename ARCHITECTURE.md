@@ -1998,9 +1998,9 @@ Two independent, decoupled inputs feed `AnomalyEngine`:
 1. A background thread follows `fr-xdp-sni-logger`'s event file
    (`frfw.journal.follow_file_forever`, `tail -F`) -- the same file and
    permission model as the webUI's own `/xdp/logs/stream` route (ROADMAP
-   SEC-4). Only the resolver's query log (with
-   `adblocker.query_logging`) is still read from a journal, which is why
-   this unit and `fr-appid` keep the `systemd-journal` group for now.
+   SEC-4). The resolver's query log (with `adblocker.query_logging`) is
+   followed the same way, from its own file -- see "DNS as an AI IDS
+   signal" -- so this unit and `fr-appid` have no journal access at all.
 2. The main loop polls `conntrack_sample` every `TICK_SECONDS` (5s) and
    diffs the returned flow list against the previous sample's flow keys
    (proto/src/sport/dst/dport) -- **only genuinely new flows are counted
@@ -2783,9 +2783,20 @@ every line and names the hosts file for blocked answers:
 1 10.0.0.5/33904 /etc/fr_os/adblock.d/malware.hosts bad.example is 0.0.0.0
 ```
 
-`fr-ai-ids` already had journal read access for the SNI logger; it now
-tails `fr-adblock-dns.service` too and feeds three new per-host
-counters into the same z-score-against-own-baseline engine:
+(dnsmasq's own log file adds a `Oct  3 17:25:19 dnsmasq[489]: ` prefix,
+which `frfw.adblock.dns_service.dnsmasq_message` removes.) The log is a
+file of the resolver's own, `/var/log/fr_os-dns/queries.log`, not its
+journal (ROADMAP SEC-4): `fr-adblock-dns.service` runs under
+`Group=fr_os-webui` with `LogsDirectory=fr_os-dns` (0750), and dnsmasq
+opens the file as root and then hands it to its own unprivileged user,
+so it is nobody:fr_os-webui 0640 -- only dnsmasq writes it, `fr-ai-ids`
+and `fr-appid` (in that group) read it, neither needs the
+`systemd-journal` group that reads every unit's log. dnsmasq only ever
+appends, so `fr-dns-log-trim.timer` empties the file hourly once it is
+past 16 MiB (root with `CAP_DAC_OVERRIDE` alone, no network); the
+readers' `tail -F` follows the truncation. `fr-ai-ids` follows it and
+feeds three new per-host counters into the same
+z-score-against-own-baseline engine:
 
 - **distinct NXDOMAIN names** per window (floor 30) -- distinct, because
   an app retrying one dead name in a loop is not the signal, a host

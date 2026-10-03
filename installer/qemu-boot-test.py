@@ -310,6 +310,9 @@ def main() -> int:
                 print(f"    {line}")
         check_sandboxed_services(check, upper)
         check_sni_event_file(check, upper)
+        # ROADMAP SEC-4: the resolver's query log has a size cap of its own.
+        check("Started" in journal(upper, "-u", "fr-dns-log-trim.timer"),
+              "the hourly query-log size cap (fr-dns-log-trim.timer) is running")
         console = upper / "etc" / "issue.d" / "fr_os-initial-admin.issue"
         shown = console.read_text() if console.exists() else ""
         match = re.search(r"login is 'admin' / '([^']+)'", shown)
