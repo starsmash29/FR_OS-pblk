@@ -5,8 +5,11 @@ that it actually works and remembers what it was told.
     sudo installer/qemu-boot-test.py installer/live-build/binary.hybrid.iso
 
 The ISO is written to a 2 GiB disk image (standing in for a USB stick)
-attached to a VM with two NICs -- WAN on QEMU's user network, LAN on a
-second one where the host reaches 192.168.1.1:443 through a port forward.
+attached to a VM with two NICs -- WAN on QEMU's user network, which has a
+DHCP server like an upstream modem, and LAN on a tap device on the host
+(192.168.1.2/24), which has none, like a laptop. First boot has to tell
+them apart by that (ROADMAP SEC-8); the host reaches the webUI at
+https://192.168.1.1/ over the tap, as a LAN client does.
 
 1. First boot: fr-persistence-setup finds the free space after the image,
    creates the persistence partition and reboots.
@@ -44,10 +47,15 @@ import urllib.request
 from contextlib import contextmanager
 from pathlib import Path
 
-WEBUI_PORT = 8443
-#: Forwarded to a LAN port nothing allows: the default policy drops it,
-#: and the drop must be logged (security-lessons K6).
-CLOSED_PORT = 8444
+#: The router's LAN address, reached over the host's tap device.
+WEBUI_HOST = "192.168.1.1"
+WEBUI_PORT = 443
+#: A LAN port nothing allows: the default policy drops it, and the drop
+#: must be logged (security-lessons K6).
+CLOSED_PORT = 4444
+#: The host's side of the VM's LAN port: a "laptop" with no DHCP server.
+LAN_TAP = "frtap0"
+LAN_TAP_ADDRESS = "192.168.1.2/24"
 NEW_PASSWORD = "changed-in-boot-3"
 NEW_USERNAME = "netadmin"
 DISK_SIZE = 2 * 2**30
@@ -73,9 +81,11 @@ class Vm:
             "qemu-system-x86_64", "-m", "2048", "-smp", "2", "-no-reboot",
             "-drive", f"file={disk},format=raw,if=virtio",
             "-nic", "user,model=virtio-net-pci,mac=52:54:00:00:00:01",
-            "-nic", ("user,model=virtio-net-pci,mac=52:54:00:00:00:02,net=192.168.1.0/24,"
-                     f"host=192.168.1.2,dhcpstart=192.168.1.50,hostfwd=tcp::{WEBUI_PORT}-192.168.1.1:443,"
-                     f"hostfwd=tcp::{CLOSED_PORT}-192.168.1.1:4444"),
+            # The LAN port: the host's tap, no DHCP server on it -- QEMU's
+            # user network always runs one, which would make both ports
+            # look like an upstream (ROADMAP SEC-8).
+            "-netdev", f"tap,id=lan,ifname={LAN_TAP},script=no,downscript=no",
+            "-device", "virtio-net-pci,netdev=lan,mac=52:54:00:00:00:02",
             "-display", "none", "-serial", f"file:{self.serial}",
             "-monitor", f"unix:{self.monitor},server,nowait",
         ]
@@ -112,6 +122,19 @@ class Vm:
         if self.proc.poll() is None:
             self.proc.kill()
             self.proc.wait()
+
+
+@contextmanager
+def lan_tap():
+    """The host's side of the VM's LAN port, for every boot."""
+    subprocess.run(["ip", "link", "del", LAN_TAP], capture_output=True)
+    subprocess.run(["ip", "tuntap", "add", "dev", LAN_TAP, "mode", "tap"], check=True)
+    try:
+        subprocess.run(["ip", "addr", "add", LAN_TAP_ADDRESS, "dev", LAN_TAP], check=True)
+        subprocess.run(["ip", "link", "set", LAN_TAP, "up"], check=True)
+        yield
+    finally:
+        subprocess.run(["ip", "link", "del", LAN_TAP], capture_output=True)
 
 
 @contextmanager
@@ -235,7 +258,7 @@ def wait_for_webui(opener, timeout: float) -> str | None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
-            with opener.open(f"https://127.0.0.1:{WEBUI_PORT}/login", timeout=10) as resp:
+            with opener.open(f"https://{WEBUI_HOST}:{WEBUI_PORT}/login", timeout=10) as resp:
                 return resp.read().decode()
         except OSError:
             time.sleep(5)
@@ -258,7 +281,7 @@ def _remember_csrf(opener, page: str) -> None:
 
 
 def get(opener, path: str) -> str:
-    with opener.open(f"https://127.0.0.1:{WEBUI_PORT}{path}", timeout=60) as resp:
+    with opener.open(f"https://{WEBUI_HOST}:{WEBUI_PORT}{path}", timeout=60) as resp:
         page = resp.read().decode()
     _remember_csrf(opener, page)
     return page
@@ -271,7 +294,7 @@ def post(opener, path: str, fields: dict) -> str:
     if token:
         fields = {**fields, "csrf_token": token}
     data = urllib.parse.urlencode(fields, doseq=True).encode()
-    with opener.open(f"https://127.0.0.1:{WEBUI_PORT}{path}", data=data, timeout=30) as resp:
+    with opener.open(f"https://{WEBUI_HOST}:{WEBUI_PORT}{path}", data=data, timeout=30) as resp:
         _remember_csrf(opener, resp.read().decode())
         return resp.geturl()
 
@@ -286,7 +309,11 @@ def main() -> int:
     if not shutil.which("qemu-system-x86_64"):
         print("qemu-system-x86_64 not found", file=sys.stderr)
         return 2
+    with lan_tap():
+        return run(args)
 
+
+def run(args: argparse.Namespace) -> int:
     workdir = args.workdir or Path(tempfile.mkdtemp(prefix="fros-qemu-"))
     workdir.mkdir(parents=True, exist_ok=True)
     disk = workdir / "stick.img"
@@ -321,6 +348,13 @@ def main() -> int:
         first_boot = journal(upper, "-u", "fr-first-boot.service")
         check("fr-first-boot: done" in first_boot, "fr-first-boot finished"
               + ("" if "did not start" not in first_boot else " (some units did not start)"))
+        # ROADMAP SEC-8: the WAN is the port where a DHCP server answered
+        # (QEMU's user network), not the first one by chance.
+        chosen = re.search(r"fr-first-boot: WAN/LAN: (.*)", first_boot)
+        check(chosen is not None and chosen.group(1) == "a DHCP server answered on ens3 only"
+              and "assigned WAN=ens3 LAN=ens4" in first_boot,
+              "first boot chose the WAN by where a DHCP server answered (ROADMAP SEC-8)"
+              + (f": {chosen.group(1)}" if chosen else ""))
         failed = sorted(set(re.findall(r"Failed to start (\S+)", journal(upper))))
         check(not failed, f"no unit failed to start{': ' + ', '.join(failed) if failed else ''}")
         for unit in failed:  # say why, right here in the CI log
@@ -390,7 +424,7 @@ def main() -> int:
         check(listen is not None and "10.99.0.1" in listen.group(1),
               "the webUI also listens on the VPN's tunnel address (security-lessons K5)")
         try:  # dropped by the default policy, so this times out
-            socket.create_connection(("127.0.0.1", CLOSED_PORT), timeout=3).recv(1)
+            socket.create_connection((WEBUI_HOST, CLOSED_PORT), timeout=3).recv(1)
         except OSError:
             pass
         time.sleep(5)  # fr-initial-password.path reacts to the account file

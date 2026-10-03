@@ -45,17 +45,21 @@ write_dhcp_clients() {
     done
 }
 
-# Naive zero-touch default: first detected NIC is WAN, second is LAN.
-# Matches the common homelab case (exactly two NICs) without requiring
-# an interactive wizard; anything more exotic (OPT zones, more than two
-# NICs) still needs a manual 'firewall-cli assign-interfaces' or a trip
-# through the webUI's Interfaces screen afterwards.
+# Which port is the WAN (ROADMAP SEC-8): the one where a DHCP server
+# already answers -- the upstream network's. The LAN, where this router
+# will serve DHCP itself, is never a port that already has a server.
+# With no server answering anywhere it falls back to port order and says
+# so; with servers on several ports it assigns nothing (see
+# frfw.netdetect.choose_wan_lan). More than two ports or OPT zones still
+# take 'firewall-cli assign-interfaces' or the webUI's Interfaces screen.
 mapfile -t DEVICES < <(firewall-cli detect-interfaces | awk 'NR>1 {print $1}')
+mapfile -t CHOICE < <(firewall-cli detect-wan-lan || true)
+read -r WAN LAN <<< "${CHOICE[0]:-}" || true
+BASIS="${CHOICE[1]:-no answer from detect-wan-lan}"
+echo "fr-first-boot: WAN/LAN: $BASIS"
 
 WEBUI_HINT=""
-if [[ ${#DEVICES[@]} -ge 2 ]]; then
-    WAN="${DEVICES[0]}"
-    LAN="${DEVICES[1]}"
+if [[ -n "${WAN:-}" && -n "${LAN:-}" ]]; then
     firewall-cli assign-interfaces --wan "$WAN" --lan "$LAN" --force
     # The webUI reads the config as the unprivileged fr_os-webui user.
     chgrp fr_os-webui "$CONFIG_DIR/config.yaml"
@@ -67,12 +71,14 @@ if [[ ${#DEVICES[@]} -ge 2 ]]; then
     # (the image boots with ip=frommedia so live-boot doesn't put one
     # back on every boot; see installer/live-build/auto/config).
     write_dhcp_clients "$WAN"
-    WEBUI_HINT="webUI: https://192.168.1.1/ from a computer on the LAN port ($LAN)"
+    WEBUI_HINT="webUI: https://192.168.1.1/ from a computer on the LAN port ($LAN); WAN is $WAN ($BASIS)"
 else
-    echo "fr-first-boot: fewer than 2 network interfaces detected (${#DEVICES[@]});" >&2
-    echo "  skipping auto-assignment -- run 'firewall-cli assign-interfaces' manually" >&2
-    # No LAN to protect: keep whatever there is reachable over DHCP.
+    echo "fr-first-boot: no WAN/LAN assignment ($BASIS);" >&2
+    echo "  run 'firewall-cli assign-interfaces' or use the webUI's Interfaces screen" >&2
+    # No LAN to protect, or no safe one to pick: keep whatever there is
+    # reachable over DHCP, and serve DHCP nowhere.
     write_dhcp_clients "${DEVICES[@]}"
+    WEBUI_HINT="no LAN port assigned ($BASIS) -- see 'firewall-cli assign-interfaces'"
 fi
 
 # The password goes on the console's login screen through a root-only
