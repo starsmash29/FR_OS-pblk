@@ -714,12 +714,16 @@ systemd units (`systemd/`):
 
 - `fr-firewall.service` — applies the canonical config at boot (early
   boot, before `network-pre.target`, so the rules are already in effect
-  before networking comes up). It is *not* ordered against Debian's own
-  `nftables.service`, which also starts before `network-pre.target`:
-  Debian ships that unit disabled, but if it is ever enabled, its
-  `/etc/nftables.conf` (`flush ruleset`) can replace the FR_OS ruleset.
-  The `nftables` package stays (it provides `nft`); the image is to mask
-  the unit (ROADMAP SEC-18). It fails closed (`firewall-cli apply
+  before networking comes up). Debian's own `nftables.service` also
+  starts before `network-pre.target`, and its `/etc/nftables.conf`
+  (`flush ruleset`) would replace the FR_OS ruleset, its stop action
+  flush it. The `nftables` package stays (it provides `nft`); the unit is
+  masked in the image (live-build hook) and by
+  `install-system-integration.sh`, and `fr-firewall.service` is ordered
+  `After=` it besides, so even an unmasked one can't load its file over
+  the FR_OS ruleset. The QEMU boot test checks the mask in the built
+  image, that persistence doesn't undo it, and that the unit never ran
+  (ROADMAP SEC-18). It fails closed (`firewall-cli apply
   --fail-closed`): with no `config.yaml`, or when an apply fails while no
   FR_OS ruleset is loaded, it loads a baseline that lets in only
   loopback, replies to the router's own connections and IPv6 neighbour

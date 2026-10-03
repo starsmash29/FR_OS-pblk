@@ -3,6 +3,10 @@ Description=FR_OS firewall ruleset (frfw)
 Documentation=https://github.com/starsmash29/FR_OS-pblk
 Wants=network-pre.target
 Before=network-pre.target shutdown.target
+# Debian's nftables.service is masked in the image (ROADMAP SEC-18): it
+# would load /etc/nftables.conf (`flush ruleset`). Ordered after it all
+# the same, so even an unmasked one can't load its file over this ruleset.
+After=nftables.service
 Conflicts=shutdown.target
 DefaultDependencies=no
 # No ConditionPathExists=/etc/fr_os/config.yaml: without a config (or when
