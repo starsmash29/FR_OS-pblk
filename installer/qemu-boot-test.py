@@ -178,6 +178,14 @@ def journal(upper: Path, *args: str) -> str:
     ).stdout
 
 
+def print_journal(upper: Path, unit: str, *boot: str) -> None:
+    """The unit's last journal lines, timestamped, into the CI log: the
+    QEMU artifacts are not always at hand when a check fails."""
+    print(f"    --- journal of {unit} ---")
+    for line in journal(upper, *boot, "-u", unit, "-o", "short-monotonic").splitlines()[-25:]:
+        print(f"    {line}")
+
+
 #: FR_OS services that must be running after a boot, each in its systemd
 #: sandbox (security-lessons I1).
 #: (fr-apply-helper is socket-activated: it starts on first use.)
@@ -194,6 +202,10 @@ def check_sandboxed_services(check, upper: Path, *boot: str) -> None:
                                 text)))
     check(not bad, "no FR_OS service crashed or was killed in its sandbox"
           + (f": {', '.join(bad)}" if bad else ""))
+    # Say why, right here in the CI log. fr-webui-rebind only restarts
+    # fr-webui, so its failure is told by fr-webui's own journal.
+    for unit in bad + (["fr-webui"] if "fr-webui-rebind" in bad else []):
+        print_journal(upper, f"{unit}.service", *boot)
     check("status=31/SYS" not in text, "no seccomp kill")
     for unit in LONG_RUNNING:
         check("Started" in journal(upper, *boot, "-u", f"{unit}.service"), f"{unit} started")
@@ -305,9 +317,7 @@ def main() -> int:
         failed = sorted(set(re.findall(r"Failed to start (\S+)", journal(upper))))
         check(not failed, f"no unit failed to start{': ' + ', '.join(failed) if failed else ''}")
         for unit in failed:  # say why, right here in the CI log
-            print(f"    --- journal of {unit} ---")
-            for line in journal(upper, "-u", unit).splitlines()[-25:]:
-                print(f"    {line}")
+            print_journal(upper, unit)
         check_sandboxed_services(check, upper)
         check_sni_event_file(check, upper)
         console = upper / "etc" / "issue.d" / "fr_os-initial-admin.issue"
