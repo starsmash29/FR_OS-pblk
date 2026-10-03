@@ -64,6 +64,7 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.util
+import hashlib
 import json
 import os
 import socket
@@ -75,7 +76,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Callable
 
-from frfw import __version__, paths, validate
+from frfw import __version__, paths, svc, validate
 from frfw.config.schema import Config
 
 # --- constants ------------------------------------------------------------
@@ -336,22 +337,107 @@ def is_loaded() -> bool:
     return PIN_PROG_PATH.exists()
 
 
-def load_and_pin(obj_path: Path) -> None:
+def _load_into(obj_path: Path, pin_dir: Path) -> None:
+    (pin_dir / "prog").mkdir(parents=True, exist_ok=True)
+    (pin_dir / "maps").mkdir(parents=True, exist_ok=True)
+    proc = _bpftool([
+        "prog", "loadall", str(obj_path), str(pin_dir / "prog"),
+        "type", "xdp", "pinmaps", str(pin_dir / "maps"),
+    ])
+    if proc.returncode != 0:
+        raise XdpError(f"Loading {obj_path} failed:\n{proc.stderr}")
+
+
+def load_and_pin(obj_path: Path) -> bool:
     """Load the compiled program once, pinning it and every one of its
     maps under /sys/fs/bpf so later attach() calls (possibly from a
     different process entirely) can reuse the same instance. Idempotent:
     if already pinned, does nothing -- in particular, this never resets
-    an already-populated blocklist map."""
+    an already-populated blocklist map. Whether the pinned program is
+    the *right* one is sync_sni_filter's question (see replace_pinned).
+    Returns whether it loaded anything."""
     if is_loaded():
+        return False
+    _load_into(obj_path, _PIN_DIR)
+    return True
+
+
+#: Where replace_pinned() loads the new program before swapping it in.
+#: (No dot in the name: bpffs refuses one with EPERM.)
+_STAGING_DIR = _PIN_DIR.with_name(_PIN_DIR.name + "_next")
+
+
+def _remove_pin_tree(directory: Path) -> None:
+    """Unpin everything under `directory` and remove it. An unpinned
+    program or map lives on while anything (an attachment, an open fd)
+    still holds it."""
+    if not directory.exists():
         return
-    _PIN_PROG_DIR.mkdir(parents=True, exist_ok=True)
-    _PIN_MAPS_DIR.mkdir(parents=True, exist_ok=True)
-    proc = _bpftool([
-        "prog", "loadall", str(obj_path), str(_PIN_PROG_DIR),
-        "type", "xdp", "pinmaps", str(_PIN_MAPS_DIR),
-    ])
-    if proc.returncode != 0:
-        raise XdpError(f"Loading {obj_path} failed:\n{proc.stderr}")
+    for root, dirs, files in os.walk(directory, topdown=False):
+        for name in files:
+            os.unlink(os.path.join(root, name))
+        for name in dirs:
+            os.rmdir(os.path.join(root, name))
+    directory.rmdir()
+
+
+def replace_pinned(obj_path: Path) -> None:
+    """Swap the pinned program and maps for a fresh load of `obj_path`
+    (ROADMAP SEC-19). load_and_pin() keeps whatever is pinned, so after
+    an upgrade the previous release's program ran until the filter was
+    disabled and re-enabled.
+
+    The new program is loaded into a staging directory first: if the
+    verifier rejects it, nothing pinned changes and the old program keeps
+    filtering. Only then are the old pins removed and the staging tree
+    renamed into place. Interfaces keep running the old program until
+    sync_sni_filter re-attaches them (it compares program ids), and the
+    new maps start empty -- the blocklist is synced again, the counters
+    start over."""
+    _remove_pin_tree(_STAGING_DIR)
+    try:
+        _load_into(obj_path, _STAGING_DIR)
+    except XdpError:
+        _remove_pin_tree(_STAGING_DIR)
+        raise
+    unload()
+    if _PIN_DIR.exists():
+        _remove_pin_tree(_STAGING_DIR)
+        raise XdpError(f"{_PIN_DIR} still holds unknown pins; remove them and apply again")
+    _STAGING_DIR.rename(_PIN_DIR)
+
+
+def object_digest(obj_path: Path) -> str | None:
+    """sha256 of a compiled object, to tell whether the pinned program
+    came from it. None if the file can't be read."""
+    try:
+        return hashlib.sha256(obj_path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+#: The daemons that read the pinned ring buffers. They open the map once,
+#: as root, then drop privileges for good (frfw.privdrop), so a reader
+#: can't notice -- let alone reopen -- a map that was unpinned and
+#: replaced under it: it keeps reading the old, now silent one.
+READER_UNITS = ("fr-xdp-sni-logger.service", "fr-tls-fp.service")
+
+
+def restart_readers() -> list[str]:
+    """`systemctl try-restart` every reader after new maps were pinned
+    (ROADMAP SEC-19): the restart reopens the current ones. A unit that
+    isn't running stays stopped. Returns the units that could not be
+    restarted; never raises -- the filter itself is already in place."""
+    failed = []
+    for unit in READER_UNITS:
+        try:
+            proc = svc.systemctl("try-restart", unit, timeout=30)
+        except (OSError, subprocess.TimeoutExpired):
+            failed.append(unit)
+            continue
+        if proc.returncode != 0:
+            failed.append(unit)
+    return failed
 
 
 def unload() -> None:
@@ -605,6 +691,10 @@ def get_stats() -> dict[str, int]:
 @dataclass
 class XdpState:
     attached: dict[str, str] = field(default_factory=dict)  # device -> AttachMode.value
+    # object_digest() of the object the pinned program was loaded from
+    # (ROADMAP SEC-19). None when nothing is pinned, or when the state
+    # predates this field -- then the pinned program's origin is unknown.
+    program: str | None = None
 
 
 def get_attached(state_path: Path = paths.XDP_STATE_PATH) -> dict[str, str]:
@@ -627,13 +717,17 @@ def _load_state(state_path: Path) -> XdpState:
         data = json.loads(state_path.read_text())
     except (json.JSONDecodeError, OSError):
         return XdpState()
-    return XdpState(attached=dict(data.get("attached", {})))
+    program = data.get("program")
+    return XdpState(
+        attached=dict(data.get("attached", {})),
+        program=program if isinstance(program, str) else None,
+    )
 
 
 def _save_state(state: XdpState, state_path: Path) -> None:
     state_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = state_path.with_name(state_path.name + ".tmp")
-    tmp.write_text(json.dumps({"attached": state.attached}))
+    tmp.write_text(json.dumps({"attached": state.attached, "program": state.program}))
     tmp.replace(state_path)
 
 
@@ -700,7 +794,28 @@ def sync_sni_filter(
 
     _require_root()
     obj_path = ensure_compiled()
-    load_and_pin(obj_path)
+    digest = object_digest(obj_path)
+    # ROADMAP SEC-19: a pinned program that didn't come from this object
+    # -- the previous release's, after an upgrade, or one of unknown
+    # origin (a state file from before the digest was recorded) -- is
+    # replaced, not kept.
+    if is_loaded() and digest is not None and digest != state.program:
+        replace_pinned(obj_path)
+        reloaded = True
+    else:
+        reloaded = load_and_pin(obj_path)
+
+    # The blocklist goes into the maps before any interface runs the
+    # program: a freshly loaded program attached first would pass every
+    # name until the sync below it caught up.
+    sync_blocklist(cfg.blocklist)
+
+    # What is attached is written down as it happens, not once at the
+    # end (ROADMAP SEC-19): an attach that fails part-way used to leave
+    # the earlier interfaces attached but unrecorded, so disabling the
+    # filter later found "nothing to do" and left them filtering.
+    recorded = XdpState(attached=dict(state.attached), program=digest or state.program)
+    _save_state(recorded, state_path)
 
     # Ask the kernel, not the state file, what is attached: after a reboot
     # the file still lists every device while nothing is attached, and
@@ -719,16 +834,19 @@ def sync_sni_filter(
             detach(device, live[0])
         mode = attach(device)
         new_attached[device] = mode.value
+        recorded.attached[device] = mode.value
+        _save_state(recorded, state_path)
         modes_used.append(f"{device}={mode.value}")
 
-    for device in state.attached:
+    for device in list(recorded.attached):
         if device not in new_attached:
             live = live_attachment(device)
             if live is not None:
                 detach(device, live[0])
+            del recorded.attached[device]
+            _save_state(recorded, state_path)
 
-    sync_blocklist(cfg.blocklist)
-    _save_state(XdpState(attached=new_attached), state_path)
+    _save_state(XdpState(attached=new_attached, program=recorded.program), state_path)
 
     flags = (SETTING_REPORT_PASS if report_pass else 0) | (SETTING_REPORT_HELLO if report_hello else 0)
     if PIN_SETTINGS_PATH.exists() and (not report_hello or PIN_HELLO_PKTS_PATH.exists()):
@@ -740,6 +858,14 @@ def sync_sni_filter(
             ", SNI observation/fingerprinting unavailable until the filter is disabled "
             "and re-enabled (the loaded program predates it)"
         )
+
+    if reloaded:
+        failed = restart_readers()
+        if failed:
+            observing += (
+                f"; could not restart {', '.join(failed)} -- restart it by hand, "
+                "or it keeps reading the previous program's maps"
+            )
 
     detail = f" ({', '.join(modes_used)})" if modes_used else ""
     return SyncResult(
