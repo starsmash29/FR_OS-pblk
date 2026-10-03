@@ -385,13 +385,13 @@ static int read_ext_header(unsigned char *p, unsigned char *end,
 // __noinline-for-register-pressure reasoning as read_ext_header() above:
 // isolating this chain in its own small stack frame is what lets each
 // bounds check actually protect the read right next to it. On success,
-// returns 1 and sets *name_ptr to the first byte of the hostname and
-// *name_len to its length (guaranteed 0 < *name_len < MAX_SNI_LEN, with
-// a full MAX_SNI_LEN bytes of packet verified readable from *name_ptr --
-// the caller's unconditional MAX_SNI_LEN-byte copy relies on that).
+// returns 1 and sets *name_len to the hostname's length (guaranteed
+// 0 < *name_len < MAX_SNI_LEN); the hostname itself starts 5 bytes after
+// `p`. Its bytes are not read here: xdp_sni_filter() copies exactly
+// *name_len of them with bpf_xdp_load_bytes(), which fails when the frame
+// ends first (ROADMAP SEC-20).
 __attribute__((noinline))
-static int parse_sni_body(unsigned char *p, unsigned char *end,
-			   __u32 *name_len, unsigned char **name_ptr)
+static int parse_sni_body(unsigned char *p, unsigned char *end, __u32 *name_len)
 {
 	// Same "advance p first, check the advanced value itself, then
 	// read backward from it" shape as read_ext_header() above, and for
@@ -419,26 +419,32 @@ static int parse_sni_body(unsigned char *p, unsigned char *end,
 	if (name_len_raw == 0 || name_len_raw >= MAX_SNI_LEN)
 		return 0;
 
-	unsigned char *name_end = p + MAX_SNI_LEN;
-	if (name_end > end)
-		return 0;
-	// `p` itself (not name_end) is handed back via *name_ptr, to be
-	// read forward by the caller after this function has returned --
-	// barrier it too, so its checked-ness doesn't get optimized away
-	// across the call boundary the same way it would have within this
-	// function.
-	p = opaque(p);
-
+	// No check of the name's bytes against `end`. This used to demand
+	// MAX_SNI_LEN readable bytes from the name's start, whatever the
+	// name's length -- the copy that followed always read that many --
+	// so a short name in a frame's last extension failed open as "no
+	// server_name": a shape any client can choose, and that browsers
+	// permuting their extensions produce by chance (ROADMAP SEC-20).
 	*name_len = name_len_raw;
-	*name_ptr = p;
 	return 1;
 }
 
-// Extracts the SNI hostname (if any, and if it fully fits in this
-// packet) from a ClientHello body. Returns the hostname length written
-// into `out_sni` (0..MAX_SNI_LEN), or a negative value if the
+// Where the SNI hostname is: its offset from the start of the ClientHello
+// body (extract_sni()'s `p`) and its length.
+struct sni_ref {
+	__u32 off;
+	__u32 len;
+};
+
+// Finds the SNI hostname in a ClientHello body. Returns 1 and fills
+// `ref` when there is one; -2 when there is none; -1 when the
 // ClientHello is malformed or truncated (caller treats that as
-// STAT_PASS_TRUNCATED, never as a match).
+// STAT_PASS_TRUNCATED, never as a match). It locates the name and
+// copies nothing: the caller copies the name's exact length with one
+// bpf_xdp_load_bytes() (ROADMAP SEC-20), which needs the packet context
+// and offset this function doesn't have -- and keeps a 32-iteration
+// unrolled copy loop, whose stack spills and verifier states the 512-
+// byte and 1M-instruction budgets can't take, out of here.
 //
 // Deliberately written as one flat sequence with the pointer kept in a
 // single local variable `p`, never behind a struct field accessed via
@@ -478,7 +484,7 @@ static int parse_sni_body(unsigned char *p, unsigned char *end,
 // comments). Each step checks `end` first, exactly as before, and
 // `limit` after it, as a separate statement.
 __attribute__((noinline))
-static int extract_sni(unsigned char *p, unsigned char *end, char *out_sni, __u32 limit)
+static int extract_sni(unsigned char *p, unsigned char *end, __u32 limit, struct sni_ref *ref)
 {
 	// client_version(2) + random(32)
 	if (p + 34 > end)
@@ -560,6 +566,7 @@ static int extract_sni(unsigned char *p, unsigned char *end, char *out_sni, __u3
 	__u32 ext_total = read_u16(p);
 	p += 2;
 	off += 2;
+	__u32 ext_off = off; // where the extensions start, from the body's start
 	// The datagram's bytes from here on (`off` <= `limit` was checked
 	// at every step above). One scalar for the walk below to compare
 	// `consumed` against, rather than two.
@@ -592,13 +599,13 @@ static int extract_sni(unsigned char *p, unsigned char *end, char *out_sni, __u3
 	// branches and select between the results afterwards, which the
 	// verifier then correctly rejects as an out-of-bounds access. The
 	// ternaries that remain in this loop (advance amounts, the
-	// `found`/`found_sp` tracking) are fine precisely because they only
+	// `found`/`found_off` tracking) are fine precisely because they only
 	// ever *select between two already-computed, already-safe* values
 	// -- nothing there triggers a new memory access.
 	int done = 0;
 	int found = 0;
 	__u32 found_len = 0;
-	unsigned char *found_sp = p; // dummy init, only meaningful when found
+	__u32 found_off = 0; // the name's offset in the extensions, when found
 	// `consumed` (bytes into the extensions block) is the *only* state
 	// that carries from one iteration to the next; each iteration's
 	// working pointer is then computed fresh as `ext_start + consumed`
@@ -687,30 +694,27 @@ static int extract_sni(unsigned char *p, unsigned char *end, char *out_sni, __u3
 		// inlined here: same register-pressure-forces-a-spill problem
 		// as read_ext_header() above, just for this chain's reads.
 		__u32 name_len = 0;
-		unsigned char *name_ptr = p; // dummy init, meaningful only when ok4
-		int ok4 = is_sni && parse_sni_body(p + 4, end, &name_len, &name_ptr);
+		int ok4 = is_sni && parse_sni_body(p + 4, end, &name_len);
 		// ... and so must the whole name: list length(2), name type(1)
 		// and name length(2) after the 4-byte header, then the name. A
 		// name cut by the datagram's end is not matched on the bytes
-		// after it (parse_sni_body()'s MAX_SNI_LEN window is checked
-		// against the frame only, for the verifier's sake).
+		// after it. (The frame's end is the caller's copy's to check.)
 		ok4 = ok4 && (consumed + 9 + name_len <= room);
 
-		// Track only a pointer + length through the loop, not the
+		// Track only an offset + length through the loop, not the
 		// bytes themselves: the alternative (copying MAX_SNI_LEN bytes
 		// on every one of MAX_TLS_EXTENSIONS iterations, self-
 		// referencing the output buffer to preserve it across
 		// non-matching iterations) is exactly the self-referential
 		// array-write pattern that overflowed the BPF stack budget in
 		// build_lpm_key -- multiplied here by MAX_TLS_EXTENSIONS, it
-		// is worse, not better. A single pointer/length pair is cheap
-		// to carry forward (safe as a ternary: name_ptr is already
-		// valid whenever ok4 is true, no new access happens here); the
-		// actual (one-time) byte copy happens once, after the loop,
-		// only if something matched.
+		// is worse, not better. Two scalars are cheap to carry forward
+		// (no packet pointer, so nothing here is a memory access); the
+		// actual (one-time) byte copy happens once, in the caller, only
+		// if something matched.
 		if (!found && ok4) {
 			found_len = name_len;
-			found_sp = name_ptr;
+			found_off = consumed + 9;
 			found = 1;
 		}
 
@@ -726,58 +730,70 @@ static int extract_sni(unsigned char *p, unsigned char *end, char *out_sni, __u3
 	}
 
 	if (found) {
-		// Canonicalize the name before build_lpm_key() turns it into a
-		// lookup key (review-triage B3, ROADMAP SEC-17, security-lessons
-		// H1). DNS names are case-insensitive (RFC 4343) and
-		// "example.com." is just "example.com" written in full
-		// (RFC 1035 3.1), so the bytes the client sends and the bytes a
-		// blocklist entry is stored as have to collapse to the same key
-		// on both sides -- otherwise a blocklisted name stays reachable
-		// just by changing its case or padding it with a trailing dot.
-		// Only A-Z is folded, and with a range test, never a blind
-		// `| 0x20` (that would turn '_' 0x5F into DEL 0x7F and mangle
-		// names the userspace mirror does not mangle). This is exactly
-		// what frfw.xdp.normalize_sni() does in userspace, so both sides
-		// build the same key for the same name.
-		//
-		// `n` is the length after trimming, and it is what the caller's
-		// prefixlen and build_lpm_key's barrel shift must both use; the
-		// trimmed tail is zeroed so the shift carries only real bytes.
-		// The (int) casts below are exact, not truncating: parse_sni_body()
-		// already refused anything >= MAX_SNI_LEN, so found_len and n are
-		// both in [1, MAX_SNI_LEN-1].
-		//
-		// Verifier: parse_sni_body() has also proven the full MAX_SNI_LEN
-		// bytes readable from found_sp (see its contract above), both loops
-		// read packet memory only under a length guard, and every stack
-		// write goes to a compile-time-constant index -- the same shape as
-		// the copy loop this replaces, and no new stack space.
-		__u32 n = 0;
-
-#pragma unroll
-		for (int j = 0; j < MAX_SNI_LEN; j++)
-			if (j < (int)found_len && found_sp[j] != '.')
-				n = (__u32)j + 1;
-
-#pragma unroll
-		for (int j = 0; j < MAX_SNI_LEN; j++) {
-			unsigned char c = (j < (int)n) ? found_sp[j] : 0;
-
-			if (c >= 'A' && c <= 'Z')
-				c = (unsigned char)(c + 32);
-			out_sni[j] = c;
-		}
-		// 0 -- a name of nothing but dots -- is what the caller already
-		// maps to STAT_PASS_NO_SNI: an empty name must not build a key.
-		return (int)n;
+		ref->off = ext_off + found_off;
+		ref->len = found_len;
+		return 1;
 	}
 
 	return -2; // walked all visible extensions, found no server_name
 }
 
+// Normalizes the hostname xdp_sni_filter() copied out of the packet, in
+// place, and returns its length after trimming (0 for a name of nothing
+// but dots).
+static __always_inline int normalize_name(unsigned char *found_sp, __u32 found_len,
+					  char *out_sni)
+{
+	// Canonicalize the name before build_lpm_key() turns it into a
+	// lookup key (review-triage B3, ROADMAP SEC-17, security-lessons
+	// H1). DNS names are case-insensitive (RFC 4343) and
+	// "example.com." is just "example.com" written in full
+	// (RFC 1035 3.1), so the bytes the client sends and the bytes a
+	// blocklist entry is stored as have to collapse to the same key
+	// on both sides -- otherwise a blocklisted name stays reachable
+	// just by changing its case or padding it with a trailing dot.
+	// Only A-Z is folded, and with a range test, never a blind
+	// `| 0x20` (that would turn '_' 0x5F into DEL 0x7F and mangle
+	// names the userspace mirror does not mangle). This is exactly
+	// what frfw.xdp.normalize_sni() does in userspace, so both sides
+	// build the same key for the same name.
+	//
+	// `n` is the length after trimming, and it is what the caller's
+	// prefixlen and build_lpm_key's barrel shift must both use; the
+	// trimmed tail is zeroed so the shift carries only real bytes.
+	// The (int) casts below are exact, not truncating: parse_sni_body()
+	// already refused anything >= MAX_SNI_LEN, so found_len and n are
+	// both in [1, MAX_SNI_LEN-1].
+	//
+	// found_sp and out_sni are the same stack buffer (the caller's
+	// copy of the name, see xdp_sni_filter()): each loop reads index j
+	// before (or without) writing index j, never another index, so
+	// working in place is exact. Every access is at a compile-time-
+	// constant index. This text is what tests/test_xdp.py compiles
+	// and compares, byte for byte, against frfw.xdp.normalize_sni().
+	__u32 n = 0;
+
+#pragma unroll
+	for (int j = 0; j < MAX_SNI_LEN; j++)
+		if (j < (int)found_len && found_sp[j] != '.')
+			n = (__u32)j + 1;
+
+#pragma unroll
+	for (int j = 0; j < MAX_SNI_LEN; j++) {
+		unsigned char c = (j < (int)n) ? found_sp[j] : 0;
+
+		if (c >= 'A' && c <= 'Z')
+			c = (unsigned char)(c + 32);
+		out_sni[j] = c;
+	}
+	// 0 -- a name of nothing but dots -- is what the caller already
+	// maps to STAT_PASS_NO_SNI: an empty name must not build a key.
+	return (int)n;
+}
+
 // Builds the label-boundary-safe LPM lookup key described in this
 // file's header comment: reverse("." + hostname). sni[] is already
-// zero-padded past sni_len (see extract_sni's copy loop).
+// zero-padded past sni_len (see normalize_name()).
 //
 // This needs a variable-*distance* shift (the meaningful bytes must
 // end up left-aligned at position 0 regardless of hostname length),
@@ -808,7 +824,7 @@ static int extract_sni(unsigned char *p, unsigned char *end, char *out_sni, __u3
 // value involved is a boolean ("is this particular bit of the shift
 // amount set") gating whether a given fixed-distance stage runs at
 // all -- the same "constant address, runtime-gated use" shape as
-// extract_sni's copy loop above, which does compile and verify cleanly.
+// normalize_name()'s loops above, which do compile and verify cleanly.
 __attribute__((noinline))
 static void build_lpm_key(struct lpm_sni_key *key, const char *sni, __u32 sni_len)
 {
@@ -1082,22 +1098,42 @@ int xdp_sni_filter(struct xdp_md *ctx)
 		}
 	}
 
-	char sni[MAX_SNI_LEN] = {};
 	// The record length (payload[3..4]) bounds nothing here: a
 	// ClientHello may legally span records, and a short one is already
 	// caught by the datagram bound. It stays what it is above, the
 	// signal that the hello continues in the flow's next segments.
-	int sni_len = extract_sni(hs + 4, data_end, sni, payload_len - 9);
+	struct sni_ref ref = {};
+	int found = extract_sni(hs + 4, data_end, payload_len - 9, &ref);
 
-	if (sni_len == -1) {
+	if (found == -1) {
 		bump(STAT_PASS_TRUNCATED);
 		return XDP_PASS;
 	}
-	if (sni_len == -2 || sni_len == 0) {
+	if (found != 1) {
 		bump(STAT_PASS_NO_SNI);
 		return XDP_PASS;
 	}
-	// Unreachable in practice: extract_sni() already refuses to return a
+
+	// Copy exactly the name's bytes (ROADMAP SEC-20). The helper fails
+	// when the frame ends inside the name -- a truncated hello, never a
+	// shorter name -- and bounds the read itself, so the name's last
+	// byte may be the frame's last byte. The same mask as
+	// emit_hello_segment's gives the verifier a [1, MAX_SNI_LEN] size it
+	// can prove; parse_sni_body() already guaranteed [1, MAX_SNI_LEN-1],
+	// so it changes no value.
+	char sni[MAX_SNI_LEN] = {};
+	__u32 found_len = ((ref.len - 1) & (MAX_SNI_LEN - 1)) + 1;
+	if (bpf_xdp_load_bytes(ctx, payload_off + 9 + ref.off, sni, found_len) < 0) {
+		bump(STAT_PASS_TRUNCATED);
+		return XDP_PASS;
+	}
+	int sni_len = normalize_name((unsigned char *)sni, found_len, sni);
+
+	if (sni_len == 0) {
+		bump(STAT_PASS_NO_SNI);
+		return XDP_PASS;
+	}
+	// Unreachable in practice: normalize_name() never returns a
 	// value over MAX_SNI_LEN. Re-checked and, crucially, re-derived via
 	// a bitmask anyway: sni_len lives on the BPF stack by this point
 	// (this function has too many live values to keep everything in
@@ -1111,7 +1147,7 @@ int xdp_sni_filter(struct xdp_md *ctx)
 	// reload, which a comparison-based branch does not; MAX_SNI_LEN is
 	// a power of 2 specifically so this mask is exact for every value
 	// this function actually produces ([1, MAX_SNI_LEN-1], since
-	// extract_sni already rejects anything >= MAX_SNI_LEN).
+	// parse_sni_body() already rejects anything >= MAX_SNI_LEN).
 	if (sni_len < 1 || sni_len >= MAX_SNI_LEN) {
 		bump(STAT_PASS_NO_SNI);
 		return XDP_PASS;

@@ -733,3 +733,40 @@ def test_padding_on_a_pure_ack_does_not_use_up_a_split_hellos_segments(lab, lan_
     ours = [s for s in segments if s.sport == sport]
     assert [s.first for s in ours] == [True, False]
     assert ours[1].payload == rest
+
+
+# --- SEC-20: a short name at the very end of the frame ---------------------
+#
+# parse_sni_body() used to demand MAX_SNI_LEN readable bytes from the
+# name's start, whatever the name's length. A ClientHello whose
+# server_name is its last extension, with nothing after it, then failed
+# open: any client can send that shape, and browsers that permute their
+# extensions send it by chance.
+
+
+@pytest.mark.parametrize("wire_sni", [
+    "blocked.example",          # 15 bytes: 17 short of the old window
+    "www.blocked.example",      # 19 bytes
+    "WWW.Blocked.Example.",     # normalized after the copy, as before
+], ids=["short", "subdomain", "case-and-dot"])
+def test_a_blocklisted_name_in_the_last_extension_is_dropped(lab, lan_attached, wire_sni):
+    record, name_end = _hello_with_sni_last(wire_sni)
+    assert name_end == len(record)  # the frame ends exactly at the name
+    frame = _tcp_frame(record, [], lan_attached["dst"], lan_attached["src"])
+    moved = _counted(lab, frame)
+    assert moved["drop_match"] == 1
+    assert moved["pass_no_sni"] == 0
+
+
+def test_a_frame_that_ends_inside_the_name_is_truncated_not_a_shorter_name(lab, lan_attached):
+    """The per-byte copy must not turn a cut name into a different, shorter
+    one: 'blocked.example' cut after 'blocked.exam' must not be looked up
+    at all. The IP total length still claims the whole hello, so only the
+    frame's end stops the copy."""
+    record, _ = _hello_with_sni_last("blocked.example")
+    frame = _tcp_frame(record[:-3], [], lan_attached["dst"], lan_attached["src"],
+                       datagram_payload=len(record))
+    moved = _counted(lab, frame)
+    assert moved["drop_match"] == 0
+    assert moved["pass_no_match"] == 0
+    assert moved["pass_truncated"] == 1
