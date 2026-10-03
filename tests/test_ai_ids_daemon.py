@@ -306,3 +306,108 @@ def test_is_daemon_active_false_when_systemctl_missing(monkeypatch):
     monkeypatch.setattr(daemon_mod.subprocess, "run", raise_not_found)
     assert daemon_mod.is_daemon_active() is False
 
+
+
+# --- SEC-2: only internal sources are scored, infrastructure is never quarantined ---
+
+
+def _scan(daemon, src: str, *, count: int = 20) -> None:
+    """A destination scan from `src`, as conntrack would show it."""
+    flows = [
+        {"proto": "tcp", "src": src, "sport": 40000 + i, "dst": f"203.0.113.{i}", "dport": 443}
+        for i in range(count)
+    ]
+    daemon._conntrack_fn = lambda: {"ok": True, "flows": flows}
+    daemon.poll_conntrack_once()
+
+
+def test_internal_networks_are_the_non_masquerade_zones_and_the_vpn(dhcp_config_dict):
+    from frfw.ai_ids.daemon import internal_networks
+
+    dhcp_config_dict["interfaces"]["wan"]["address"] = "198.51.100.2/24"  # a static WAN
+    dhcp_config_dict["zones"]["vpn"] = {}
+    dhcp_config_dict["wireguard"] = {"enabled": True, "address": "10.99.0.1/24", "listen_port": 51820}
+    networks = [str(n) for n in internal_networks(parse_config(dhcp_config_dict))]
+    assert networks == ["10.0.0.0/24", "10.99.0.0/24"]
+
+
+def test_a_source_outside_the_internal_networks_is_never_scored(config_with_reservation, tmp_path):
+    """R7: an inbound scan from the internet (or the ISP's gateway talking
+    to many hosts) used to be scored -- and quarantined -- like a LAN host."""
+    quarantined = []
+    daemon = _daemon(config_with_reservation, tmp_path=tmp_path,
+                     quarantine_fn=lambda ip, d: quarantined.append(ip) or {"ok": True})
+
+    _scan(daemon, "198.51.100.7")
+    for _ in range(5):
+        daemon.handle_sni_event_line(json.dumps({"action": "drop", "saddr": "198.51.100.7", "sni": "x.example"}))
+    daemon.handle_dns_log_line("3 198.51.100.7/46443 reply qwzxkjhv.example is NXDOMAIN")
+
+    assert daemon.engine.tracked_ips() == []
+    daemon._clock.t += 10.0
+    assert daemon.evaluate_and_enforce() == [] and quarantined == []
+
+
+def test_an_internal_source_is_still_scored_and_quarantined(config_with_reservation, tmp_path):
+    quarantined = []
+    daemon = _daemon(config_with_reservation, tmp_path=tmp_path,
+                     quarantine_fn=lambda ip, d: quarantined.append(ip) or {"ok": True})
+    _scan(daemon, "10.0.0.99")
+    daemon._clock.t += 10.0
+    assert [e.ip for e in daemon.evaluate_and_enforce()] == ["10.0.0.99"]
+    assert quarantined == ["10.0.0.99"]
+
+
+def test_a_config_without_an_internal_network_scores_nothing(minimal_config_dict, tmp_path):
+    daemon = _daemon(parse_config(minimal_config_dict), tmp_path=tmp_path)
+    _scan(daemon, "10.0.0.99")
+    assert daemon.engine.tracked_ips() == []
+
+
+_ROUTE_TABLE = (
+    "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n"
+    "eth0\t00000000\t0101A8C0\t0003\t0\t0\t0\t00000000\t0\t0\t0\n"   # default via 192.168.1.1
+    "eth1\t0000000A\t00000000\t0001\t0\t0\t0\t00FFFFFF\t0\t0\t0\n"   # 10.0.0.0/24, on-link
+    "eth1\t00000000\tFE00000A\t0003\t0\t0\t100\t00000000\t0\t0\t0\n"  # default via 10.0.0.254
+)
+
+
+@pytest.mark.parametrize("infra_ip, where", [
+    ("10.0.0.1", "the router's own LAN address"),
+    ("10.0.0.254", "a default gateway (/proc/net/route)"),
+    ("10.0.0.53", "a DNS server the DHCP pool hands out"),
+    ("10.0.0.60", "a nameserver in resolv.conf"),
+])
+def test_infrastructure_is_flagged_but_never_quarantined(dhcp_config_dict, tmp_path, infra_ip, where):
+    """R7: a gateway or DNS server talks to many hosts by design -- what
+    the destination-diversity score counts -- and quarantining one cuts
+    every host off."""
+    dhcp_config_dict["dhcp"]["lan"]["dns_servers"] = ["10.0.0.53"]
+    route, resolv = tmp_path / "route", tmp_path / "resolv.conf"
+    route.write_text(_ROUTE_TABLE)
+    resolv.write_text("# generated\nnameserver 10.0.0.60\nnameserver ::1\noptions edns0\n")
+    quarantined = []
+    daemon = IDSDaemon(
+        parse_config(dhcp_config_dict),
+        engine=AnomalyEngine(window_seconds=10.0),
+        quarantine_fn=lambda ip, d: quarantined.append(ip) or {"ok": True},
+        conntrack_fn=lambda: {"ok": True, "flows": []},
+        events_path=tmp_path / "events.json",
+        clock=_Clock(),
+        route_path=route,
+        resolv_path=resolv,
+    )
+    _scan(daemon, infra_ip)
+    daemon._clock.t += 10.0
+
+    assert [e.ip for e in daemon.evaluate_and_enforce()] == [infra_ip], where  # flagged...
+    assert quarantined == [], where  # ...never enforced
+
+
+def test_default_gateways_read_every_default_route(tmp_path):
+    from frfw.ai_ids.daemon import _default_gateways
+
+    route = tmp_path / "route"
+    route.write_text(_ROUTE_TABLE)
+    assert _default_gateways(route) == {"192.168.1.1", "10.0.0.254"}
+    assert _default_gateways(tmp_path / "missing") == set()

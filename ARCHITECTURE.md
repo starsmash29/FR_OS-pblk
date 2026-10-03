@@ -2008,6 +2008,27 @@ excludes nothing; this is a known limitation (a static, non-DHCP host
 cannot currently be excluded), not a silently swallowed case -- see Open
 issues.
 
+### Whom the IDS scores, and whom it never quarantines (ROADMAP SEC-2)
+
+Every telemetry source -- conntrack, the XDP SNI events, the resolver's
+query log -- is filtered to *internal* sources before the engine sees
+it (`frfw.ai_ids.daemon.internal_networks`): the subnet of every
+interface with a static address in a zone that isn't a NAT masquerade
+target (the LAN, the IoT and guest segments), plus the WireGuard VPN's.
+The engine used to score every conntrack source, so an ordinary inbound
+scan from the internet, or the ISP's gateway, could be scored and
+quarantined like a compromised LAN host (review v0.2.0 R7). A config with
+no internal network scores nothing rather than guessing one.
+
+Inside those networks, some hosts talk to many others by design -- what
+the destination-diversity score counts -- and quarantining one would cut
+every host off: the router's own addresses, the default gateways (read
+from `/proc/net/route` at every evaluation, since a DHCP renewal can move
+one) and the DNS servers (`/etc/resolv.conf` and every DHCP pool's
+`dns_servers`). They are still scored and their verdict is logged, but
+never enforced (`infrastructure_ips`). The apply-helper keeps its own,
+narrower guard underneath (non-host and router addresses, the 7-day cap).
+
 ### `frfw.ids_quarantine` and the `ids_quarantine` nftables set
 
 A close structural mirror of `frfw.bruteforce`/`frfw.ztna` -- same

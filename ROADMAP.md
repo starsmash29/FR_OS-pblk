@@ -1336,7 +1336,7 @@ issues #17 and #18). The R-numbers are that record's.
 | ID | Item | Severity | Where it plugs in |
 |---|---|---|---|
 | SEC-1 | QUIC/HTTP3 (UDP/443) bypasses the SNI blocklist and XDP app blocking: reject UDP/443 from filtered zones while the filter is on; show the remaining gaps (ECH, IPv6) on the XDP screen (R8) | medium | `frfw.nft.builder`, `routes/xdp.py` |
-| SEC-2 | AI IDS: score only internal-zone sources and never quarantine infrastructure (gateway, upstream DNS) -- the helper-side guard is done (R7) | medium | `frfw.ai_ids.daemon`, `frfw.ai_ids.engine` |
+| SEC-2 | AI IDS: score only internal-zone sources and never quarantine infrastructure (gateway, upstream DNS) -- the helper-side guard is done (R7; done: every telemetry source is filtered to the internal networks -- non-masquerade zones with a static address, and the VPN -- and the router's addresses, default gateways and DNS servers are flagged but never quarantined, see ARCHITECTURE) | medium | `frfw.ai_ids.daemon` (`internal_networks`, `infrastructure_ips`), `tests/test_ai_ids_daemon.py` (SEC-2 section) |
 | SEC-3 | `/metrics` protected by default (token generated at first boot), helper-backed values cached (R11) | medium | `frfw.metrics`, `routes/metrics.py`, `scripts/fr-first-boot.sh` |
 | SEC-4 | Narrower journal access for the webUI and the sensor daemons (R10) | medium | `systemd/fr-webui.service`, `fr-ai-ids`, `fr-appid` |
 | SEC-5 | Cross-subsystem apply: validate, stage and roll back beyond the firewall (R6) | medium | `frfw.provision` |
