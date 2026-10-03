@@ -27,7 +27,7 @@
     firewall-cli update apply VERSION [--repo OWNER/REPO]
     firewall-cli update rollback [--repo OWNER/REPO]
     firewall-cli xdp-status
-    firewall-cli adblock-refresh [config.yaml]
+    firewall-cli adblock-refresh [--scheduled] [config.yaml]
     firewall-cli dns-log-trim
     firewall-cli persistence status
     firewall-cli persistence auto [--reboot]
@@ -377,6 +377,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "adblock-refresh",
         help="download+dedupe the configured ad-block lists (needs root); "
         "run daily by fr-adblock-refresh.timer, or on demand from the webUI",
+    )
+    p_adblock_refresh.add_argument(
+        "--scheduled",
+        action="store_true",
+        help="the timer's run: fetch nothing while ad-blocking is off",
     )
     add_config_arg(p_adblock_refresh)
     p_adblock_refresh.set_defaults(handler=_cmd_adblock_refresh)
@@ -921,6 +926,15 @@ def _cmd_dns_log_trim(args: argparse.Namespace) -> int:
 
 def _cmd_adblock_refresh(args: argparse.Namespace) -> int:
     config = load_config(args.config)
+    # ROADMAP SEC-21: fr-adblock-refresh.timer is enabled on every router,
+    # but FR_OS fetches nothing from the internet the admin didn't turn on
+    # (security-lessons G11): the daily run downloads only while ad-blocking
+    # is on (and on, it has lists: the config loader refuses it without).
+    # An admin's own run -- this command, the webUI's "Refresh now" --
+    # still fetches whenever lists are configured.
+    if args.scheduled and not config.adblocker.enabled:
+        print("ad-blocking is off: nothing fetched")
+        return 0
     try:
         result = adblock_refresh(
             config.adblocker.source_urls,

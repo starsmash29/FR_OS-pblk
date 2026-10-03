@@ -8,7 +8,9 @@ Type=oneshot
 # display-only state, and asks the privileged apply-helper for anything
 # else), this writes to /etc/fr_os/adblock.hosts -- root, the same way
 # fr-firewall.service itself runs.
-ExecStart=firewall-cli adblock-refresh /etc/fr_os/config.yaml
+# --scheduled: the timer runs on every router, but this downloads only
+# while adblocker.enabled is on (ROADMAP SEC-21, security-lessons G11).
+ExecStart=firewall-cli adblock-refresh --scheduled /etc/fr_os/config.yaml
 # Sandbox (security-lessons I1; checked by tests/test_systemd_sandbox.py).
 # Downloads block lists into /etc/fr_os and restarts fr-adblock-dns (over
 # D-Bus, as uid 0). Needs no capability at all.
