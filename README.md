@@ -86,9 +86,12 @@ dd if=fr_os_hybrid.iso of=/dev/sdX bs=4M status=progress oflag=sync
    at least 256 MiB free after the ~330 MB image; anything from 1 GB up
    is fine.
 2. **The second boot sets the router up**, with no wizard to click
-   through: the first NIC becomes the **WAN** (DHCP from your modem/ISP),
-   the second the **LAN** at **192.168.1.1/24** with a DHCP server for
-   .100-.199, and a random admin password is generated.
+   through: the port where your modem's DHCP server answers becomes the
+   **WAN**, the other the **LAN** at **192.168.1.1/24** with a DHCP
+   server for .100-.199, and a random admin password is generated. If no
+   DHCP server answers anywhere it goes by port order (first WAN), and if
+   one answers on more than one port it assigns nothing and serves DHCP
+   nowhere -- the console says which happened.
 3. **The console shows the login**: `admin` / the generated password, and
    `https://192.168.1.1/` -- open it from a computer on the LAN port
    (the browser warns about the self-signed certificate once). The first
