@@ -1,12 +1,14 @@
 """`fr-appid`: the unprivileged app identification daemon (phase 16,
 systemd/fr-appid.service).
 
-Reads two journals, never the network or the kernel directly:
+Reads two logs, never the network or the kernel directly:
 
-1. fr-adblock-dns.service (only when `adblocker.query_logging` is on):
-   every "query[...]" line names a client and the name it looked up;
-2. fr-xdp-sni-logger.service (only when `app_control.observe_sni` is on,
-   which makes the XDP program report *passed* SNIs as well as drops).
+1. fr-adblock-dns.service's journal (only when `adblocker.query_logging`
+   is on): every "query[...]" line names a client and the name it
+   looked up;
+2. fr-xdp-sni-logger.service's event file, paths.SNI_EVENTS_PATH (only
+   when `app_control.observe_sni` is on, which makes the XDP program
+   report *passed* SNIs as well as drops; ROADMAP SEC-4).
 
 Each name is matched against the bundled catalog (frfw.appid) and counted
 per app and client (frfw.appid.usage). The summary is written to
@@ -37,7 +39,7 @@ from frfw import paths
 from frfw.appid import AppMatcher, Catalog, load_catalog
 from frfw.appid.usage import UsageTracker
 from frfw.config.schema import Config
-from frfw.journal import tail_journal_forever
+from frfw.journal import follow_file_forever, tail_journal_forever
 
 FLUSH_SECONDS = 30.0
 CONFIG_POLL_SECONDS = 30.0
@@ -141,8 +143,14 @@ class AppIdDaemon:
     ) -> None:  # pragma: no cover -- thin composition of tested parts
         units = source_units(self.config)
         for unit, handler in self.sources():
+            # The SNI events have a file of their own (ROADMAP SEC-4); the
+            # resolver's query log is still read from its journal.
+            if unit == XDP_LOGGER_UNIT:
+                target, source = follow_file_forever, paths.SNI_EVENTS_PATH
+            else:
+                target, source = tail_journal_forever, unit
             threading.Thread(
-                target=tail_journal_forever, args=(unit, handler), kwargs={"program": "fr-appid"},
+                target=target, args=(source, handler), kwargs={"program": "fr-appid"},
                 daemon=True,
             ).start()
         while True:

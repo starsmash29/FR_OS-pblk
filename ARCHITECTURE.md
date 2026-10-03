@@ -434,12 +434,21 @@ but not yet applied".
 The live log (`GET /xdp/logs/stream`, Server-Sent Events) does NOT read
 the kernel ring buffer directly -- the map pinned for it is root-only
 (see the `RingBufferReader` docstring), and the webUI process deliberately
-does not run as root (`systemd/fr-webui.service`). Instead it tails the
-already-decoded JSON lines that `fr-xdp-sni-logger` has already written
-to journald (`journalctl -u fr-xdp-sni-logger.service -f -o cat`) --
-`fr-webui.service` was given a `SupplementaryGroups=systemd-journal`
-line for this, which is the usual, minimal-privilege way for a non-root
-process to read the journal without root. Because each of those is a
+does not run as root (`systemd/fr-webui.service`). Instead it follows
+the already-decoded JSON lines `fr-xdp-sni-logger` writes to its event
+file, `/var/log/fr_os-sni/events.jsonl` (`tail -n 50 -F`). That used to
+be the logger's journal, read through the `systemd-journal` group --
+which reads *every* unit's log and the kernel's (review v0.2.0 R10). The
+event file is narrower (ROADMAP SEC-4): the logger opens it while still
+root, under `Group=fr_os-webui`, `LogsDirectory=fr_os-sni` (0750) and
+`UMask=0027`, so it is root:fr_os-webui 0640 -- the webUI and the sensor
+daemons (`fr_os-sensor`, in the `fr_os-webui` group) can read it, and
+only the logger's already-open descriptor can write it, so no reader
+can forge an event that another one acts on (the AI IDS quarantines on
+them). The logger keeps it under 4 MiB by emptying it, which `tail -F`
+follows; it also still prints each event to its journal for the admin.
+A file the webUI may not read is reported in the stream (tail's
+"Permission denied") instead of staying silent. Because each stream is a
 child process, the route bounds them: one per webUI session -- every
 live-log tab of a session reads the *same* child through the process-wide
 `_LogStream` registry in `routes/xdp.py`, so N tabs mean one child, not N
@@ -1986,11 +1995,12 @@ well downstream of any packet-path code.
 
 Two independent, decoupled inputs feed `AnomalyEngine`:
 
-1. A background thread tails `fr-xdp-sni-logger.service`'s journald
-   output (`journalctl -f -o cat`) -- the identical mechanism and the
-   identical `SupplementaryGroups=systemd-journal` permission model the
-   webUI's own `/xdp/logs/stream` route already uses to read the same
-   daemon's output without root.
+1. A background thread follows `fr-xdp-sni-logger`'s event file
+   (`frfw.journal.follow_file_forever`, `tail -F`) -- the same file and
+   permission model as the webUI's own `/xdp/logs/stream` route (ROADMAP
+   SEC-4). Only the resolver's query log (with
+   `adblocker.query_logging`) is still read from a journal, which is why
+   this unit and `fr-appid` keep the `systemd-journal` group for now.
 2. The main loop polls `conntrack_sample` every `TICK_SECONDS` (5s) and
    diffs the returned flow list against the previous sample's flow keys
    (proto/src/sport/dst/dport) -- **only genuinely new flows are counted

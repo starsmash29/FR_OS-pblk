@@ -31,9 +31,13 @@ def test_the_sni_event_logger_drops_root_before_the_first_poll(monkeypatch, tmp_
     monkeypatch.setattr(xdp, "RingBufferReader", FakeReader)
     monkeypatch.setattr(xdp.os, "geteuid", lambda: 0)
     monkeypatch.setattr(privdrop, "drop_privileges", lambda: events.append("drop"))
+    events_file = tmp_path / "events.jsonl"
     with pytest.raises(KeyboardInterrupt):
-        xdp.run_event_logger()
+        xdp.run_event_logger(events_path=events_file)
     assert events == ["open", "drop", "poll"]
+    # ROADMAP SEC-4: the event file was created by the process before it
+    # dropped root, readable by its group only, never by others.
+    assert events_file.exists() and events_file.stat().st_mode & 0o777 == 0o640
 
 
 def test_drop_privileges_refuses_to_stay_root(monkeypatch):

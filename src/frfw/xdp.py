@@ -980,21 +980,62 @@ def format_event_json(event: SniEvent) -> str:
     )
 
 
-def run_event_logger(*, poll_timeout_ms: int = 500) -> None:
+#: Past this size the event file is emptied and starts over: a router's
+#: log partition is small, and its readers only follow new lines (the
+#: webUI also shows the last 50). About 30,000 events.
+SNI_EVENTS_MAX_BYTES = 4 * 1024 * 1024
+
+
+class EventFile:
+    """The SNI event file (paths.SNI_EVENTS_PATH), opened once for
+    appending (ROADMAP SEC-4).
+
+    The logger opens it while still root, so the file is root's and only
+    this open file can write it; the descriptor stays usable after the
+    process drops to fr_os-sensor -- the same account fr-ai-ids and
+    fr-appid run as, which is exactly why the file must not be theirs to
+    open for writing. Its group comes from the unit (Group=fr_os-webui),
+    the readers' group. Each event is one write() of one whole line with
+    O_APPEND, so a reader never sees half a line from this writer."""
+
+    def __init__(self, path: Path, *, max_bytes: int = SNI_EVENTS_MAX_BYTES) -> None:
+        self._fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_CLOEXEC, 0o640)
+        os.fchmod(self._fd, 0o640)
+        self._max_bytes = max_bytes
+
+    def write_line(self, line: str) -> None:
+        data = (line + "\n").encode()
+        if os.fstat(self._fd).st_size + len(data) > self._max_bytes:
+            # Readers follow with `tail -F`, which notices the truncation
+            # and starts again from the top.
+            os.ftruncate(self._fd, 0)
+        os.write(self._fd, data)
+
+    def close(self) -> None:
+        os.close(self._fd)
+
+
+def run_event_logger(*, poll_timeout_ms: int = 500, events_path: Path = paths.SNI_EVENTS_PATH) -> None:
     """Blocking entry point for the event-logger daemon (see
     systemd/fr-xdp-sni-logger.service): waits for the pinned events map
     to exist (created only once `sync_sni_filter` has run with
     `enabled: true`, which may not have happened yet on first boot, or
-    ever, if the feature is off), then logs every match to stdout
-    (captured by journald under that unit) forever. Opening the pinned
-    map needs CAP_BPF, so the unit starts as root with only that (and
-    what it takes to switch user); right after opening it the process
+    ever, if the feature is off), then logs every event forever -- to
+    the event file the webUI and the sensor daemons read (ROADMAP SEC-4,
+    instead of giving them the whole journal), and to stdout, where
+    journald keeps it for the admin. Opening the pinned map needs
+    CAP_BPF, and creating the event file as root is what keeps it out of
+    the readers' reach, so the unit starts as root with only that (and
+    what it takes to switch user); right after opening both the process
     becomes fr_os-sensor for good (frfw.privdrop)."""
+    event_file = EventFile(events_path)
     while not PIN_EVENTS_PATH.exists():
         time.sleep(2)
 
     def _log(event: SniEvent) -> None:
-        print(format_event_json(event), flush=True)
+        line = format_event_json(event)
+        event_file.write_line(line)
+        print(line, flush=True)
 
     with RingBufferReader(_log) as reader:
         # Opening the pinned map needed root (CAP_BPF); reading it doesn't.

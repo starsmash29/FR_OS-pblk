@@ -171,10 +171,10 @@ def test_logs_stream_requires_login(client):
     assert response.headers["location"] == "/login"
 
 
-def _fake_journal(monkeypatch, code: str) -> None:
-    """Stand a real child process in for `journalctl -f`: the stream
+def _fake_log(monkeypatch, code: str) -> None:
+    """Stand a real child process in for `tail -F`: the stream
     code runs exactly as on a router, only the argv differs."""
-    monkeypatch.setattr(xdp_route, "_JOURNALCTL_CMD", [sys.executable, "-c", code])
+    monkeypatch.setattr(xdp_route, "_EVENTS_CMD", [sys.executable, "-c", code])
 
 
 @pytest.fixture
@@ -194,7 +194,7 @@ def test_logs_stream_relays_valid_json_lines_and_drops_garbage(
         "",
         '{"ts": 2.0, "saddr": "9.9.9.9", "sport": 222, "daddr": "8.8.8.8", "dport": 443, "sni": "also-bad.example.com"}',
     ]
-    _fake_journal(monkeypatch, f"print('\\n'.join({lines!r}))")
+    _fake_log(monkeypatch, f"print('\\n'.join({lines!r}))")
 
     with logged_in_client.stream("GET", "/xdp/logs/stream") as response:
         assert response.status_code == 200
@@ -205,19 +205,19 @@ def test_logs_stream_relays_valid_json_lines_and_drops_garbage(
     assert "also-bad.example.com" in body
     assert "not json" not in body
     assert body.count("data: ") == 2
-    # The journal ended, so the session's stream ended with it and gave
+    # The log ended, so the session's stream ended with it and gave
     # its cap slot back (review v0.2.0 R19).
     assert fresh_streams == {}
 
 
-def test_a_missing_journalctl_is_an_error_frame(logged_in_client, monkeypatch, fresh_streams):
-    monkeypatch.setattr(xdp_route, "_JOURNALCTL_CMD", ["/nonexistent/journalctl", "-f"])
+def test_a_missing_tail_is_an_error_frame(logged_in_client, monkeypatch, fresh_streams):
+    monkeypatch.setattr(xdp_route, "_EVENTS_CMD", ["/nonexistent/tail", "-F"])
 
     with logged_in_client.stream("GET", "/xdp/logs/stream") as response:
         assert response.status_code == 200
         body = "".join(response.iter_text())
 
-    assert json.loads(body.removeprefix("data: "))["error"].startswith("journalctl not found")
+    assert json.loads(body.removeprefix("data: "))["error"].startswith("tail not found")
     assert fresh_streams == {}
 
 
@@ -228,7 +228,7 @@ def test_stream_past_the_cap_is_an_error_frame_and_spawns_nothing(
     one clear `text/event-stream` error frame and no child process
     (review v0.2.0 R19)."""
     spawned = tmp_path / "spawned"
-    _fake_journal(monkeypatch, f"open({str(spawned)!r}, 'w').close()")
+    _fake_log(monkeypatch, f"open({str(spawned)!r}, 'w').close()")
     # Fill the process-wide registry with other sessions' live streams.
     for n in range(xdp_route.LOG_STREAM_LIMIT):
         fresh_streams[f"other-session-{n}"] = xdp_route._LogStream(f"other-session-{n}")
@@ -238,7 +238,7 @@ def test_stream_past_the_cap_is_an_error_frame_and_spawns_nothing(
         assert response.headers["content-type"].startswith("text/event-stream")
         body = "".join(response.iter_text())
 
-    assert not spawned.exists(), "a journalctl was spawned past the cap"
+    assert not spawned.exists(), "a child was spawned past the cap"
     assert "limit reached" in json.loads(body.removeprefix("data: "))["error"]
     assert str(xdp_route.LOG_STREAM_LIMIT) in body
     assert len(fresh_streams) == xdp_route.LOG_STREAM_LIMIT
@@ -295,7 +295,7 @@ def test_session_stream_key_is_the_digest_not_the_cookie_itself():
 #
 # The TestClient drains a response body before it hands it over, and it
 # never disconnects mid-stream, so it can't show what happens when a
-# browser tab is closed on a quiet journal -- the case R19 is about. These
+# browser tab is closed on a quiet log -- the case R19 is about. These
 # tests run the app under uvicorn, as on the router, and talk to it over
 # real sockets.
 
@@ -347,10 +347,10 @@ def _wait_for(condition, timeout: float = 10) -> bool:
     return condition()
 
 
-#: A quiet journal: one line naming the child, then nothing for a minute.
+#: A quiet log: one line naming the child, then nothing for a minute.
 #: Every child it starts also appends its pid to a file, so a test counts
 #: the children that really ran, not a fake's bookkeeping.
-_QUIET_JOURNAL = (
+_QUIET_LOG = (
     "import json, os, sys, time; "
     "open(sys.argv[1], 'a').write(f'{os.getpid()}\\n'); "
     "print(json.dumps({'pid': os.getpid()}), flush=True); "
@@ -362,16 +362,16 @@ def _children(pids_file) -> list[int]:
     return [int(pid) for pid in pids_file.read_text().split()] if pids_file.exists() else []
 
 
-def test_closing_the_last_tab_on_a_quiet_journal_ends_the_child(
+def test_closing_the_last_tab_on_a_quiet_log_ends_the_child(
     logged_in_client, live_server, monkeypatch, fresh_streams, tmp_path
 ):
-    """SEC-13 / review v0.2.0 R19: the `journalctl` child of a closed tab
-    is gone, and the session's cap slot free, even when the journal never
+    """SEC-13 / review v0.2.0 R19: the `tail` child of a closed tab
+    is gone, and the session's cap slot free, even when the log never
     writes another line -- the case where a server is never told its
     client left."""
     pids_file = tmp_path / "pids"
     monkeypatch.setattr(
-        xdp_route, "_JOURNALCTL_CMD", [sys.executable, "-c", _QUIET_JOURNAL, str(pids_file)]
+        xdp_route, "_EVENTS_CMD", [sys.executable, "-c", _QUIET_LOG, str(pids_file)]
     )
     monkeypatch.setattr(xdp_route, "LOG_HEARTBEAT_SECONDS", 0.2)
     cookie = logged_in_client.cookies[COOKIE_NAME]
@@ -383,7 +383,7 @@ def test_closing_the_last_tab_on_a_quiet_journal_ends_the_child(
 
     tab.close()  # the browser tab is closed
 
-    assert _wait_for(lambda: not _alive(pid)), "the journalctl child outlived its last tab"
+    assert _wait_for(lambda: not _alive(pid)), "the tail child outlived its last tab"
     assert _wait_for(lambda: fresh_streams == {}), "the session kept its cap slot"
 
 
@@ -391,11 +391,11 @@ def test_tabs_of_one_session_share_one_child_until_the_last_one_leaves(
     logged_in_client, live_server, monkeypatch, fresh_streams, tmp_path
 ):
     """SEC-13 / review v0.2.0 R19: every live-log tab of a session reads
-    one `journalctl`, not one child per request; closing one tab leaves
+    one `tail`, not one child per request; closing one tab leaves
     the others streaming, and the last one to leave ends the child."""
     pids_file = tmp_path / "pids"
     monkeypatch.setattr(
-        xdp_route, "_JOURNALCTL_CMD", [sys.executable, "-c", _QUIET_JOURNAL, str(pids_file)]
+        xdp_route, "_EVENTS_CMD", [sys.executable, "-c", _QUIET_LOG, str(pids_file)]
     )
     monkeypatch.setattr(xdp_route, "LOG_HEARTBEAT_SECONDS", 0.2)
     cookie = logged_in_client.cookies[COOKIE_NAME]
@@ -416,6 +416,50 @@ def test_tabs_of_one_session_share_one_child_until_the_last_one_leaves(
     _read_until(second, b": keepalive")  # still streaming
 
     second.close()
-    assert _wait_for(lambda: not _alive(pid)), "the journalctl child outlived its last tab"
+    assert _wait_for(lambda: not _alive(pid)), "the tail child outlived its last tab"
     assert _wait_for(lambda: fresh_streams == {})
-    assert _children(pids_file) == [pid], "a second journalctl was spawned for one session"
+    assert _children(pids_file) == [pid], "a second tail was spawned for one session"
+
+
+# --- SEC-4: the stream follows the logger's event file -----------------------
+
+
+def test_the_stream_follows_the_real_event_file_through_a_truncation(
+    logged_in_client, live_server, monkeypatch, fresh_streams, tmp_path
+):
+    """The command the webUI really runs (`tail -F`) on a real event file
+    the logger writes (frfw.xdp.EventFile): recent history first, then new
+    lines -- also after the logger empties the file at its size cap."""
+    from frfw import xdp
+
+    events = tmp_path / "events.jsonl"
+    writer = xdp.EventFile(events, max_bytes=400)
+    writer.write_line(json.dumps({"ts": 1.0, "action": "drop", "sni": "before.example"}))
+    monkeypatch.setattr(xdp_route, "_EVENTS_CMD", ["tail", "-n", "50", "-F", "--", str(events)])
+    monkeypatch.setattr(xdp_route, "LOG_HEARTBEAT_SECONDS", 0.2)
+
+    tab = _open_tab(live_server, logged_in_client.cookies[COOKIE_NAME])
+    try:
+        _read_until(tab, b"before.example")  # the history
+        writer.write_line(json.dumps({"ts": 2.0, "action": "drop", "sni": "live.example"}))
+        _read_until(tab, b"live.example")  # followed live
+        for n in range(5):  # past the cap: the writer empties the file
+            writer.write_line(json.dumps({"ts": 3.0 + n, "action": "drop", "sni": f"after{n}.example"}))
+        assert events.stat().st_size < 400
+        _read_until(tab, b"after4.example")  # ...and tail starts over
+    finally:
+        tab.close()
+        writer.close()
+
+
+def test_an_event_file_the_webui_may_not_read_is_reported_in_the_stream(
+    logged_in_client, monkeypatch, fresh_streams
+):
+    """A broken install (the file not readable by fr_os-webui) used to be
+    an empty stream forever: tail keeps retrying and says why on stderr
+    only. Simulated here -- the tests run as root, who reads anything."""
+    _fake_log(monkeypatch, "import sys, time; print(\"tail: cannot open 'events.jsonl' for reading: "
+                           "Permission denied\", file=sys.stderr, flush=True); time.sleep(0.5)")
+    with logged_in_client.stream("GET", "/xdp/logs/stream") as response:
+        body = "".join(response.iter_text())
+    assert "permission denied" in json.loads(body.removeprefix("data: ").strip())["error"]

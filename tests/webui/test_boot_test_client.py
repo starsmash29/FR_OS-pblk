@@ -89,3 +89,16 @@ def test_the_boot_tests_client_gets_through_setup_and_changes_settings(boot_test
     assert "Europe/Budapest" in webui_env["config_path"].read_text()
     applied = boot_test.post(opener, "/apply", {})
     assert "error=" not in applied
+
+
+def test_the_boot_tests_stream_check_reads_the_first_line(boot_test, router_webui, monkeypatch):
+    """ROADMAP SEC-4: boot 3 reads the live XDP log's first line to show
+    the webUI's stream works without journal access."""
+    from frfw.webui.routes import xdp as xdp_route
+
+    monkeypatch.setattr(xdp_route, "LOG_HEARTBEAT_SECONDS", 0.2)
+    opener = boot_test.webui_opener()
+    boot_test.post(opener, "/login", {"username": "admin", "password": GENERATED})
+    boot_test.post(opener, "/setup", {"username": boot_test.NEW_USERNAME, "password": boot_test.NEW_PASSWORD,
+                                      "password_confirm": boot_test.NEW_PASSWORD})
+    assert boot_test.first_stream_line(opener).startswith(":")

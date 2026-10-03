@@ -11,12 +11,10 @@ Wants=fr-accounts.service fr-apply-helper.socket fr-initial-password.path fr-ini
 Type=simple
 User=fr_os-webui
 Group=fr_os-webui
-# Read-only journal access for the XDP SNI filter screen's live log
-# stream (frfw.webui.routes.xdp tails `journalctl -u
-# fr-xdp-sni-logger.service -f`) -- the standard, minimal-privilege way
-# for a non-root process to read journald without needing root or a
-# broader capability. It grants nothing beyond "read the journal".
-SupplementaryGroups=systemd-journal
+# No journal access (ROADMAP SEC-4, review v0.2.0 R10): the XDP screen's
+# live log follows fr-xdp-sni-logger's event file, readable by this
+# unit's own group (frfw.paths.SNI_EVENTS_PATH), and the dashboard's
+# recent drops come from the kernel log through the apply-helper.
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 # Points OpenSSL at the TLS group preference frfw.pqc regenerates on
 # every `apply` (see that module's docstring for why this -- rather

@@ -205,6 +205,18 @@ ADBLOCK_DNS_SERVICE_NAME = "fr-adblock-dns"
 #: kernel's nftables set, never here.
 IOT_INVENTORY_PATH = SENSOR_STATE_DIR / "iot_inventory.json"
 
+#: The XDP SNI filter's events, one JSON line each (frfw.xdp.format_event_json),
+#: for the readers that used to follow fr-xdp-sni-logger's journal: the
+#: webUI's live log, fr-ai-ids and fr-appid (ROADMAP SEC-4, review v0.2.0
+#: R10). Created by the logger while it is still root, root:fr_os-webui
+#: 0640 in a root:fr_os-webui 0750 directory (systemd's LogsDirectory=):
+#: the readers -- the fr_os-webui user, and fr_os-sensor through that
+#: group -- can read it, only the logger's open file can write it, so no
+#: reader can forge an event another one acts on. Capped in size by the
+#: logger (frfw.xdp.EventFile), which empties it when it gets too big.
+SNI_EVENTS_DIR = Path("/var/log/fr_os-sni")
+SNI_EVENTS_PATH = SNI_EVENTS_DIR / "events.jsonl"
+
 #: App identification usage summary (phase 16, see frfw.appid.daemon):
 #: which apps each client used recently, written by the unprivileged
 #: fr-appid daemon and read by the webUI and the metrics exporter.

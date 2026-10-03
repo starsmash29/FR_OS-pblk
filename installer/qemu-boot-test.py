@@ -134,6 +134,43 @@ def persistence_partition(disk: Path):
         mountpoint.rmdir()
 
 
+def group_id(upper: Path, name: str) -> int | None:
+    """A group's id, from the router's own /etc/group (FR_OS creates its
+    accounts at boot, so the file is on the persistence layer)."""
+    group_file = upper / "etc" / "group"
+    for line in group_file.read_text().splitlines() if group_file.exists() else []:
+        fields = line.split(":")
+        if len(fields) >= 3 and fields[0] == name:
+            return int(fields[2])
+    return None
+
+
+def check_sni_event_file(check, upper: Path) -> None:
+    """ROADMAP SEC-4: fr-xdp-sni-logger's event file, which the webUI and
+    the sensor daemons read instead of the journal, is root's and
+    readable by the fr_os-webui group only -- no reader can write it."""
+    directory = upper / "var" / "log" / "fr_os-sni"
+    events = directory / "events.jsonl"
+    webui_gid = group_id(upper, "fr_os-webui")
+    ok = (events.exists() and webui_gid is not None
+          and events.stat().st_uid == 0 and events.stat().st_gid == webui_gid
+          and events.stat().st_mode & 0o777 == 0o640
+          and directory.stat().st_uid == 0 and directory.stat().st_gid == webui_gid
+          and directory.stat().st_mode & 0o777 == 0o750)
+    detail = ""
+    if not ok and events.exists():
+        st = events.stat()
+        detail = f": {st.st_uid}:{st.st_gid} {oct(st.st_mode & 0o777)} (fr_os-webui is {webui_gid})"
+    check(ok, "the XDP SNI event file is root:fr_os-webui 0640 (ROADMAP SEC-4)" + detail)
+
+
+def first_stream_line(opener) -> str:
+    """The first line of the webUI's live XDP log stream: recent events,
+    or the keep-alive the stream sends within 15 s on a quiet log."""
+    with opener.open(f"https://127.0.0.1:{WEBUI_PORT}/xdp/logs/stream", timeout=40) as resp:
+        return resp.readline().decode()
+
+
 def journal(upper: Path, *args: str) -> str:
     return subprocess.run(
         ["journalctl", f"--directory={upper}/var/log/journal", "--no-pager", "-o", "cat", *args],
@@ -272,6 +309,7 @@ def main() -> int:
             for line in journal(upper, "-u", unit).splitlines()[-25:]:
                 print(f"    {line}")
         check_sandboxed_services(check, upper)
+        check_sni_event_file(check, upper)
         console = upper / "etc" / "issue.d" / "fr_os-initial-admin.issue"
         shown = console.read_text() if console.exists() else ""
         match = re.search(r"login is 'admin' / '([^']+)'", shown)
@@ -308,6 +346,12 @@ def main() -> int:
         found = re.search(r'id="unneeded">(.*?)</div>', surface_page, re.S)
         check(clean, "nothing listens that the config doesn't need (security-lessons K7)"
               + ("" if clean else ": " + " ".join((found.group(1) if found else surface_page[:300]).split())))
+        # ROADMAP SEC-4: the webUI has no journal access any more; its
+        # live XDP log reads the logger's event file from its sandbox.
+        first = first_stream_line(opener)
+        check(first.startswith((":", "data: {")) and '"error"' not in first,
+              "the webUI's live XDP log stream works without journal access (ROADMAP SEC-4)"
+              + ("" if '"error"' not in first and first else f": {first.strip()[:200]!r}"))
         score_page = get(opener, "/security")
         score = re.search(r'id="score">(\d+)%', score_page)
         check(score is not None, "the security score page works on the real router (security-lessons K8)"
