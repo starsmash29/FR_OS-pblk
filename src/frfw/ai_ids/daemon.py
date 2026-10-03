@@ -33,6 +33,7 @@ telemetry source rather than everything being read from one log.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import re
 import subprocess
@@ -99,6 +100,92 @@ def resolve_excluded_ips(config: Config) -> set[str]:
     return ips
 
 
+def internal_networks(config: Config) -> list[ipaddress.IPv4Network]:
+    """The networks whose hosts the IDS scores (ROADMAP SEC-2, review
+    v0.2.0 R7): the subnet of every interface with a static address in a
+    zone that isn't a NAT masquerade target -- the LAN, the IoT and guest
+    segments -- plus the WireGuard VPN's. A masquerade target is the
+    internet side: its hosts are the outside world, and scoring them is
+    how an ordinary inbound scan, or the ISP's own gateway, ended up
+    quarantined. A config with no such interface scores nothing: there is
+    no inside to protect, and guessing one would quarantine the outside."""
+    outside = {masq.out_zone for masq in config.nat.masquerade}
+    networks = {
+        ipaddress.IPv4Interface(iface.address).network
+        for iface in config.interfaces.values()
+        if iface.address and iface.zone not in outside
+    }
+    if config.wireguard.enabled and config.wireguard.address:
+        networks.add(ipaddress.IPv4Interface(config.wireguard.address).network)
+    return sorted(networks)
+
+
+#: Where the kernel lists this network namespace's IPv4 routes, and the
+#: resolver configuration: both world-readable, so no privilege is needed.
+_ROUTE_PATH = Path("/proc/net/route")
+_RESOLV_CONF_PATH = Path("/etc/resolv.conf")
+
+
+def _default_gateways(route_path: Path) -> set[str]:
+    """Next hops of every IPv4 default route. /proc/net/route prints
+    addresses as little-endian hex."""
+    gateways: set[str] = set()
+    try:
+        lines = route_path.read_text().splitlines()[1:]
+    except OSError:
+        return gateways
+    for line in lines:
+        fields = line.split()
+        if len(fields) < 3 or fields[1] != "00000000":
+            continue
+        try:
+            gateway = ipaddress.IPv4Address(int(fields[2], 16).to_bytes(4, "little"))
+        except ValueError:
+            continue
+        if int(gateway):
+            gateways.add(str(gateway))
+    return gateways
+
+
+def _resolv_nameservers(resolv_path: Path) -> set[str]:
+    servers: set[str] = set()
+    try:
+        lines = resolv_path.read_text().splitlines()
+    except OSError:
+        return servers
+    for line in lines:
+        fields = line.split()
+        if len(fields) >= 2 and fields[0] == "nameserver":
+            try:
+                servers.add(str(ipaddress.IPv4Address(fields[1])))
+            except ValueError:
+                continue
+    return servers
+
+
+def infrastructure_ips(
+    config: Config,
+    *,
+    route_path: Path = _ROUTE_PATH,
+    resolv_path: Path = _RESOLV_CONF_PATH,
+) -> set[str]:
+    """Addresses the IDS never quarantines, however they score (ROADMAP
+    SEC-2, review v0.2.0 R7): the router's own addresses, the default
+    gateways, and the DNS servers -- the resolver's and those the DHCP
+    pools hand out. Quarantining one of them cuts every host off, and
+    each talks to many hosts by design, which is exactly what the
+    destination-diversity score counts. Read afresh at every evaluation:
+    a DHCP renewal on the WAN can move the gateway."""
+    ips = {str(ipaddress.IPv4Interface(i.address).ip) for i in config.interfaces.values() if i.address}
+    if config.wireguard.enabled and config.wireguard.address:
+        ips.add(str(ipaddress.IPv4Interface(config.wireguard.address).ip))
+    for pool in config.dhcp.zones.values():
+        ips.update(pool.dns_servers)
+    ips |= _default_gateways(route_path)
+    ips |= _resolv_nameservers(resolv_path)
+    return ips
+
+
 class IDSDaemon:
     """Holds the engine plus everything needed to turn its verdicts into
     quarantine actions. Split into small, independently callable methods
@@ -120,6 +207,8 @@ class IDSDaemon:
         events_path: Path = paths.AI_IDS_STATE_PATH,
         clock: Callable[[], float] | None = None,
         adblock_category_dir: Path = paths.ADBLOCK_CATEGORY_DIR,
+        route_path: Path = _ROUTE_PATH,
+        resolv_path: Path = _RESOLV_CONF_PATH,
     ) -> None:
         self.config = config
         self.engine = engine or AnomalyEngine()
@@ -128,6 +217,9 @@ class IDSDaemon:
         self._events_path = events_path
         self._clock = clock or time.monotonic
         self._excluded_ips = resolve_excluded_ips(config)
+        self._internal = internal_networks(config)
+        self._route_path = route_path
+        self._resolv_path = resolv_path
         self._known_flow_keys: set[tuple[str, str, int, str, int]] = set()
         self._threat_files = {
             str(adblock_category_dir / f"{name}.hosts")
@@ -136,6 +228,15 @@ class IDSDaemon:
         }
 
     # -- ingestion ---------------------------------------------------------
+
+    def _is_internal(self, ip: str) -> bool:
+        """Only a source inside an internal network is scored (see
+        `internal_networks`); everything else never reaches the engine."""
+        try:
+            address = ipaddress.IPv4Address(ip)
+        except ValueError:
+            return False
+        return any(address in network for network in self._internal)
 
     def handle_sni_event_line(self, line: str) -> None:
         """One line of fr-xdp-sni-logger's journald output (see
@@ -150,7 +251,7 @@ class IDSDaemon:
         if not isinstance(event, dict) or event.get("action") != "drop":
             return
         src_ip = event.get("saddr")
-        if isinstance(src_ip, str) and src_ip:
+        if isinstance(src_ip, str) and self._is_internal(src_ip):
             self.engine.observe_sni_block(src_ip, now=self._clock())
 
     def handle_dns_log_line(self, line: str) -> None:
@@ -165,6 +266,8 @@ class IDSDaemon:
         if not match:
             return
         client, rest = match.group("client"), match.group("rest")
+        if not self._is_internal(client):
+            return
         now = self._clock()
         nx = _DNS_NXDOMAIN_RE.match(rest)
         if nx:
@@ -201,7 +304,7 @@ class IDSDaemon:
             except (KeyError, TypeError, ValueError):
                 continue
             current_keys.add(key)
-            if key not in self._known_flow_keys:
+            if key not in self._known_flow_keys and self._is_internal(flow["src"]):
                 self.engine.observe_connection(flow["src"], flow["dst"], now=now)
         self._known_flow_keys = current_keys
 
@@ -213,6 +316,9 @@ class IDSDaemon:
         caller/test can tell the difference between "not anomalous" and
         "anomalous but excluded")."""
         now = self._clock()
+        infrastructure = infrastructure_ips(
+            self.config, route_path=self._route_path, resolv_path=self._resolv_path
+        )
         flagged: list[AnomalyEvent] = []
         for ip in self.engine.tracked_ips():
             event = self.engine.evaluate(ip, now=now)
@@ -220,6 +326,13 @@ class IDSDaemon:
                 continue
             flagged.append(event)
             if ip in self._excluded_ips:
+                continue
+            if ip in infrastructure:
+                print(
+                    f"fr-ai-ids: {ip} scored {event.score} ({', '.join(event.reasons)}) but is "
+                    "infrastructure (the router, a gateway or a DNS server); not quarantining it",
+                    flush=True,
+                )
                 continue
             self._enforce(event)
         return flagged

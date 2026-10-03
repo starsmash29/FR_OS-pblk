@@ -105,6 +105,12 @@ fi
 echo "==> Reloading systemd"
 systemctl daemon-reload
 
+# ROADMAP SEC-18: Debian's nftables.service would load /etc/nftables.conf
+# (`flush ruleset`) over the FR_OS ruleset, and flush it when stopped.
+# fr-firewall loads the ruleset; the nftables package stays for `nft`.
+echo "==> Masking Debian's nftables.service (fr-firewall owns the ruleset)"
+systemctl mask nftables.service
+
 cat <<EOF
 
 Done. Next steps:

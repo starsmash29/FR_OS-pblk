@@ -10,6 +10,7 @@ the DoH canary, the query log, and the AI IDS consuming that log.
 
 from __future__ import annotations
 
+import copy
 import random
 import shutil
 import socket
@@ -343,14 +344,18 @@ def test_daemon_parses_real_dnsmasq_log_lines(dhcp_config_dict, tmp_path):
 # --- real dnsmasq, end to end ------------------------------------------------------------------
 
 
-def _query(port: int, name: str, qtype: int = 1) -> int:
+def _query(port: int, name: str, qtype: int = 1, source: str = "127.0.0.1") -> int:
     packet = struct.pack("!HHHHHH", random.randrange(65536), 0x0100, 1, 0, 0, 0)
     packet += b"".join(bytes([len(l)]) + l.encode() for l in name.split(".")) + b"\0" + struct.pack("!HH", qtype, 1)
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        s.bind((source, 0))
         s.settimeout(3)
         s.sendto(packet, ("127.0.0.1", port))
         data, _ = s.recvfrom(4096)
     return data[3] & 0x0F  # rcode
+
+
+CLIENT = "127.0.0.7"
 
 
 @requires_dnsmasq
@@ -402,12 +407,14 @@ def test_real_dnsmasq_blocks_logs_and_feeds_the_ai_ids(dhcp_config_dict, tmp_pat
         deadline = time.time() + 5
         while time.time() < deadline and "started" not in (log.read_text() if log.exists() else ""):
             time.sleep(0.1)
-        assert _query(port, "bad-malware.example") == 0
-        assert _query(port, "use-application-dns.net") == 3
-        assert _query(port, "use-application-dns.net", qtype=28) == 3
+        # The "LAN client" is another loopback address: 127.0.0.1 stands
+        # for the router itself below.
+        assert _query(port, "bad-malware.example", source=CLIENT) == 0
+        assert _query(port, "use-application-dns.net", source=CLIENT) == 3
+        assert _query(port, "use-application-dns.net", qtype=28, source=CLIENT) == 3
         rng = random.Random(99)
         for _ in range(25):
-            _query(port, "".join(rng.choice(string.ascii_lowercase) for _ in range(16)) + ".com")
+            _query(port, "".join(rng.choice(string.ascii_lowercase) for _ in range(16)) + ".com", source=CLIENT)
         time.sleep(0.3)
     finally:
         proc.terminate()
@@ -417,10 +424,16 @@ def test_real_dnsmasq_blocks_logs_and_feeds_the_ai_ids(dhcp_config_dict, tmp_pat
     messages = [l.split(": ", 1)[1] for l in log.read_text().splitlines() if ": " in l]
     assert any(m.endswith("bad-malware.example is 0.0.0.0") and "malware.hosts" in m for m in messages)
 
-    daemon = _daemon(dhcp_config_dict, tmp_path, ["malware", "doh-bypass"])
+    # dnsmasq and its client both run on loopback here, so loopback's
+    # network is this test's LAN: the IDS scores internal sources only
+    # (ROADMAP SEC-2), and 127.0.0.1 is the router's own address on it.
+    lan = copy.deepcopy(dhcp_config_dict)
+    lan["interfaces"]["lan"]["address"] = "127.0.0.1/8"
+    del lan["dhcp"]
+    daemon = _daemon(lan, tmp_path, ["malware", "doh-bypass"])
     for m in messages:
         daemon.handle_dns_log_line(m)
     (event,) = daemon.evaluate_and_enforce()
-    assert event.ip == "127.0.0.1"
+    assert event.ip == CLIENT
     assert "DGA-like NXDOMAIN lookups" in event.reasons
     assert event.dns_threat_count == 1
