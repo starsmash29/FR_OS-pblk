@@ -119,15 +119,34 @@ def main(argv: list[str] | None = None) -> int:
 
     addresses = args.host or listen_addresses(config_path)
     print(f"fr-webui: listening on {', '.join(addresses)} port {args.port}", file=sys.stderr, flush=True)
-    server = uvicorn.Server(uvicorn.Config(
-        app,
-        port=args.port,
-        ssl_certfile=str(cert_path),
-        ssl_keyfile=str(key_path),
+    server = uvicorn.Server(server_config(
+        app, port=args.port, cert_path=cert_path, key_path=key_path,
         ssl_context_factory=ssl_context_factory,
     ))
     server.run(sockets=bind_sockets(addresses, args.port))
     return 0
+
+
+#: How long a stopping webUI waits for open requests before closing them.
+#: uvicorn's default is to wait for ever, and a live-log tab (the XDP
+#: screen's Server-Sent Events) is a request that never ends while the
+#: browser keeps it open: every restart -- `apply` rebinding the webUI to
+#: a new address, an update -- then hung until systemd's stop timeout,
+#: and a shutdown meanwhile cancelled the restart. The browser's
+#: EventSource reconnects by itself.
+SHUTDOWN_GRACE_SECONDS = 3
+
+
+def server_config(app, *, port: int, cert_path: Path, key_path: Path, ssl_context_factory=None) -> uvicorn.Config:
+    """The uvicorn settings fr-webui runs with."""
+    return uvicorn.Config(
+        app,
+        port=port,
+        ssl_certfile=str(cert_path),
+        ssl_keyfile=str(key_path),
+        ssl_context_factory=ssl_context_factory or tls_minimum_1_2_context_factory,
+        timeout_graceful_shutdown=SHUTDOWN_GRACE_SECONDS,
+    )
 
 
 if __name__ == "__main__":
