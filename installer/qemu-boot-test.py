@@ -134,6 +134,43 @@ def persistence_partition(disk: Path):
         mountpoint.rmdir()
 
 
+@contextmanager
+def image_root(iso: Path):
+    """The image's root filesystem (live/filesystem.squashfs), mounted
+    read-only -- what every boot starts from before persistence."""
+    iso_mount = Path(tempfile.mkdtemp(prefix="fros-iso-"))
+    root = Path(tempfile.mkdtemp(prefix="fros-root-"))
+    try:
+        subprocess.run(["mount", "-o", "loop,ro", str(iso), str(iso_mount)], check=True)
+        try:
+            subprocess.run(["mount", "-t", "squashfs", "-o", "loop,ro",
+                            str(iso_mount / "live" / "filesystem.squashfs"), str(root)], check=True)
+            try:
+                yield root
+            finally:
+                subprocess.run(["umount", str(root)], check=False)
+        finally:
+            subprocess.run(["umount", str(iso_mount)], check=False)
+    finally:
+        root.rmdir()
+        iso_mount.rmdir()
+
+
+#: Debian's own ruleset loader (ROADMAP SEC-18).
+NFTABLES_UNIT = Path("etc") / "systemd" / "system" / "nftables.service"
+
+
+def nftables_unit_masked(root: Path, upper: Path) -> bool:
+    """Debian's nftables.service is masked in the image, and the
+    persistence layer doesn't undo that: a mask is a symlink to
+    /dev/null, and live-boot's overlay would show an unmask as the link
+    gone (a whiteout) or replaced in the upper directory."""
+    masked = (root / NFTABLES_UNIT).is_symlink() and os.readlink(root / NFTABLES_UNIT) == "/dev/null"
+    override = upper / NFTABLES_UNIT
+    kept = not os.path.lexists(override) or (override.is_symlink() and os.readlink(override) == "/dev/null")
+    return masked and kept
+
+
 def journal(upper: Path, *args: str) -> str:
     return subprocess.run(
         ["journalctl", f"--directory={upper}/var/log/journal", "--no-pager", "-o", "cat", *args],
@@ -328,6 +365,12 @@ def main() -> int:
         check_sandboxed_services(check, upper, "-b")
         check("Server listening" not in journal(upper, "-b", "-u", "ssh.service"),
               "sshd did not listen at all this boot (off while nobody has a key)")
+        # ROADMAP SEC-18: Debian's nftables.service would load
+        # /etc/nftables.conf (`flush ruleset`) over the FR_OS ruleset.
+        with image_root(args.iso) as root:
+            check(nftables_unit_masked(root, upper),
+                  "Debian's nftables.service is masked, and persistence didn't unmask it")
+        check(not journal(upper, "-u", "nftables.service").strip(), "...and it never ran, on any boot")
         audit_log = upper / "var" / "log" / "fr_os" / "audit.log"
         check(audit_log.exists() and audit_log.stat().st_uid == 0 and audit_log.stat().st_mode & 0o777 == 0o640
               and '"via": "webui"' in audit_log.read_text(),
