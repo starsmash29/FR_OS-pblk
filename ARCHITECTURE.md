@@ -345,7 +345,24 @@ read-side (it can never influence the drop decision).
   ... pinmaps ...`) — this is what lets it attach to multiple interfaces
   (e.g. a wired LAN and a guest Wi-Fi interface) and have all of them see *the same*
   blocklist/stats/events maps, instead of a separate copy per map per
-  interface.
+  interface. Which object the pinned program came from is recorded (its
+  sha256, in the XDP state file); when `apply` runs with a different
+  object -- after an upgrade -- or the origin is unknown, the program is
+  replaced (`replace_pinned`, ROADMAP SEC-19): the new one is loaded into
+  a staging directory first, so a verifier rejection changes nothing,
+  then swapped in by rename, and every interface is moved to it (the
+  attach loop compares program ids). Its maps start empty: the blocklist
+  is synced again *before* any interface runs the program, the counters
+  start over. Whenever new maps are pinned -- a first load, a re-enable,
+  a replacement -- the two ring-buffer readers (`fr-xdp-sni-logger`,
+  `fr-tls-fp`) are `try-restart`ed: each opened its map once as root and
+  then dropped privileges, so it can neither notice nor reopen a map
+  replaced under it.
+- **Attachment state** (`sync_sni_filter`): the state file is written
+  after *each* attach and detach, not once at the end, so an apply that
+  fails part-way still records the interfaces it did attach and a later
+  disable detaches them (ROADMAP SEC-19). `tests/test_xdp_lifecycle_live.py`
+  runs both against the real kernel.
 - **Attachment** (`attach`): tries native (`xdpdrv`) mode first (real
   driver-level speed on supported NICs), falls back to generic
   (`xdpgeneric`) mode on failure — this is the fallback chain the
