@@ -223,14 +223,37 @@ def wait_for_webui(opener, timeout: float) -> str | None:
     return None
 
 
+#: The session's CSRF token, as the webUI renders it into every page it
+#: serves a logged-in session (the hidden field every form carries).
+_CSRF_FIELD = re.compile(r'name="csrf_token" value="([^"]+)"')
+
+
+def _remember_csrf(opener, page: str) -> None:
+    """Keep the CSRF token of the page just served, like the browser's
+    form would: the webUI refuses a state-changing request without the
+    session's token (security-lessons H1, ROADMAP SEC-9), and the token
+    changes with the session, e.g. after first-run setup."""
+    match = _CSRF_FIELD.search(page)
+    if match:
+        opener.csrf_token = match.group(1)
+
+
 def get(opener, path: str) -> str:
     with opener.open(f"https://127.0.0.1:{WEBUI_PORT}{path}", timeout=60) as resp:
-        return resp.read().decode()
+        page = resp.read().decode()
+    _remember_csrf(opener, page)
+    return page
 
 
 def post(opener, path: str, fields: dict) -> str:
+    """Submit a form the way the page's own form does -- with the
+    session's CSRF token -- and return the URL it lands on."""
+    token = getattr(opener, "csrf_token", "")
+    if token:
+        fields = {**fields, "csrf_token": token}
     data = urllib.parse.urlencode(fields, doseq=True).encode()
     with opener.open(f"https://127.0.0.1:{WEBUI_PORT}{path}", data=data, timeout=30) as resp:
+        _remember_csrf(opener, resp.read().decode())
         return resp.geturl()
 
 
