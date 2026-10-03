@@ -723,12 +723,16 @@ systemd units (`systemd/`):
 
 - `fr-firewall.service` — applies the canonical config at boot (early
   boot, before `network-pre.target`, so the rules are already in effect
-  before networking comes up). It is *not* ordered against Debian's own
-  `nftables.service`, which also starts before `network-pre.target`:
-  Debian ships that unit disabled, but if it is ever enabled, its
-  `/etc/nftables.conf` (`flush ruleset`) can replace the FR_OS ruleset.
-  The `nftables` package stays (it provides `nft`); the image is to mask
-  the unit (ROADMAP SEC-18). It fails closed (`firewall-cli apply
+  before networking comes up). Debian's own `nftables.service` also
+  starts before `network-pre.target`, and its `/etc/nftables.conf`
+  (`flush ruleset`) would replace the FR_OS ruleset, its stop action
+  flush it. The `nftables` package stays (it provides `nft`); the unit is
+  masked in the image (live-build hook) and by
+  `install-system-integration.sh`, and `fr-firewall.service` is ordered
+  `After=` it besides, so even an unmasked one can't load its file over
+  the FR_OS ruleset. The QEMU boot test checks the mask in the built
+  image, that persistence doesn't undo it, and that the unit never ran
+  (ROADMAP SEC-18). It fails closed (`firewall-cli apply
   --fail-closed`): with no `config.yaml`, or when an apply fails while no
   FR_OS ruleset is loaded, it loads a baseline that lets in only
   loopback, replies to the router's own connections and IPv6 neighbour
@@ -2034,6 +2038,27 @@ instead of a mock profile. A MAC with no matching reservation currently
 excludes nothing; this is a known limitation (a static, non-DHCP host
 cannot currently be excluded), not a silently swallowed case -- see Open
 issues.
+
+### Whom the IDS scores, and whom it never quarantines (ROADMAP SEC-2)
+
+Every telemetry source -- conntrack, the XDP SNI events, the resolver's
+query log -- is filtered to *internal* sources before the engine sees
+it (`frfw.ai_ids.daemon.internal_networks`): the subnet of every
+interface with a static address in a zone that isn't a NAT masquerade
+target (the LAN, the IoT and guest segments), plus the WireGuard VPN's.
+The engine used to score every conntrack source, so an ordinary inbound
+scan from the internet, or the ISP's gateway, could be scored and
+quarantined like a compromised LAN host (review v0.2.0 R7). A config with
+no internal network scores nothing rather than guessing one.
+
+Inside those networks, some hosts talk to many others by design -- what
+the destination-diversity score counts -- and quarantining one would cut
+every host off: the router's own addresses, the default gateways (read
+from `/proc/net/route` at every evaluation, since a DHCP renewal can move
+one) and the DNS servers (`/etc/resolv.conf` and every DHCP pool's
+`dns_servers`). They are still scored and their verdict is logged, but
+never enforced (`infrastructure_ips`). The apply-helper keeps its own,
+narrower guard underneath (non-host and router addresses, the 7-day cap).
 
 ### `frfw.ids_quarantine` and the `ids_quarantine` nftables set
 

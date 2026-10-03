@@ -81,6 +81,13 @@ systemctl enable fr-persistence-setup.service
 # loads the fail-closed baseline, so the WAN (DHCP'd by live-boot) is
 # never up unfiltered.
 systemctl enable fr-firewall.service
+# ROADMAP SEC-18: Debian's own nftables.service loads /etc/nftables.conf,
+# which starts with `flush ruleset`, and its stop action flushes the
+# ruleset too: enabled by anyone, it would replace or wipe the FR_OS
+# ruleset, and both units start before network-pre.target. FR_OS loads
+# the ruleset itself (fr-firewall), so mask the unit -- it can't be
+# started, enabled or pulled in. The package stays: it provides `nft`.
+systemctl mask nftables.service
 
 echo "frfw: removing bundled source (already installed via pip)..."
 rm -rf /opt/frfw-src
