@@ -3581,9 +3581,23 @@ command line, a filesystem labelled `persistence` holding a
   NICs, TCG -- all 19 checks pass), and the first boot on UEFI (OVMF,
   Secure Boot off: GRUB menu with the same options, persistence created,
   reboot). Not yet on physical hardware.
-- The first NIC found is the WAN, the second the LAN -- on a machine
-  where that order is wrong, reassign with `firewall-cli
-  assign-interfaces` (the console shows which is which).
+- The WAN is the port where a DHCP server already answers (ROADMAP
+  SEC-8, review v0.2.0 R14): `firewall-cli detect-wan-lan` sends a
+  DHCPDISCOVER on every port at once from a packet socket -- no address
+  and nothing configured on the port, no REQUEST so no lease taken -- and
+  `frfw.netdetect.choose_wan_lan` decides. One port answering: that is
+  the WAN, the LAN is another (one with a link if there is one). Several
+  answering: no assignment at all, DHCP clients on every port and no
+  DHCP server anywhere -- the LAN is where FR_OS serves DHCP, and serving
+  it onto a network that already has a server (the ISP's side, cabled
+  the other way round) is the failure this prevents. None answering (a
+  static or PPPoE upstream, a modem still booting): the old port order,
+  first WAN, second LAN, with the console saying so. The first-boot log
+  and the console say which rule picked the ports; reassign with
+  `firewall-cli assign-interfaces` or the webUI's Interfaces screen. The
+  QEMU boot test runs the LAN port on a host tap with no DHCP server --
+  QEMU's user network always runs one -- so the choice is tested, not
+  given by NIC order.
 
 ## Open decisions
 

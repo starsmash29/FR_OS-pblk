@@ -6,6 +6,7 @@
     firewall-cli apply    [config.yaml] [--dry-run] [--fail-closed]
     firewall-cli rollback [--list]
     firewall-cli detect-interfaces [--include-virtual]
+    firewall-cli detect-wan-lan
     firewall-cli assign-interfaces --wan DEV --lan DEV [--opt NAME:DEV ...] [--out PATH]
     firewall-cli set-admin-password [--username admin] [--generate [--show-on-console]]
     firewall-cli initial-password
@@ -183,6 +184,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="also list virtual interfaces (veth, docker0, tun/tap, ...)",
     )
     p_detect.set_defaults(handler=_cmd_detect_interfaces)
+
+    p_wan_lan = sub.add_parser(
+        "detect-wan-lan",
+        help="pick the WAN and LAN ports by asking each whether a DHCP server answers (first boot; needs root)",
+    )
+    p_wan_lan.set_defaults(handler=_cmd_detect_wan_lan)
 
     p_assign = sub.add_parser(
         "assign-interfaces",
@@ -456,6 +463,15 @@ def _cmd_detect_interfaces(args: argparse.Namespace) -> int:
             f"{iface.mac_address or '?':<18} {link:<6} {speed}"
         )
     return 0
+
+
+def _cmd_detect_wan_lan(args: argparse.Namespace) -> int:
+    """For fr-first-boot.sh: line 1 is "WAN LAN" (nothing when there is no
+    safe choice), line 2 says why (ROADMAP SEC-8). Exit 1 without a choice."""
+    choice = netdetect.choose_wan_lan(netdetect.list_interfaces(), netdetect.dhcp_server_answers)
+    print(f"{choice.wan} {choice.lan}" if choice.wan and choice.lan else "")
+    print(choice.basis)
+    return 0 if choice.wan and choice.lan else 1
 
 
 def _cmd_assign_interfaces(args: argparse.Namespace) -> int:

@@ -4,13 +4,24 @@ Deliberately avoids shelling out to `ip`/`ethtool`: everything needed
 (MAC address, driver, link state, negotiated speed) is already exposed as
 plain files under `/sys/class/net/<iface>/`, so reading it directly is
 both dependency-free and trivially testable (point `sysfs_net` at a fake
-directory tree in tests instead of the real `/sys`).
+directory tree in tests instead of the real `/sys`). The one exception
+is first boot's WAN/LAN choice (`choose_wan_lan`, ROADMAP SEC-8), which
+asks each port whether a DHCP server answers there.
 """
 
 from __future__ import annotations
 
+import random
+import socket
+import struct
+import subprocess
+import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
+
+from frfw import validate
 
 DEFAULT_SYSFS_NET = Path("/sys/class/net")
 
@@ -104,3 +115,160 @@ def _read_speed(iface_dir: Path) -> int | None:
     # The kernel reports -1 (or occasionally 0) when speed is unknown, e.g.
     # link down or a virtual device that doesn't negotiate a speed.
     return value if value > 0 else None
+
+
+# --- WAN/LAN choice at first boot (ROADMAP SEC-8, review v0.2.0 R14) --------
+#
+# First boot used to make the first NIC the WAN and the second the LAN.
+# Cabled the other way round, the router then served DHCP -- as the LAN's
+# gateway, 192.168.1.1 -- onto the upstream network, and took its own
+# address from whatever answered on the LAN. The upstream side is the one
+# where a DHCP server already answers, and the LAN must never be a port
+# that already has one: so first boot asks each port, before anything is
+# configured on it.
+
+_ETH_P_IP = 0x0800
+_BOOTP_MAGIC = b"\x63\x82\x53\x63"
+_DHCPDISCOVER, _DHCPOFFER = 1, 2
+
+
+def _checksum(header: bytes) -> int:
+    total = sum(struct.unpack(f"!{len(header) // 2}H", header))
+    while total >> 16:
+        total = (total & 0xFFFF) + (total >> 16)
+    return ~total & 0xFFFF
+
+
+def _discover_frame(mac: bytes, xid: int) -> bytes:
+    """A broadcast DHCPDISCOVER from `mac`, Ethernet header included: the
+    port has no address yet, so it goes out on a packet socket."""
+    bootp = struct.pack("!BBBBIHH4s4s4s4s16s64s128s", 1, 1, 6, 0, xid, 0, 0x8000,
+                        bytes(4), bytes(4), bytes(4), bytes(4), mac.ljust(16, b"\0"), b"", b"")
+    options = _BOOTP_MAGIC + bytes([53, 1, _DHCPDISCOVER, 55, 3, 1, 3, 6, 255])
+    payload = bootp + options
+    udp = struct.pack("!HHHH", 68, 67, 8 + len(payload), 0) + payload
+    ip = bytearray(struct.pack("!BBHHHBBH4s4s", 0x45, 0, 20 + len(udp), random.randrange(65536), 0, 64, 17, 0,
+                               bytes(4), b"\xff\xff\xff\xff"))
+    ip[10:12] = struct.pack("!H", _checksum(bytes(ip)))
+    return b"\xff" * 6 + mac + struct.pack("!H", _ETH_P_IP) + bytes(ip) + udp
+
+
+def _is_offer(frame: bytes, xid: int) -> bool:
+    """Whether `frame` is a DHCPOFFER answering our DISCOVER `xid`."""
+    if len(frame) < 14 + 20 + 8 + 240 or frame[12:14] != struct.pack("!H", _ETH_P_IP):
+        return False
+    ip = frame[14:]
+    ihl = (ip[0] & 0x0F) * 4
+    if ip[9] != 17 or len(ip) < ihl + 8 + 240:
+        return False
+    udp = ip[ihl:]
+    if struct.unpack("!H", udp[2:4])[0] != 68:
+        return False
+    bootp = udp[8:]
+    if bootp[0] != 2 or struct.unpack("!I", bootp[4:8])[0] != xid or bootp[236:240] != _BOOTP_MAGIC:
+        return False
+    options, i = bootp[240:], 0
+    while i < len(options) and options[i] != 255:
+        if options[i] == 0:
+            i += 1
+            continue
+        if i + 1 >= len(options):
+            return False
+        code, length = options[i], options[i + 1]
+        if code == 53 and length == 1 and i + 2 < len(options):
+            return options[i + 2] == _DHCPOFFER
+        i += 2 + length
+    return False
+
+
+def _bring_up(device: str, sysfs_net: Path, *, carrier_wait: float) -> None:
+    """Set the port up (it may still be down this early in first boot)
+    and give its link a moment to come up."""
+    subprocess.run(["ip", "link", "set", "dev", device, "up"], capture_output=True, check=False)
+    deadline = time.monotonic() + carrier_wait
+    while time.monotonic() < deadline and _read_carrier(sysfs_net / device) is not True:
+        time.sleep(0.2)
+
+
+def dhcp_server_answers(
+    device: str,
+    *,
+    timeout: float = 3.0,
+    attempts: int = 3,
+    carrier_wait: float = 5.0,
+    sysfs_net: Path = DEFAULT_SYSFS_NET,
+) -> bool:
+    """Whether a DHCP server answers a DISCOVER on `device` -- sent and
+    heard on a packet socket, so the port needs no address and nothing is
+    configured on it; no REQUEST follows, so no lease is taken. Needs
+    root (CAP_NET_RAW). Any failure counts as "no answer"."""
+    device = validate.ifname(device)
+    mac_text = _read_text(sysfs_net / device / "address") or ""
+    try:
+        mac = bytes.fromhex(mac_text.replace(":", ""))
+    except ValueError:
+        return False
+    if len(mac) != 6:
+        return False
+    _bring_up(device, sysfs_net, carrier_wait=carrier_wait)
+    try:
+        sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(_ETH_P_IP))
+    except OSError:
+        return False
+    with sock:
+        try:
+            sock.bind((device, _ETH_P_IP))
+            for _ in range(attempts):
+                xid = random.getrandbits(32)
+                sock.send(_discover_frame(mac, xid))
+                deadline = time.monotonic() + timeout
+                while (remaining := deadline - time.monotonic()) > 0:
+                    sock.settimeout(remaining)
+                    try:
+                        frame = sock.recv(4096)
+                    except socket.timeout:
+                        break
+                    if _is_offer(frame, xid):
+                        return True
+        except OSError:
+            return False
+    return False
+
+
+@dataclass(frozen=True)
+class WanLanChoice:
+    wan: str | None
+    lan: str | None
+    #: Why, in a sentence the console and the first-boot log show.
+    basis: str
+
+
+def choose_wan_lan(
+    interfaces: list[DetectedInterface], answers: Callable[[str], bool]
+) -> WanLanChoice:
+    """Which port is the WAN and which the LAN, for first boot.
+
+    - Exactly one port has a DHCP server answering: that one is the WAN
+      (the upstream network hands out addresses); the LAN is another
+      port, one with a link if there is one.
+    - Several do: no choice. FR_OS serves DHCP on its LAN, and doing so
+      on a network that already has a server is the mistake this exists
+      to prevent; the admin assigns the ports.
+    - None does (a static or PPPoE upstream, a modem still booting): the
+      old order, first port WAN, second LAN -- said plainly, so the
+      console tells the admin to check the cabling."""
+    names = [iface.name for iface in interfaces]
+    if len(names) < 2:
+        return WanLanChoice(None, None, f"{len(names)} network port(s): nothing to choose")
+    with ThreadPoolExecutor(max_workers=len(names)) as pool:
+        offering = [name for name, yes in zip(names, pool.map(answers, names)) if yes]
+    if len(offering) == 1:
+        wan = offering[0]
+        others = [iface for iface in interfaces if iface.name != wan]
+        lan = next((iface.name for iface in others if iface.link_up), others[0].name)
+        return WanLanChoice(wan, lan, f"a DHCP server answered on {wan} only")
+    if offering:
+        return WanLanChoice(None, None, f"DHCP servers answered on {', '.join(offering)}: "
+                                        "not putting the LAN where one already runs")
+    return WanLanChoice(names[0], names[1],
+                        "no DHCP server answered on any port: chosen by port order -- check the cabling")
