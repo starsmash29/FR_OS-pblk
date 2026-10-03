@@ -190,7 +190,7 @@ def check_sni_event_file(check, upper: Path) -> None:
 def first_stream_line(opener) -> str:
     """The first line of the webUI's live XDP log stream: recent events,
     or the keep-alive the stream sends within 15 s on a quiet log."""
-    with opener.open(f"https://127.0.0.1:{WEBUI_PORT}/xdp/logs/stream", timeout=40) as resp:
+    with opener.open(f"https://{WEBUI_HOST}:{WEBUI_PORT}/xdp/logs/stream", timeout=40) as resp:
         return resp.readline().decode()
 
 
