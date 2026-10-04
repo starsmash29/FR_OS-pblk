@@ -23,6 +23,7 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -249,3 +250,30 @@ def test_the_boot_test_reads_the_blocked_names_events(tmp_path):
     (found,) = boot_test.xdp_blocked_events(tmp_path)
     assert '"action": "drop"' in found
     assert boot_test.xdp_blocked_events(tmp_path / "nowhere") == []
+
+
+@pytest.mark.skipif(os.geteuid() != 0 or shutil.which("setpriv") is None, reason="needs root and setpriv")
+def test_an_unprivileged_reader_gets_an_xdp_error_not_a_crash(tmp_path):
+    """The real failure, reproduced: an unprivileged process (the webUI's
+    situation) asks for the counters under a root-only directory, as
+    bpffs is on a router (mode 0700). Path.exists() raises PermissionError
+    there; get_stats() turns it into the XdpError its callers handle."""
+    pins = tmp_path / "bpf"
+    (pins / "fr_os_xdp").mkdir(parents=True)
+    pins.chmod(0o700)
+    code = (
+        "import sys\n"
+        "from pathlib import Path\n"
+        "from frfw import xdp\n"
+        f"xdp.PIN_STATS_PATH = Path({str(pins / 'fr_os_xdp' / 'stats')!r})\n"
+        "try:\n"
+        "    xdp.get_stats()\n"
+        "except xdp.XdpError as exc:\n"
+        "    print('XdpError:', exc)\n"
+    )
+    proc = subprocess.run(
+        ["setpriv", "--reuid=65534", "--regid=65534", "--clear-groups", sys.executable, "-c", code],
+        capture_output=True, text=True, env={**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")}, cwd="/",
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.startswith("XdpError:") and "bpffs is root's" in proc.stdout

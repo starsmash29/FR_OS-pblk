@@ -662,12 +662,25 @@ def set_report_hello(enabled: bool) -> None:
     set_settings(flags | SETTING_REPORT_HELLO if enabled else flags & ~SETTING_REPORT_HELLO)
 
 
+def _pinned(path: Path) -> bool:
+    """Whether `path` is pinned on bpffs. bpffs is root's (mode 0700), so
+    an unprivileged process -- the webUI -- can't even look, and
+    `Path.exists()` raises PermissionError for that instead of answering:
+    the XDP screen failed with HTTP 500 on every router (found turning
+    the filter on in the boot test, ROADMAP P4-1). Callers get an
+    XdpError, which they already handle."""
+    try:
+        return path.exists()
+    except PermissionError as exc:
+        raise XdpError(f"{path.parent} can't be read by this process (bpffs is root's)") from exc
+
+
 def get_stats() -> dict[str, int]:
     """Read the cheap per-category packet counters (see STAT_NAMES),
     for the webUI/CLI status display. All zero if the filter has never
-    been loaded."""
+    been loaded; XdpError if this process can't read them."""
     counts = {name: 0 for name in STAT_NAMES}
-    if not PIN_STATS_PATH.exists():
+    if not _pinned(PIN_STATS_PATH):
         return counts
     proc = _bpftool(["map", "dump", "pinned", str(PIN_STATS_PATH)])  # see _dump_lpm_keys re: no -j
     if proc.returncode != 0:

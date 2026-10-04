@@ -463,3 +463,21 @@ def test_an_event_file_the_webui_may_not_read_is_reported_in_the_stream(
     with logged_in_client.stream("GET", "/xdp/logs/stream") as response:
         body = "".join(response.iter_text())
     assert "permission denied" in json.loads(body.removeprefix("data: ").strip())["error"]
+
+
+def test_the_page_works_when_the_counters_cant_be_read(logged_in_client, monkeypatch):
+    """ROADMAP P4-1: bpffs is root's, so the unprivileged webUI can't read
+    the pinned counters -- the XDP screen answered HTTP 500 on every
+    router. It now renders, and says the counters aren't readable here
+    instead of showing zeros that look like "nothing dropped". (Tests run
+    as root, which a 0700 directory doesn't stop, so the counters' path is
+    one whose stat fails as it does for the webUI's account; the real
+    unprivileged case is in tests/test_xdp_precompiled.py.)"""
+    class Unreadable(type(xdp_mod.PIN_STATS_PATH)):
+        def exists(self, *args, **kwargs):
+            raise PermissionError(13, "Permission denied", str(self))
+
+    monkeypatch.setattr(xdp_mod, "PIN_STATS_PATH", Unreadable("/sys/fs/bpf/fr_os_xdp/stats"))
+    response = logged_in_client.get("/xdp")
+    assert response.status_code == 200
+    assert 'id="stats-unreadable"' in response.text

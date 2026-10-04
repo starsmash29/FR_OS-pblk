@@ -97,7 +97,9 @@ def show_xdp(
     try:
         stats = xdp_mod.get_stats()
     except xdp_mod.XdpError:
-        stats = {name: 0 for name in xdp_mod.STAT_NAMES}
+        # This process can't read the counters (bpffs is root's): say so
+        # rather than show zeros that look like "nothing dropped".
+        stats = None
 
     interfaces_status = [
         {

@@ -368,7 +368,13 @@ read-side (it can never influence the drop decision).
   newer one rather than run it under code it wasn't built for. The boot
   test turns the filter on with the image's program and checks that a
   blocked name's TLS handshake to the router is dropped, an allowed one's
-  isn't, and the drop reaches the event file.
+  isn't, and the drop reaches the event file. Its first run found the XDP
+  screen failing with HTTP 500 on every router: bpffs is root's (mode
+  0700), so `Path.exists()` on a pin raised PermissionError in the
+  unprivileged webUI. `get_stats` now turns that into the XdpError its
+  callers handle, and the screen says the counters aren't readable by
+  the webUI (`firewall-cli xdp-status` shows them) instead of showing
+  zeros; reading them through the apply-helper is a follow-up.
 - **Loading + pinning** (`load_and_pin`): loads and pins the program and
   ALL its maps once, under `/sys/fs/bpf/fr_os_xdp` (`bpftool prog loadall
   ... pinmaps ...`) — this is what lets it attach to multiple interfaces
