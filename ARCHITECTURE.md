@@ -346,12 +346,38 @@ wires in exactly three `libbpf` functions
 that relies on a real library call instead of bcc, and it's purely
 read-side (it can never influence the drop decision).
 
-- **Compilation** (`ensure_compiled`): if the target has no precompiled
-  `.o` and a `bpf/xdp_sni_filter.c` source is available (a dev checkout,
-  or an installed release's preserved source file under `RELEASES_DIR`),
-  it compiles with clang. A production image shouldn't need a C compiler
-  -- the live-build pipeline should ship a precompiled `.o` (this isn't
-  wired up yet, see Open issues).
+- **Compilation** (ROADMAP P4-1): `scripts/build-xdp-object.sh` is the
+  one way the program is compiled. The image build runs it on the build
+  host (`installer/build-live-image.sh`), the live-build hook installs the
+  object at `frfw.paths.XDP_BPF_OBJ_PATH`, and the release workflow adds
+  the same file to the signed source tarball at `bpf/xdp_sni_filter.o`
+  (`git archive --add-file`). A router never compiles: it has no compiler,
+  and root must not run whatever `clang` is first on its PATH (SEC-19).
+  So `ensure_compiled` returns the shipped object on an installed frfw,
+  and with none it says so -- the filter can't be turned on -- instead of
+  looking for a compiler. Only a from-source checkout compiles, through
+  the same script, when its object is missing or older than the source.
+  An update installs the release's own object over the previous one
+  (`frfw.update._install_xdp_object`); the old updater never replaced
+  it -- it looked for the release's source where the release isn't
+  extracted, and kept the image's object, so an update never changed the
+  kernel program, and SEC-19's digest had nothing to notice. Now the new
+  object's digest differs, and the apply that follows the update (the
+  updater restarts fr-firewall) swaps the program in. A release built
+  before P4-1 carries no object: installing it (a rollback) removes the
+  newer one rather than run it under code it wasn't built for. The boot
+  test turns the filter on with the image's program and checks that a
+  blocked name's TLS handshake to the router is dropped, an allowed one's
+  isn't, and the drop reaches the event file. Its first run found the XDP
+  screen failing with HTTP 500 on every router: bpffs is root's (mode
+  0700), so `Path.exists()` on a pin raised PermissionError in the
+  unprivileged webUI. The screen and `/metrics` now read the counters
+  through the apply-helper's read-only `xdp_stats` (the webUI role only;
+  the sensor daemons' role can't send it), `get_stats` turns an
+  unreadable pin into the XdpError its callers handle, and if the helper
+  can't answer the screen says the counters are unavailable instead of
+  showing zeros that look like "nothing dropped". The boot test checks
+  the screen shows the drops it caused.
 - **Loading + pinning** (`load_and_pin`): loads and pins the program and
   ALL its maps once, under `/sys/fs/bpf/fr_os_xdp` (`bpftool prog loadall
   ... pinmaps ...`) — this is what lets it attach to multiple interfaces
@@ -479,9 +505,6 @@ framework, consistent with the rest of the project's screens.
 
 ### Open issues
 
-- **Live-build integration**: precompiling the `.o` file and packaging it
-  into the image as part of the build pipeline, so a production image
-  doesn't need to rely on `clang` at boot.
 - **Real 10G/40GbE performance measurement**: this sandbox isn't suited
   to such measurement (no suitable NIC/traffic generator) -- the
   program's correctness (in the sense above) is proven, but the
@@ -701,10 +724,24 @@ currently-empty repo -- correctly returning a "no release" 404 --, the
 full apply/rollback flow on both the success and failure branch,
 path-traversal protection on tarball extraction, the update-helper
 socket protocol, webUI routes) is covered by unit tests (see
-`tests/test_update*.py`, `tests/webui/test_update_routes.py`). What has
-NOT been tried: an actual end-to-end update from a real older version to
-an actual, published GitHub release on a live VM -- for that, the repo
-first needs at least one real tagged release (see ROADMAP.md phase 6).
+`tests/test_update*.py`, `tests/webui/test_update_routes.py`).
+
+`tests/test_update_xdp_live.py` runs the path end to end, short of the
+download and of `pip`/systemd (ROADMAP P4-1): a release tarball made by
+the workflow's own `git archive` command, signed with a throwaway key
+the test points `trusted_keys()` at, found in the release cache,
+verified, extracted and installed by `apply_update`, and then its XDP
+program swapped into the kernel by the next apply. Its first run found
+every update failing: the source tree has symbolic links (live-build's
+bootloader links, absolute paths into the build host's `/usr/lib`), and
+`filter="data"` refuses an absolute link -- while on a Python without
+that filter, the extraction's own check looked at member names, not at
+where a link points. Extraction now takes regular files and directories
+only; links are skipped, never created or followed.
+
+What has NOT been tried: an update from a real older version to a
+published GitHub release on a live VM -- for that, the repo first needs
+a real tagged release built with P4-1 (see ROADMAP.md phase 6).
 
 ## System integration
 

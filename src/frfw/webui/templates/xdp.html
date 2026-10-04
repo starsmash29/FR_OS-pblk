@@ -23,7 +23,7 @@
     </div>
     <div>
       <dt>Drops (since last load)</dt>
-      <dd>{{ stats.drop_match }}</dd>
+      <dd>{% if stats is not none %}{{ stats.drop_match }}{% else %}<span class="muted" id="stats-unreadable">unavailable -- the apply-helper didn't answer; <code>firewall-cli xdp-status</code> shows them</span>{% endif %}</dd>
     </div>
   </dl>
 </div>

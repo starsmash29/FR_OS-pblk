@@ -111,6 +111,7 @@ def test_bash_scripts_pass_shellcheck(path: Path):
         LIVE_BUILD_DIR / "config" / "hooks" / "0100-install-frfw.hook.chroot",
         LIVE_BUILD_DIR / "config" / "hooks" / "0050-security-updates.hook.chroot",
         SCRIPTS_DIR / "lock-requirements.sh",
+        SCRIPTS_DIR / "build-xdp-object.sh",
     ],
 )
 def test_posix_sh_scripts_pass_shellcheck(path: Path):

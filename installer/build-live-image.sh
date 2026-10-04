@@ -29,6 +29,9 @@
 # installer/make-hybrid-uefi-iso.sh (grub-mkstandalone, mkfs.vfat,
 # mmd/mcopy) rather than by anything inside the chroot -- see that
 # script's own header for exactly what each one is for.
+# `clang` and `libbpf-dev` build the XDP SNI filter's program on this
+# host too (ROADMAP P4-1): the image ships it compiled and has no
+# compiler of its own (scripts/build-xdp-object.sh).
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -56,6 +59,13 @@ unset PIP_CERT REQUESTS_CA_BUNDLE CURL_CA_BUNDLE SSL_CERT_FILE \
     CARGO_HTTP_CAINFO DENO_CERT HTTPLIB2_CA_CERTS AWS_CA_BUNDLE \
     CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE GRPC_DEFAULT_SSL_ROOTS_FILE_PATH \
     HEX_CACERTS_PATH
+
+# ROADMAP P4-1: the image ships the XDP SNI filter compiled -- a router
+# has no compiler. Built fresh from this checkout's source, then staged
+# with it; the release tarball carries this same file
+# (.github/workflows/build-installer.yml).
+echo "==> Compiling the XDP SNI filter (bpf/xdp_sni_filter.o)"
+"$REPO_ROOT/scripts/build-xdp-object.sh" "$REPO_ROOT/bpf/xdp_sni_filter.c" "$REPO_ROOT/bpf/xdp_sni_filter.o"
 
 echo "==> Staging repo source into $STAGE_DIR"
 rm -rf "$STAGE_DIR"

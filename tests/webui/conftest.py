@@ -180,6 +180,14 @@ class FakeHelper:
     def firewall_drops(self) -> dict:
         return {"ok": True, "drops": list(self.drops)}
 
+    #: What `xdp_stats` reports (ROADMAP P4-1); tests set it.
+    xdp_counters: dict = {}
+
+    def xdp_stats(self) -> dict:
+        from frfw import xdp
+
+        return {"ok": True, "stats": {name: self.xdp_counters.get(name, 0) for name in xdp.STAT_NAMES}}
+
 
 class FakeUpdateHelper:
     """An in-memory stand-in for the real Unix-socket update-helper.

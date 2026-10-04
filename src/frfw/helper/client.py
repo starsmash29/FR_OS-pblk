@@ -155,5 +155,9 @@ def wireguard_status(socket_path: Path = paths.APPLY_SOCKET_PATH) -> dict:
     return send_command({"cmd": "wireguard_status"}, socket_path)
 
 
+def xdp_stats(socket_path: Path = paths.APPLY_SOCKET_PATH) -> dict:
+    return send_command({"cmd": "xdp_stats"}, socket_path)
+
+
 def audit_append(entry: dict, socket_path: Path = paths.APPLY_SOCKET_PATH) -> dict:
     return send_command({"cmd": "audit_append", "entry": entry}, socket_path)

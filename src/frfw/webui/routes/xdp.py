@@ -6,10 +6,11 @@ every other screen (see frfw.webui.actions.try_save) -- attaching or
 detaching the actual XDP program never happens from this process
 directly; it happens the next time `apply` runs (CLI or the "Apply"
 button on the dashboard), exactly like an nftables ruleset or Kea config
-change. This page's status card reflects live kernel state
-(`frfw.xdp.get_attached`/`get_stats`, both read-only, root-optional --
-they return empty/zero rather than raising when the filter has never
-been loaded), which is deliberately allowed to disagree with the
+change. This page's status card reflects live kernel state -- which
+interfaces run the program (`frfw.xdp.get_attached`, `ip -j link`, no
+privilege needed) and its packet counters, which come through the
+apply-helper's read-only `xdp_stats` (ROADMAP P4-1: they live on bpffs,
+root's) -- and is deliberately allowed to disagree with the
 *configured* state shown in the settings form and blocklist table until
 the next apply -- the same "config vs. running state can drift until
 you apply" reality every other screen already lives with.
@@ -44,6 +45,7 @@ from fastapi.responses import StreamingResponse
 
 from frfw import paths
 from frfw import xdp as xdp_mod
+from frfw.helper.client import HelperError
 from frfw.webui.actions import try_save
 from frfw.webui.auth import COOKIE_NAME
 from frfw.webui.deps import get_helper, get_raw_config, get_xdp_state_path, require_login
@@ -82,6 +84,7 @@ def show_xdp(
     username: str = Depends(require_login),
     raw: dict = Depends(get_raw_config),
     xdp_state_path: Path = Depends(get_xdp_state_path),
+    helper: HelperClient = Depends(get_helper),
 ):
     xdp_raw = raw.get("xdp_sni_filter") or {}
     enabled = bool(xdp_raw.get("enabled", False))
@@ -94,10 +97,14 @@ def show_xdp(
         attached = xdp_mod.get_attached(state_path=xdp_state_path)
     except xdp_mod.XdpError:
         attached = {}
+    # The counters live on bpffs, root's: the apply-helper reads them
+    # (ROADMAP P4-1). If it can't, say so rather than show zeros that
+    # look like "nothing dropped".
     try:
-        stats = xdp_mod.get_stats()
-    except xdp_mod.XdpError:
-        stats = {name: 0 for name in xdp_mod.STAT_NAMES}
+        result = helper.xdp_stats()
+    except HelperError:
+        result = {}
+    stats = result.get("stats") if result.get("ok") else None
 
     interfaces_status = [
         {

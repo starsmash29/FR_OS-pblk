@@ -187,6 +187,34 @@ def check_sni_event_file(check, upper: Path) -> None:
     check(ok, "the XDP SNI event file is root:fr_os-webui 0640 (ROADMAP SEC-4)" + detail)
 
 
+#: ROADMAP P4-1: the XDP SNI filter is turned on in boot 3 with this one
+#: name blocked, on the LAN port the boot test reaches the webUI through.
+XDP_BLOCKED_NAME = "blocked.fr-os.test"
+XDP_ALLOWED_NAME = "allowed.fr-os.test"
+
+
+def tls_handshake(server_name: str, timeout: float = 8) -> bool:
+    """Whether a TLS handshake with the router's webUI completes when the
+    ClientHello names `server_name` -- the XDP filter on the LAN port
+    drops a blocked name's ClientHello, so that handshake never does."""
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    try:
+        with socket.create_connection((WEBUI_HOST, WEBUI_PORT), timeout=timeout) as raw:
+            with context.wrap_socket(raw, server_hostname=server_name):
+                return True
+    except OSError:  # a timeout, or a TLS error
+        return False
+
+
+def xdp_blocked_events(upper: Path) -> list[str]:
+    """The SNI event file's lines for the boot test's blocked name."""
+    events = upper / "var" / "log" / "fr_os-sni" / "events.jsonl"
+    text = events.read_text() if events.exists() else ""
+    return [line for line in text.splitlines() if f'"sni": "{XDP_BLOCKED_NAME}"' in line]
+
+
 def first_stream_line(opener) -> str:
     """The first line of the webUI's live XDP log stream: recent events,
     or the keep-alive the stream sends within 15 s on a quiet log."""
@@ -473,7 +501,13 @@ def run(args: argparse.Namespace) -> int:
         post(opener, "/segments", {"segment": ["iot", "guest"]})
         device_key = base64.b64encode(os.urandom(32)).decode()
         post(opener, "/vpn/peers/add", {"name": "laptop", "public_key": device_key})
+        # ROADMAP P4-1: the XDP SNI filter, on the image's own compiled
+        # program, on the LAN port.
+        post(opener, "/xdp/settings", {"enabled": "true", "interfaces": ["lan"], "blocklist": XDP_BLOCKED_NAME})
         applied = urllib.parse.unquote_plus(post(opener, "/apply", {}))
+        check("XDP SNI filter attached to: ens4" in applied,
+              "the XDP SNI filter loaded the image's compiled program and attached to the LAN port (ROADMAP P4-1)"
+              + ("" if "XDP SNI filter attached" in applied else f": {applied[:300]}"))
         check("WireGuard up: wg0 10.99.0.1/24, UDP 51820, 1 peer(s)" in applied,
               "the VPN came up on the kernel's WireGuard (security-lessons G8)"
               + ("" if "WireGuard up" in applied else f": {applied[:300]}"))
@@ -489,6 +523,19 @@ def run(args: argparse.Namespace) -> int:
         except OSError:
             pass
         time.sleep(5)  # fr-initial-password.path reacts to the account file
+        # The webUI is back from its rebind; the filter drops the
+        # ClientHello naming the blocked name, and only that one.
+        wait_for_webui(opener, boot_timeout)
+        allowed = any(tls_handshake(XDP_ALLOWED_NAME) for _ in range(3))
+        check(allowed, "a TLS handshake naming an allowed host gets through the XDP filter")
+        check(allowed and not tls_handshake(XDP_BLOCKED_NAME),
+              "the XDP filter drops the ClientHello naming a blocked host (ROADMAP P4-1)")
+        # The screen's counters come through the apply-helper: bpffs is
+        # root's, and reading them in the webUI was an HTTP 500.
+        drops = re.search(r"Drops \(since last load\)</dt>\s*<dd>(\d+)</dd>", get(opener, "/xdp"))
+        check(drops is not None and int(drops.group(1)) >= 1,
+              "the XDP screen shows the drops, read through the apply-helper (ROADMAP P4-1)"
+              + (f": {drops.group(1)}" if drops else ""))
     check(vm.power_off(), "powered off")
     vm.kill()
     with persistence_partition(disk) as upper:
@@ -500,6 +547,9 @@ def run(args: argparse.Namespace) -> int:
         config = (upper / "etc" / "fr_os" / "config.yaml").read_text()
         check("Europe/Budapest" in config, "a change made in the webUI was saved to the persistence partition")
         check_sandboxed_services(check, upper, "-b")
+        dropped_events = xdp_blocked_events(upper)
+        check(any('"action": "drop"' in line for line in dropped_events),
+              "the dropped ClientHello is in the XDP SNI event file (ROADMAP P4-1, SEC-4)")
         check("Server listening" not in journal(upper, "-b", "-u", "ssh.service"),
               "sshd did not listen at all this boot (off while nobody has a key)")
         # ROADMAP SEC-18: Debian's nftables.service would load

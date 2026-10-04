@@ -123,6 +123,9 @@ class _StubHelper:
     def hw_ram_info(self):
         return {"ok": True, "modules": []}
 
+    def xdp_stats(self):
+        return {"ok": True, "stats": {"drop_match": 0}}
+
 
 # --- fros_interface_bytes_total ---------------------------------------------
 
@@ -208,12 +211,25 @@ def test_xdp_status_reports_zero_for_configured_but_not_attached(minimal_config_
     assert fam.samples[0].value == 0
 
 
-def test_xdp_blocked_connections_reads_drop_match_stat(monkeypatch):
-    from frfw import xdp as xdp_mod
+class _XdpHelper:
+    def __init__(self, response):
+        self.response = response
 
-    monkeypatch.setattr(xdp_mod, "get_stats", lambda: {"drop_match": 7, "pass_no_sni": 3})
-    fam = metrics_mod._read_xdp_blocked_family()
+    def xdp_stats(self):
+        return self.response
+
+
+def test_xdp_blocked_connections_reads_drop_match_through_the_helper():
+    """ROADMAP P4-1: the counters live on bpffs (root's), so /metrics --
+    served by the unprivileged webUI -- asks the apply-helper."""
+    helper = _XdpHelper({"ok": True, "stats": {"drop_match": 7, "pass_no_sni": 3}})
+    fam = metrics_mod._read_xdp_blocked_family(helper)
     assert fam.samples == [metrics_mod._Sample(value=7, labels={})]
+
+
+def test_xdp_blocked_connections_reports_nothing_when_the_helper_cant_read_them():
+    helper = _XdpHelper({"ok": False, "message": "/sys/fs/bpf can't be read"})
+    assert metrics_mod._read_xdp_blocked_family(helper).samples == []
 
 
 # --- fros_adblock_total_domains ---------------------------------------------

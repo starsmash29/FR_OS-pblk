@@ -463,3 +463,31 @@ def test_an_event_file_the_webui_may_not_read_is_reported_in_the_stream(
     with logged_in_client.stream("GET", "/xdp/logs/stream") as response:
         body = "".join(response.iter_text())
     assert "permission denied" in json.loads(body.removeprefix("data: ").strip())["error"]
+
+
+def test_the_page_shows_the_counters_the_apply_helper_reads(logged_in_client, webui_env, monkeypatch):
+    """ROADMAP P4-1: the counters live on bpffs, root's (mode 0700), so the
+    unprivileged webUI asks the apply-helper (`xdp_stats`) -- reading
+    them itself made the screen answer HTTP 500 on every router."""
+    monkeypatch.setattr(webui_env["helper"], "xdp_counters", {"drop_match": 42})
+    response = logged_in_client.get("/xdp")
+    assert response.status_code == 200
+    assert "<dd>42</dd>" in response.text
+    assert 'id="stats-unreadable"' not in response.text
+
+
+@pytest.mark.parametrize("failure", ["refused", "unreachable"])
+def test_the_page_works_when_the_helper_cant_give_the_counters(logged_in_client, webui_env, monkeypatch, failure):
+    """No zeros that look like "nothing dropped": the page says the
+    counters are unavailable."""
+    from frfw.helper.client import HelperError
+
+    def xdp_stats():
+        if failure == "unreachable":
+            raise HelperError("cannot reach apply-helper")
+        return {"ok": False, "message": "/sys/fs/bpf can't be read by this process (bpffs is root's)"}
+
+    monkeypatch.setattr(webui_env["helper"], "xdp_stats", xdp_stats)
+    response = logged_in_client.get("/xdp")
+    assert response.status_code == 200
+    assert 'id="stats-unreadable"' in response.text

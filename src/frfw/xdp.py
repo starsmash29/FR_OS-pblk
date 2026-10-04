@@ -76,7 +76,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Callable
 
-from frfw import __version__, paths, svc, validate
+from frfw import paths, svc, validate
 from frfw.config.schema import Config
 
 # --- constants ------------------------------------------------------------
@@ -283,48 +283,42 @@ def build_lpm_key(hostname: str) -> bytes:
 # --- compiling ---------------------------------------------------------------
 
 
-def _candidate_source_paths() -> list[Path]:
-    # Dev/sandbox convenience: running from a git checkout, bpf/ is a
-    # sibling of src/. (src/frfw/xdp.py -> parents[2] is the repo root.)
-    checkout_src = Path(__file__).resolve().parents[2] / "bpf" / "xdp_sni_filter.c"
-    # A real installed deployment: frfw.update keeps each installed
-    # release's extracted source tree under RELEASES_DIR permanently
-    # (see frfw.update's module docstring), so the exact version
-    # currently `pip install`ed has its bpf/ sitting right there too.
-    release_src = paths.RELEASES_DIR / f"v{__version__}" / "bpf" / "xdp_sni_filter.c"
-    return [checkout_src, release_src]
+def _checkout_source() -> Path | None:
+    """bpf/xdp_sni_filter.c of a from-source checkout (src/frfw/xdp.py ->
+    parents[2] is the repo root), or None: an installed frfw (the image,
+    or a release the updater installed) has no source next to it."""
+    source = Path(__file__).resolve().parents[2] / "bpf" / "xdp_sni_filter.c"
+    return source if source.is_file() else None
 
 
 def ensure_compiled(*, obj_path: Path = paths.XDP_BPF_OBJ_PATH) -> Path:
-    """Return a path to a compiled xdp_sni_filter.o, compiling it with
-    clang if `obj_path` is missing or older than the source it can find.
+    """Return the path of the compiled xdp_sni_filter.o to load.
 
-    A production image (installer/live-build) ships `obj_path`
-    precompiled, so this is normally a same-mtime no-op that never shells
-    out to clang at all -- a router appliance image has no business
-    assuming a C compiler is installed. Compiling here is what this
-    project's own manual verification of the kernel program used, and is
-    a reasonable fallback for a from-source dev checkout.
+    On a router it is never compiled here (ROADMAP P4-1): the image ships
+    `obj_path` built by `scripts/build-xdp-object.sh` at image build time,
+    and the updater installs each release's own copy over it
+    (frfw.update), so the program always comes from the release that is
+    installed. A router has no compiler, and root must not run whatever
+    `clang` is first on its PATH (ROADMAP SEC-19). With no object, the
+    filter can't be turned on, and this says why.
+
+    In a from-source checkout it compiles the checkout's program with the
+    same script whenever `obj_path` is missing or older than the source.
     """
-    source = next((p for p in _candidate_source_paths() if p.is_file()), None)
-
-    if obj_path.is_file() and (source is None or obj_path.stat().st_mtime >= source.stat().st_mtime):
-        return obj_path
-
+    source = _checkout_source()
     if source is None:
+        if obj_path.is_file():
+            return obj_path
         raise XdpError(
-            f"No compiled XDP object at {obj_path} and no bpf/xdp_sni_filter.c "
-            "source found to compile it from."
+            f"No compiled XDP program at {obj_path}: this installation did not ship one, "
+            "so the SNI filter can't be turned on (ROADMAP P4-1)."
         )
 
-    obj_path.parent.mkdir(parents=True, exist_ok=True)
-    arch = os.uname().machine
-    cmd = [
-        "clang", "-O2", "-g", "-target", "bpf",
-        "-I", f"/usr/include/{arch}-linux-gnu",
-        "-c", str(source), "-o", str(obj_path),
-    ]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if obj_path.is_file() and obj_path.stat().st_mtime >= source.stat().st_mtime:
+        return obj_path
+
+    script = source.parents[1] / "scripts" / "build-xdp-object.sh"
+    proc = subprocess.run([str(script), str(source), str(obj_path)], capture_output=True, text=True)
     if proc.returncode != 0:
         raise XdpError(f"Compiling {source} failed:\n{proc.stderr}")
     return obj_path
@@ -668,12 +662,25 @@ def set_report_hello(enabled: bool) -> None:
     set_settings(flags | SETTING_REPORT_HELLO if enabled else flags & ~SETTING_REPORT_HELLO)
 
 
+def _pinned(path: Path) -> bool:
+    """Whether `path` is pinned on bpffs. bpffs is root's (mode 0700), so
+    an unprivileged process -- the webUI -- can't even look, and
+    `Path.exists()` raises PermissionError for that instead of answering:
+    the XDP screen failed with HTTP 500 on every router (found turning
+    the filter on in the boot test, ROADMAP P4-1). Callers get an
+    XdpError, which they already handle."""
+    try:
+        return path.exists()
+    except PermissionError as exc:
+        raise XdpError(f"{path.parent} can't be read by this process (bpffs is root's)") from exc
+
+
 def get_stats() -> dict[str, int]:
     """Read the cheap per-category packet counters (see STAT_NAMES),
     for the webUI/CLI status display. All zero if the filter has never
-    been loaded."""
+    been loaded; XdpError if this process can't read them."""
     counts = {name: 0 for name in STAT_NAMES}
-    if not PIN_STATS_PATH.exists():
+    if not _pinned(PIN_STATS_PATH):
         return counts
     proc = _bpftool(["map", "dump", "pinned", str(PIN_STATS_PATH)])  # see _dump_lpm_keys re: no -j
     if proc.returncode != 0:
@@ -961,9 +968,9 @@ class RingBufferReader:
 
 def format_event_json(event: SniEvent) -> str:
     """One JSON line per event, the event-logger daemon's actual stdout
-    format (captured by journald, and what the webUI's live log stream
-    -- frfw.webui.routes.xdp -- relays essentially verbatim via
-    `journalctl -o cat`). A single `dict`-then-`json.dumps` here, rather
+    format, and its event file's (ROADMAP SEC-4), which the webUI's live
+    log stream -- frfw.webui.routes.xdp -- relays essentially verbatim.
+    A single `dict`-then-`json.dumps` here, rather
     than each consumer inventing its own text format, is what lets the
     webUI treat this as structured data instead of scraping a
     human-oriented log line."""

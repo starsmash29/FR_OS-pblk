@@ -30,7 +30,7 @@ from pathlib import Path
 
 import yaml
 
-from frfw import bruteforce, conntrack, firewall_log, hwinfo, ids_quarantine, iot_isolation, kea, paths, surface, svc, wireguard, ztna
+from frfw import bruteforce, conntrack, firewall_log, hwinfo, ids_quarantine, iot_isolation, kea, paths, surface, svc, wireguard, xdp, ztna
 from frfw.adblock import AdblockError
 from frfw.iot import leases as iot_leases
 from frfw.iot_isolation import IotIsolationError
@@ -152,11 +152,14 @@ def _handle_request(request: dict, server: "ApplyHelperServer") -> dict:
         if cmd == "firewall_drops":
             return {"ok": True, "drops": firewall_log.recent_drops()}
 
+        if cmd == "xdp_stats":
+            return {"ok": True, "stats": xdp.get_stats()}
+
         return {"ok": False, "message": f"unknown command {cmd!r}"}
     except (
         ConfigError, NftError, IfaddrError, KeaError, ZtnaError, PqcError, AdblockError,
         BruteforceError, IdsQuarantineError, ConntrackError, HwInfoError, IotIsolationError,
-        SurfaceError, ForwardingError, WireguardError, FileNotFoundError, yaml.YAMLError,
+        SurfaceError, ForwardingError, WireguardError, xdp.XdpError, FileNotFoundError, yaml.YAMLError,
     ) as exc:
         return {"ok": False, "message": str(exc)}
 

@@ -6,7 +6,7 @@ trusts (`frfw.release_signing`; review triage A4). Each release carries:
 | Asset | What it is |
 |---|---|
 | `FR_OS-<version>-amd64.iso` | the installer / live image |
-| `frfw-<version>.tar.gz` | the source (`git archive` of the tagged commit) — what the updater installs |
+| `frfw-<version>.tar.gz` | the source (`git archive` of the tagged commit) plus the compiled XDP program at `bpf/xdp_sni_filter.o` (ROADMAP P4-1) — what the updater installs |
 | `SHA256SUMS` | sha256 of both |
 | `SHA256SUMS.sig` | Ed25519 signature over `SHA256SUMS` |
 

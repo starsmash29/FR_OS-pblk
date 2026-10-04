@@ -103,3 +103,12 @@ def test_the_boot_tests_stream_check_reads_the_first_line(boot_test, router_webu
     boot_test.post(opener, "/setup", {"username": boot_test.NEW_USERNAME, "password": boot_test.NEW_PASSWORD,
                                       "password_confirm": boot_test.NEW_PASSWORD})
     assert boot_test.first_stream_line(opener).startswith(":")
+
+
+def test_the_boot_tests_tls_handshake_names_the_host_it_is_given(boot_test, router_webui, monkeypatch):
+    """ROADMAP P4-1: boot 3 tells a dropped ClientHello from a completed
+    handshake with `tls_handshake`; against the real webUI an allowed
+    name completes, and a port nothing answers on doesn't."""
+    assert boot_test.tls_handshake(boot_test.XDP_ALLOWED_NAME, timeout=5)
+    monkeypatch.setattr(boot_test, "WEBUI_PORT", 1)
+    assert not boot_test.tls_handshake(boot_test.XDP_ALLOWED_NAME, timeout=2)
