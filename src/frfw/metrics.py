@@ -382,21 +382,41 @@ def generate_metrics_token() -> tuple[str, str]:
     return token, hash_metrics_token(token)
 
 
-def metrics_token_ok(raw_config: dict, authorization: str | None) -> bool:
-    """Whether a /metrics request may be answered. Reads the digest from
-    the *raw* config on purpose: an otherwise-invalid config.yaml must not
-    silently turn a protected endpoint public. A present but malformed
-    digest fails closed."""
+#: What a /metrics request gets (metrics_access).
+METRICS_OFF = "off"
+METRICS_DENIED = "denied"
+METRICS_OK = "ok"
+
+
+def metrics_access(raw_config: dict, authorization: str | None) -> str:
+    """Whether a /metrics request may be answered: METRICS_OK, METRICS_DENIED
+    (a token is set and the request doesn't carry it), or METRICS_OFF (no
+    token is set).
+
+    ROADMAP SEC-3 (review v0.2.0 R11): without a token /metrics is off,
+    not public. It used to answer anyone who could reach the webUI's port
+    -- counts of banned and quarantined hosts, the device inventory, the
+    hardware -- and every request made the root helper run its `nft`
+    reads. A service stays off until it is configured (security-lessons
+    I1, K7), and the token is that configuration: a Prometheus needs it
+    anyway once it scrapes across any network the admin doesn't fully
+    control.
+
+    Reads the digest from the *raw* config on purpose: an otherwise
+    invalid config.yaml must not turn a protected endpoint public. A
+    present but malformed digest fails closed."""
     section = raw_config.get("metrics") if isinstance(raw_config, dict) else None
     expected = section.get("token_sha256") if isinstance(section, dict) else None
     if expected is None:
-        return True
+        return METRICS_OFF
     if not isinstance(expected, str) or len(expected) != 64:
-        return False
+        return METRICS_DENIED
     scheme, _, token = (authorization or "").partition(" ")
     if scheme.lower() != "bearer" or not token:
-        return False
-    return hmac.compare_digest(hash_metrics_token(token.strip()), expected.lower())
+        return METRICS_DENIED
+    if not hmac.compare_digest(hash_metrics_token(token.strip()), expected.lower()):
+        return METRICS_DENIED
+    return METRICS_OK
 
 
 # --- hardware metrics: CPU, RAM, storage -----------------------------------

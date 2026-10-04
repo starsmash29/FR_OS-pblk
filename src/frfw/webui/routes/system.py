@@ -236,7 +236,7 @@ def change_metrics_token(
     if not ok:
         return redirect_with("/system", error=message)
     if token is None:
-        return redirect_with("/system", success="Metrics token removed: /metrics is public again")
+        return redirect_with("/system", success="Metrics token removed: /metrics is off")
     # Rendered directly, never redirected: a token in a URL would end up in
     # browser history and access logs. This page is the only place it appears.
     return _render_system(request, username, raw, cert_path, new_token=token)

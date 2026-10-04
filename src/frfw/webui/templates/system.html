@@ -139,8 +139,8 @@
   </div>
   {% endif %}
   <p class="muted">
-    A Prometheus server at another site can scrape this router's <code>/metrics</code> over HTTPS.
-    With a token set, /metrics answers only requests carrying <code>Authorization: Bearer &lt;token&gt;</code>
+    A Prometheus server can scrape this router's <code>/metrics</code> over HTTPS. It is off until a
+    token is generated here; then it answers only requests carrying <code>Authorization: Bearer &lt;token&gt;</code>
     (only its SHA-256 is kept in config.yaml). Examples: <code>telemetry/prometheus-multisite.yml</code>
     and the fleet dashboard in <code>telemetry/</code>.
   </p>
@@ -150,7 +150,7 @@
     <input type="text" name="site" value="{{ metrics_site }}" placeholder="budapest-office" pattern="[a-z0-9][a-z0-9_.\-]{0,62}">
     <button type="submit">Save site name</button>
   </form>
-  <p>Token: {% if metrics_token_set %}<span class="badge badge-green">required</span>{% else %}<span class="badge badge-yellow">none -- /metrics is public</span>{% endif %}</p>
+  <p>Token: {% if metrics_token_set %}<span class="badge badge-green">required</span>{% else %}<span class="badge badge-yellow" id="metrics-off">none -- /metrics is off</span>{% endif %}</p>
   <form class="inline" method="post" action="/system/metrics/token">
     {{ csrf_input(request) }}
     <input type="hidden" name="action" value="generate">

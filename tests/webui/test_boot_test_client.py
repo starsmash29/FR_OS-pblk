@@ -15,6 +15,7 @@ of the test suite, not only on an ISO build.
 from __future__ import annotations
 
 import importlib.util
+import re
 import socket
 import threading
 import time
@@ -155,3 +156,19 @@ def test_udp_through_router_tells_a_reject_from_silence_and_an_answer(boot_test,
     finally:
         echo.close()
         silent.close()
+
+
+def test_the_boot_tests_metrics_sequence(boot_test, router_webui):
+    """ROADMAP SEC-3: boot 3 scrapes /metrics with no token (off), then
+    generates one on the System screen, reads it from the page the form
+    returns, and scrapes with it and with a wrong one."""
+    opener = boot_test.webui_opener()
+    boot_test.post(opener, "/login", {"username": "admin", "password": GENERATED})
+    boot_test.post(opener, "/setup", {"username": boot_test.NEW_USERNAME, "password": boot_test.NEW_PASSWORD,
+                                      "password_confirm": boot_test.NEW_PASSWORD})
+    assert boot_test.scrape_metrics()[0] == 404
+    boot_test.post(opener, "/system/metrics/token", {"action": "generate"})
+    token = re.search(r'<code style="user-select:all;">([^<]+)</code>', opener.last_page).group(1)
+    status, body = boot_test.scrape_metrics(token)
+    assert status == 200 and "fros_bruteforce_banned_ips" in body
+    assert boot_test.scrape_metrics("not-the-token")[0] == 401

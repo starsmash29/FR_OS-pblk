@@ -186,10 +186,10 @@ def test_page_shows_per_category_counts(logged_in_client, webui_env):
     assert "<dd>3</dd>" in page  # total
 
 
-def test_metrics_report_blocked_domains_per_category(client, webui_env):
+def test_metrics_report_blocked_domains_per_category(client, webui_env, scrape):
     _write_dhcp_config(webui_env, {"enabled": True, "categories": {"malware": ["https://x.example/m"]}})
     write_hosts_file({"b.example", "c.example"}, webui_env["adblock_category_dir"] / "malware.hosts")
-    text = client.get("/metrics").text
+    text = scrape(client).text
     assert "# TYPE fros_dns_blocked_domains gauge" in text
     assert 'fros_dns_blocked_domains{category="malware"} 2' in text
     assert 'fros_dns_blocked_domains{category="ads"} 0' in text

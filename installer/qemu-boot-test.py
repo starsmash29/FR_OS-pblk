@@ -437,14 +437,32 @@ def get(opener, path: str) -> str:
 
 def post(opener, path: str, fields: dict) -> str:
     """Submit a form the way the page's own form does -- with the
-    session's CSRF token -- and return the URL it lands on."""
+    session's CSRF token -- and return the URL it lands on (the page
+    itself is kept as `opener.last_page`)."""
     token = getattr(opener, "csrf_token", "")
     if token:
         fields = {**fields, "csrf_token": token}
     data = urllib.parse.urlencode(fields, doseq=True).encode()
     with opener.open(f"https://{WEBUI_HOST}:{WEBUI_PORT}{path}", data=data, timeout=30) as resp:
-        _remember_csrf(opener, resp.read().decode())
+        opener.last_page = resp.read().decode()
+        _remember_csrf(opener, opener.last_page)
         return resp.geturl()
+
+
+def scrape_metrics(token: str | None = None) -> tuple[int, str]:
+    """GET /metrics the way a Prometheus does -- no session, the bearer
+    token if any: (HTTP status, body)."""
+    request = urllib.request.Request(f"https://{WEBUI_HOST}:{WEBUI_PORT}/metrics")
+    if token:
+        request.add_header("Authorization", f"Bearer {token}")
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    try:
+        with urllib.request.urlopen(request, timeout=30, context=context) as resp:
+            return resp.status, resp.read().decode()
+    except urllib.error.HTTPError as err:
+        return err.code, err.read().decode()
 
 
 def main() -> int:
@@ -559,6 +577,17 @@ def run(args: argparse.Namespace) -> int:
         check(first.startswith((":", "data: {")) and '"error"' not in first,
               "the webUI's live XDP log stream works without journal access (ROADMAP SEC-4)"
               + ("" if '"error"' not in first and first else f": {first.strip()[:200]!r}"))
+        # ROADMAP SEC-3: /metrics is off until a token is generated, and
+        # then answers only with it -- the helper-backed values included.
+        off_status, _ = scrape_metrics()
+        post(opener, "/system/metrics/token", {"action": "generate"})
+        token = re.search(r'<code style="user-select:all;">([^<]+)</code>', opener.last_page)
+        on_status, on_body = scrape_metrics(token.group(1)) if token else (0, "")
+        wrong_status, _ = scrape_metrics("not-the-token")
+        check(off_status == 404 and on_status == 200 and "fros_bruteforce_banned_ips" in on_body
+              and wrong_status == 401,
+              "/metrics is off without a token, and answers only with the one generated (ROADMAP SEC-3): "
+              f"HTTP {off_status} / {on_status} / {wrong_status}")
         score_page = get(opener, "/security")
         score = re.search(r'id="score">(\d+)%', score_page)
         check(score is not None, "the security score page works on the real router (security-lessons K8)"

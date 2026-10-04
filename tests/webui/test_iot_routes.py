@@ -119,18 +119,19 @@ def test_nav_has_iot_link(logged_in_client, webui_env):
     assert 'href="/iot"' in logged_in_client.get("/iot").text
 
 
-def test_metrics_include_iot_families_when_enabled(logged_in_client, webui_env):
+def test_metrics_include_iot_families_when_enabled(logged_in_client, webui_env, scrape):
     _write_config(webui_env, enabled=True, zones=["lan"], auto_isolate=True)
     webui_env["helper"].leases = [{"ip": "10.0.1.50", "mac": ESP_MAC, "hostname": "esp_112233"}]
     logged_in_client.post("/iot/scan")
 
-    text = logged_in_client.get("/metrics").text
+    text = scrape(logged_in_client).text
     assert "# TYPE fros_iot_devices gauge" in text
     assert 'fros_iot_devices{category="iot"} 1' in text
     assert 'fros_iot_devices{category="general"} 0' in text
     assert "fros_iot_isolated_devices 1" in text
 
 
-def test_metrics_omit_iot_families_when_disabled(client, webui_env):
+def test_metrics_omit_iot_families_when_disabled(client, webui_env, scrape):
     _write_config(webui_env)
-    assert "fros_iot_devices" not in client.get("/metrics").text
+    response = scrape(client)
+    assert response.status_code == 200 and "fros_iot_devices" not in response.text

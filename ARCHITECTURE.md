@@ -2427,9 +2427,18 @@ an operator most needs it to still work.
 
 ### Public, unauthenticated -- a deliberate security tradeoff, stated honestly
 
-> **Update (phase 20):** `/metrics` can now require a bearer token
-> (`metrics.token_sha256`) for scraping across sites; without one it
-> behaves as described here.
+> **Superseded (ROADMAP SEC-3, review v0.2.0 R11).** `/metrics` is now
+> off until a bearer token (`metrics.token_sha256`, phase 20) is
+> generated, and then answers only requests carrying it: without a token
+> it answers 404 and gathers nothing. The exposure described below --
+> banned and quarantined host counts, the IoT inventory, the hardware, to
+> anyone who could reach the webUI's port -- was one finding; the other
+> was that every request made the root helper run its `nft` reads, so
+> any LAN client could keep it busy in a loop. An authenticated scrape's
+> text is now cached for 15 s (`routes/metrics.py`, `CACHE_SECONDS`),
+> keyed by the config, so not even an over-eager Prometheus makes the
+> helper work more than once per window. Kept below for the reasoning
+> it answered.
 
 `GET /metrics` carries no `require_login` dependency, per the request's
 explicit "unprivileged public/telemetry endpoint" wording -- this
@@ -2492,12 +2501,11 @@ rule engine already supports exactly that kind of restriction.
   single, unlabeled gauge the request specified; per-core breakdown
   would need a `core` label and a design decision this phase didn't need
   to make.
-- **The `/metrics` endpoint is unauthenticated** -- see above; mitigated
-  at the network layer, not in-process, by design.
-- **No caching/rate-limiting on the endpoint itself** -- a very frequent
-  scrape interval (well under Prometheus's typical 15s default) would
-  repeat the 100ms CPU-usage sample every time; not a concern at any
-  normal scrape interval, but not guarded against either.
+- ~~**The `/metrics` endpoint is unauthenticated**~~ -- off until a
+  token is generated, since ROADMAP SEC-3 (see above).
+- ~~**No caching/rate-limiting on the endpoint itself**~~ -- an
+  authenticated scrape's text is cached for 15 s since ROADMAP SEC-3, and
+  nothing is gathered for a request without the token.
 
 ## Hybrid BIOS + UEFI boot support (phase 13)
 

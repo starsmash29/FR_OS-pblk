@@ -71,10 +71,10 @@ def test_enabling_needs_the_xdp_filter(logged_in_client, webui_env):
     assert _saved(webui_env)["quarantine_on_match"] is True
 
 
-def test_metrics_report_fingerprints(logged_in_client, webui_env):
+def test_metrics_report_fingerprints(logged_in_client, webui_env, scrape):
     _write_config(webui_env, enabled=True)
     _state(webui_env)
-    text = logged_in_client.get("/metrics").text
+    text = scrape(logged_in_client).text
     assert "fros_tls_fingerprinted_clients 1" in text
     assert "fros_tls_distinct_fingerprints 1" in text
     assert 'fros_tls_fingerprint_events_24h{type="new_fingerprint"} 1' in text

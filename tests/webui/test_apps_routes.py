@@ -93,12 +93,12 @@ def test_blocking_without_lan_resolver_is_rejected(logged_in_client, webui_env):
     assert _saved(webui_env).get("blocked_apps", []) == []
 
 
-def test_metrics_report_app_usage(logged_in_client, webui_env):
+def test_metrics_report_app_usage(logged_in_client, webui_env, scrape):
     _write_config(webui_env, adblocker=_RESOLVER, enabled=True, blocked_apps=["tiktok"])
     webui_env["appid_usage_path"].write_text(json.dumps({
         "generated": 1, "apps": {"netflix": {"hits_24h": 12, "active_clients": 2, "last_seen": 1, "clients": {}}},
     }))
-    text = logged_in_client.get("/metrics").text
+    text = scrape(logged_in_client).text
     assert 'fros_app_active_clients{app="netflix",category="streaming"} 2' in text
     assert 'fros_app_hits_24h{app="netflix",category="streaming"} 12' in text
     assert 'fros_app_blocked{app="tiktok"} 1' in text

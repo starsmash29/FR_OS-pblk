@@ -392,15 +392,19 @@ Multi-site monitoring (phase 20, see
 ```yaml
 metrics:
   site: budapest-office     # optional; this router's name in fleet dashboards (fros_info's site_name); default: hostname
-  token_sha256: 3f1a...     # optional; SHA-256 hex of the bearer token /metrics then requires
+  token_sha256: 3f1a...     # optional; SHA-256 hex of the bearer token; /metrics is off without one
 ```
 
 - Never write a token here by hand: `firewall-cli metrics-token
   --generate` (or System -> Multi-site monitoring in the webUI) creates
   one, prints it once and stores only its digest. `--disable` removes it.
-- With `token_sha256` set, `GET /metrics` answers 401 unless the request
-  carries `Authorization: Bearer <token>` -- also while the rest of
-  config.yaml fails validation.
+- Without `token_sha256`, `GET /metrics` is off: it answers 404 and
+  gathers nothing (ROADMAP SEC-3). With it, `GET /metrics` answers 401
+  unless the request carries `Authorization: Bearer <token>` -- also
+  while the rest of config.yaml fails validation.
+- An authenticated scrape's output is reused for 15 seconds, so the
+  kernel-side counts it reports can be up to that old; a config change
+  shows at once.
 - Takes effect immediately, no `apply` needed.
 - Example scraper setup: `telemetry/prometheus-multisite.yml`; dashboards:
   `telemetry/grafana-fleet-dashboard.json` and the `Site` selector of

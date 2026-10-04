@@ -303,12 +303,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_mtoken = sub.add_parser(
         "metrics-token",
-        help="protect GET /metrics with a bearer token for a remote Prometheus (phase 20)",
+        help="turn GET /metrics on with a bearer token for a Prometheus (phase 20; off without one, ROADMAP SEC-3)",
     )
     add_config_arg(p_mtoken)
     mode = p_mtoken.add_mutually_exclusive_group()
     mode.add_argument("--generate", action="store_true", help="create a new token (printed once) and require it")
-    mode.add_argument("--disable", action="store_true", help="remove the token: /metrics is public again")
+    mode.add_argument("--disable", action="store_true", help="remove the token: /metrics is off again")
     p_mtoken.add_argument("--site", help="set metrics.site, this router's name in the fleet")
     p_mtoken.set_defaults(handler=_cmd_metrics_token)
 
