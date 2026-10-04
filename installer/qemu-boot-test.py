@@ -38,10 +38,12 @@ import re
 import shutil
 import socket
 import ssl
+import struct
 import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from contextlib import contextmanager
@@ -205,6 +207,53 @@ def tls_handshake(server_name: str, timeout: float = 8) -> bool:
             with context.wrap_socket(raw, server_hostname=server_name):
                 return True
     except OSError:  # a timeout, or a TLS error
+        return False
+
+
+def _vec16(data: bytes) -> bytes:
+    return struct.pack("!H", len(data)) + data
+
+
+def split_client_hello(server_name: str) -> tuple[bytes, int]:
+    """A browser-sized TLS ClientHello record -- an X25519MLKEM768 key
+    share makes it larger than one segment -- with its server_name
+    extension last, and where to cut it so the name is wholly in the
+    second segment (ROADMAP SEC-17). Built from RFC 8446 structures."""
+    def ext(ext_type: int, body: bytes) -> bytes:
+        return struct.pack("!H", ext_type) + _vec16(body)
+
+    shares = struct.pack("!H", 0x11EC) + _vec16(bytes(1216)) + struct.pack("!H", 0x001D) + _vec16(os.urandom(32))
+    sni = ext(0x0000, _vec16(b"\x00" + _vec16(server_name.encode())))
+    extensions = (
+        ext(0x000A, _vec16(struct.pack("!HH", 0x11EC, 0x001D)))       # supported_groups
+        + ext(0x000D, _vec16(struct.pack("!HHH", 0x0403, 0x0804, 0x0401)))  # signature_algorithms
+        + ext(0x002B, b"\x02\x03\x04")                               # supported_versions: TLS 1.3
+        + ext(0x0015, bytes(200))                                      # padding (RFC 7685), as Chrome sends
+        + ext(0x0033, _vec16(shares))                                  # key_share
+        + sni
+    )
+    body = (b"\x03\x03" + os.urandom(32) + b"\x20" + os.urandom(32)
+            + _vec16(struct.pack("!HHH", 0x1301, 0x1302, 0x1303)) + b"\x01\x00" + _vec16(extensions))
+    message = b"\x01" + struct.pack("!I", len(body))[1:] + body
+    record = b"\x16\x03\x01" + _vec16(message)
+    return record, record.index(sni) - 300
+
+
+def split_hello_answered(server_name: str, timeout: float = 5) -> bool:
+    """Send split_client_hello() to the webUI in two segments: whether its
+    TLS server answers at all (a ServerHello or an alert) -- it does once
+    it has the whole hello, which the XDP filter must stop for a blocked
+    name. Closes with an RST, so nothing is retransmitted afterwards."""
+    record, cut = split_client_hello(server_name)
+    try:
+        with socket.create_connection((WEBUI_HOST, WEBUI_PORT), timeout=timeout) as conn:
+            conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            conn.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+            conn.sendall(record[:cut])
+            time.sleep(0.2)
+            conn.sendall(record[cut:])
+            return len(conn.recv(1)) == 1
+    except OSError:  # a timeout: no answer
         return False
 
 
@@ -473,6 +522,7 @@ def run(args: argparse.Namespace) -> int:
                                    "password_confirm": NEW_PASSWORD}) if landed else ""
     set_up = done.endswith("/segments?first_run=1")  # then the segments offer (security-lessons K4)
     check(set_up, f"setup renamed the account to {NEW_USERNAME!r} with a new password")
+    applied = ""
     if set_up:
         # Security-lessons K7: a fresh FR_OS listens on nothing its config
         # doesn't need.
@@ -504,7 +554,12 @@ def run(args: argparse.Namespace) -> int:
         # ROADMAP P4-1: the XDP SNI filter, on the image's own compiled
         # program, on the LAN port.
         post(opener, "/xdp/settings", {"enabled": "true", "interfaces": ["lan"], "blocklist": XDP_BLOCKED_NAME})
-        applied = urllib.parse.unquote_plus(post(opener, "/apply", {}))
+        try:
+            applied = urllib.parse.unquote_plus(post(opener, "/apply", {}))
+        except urllib.error.HTTPError as err:
+            # The checks below then fail by name, and the apply-helper's
+            # journal says why once the VM is off.
+            applied = f"POST /apply: HTTP {err.code}"
         check("XDP SNI filter attached to: ens4" in applied,
               "the XDP SNI filter loaded the image's compiled program and attached to the LAN port (ROADMAP P4-1)"
               + ("" if "XDP SNI filter attached" in applied else f": {applied[:300]}"))
@@ -530,6 +585,12 @@ def run(args: argparse.Namespace) -> int:
         check(allowed, "a TLS handshake naming an allowed host gets through the XDP filter")
         check(allowed and not tls_handshake(XDP_BLOCKED_NAME),
               "the XDP filter drops the ClientHello naming a blocked host (ROADMAP P4-1)")
+        # ROADMAP SEC-17: a browser-sized hello, its name in the second
+        # segment -- followed by the image's second XDP program.
+        split_allowed = split_hello_answered(XDP_ALLOWED_NAME)
+        check(split_allowed, "a split ClientHello naming an allowed host gets an answer")
+        check(split_allowed and not split_hello_answered(XDP_BLOCKED_NAME),
+              "the XDP filter stops a split ClientHello naming a blocked host (ROADMAP SEC-17)")
         # The screen's counters come through the apply-helper: bpffs is
         # root's, and reading them in the webUI was an HTTP 500.
         drops = re.search(r"Drops \(since last load\)</dt>\s*<dd>(\d+)</dd>", get(opener, "/xdp"))
@@ -539,6 +600,8 @@ def run(args: argparse.Namespace) -> int:
     check(vm.power_off(), "powered off")
     vm.kill()
     with persistence_partition(disk) as upper:
+        if applied.startswith("POST /apply: HTTP"):
+            print_journal(upper, "fr-apply-helper.service", "-b")
         this_boot = journal(upper, "-b", "-u", "fr-first-boot.service")
         check("running initial setup" not in this_boot, "fr-first-boot did not run again")
         check(not (upper / "etc" / "issue.d" / "fr_os-initial-admin.issue").exists()

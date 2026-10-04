@@ -41,31 +41,46 @@ CLIENT_NS, ROUTER_NS, SERVER_NS = "frx-cli", "frx-rtr", "frx-srv"
 CLIENT_IP, SERVER_IP = "10.81.1.10", "10.81.2.10"
 ROUTER_LAN_DEV, ROUTER_WAN_DEV = "frx-rl", "frx-rw"
 
+# Logs, per connection, every byte it received within 2 s and the first
+# one ("timeout" for none): a split ClientHello whose rest was dropped
+# shows as its first segment's bytes only (ROADMAP SEC-17).
 _SERVER = """
-import socket, sys
+import socket, sys, time
 log = open(sys.argv[1], "a", buffering=1)
 s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 s.bind(("0.0.0.0", 443)); s.listen(16)
 while True:
-    c, _ = s.accept(); c.settimeout(2)
+    c, _ = s.accept()
+    data = b""
+    deadline = time.time() + 2
     try:
-        data = c.recv(4096)
-        log.write(f"{len(data)} {data[:1].hex()}\\n")
+        while (left := deadline - time.time()) > 0:
+            c.settimeout(left)
+            chunk = c.recv(4096)
+            if not chunk:
+                break
+            data += chunk
     except OSError:
-        log.write("0 timeout\\n")
+        pass
+    log.write(f"{len(data)} {data[:1].hex() or 'timeout'}\\n")
     c.close()
 """
 
+# The clients close with an RST (SO_LINGER 0): a connection whose segments
+# the filter drops would otherwise go on retransmitting them for minutes
+# after the client exits, into later tests' counters.
 _CLIENT = """
-import socket, ssl, sys
+import socket, ssl, struct, sys
 ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
 raw = socket.create_connection((sys.argv[1], 443), timeout=3)
+raw.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
 tls = ctx.wrap_socket(raw, server_hostname=sys.argv[2], do_handshake_on_connect=False)
 tls.settimeout(3)
 try:
     tls.do_handshake()
 except (OSError, ssl.SSLError):
     pass
+tls.close()
 """
 
 
@@ -264,13 +279,18 @@ def test_pass_events_only_while_reporting_is_on(lab):
 
 # --- phase 19: ClientHello copies for TLS fingerprinting ---------------------------
 
+# Sends a ClientHello in parts, cut at the comma-separated offsets in
+# argv[2], each part its own segment (TCP_NODELAY and a pause between).
 _RAW_CLIENT = """
-import socket, sys, time
+import socket, struct, sys, time
 hello = bytes.fromhex(sys.argv[3])
 s = socket.create_connection((sys.argv[1], 443), timeout=3)
 s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-split = int(sys.argv[2])
-s.sendall(hello[:split]); time.sleep(0.2); s.sendall(hello[split:]); time.sleep(0.5)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+cuts = [0] + [int(c) for c in sys.argv[2].split(",")] + [len(hello)]
+for a, b in zip(cuts, cuts[1:]):
+    s.sendall(hello[a:b]); time.sleep(0.2)
+time.sleep(0.5)
 s.close()
 """
 
@@ -373,7 +393,8 @@ def _ipv4_checksum(header: bytes) -> int:
 
 
 def _tcp_frame(payload: bytes, tags: list[tuple[int, int]], dst_mac: bytes, src_mac: bytes,
-               *, datagram_payload: int | None = None, sport: int = 40443) -> bytes:
+               *, datagram_payload: int | None = None, sport: int = 40443, seq: int = 1000,
+               flags: int = 0x18) -> bytes:
     """An Ethernet frame carrying one TCP segment to SERVER_IP:443, behind
     `tags` ((TPID, VLAN id) pairs, outermost first).
 
@@ -383,7 +404,7 @@ def _tcp_frame(payload: bytes, tags: list[tuple[int, int]], dst_mac: bytes, src_
     padding goes (SEC-7)."""
     if datagram_payload is None:
         datagram_payload = len(payload)
-    tcp = struct.pack("!HHIIBBHHH", sport, 443, 1000, 0, 5 << 4, 0x18, 64240, 0, 0)
+    tcp = struct.pack("!HHIIBBHHH", sport, 443, seq, 0, 5 << 4, flags, 64240, 0, 0)
     ip = bytearray(struct.pack("!BBHHHBBH4s4s", 0x45, 0, 20 + len(tcp) + datagram_payload, 1, 0x4000, 64, 6, 0,
                                socket.inet_aton(CLIENT_IP), socket.inet_aton(SERVER_IP)))
     ip[10:12] = _ipv4_checksum(bytes(ip)).to_bytes(2, "big")
@@ -411,11 +432,19 @@ def _inject(lab, frame: bytes) -> None:
                    check=True, capture_output=True, timeout=10)
 
 
+TCP_SYN = 0x02
+
+
 @pytest.fixture()
 def lan_attached(lab):
     _attach(ROUTER_LAN_DEV)
+    addrs = {"dst": _mac(ROUTER_LAN_DEV, ROUTER_NS), "src": _mac("frx-c", CLIENT_NS)}
+    # The injected frames share their addresses and ports: a SYN starts
+    # each test on a new connection, which forgets what the program
+    # remembered of the last one (a followed split hello, ROADMAP SEC-17).
+    _inject(lab, _tcp_frame(b"", [], addrs["dst"], addrs["src"], flags=TCP_SYN))
     try:
-        yield {"dst": _mac(ROUTER_LAN_DEV, ROUTER_NS), "src": _mac("frx-c", CLIENT_NS)}
+        yield addrs
     finally:
         _detach(ROUTER_LAN_DEV)
 
@@ -671,16 +700,20 @@ def test_a_name_is_matched_only_when_the_datagram_holds_all_of_it(lab, lan_attac
     """The datagram's end, not the frame's, bounds the name. The rest of
     the hello and MAX_SNI_LEN bytes of padding follow on the wire, so
     the frame itself always holds the whole name: before SEC-7 every case
-    here was dropped. A name cut by the datagram's end can't be told from
-    a different, shorter name, so it is passed (as no usable server_name),
-    never matched on bytes the router doesn't forward."""
+    here was dropped. A name cut by the datagram's end is never matched
+    on bytes the router doesn't forward: the segment passes, counted as a
+    hello that didn't fit it -- and since SEC-17 the flow is followed, so
+    the next segment, which brings the rest of the name, is dropped."""
     record, name_end = _hello_with_sni_last("www.blocked.example")
     frame = _tcp_frame(record + bytes(xdp.MAX_SNI_LEN), [], lan_attached["dst"], lan_attached["src"],
                        datagram_payload=name_end + cut)
     moved = _counted(lab, frame)
     assert moved["drop_match"] == (1 if dropped else 0)
     if not dropped:
-        assert moved["pass_no_sni"] == 1
+        assert moved["pass_truncated"] == 1
+        rest = _tcp_frame(record[name_end + cut:], [], lan_attached["dst"], lan_attached["src"],
+                          seq=1000 + name_end + cut)
+        assert _counted(lab, rest)["drop_match"] == 1
 
 
 def test_a_datagram_ending_inside_the_client_hello_is_truncated(lab, lan_attached):
@@ -770,3 +803,114 @@ def test_a_frame_that_ends_inside_the_name_is_truncated_not_a_shorter_name(lab, 
     assert moved["drop_match"] == 0
     assert moved["pass_no_match"] == 0
     assert moved["pass_truncated"] == 1
+
+
+# --- SEC-17: a ClientHello split across segments ---------------------------
+#
+# A browser's ClientHello, with a post-quantum key share, is larger than
+# one segment. Before SEC-17 a name that the first segment didn't hold in
+# full passed: the program looked at one packet at a time. Now the flow is
+# followed (sni_flow, xdp_sni_split). These go through the real TCP stack
+# of the client namespace, with the hello cut where the test says: what
+# the server received tells whether the rest of the hello reached it.
+
+
+def _browser_hello_sni_last(sni: str) -> tuple[bytes, int]:
+    """A browser-sized ClientHello record (ML-KEM key share, GREASE ECH)
+    whose server_name extension comes last -- browsers permute their
+    extensions -- and that extension's offset in the record."""
+    import tlsfp_samples as samples
+
+    sni_ext = samples.default_extensions(sni=sni)[0]
+    record = samples.tls_records(samples.client_hello(samples.default_extensions(sni=None) + [sni_ext]))
+    assert len(record) > 1460  # more than one full-size segment on a 1500-byte MTU
+    return record, record.index(sni_ext)
+
+
+def _send_in_parts(lab, record: bytes, cuts: list[int]) -> int:
+    """Send `record` in parts cut at `cuts`; returns how many of its bytes
+    the server received."""
+    script = lab["tmp"] / "raw_client.py"
+    script.write_text(_RAW_CLIENT)
+    before = lab["server_log"].read_text().splitlines()
+    subprocess.run(["ip", "netns", "exec", CLIENT_NS, sys.executable, str(script), SERVER_IP,
+                    ",".join(str(c) for c in cuts), record.hex()], capture_output=True, timeout=30, check=True)
+    time.sleep(2.5)  # the server's own read window
+    (line,) = lab["server_log"].read_text().splitlines()[len(before):]
+    return int(line.split()[0])
+
+
+#: Where the hello is cut, from the server_name extension's offset `o` in
+#: the record (None: the record's end) -- the cases the walk carries
+#: across a segment boundary.
+SPLIT_CASES = {
+    "in-key-share": lambda o, n: [o - 300],       # the name wholly in a later segment
+    "at-extension": lambda o, n: [o],             # right before the server_name extension
+    "in-header": lambda o, n: [o + 2],            # inside its 4-byte header
+    "in-fields": lambda o, n: [o + 6],            # inside list length / type / name length
+    "in-name": lambda o, n: [o + 12],             # inside the name itself
+    "last-byte": lambda o, n: [n - 1],            # all but the name's last byte
+    "three-parts": lambda o, n: [600, 1200],      # the key share spans the first two
+}
+
+
+@pytest.fixture()
+def lan_router_attached(lab):
+    _attach(ROUTER_LAN_DEV)
+    try:
+        yield
+    finally:
+        _detach(ROUTER_LAN_DEV)
+
+
+@pytest.mark.parametrize("case", list(SPLIT_CASES))
+def test_a_split_client_hello_naming_a_blocked_host_never_reaches_the_server(lab, lan_router_attached, case):
+    record, sni_off = _browser_hello_sni_last("www.blocked.example")
+    cuts = SPLIT_CASES[case](sni_off, len(record))
+    events: list[xdp.SniEvent] = []
+    with xdp.RingBufferReader(events.append) as reader:
+        _drain(reader)
+        events.clear()
+        before = xdp.get_stats()
+        received = _send_in_parts(lab, record, cuts)
+        reader.poll(500)
+        after = xdp.get_stats()
+    # The segment that completed the name was dropped, and so was every
+    # retransmission of it: the server never got the whole hello.
+    assert received < len(record), f"the server got all {len(record)} bytes"
+    assert after["drop_match"] > before["drop_match"]
+    drops = [e for e in events if e.action == "drop"]
+    assert drops and drops[0].hostname == "www.blocked.example" and drops[0].saddr == CLIENT_IP
+
+
+@pytest.mark.parametrize("case", list(SPLIT_CASES))
+def test_a_split_client_hello_naming_an_allowed_host_arrives_whole(lab, lan_router_attached, case):
+    record, sni_off = _browser_hello_sni_last("www.allowed.example")
+    before = xdp.get_stats()
+    received = _send_in_parts(lab, record, SPLIT_CASES[case](sni_off, len(record)))
+    after = xdp.get_stats()
+    assert received == len(record)
+    assert after["pass_no_match"] > before["pass_no_match"]
+    assert after["drop_match"] == before["drop_match"]
+
+
+TCP_RST = 0x04
+
+
+@pytest.mark.parametrize("ender", [TCP_SYN, TCP_RST], ids=["new-connection-syn", "reset"])
+def test_a_blocked_flow_drops_its_retransmissions_until_the_connection_ends(lab, lan_attached, ender):
+    """The segment that completed a blocked name is dropped, and so is
+    every retransmission of it -- before any parsing, so no counter moves
+    -- with no time limit, until an RST ends the connection or a SYN on
+    the same addresses and ports starts a new one."""
+    record, name_end = _hello_with_sni_last("www.blocked.example")
+    dst, src = lan_attached["dst"], lan_attached["src"]
+    cut = name_end - 3
+    assert _counted(lab, _tcp_frame(record, [], dst, src, datagram_payload=cut))["pass_truncated"] == 1
+    rest = _tcp_frame(record[cut:], [], dst, src, seq=1000 + cut)
+    assert _counted(lab, rest)["drop_match"] == 1
+    assert not any(_counted(lab, rest).values())  # the retransmission: dropped as part of the flow
+    _inject(lab, _tcp_frame(b"", [], dst, src, seq=1000 + cut, flags=ender))
+    # The flow is over: the same bytes are just a segment that doesn't
+    # start a TLS record.
+    assert _counted(lab, rest)["pass_not_tls"] == 1

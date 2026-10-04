@@ -435,17 +435,16 @@ def restart_readers() -> list[str]:
 
 
 def unload() -> None:
-    """Remove the pinned program and maps. Only call once nothing is
+    """Remove the pinned programs and maps. Only call once nothing is
     still attached to the program (detach() every interface first) --
-    this does not itself detach anything."""
-    for p in (PIN_PROG_PATH, PIN_BLOCKLIST_PATH, PIN_STATS_PATH, PIN_EVENTS_PATH, PIN_SETTINGS_PATH,
-              PIN_HELLO_PKTS_PATH, PIN_HELLO_FLOWS_PATH):
-        p.unlink(missing_ok=True)
-    for d in (_PIN_PROG_DIR, _PIN_MAPS_DIR, _PIN_DIR):
-        try:
-            d.rmdir()
-        except OSError:
-            pass
+    this does not itself detach anything.
+
+    The whole pin directory goes, not a list of known pins: it is FR_OS's
+    own, and what the object pins changes with it -- the split-ClientHello
+    follower (ROADMAP SEC-17) brought a second program and maps, one of
+    them named by the compiler. A list left those behind, and the next
+    load failed on them ("File exists")."""
+    _remove_pin_tree(_PIN_DIR)
 
 
 # --- attach / detach ---------------------------------------------------------
