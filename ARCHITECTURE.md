@@ -239,6 +239,15 @@ they're documented design decisions:
    the packet only through `bpf_xdp_load_bytes()` into a per-CPU buffer,
    and its per-extension step is a `bpf_loop()` callback, verified once
    rather than once per iteration (a plain loop exceeded the budget).
+   The budget is the kernel's, and the image's kernel is Debian 12's
+   6.1, whose verifier prunes less than a current one. The first version
+   of the main program's flow lookup cost 6.1 over the budget, while a
+   6.18 kernel took it at 772,000; the boot test caught it. That lookup
+   is now its own `__noinline` function (`follow_flow()`), whose paths
+   all return to one caller state, and both programs were measured on
+   6.1 itself: main about 756,000, split about 64,000. Only the boot
+   test loads them on the image's kernel; a newer kernel accepting them
+   says nothing about 6.1.
    Still out of reach, and failing open: segments out of order, a hello
    spread over several TLS records, one longer than 8 segments, and a
    jumbo segment past the first.

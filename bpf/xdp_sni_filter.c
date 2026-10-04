@@ -1177,16 +1177,16 @@ static __always_inline void emit_event(struct iphdr *ip, struct tcphdr *tcp,
 	bpf_ringbuf_submit(ev, 0);
 }
 
-// ROADMAP SEC-17: hand this segment to xdp_sni_split. Returns only if the
-// tail call failed -- then the caller goes on as without following.
-static __always_inline void hand_over(struct xdp_md *ctx, __u32 mode, struct hello_flow_key *key,
-				      __u32 payload_off, __u32 payload_len, __u32 seq,
-				      __u32 pos, __u32 ext_total, int found)
+// ROADMAP SEC-17: write this segment's job for xdp_sni_split. Returns
+// whether there is one to hand over (see hand_over()).
+static __always_inline int prepare_job(__u32 mode, struct hello_flow_key *key,
+				       __u32 payload_off, __u32 payload_len, __u32 seq,
+				       __u32 pos, __u32 ext_total, int found)
 {
 	__u32 zero = 0;
 	struct split_job *job = bpf_map_lookup_elem(&split_job, &zero);
 	if (!job)
-		return;
+		return 0;
 	job->mode = mode;
 	job->payload_off = payload_off;
 	job->payload_len = payload_len;
@@ -1195,7 +1195,61 @@ static __always_inline void hand_over(struct xdp_md *ctx, __u32 mode, struct hel
 	job->seq = seq;
 	job->found = found;
 	job->key = *key;
-	bpf_tail_call(ctx, &split_prog, 0);
+	return 1;
+}
+
+// ROADMAP SEC-17: hand this segment to xdp_sni_split. Returns only if
+// that failed -- then the caller goes on as without following.
+static __always_inline void hand_over(struct xdp_md *ctx, __u32 mode, struct hello_flow_key *key,
+				      __u32 payload_off, __u32 payload_len, __u32 seq,
+				      __u32 pos, __u32 ext_total, int found)
+{
+	if (prepare_job(mode, key, payload_off, payload_len, seq, pos, ext_total, found))
+		bpf_tail_call(ctx, &split_prog, 0);
+}
+
+// ROADMAP SEC-17: what becomes of a segment of a flow xdp_sni_split may
+// be following (see sni_flow): XDP_DROP, FOLLOW_HAND_OVER (its job is
+// ready; the caller makes the tail call), or FOLLOW_NOT for the ordinary
+// path. __noinline, and so verified as its own function: its paths -- a
+// SYN or RST, no state, state expired, a segment out of order -- all
+// return to the caller with the caller's frame as it was, and the
+// verifier merges them there. Inlined, each went on through the
+// ClientHello parse below separately, and an older kernel's verifier
+// (Debian 12's 6.1) ran out of its 1,000,000-instruction budget. The
+// tail call stays with the caller: a newer verifier (6.13 on) takes a
+// subprogram that makes one as changing the packet, and drops every
+// packet pointer of the caller's when it returns.
+#define FOLLOW_NOT -1
+#define FOLLOW_HAND_OVER -2
+
+static __noinline int follow_flow(struct hello_flow_key *key, struct tcphdr *tcp,
+				  __u32 payload_off, __u32 payload_len)
+{
+	if (tcp->syn || tcp->rst) {
+		// A new connection on the same addresses and ports, or the end
+		// of this one.
+		bpf_map_delete_elem(&sni_flows, key);
+		return FOLLOW_NOT;
+	}
+	if (payload_len == 0)
+		return FOLLOW_NOT;
+	struct sni_flow *split = bpf_map_lookup_elem(&sni_flows, key);
+	if (!split)
+		return FOLLOW_NOT;
+	if (split->blocked)
+		return XDP_DROP; // the rest of a blocked hello, retransmissions included
+	if (bpf_ktime_get_ns() - split->born > SPLIT_TTL_NS) {
+		bpf_map_delete_elem(&sni_flows, key);
+		return FOLLOW_NOT;
+	}
+	__u32 seq = bpf_ntohl(tcp->seq);
+	if (seq != split->next_seq)
+		// The first segment again, or one out of order: the ordinary path.
+		return FOLLOW_NOT;
+	if (!prepare_job(SPLIT_NEXT, key, payload_off, payload_len, seq, 0, 0, 0))
+		return XDP_PASS; // as without following
+	return FOLLOW_HAND_OVER;
 }
 
 // emit_event() for xdp_sni_split, which has the flow's addresses and
@@ -1425,26 +1479,13 @@ int xdp_sni_filter(struct xdp_md *ctx)
 
 	// ROADMAP SEC-17: the next segment of a ClientHello being followed
 	// goes to xdp_sni_split (see sni_flow).
-	if (tcp->syn || tcp->rst) {
-		// A new connection on the same addresses and ports, or the end
-		// of this one.
-		bpf_map_delete_elem(&sni_flows, &flow_key);
-	} else if (payload_len > 0) {
-		struct sni_flow *split = bpf_map_lookup_elem(&sni_flows, &flow_key);
-		if (split) {
-			__u32 seq = bpf_ntohl(tcp->seq);
-			if (!split->blocked && bpf_ktime_get_ns() - split->born > SPLIT_TTL_NS) {
-				bpf_map_delete_elem(&sni_flows, &flow_key);
-			} else if (split->blocked) {
-				return XDP_DROP; // the rest of a blocked hello, retransmissions included
-			} else if (seq == split->next_seq) {
-				hand_over(ctx, SPLIT_NEXT, &flow_key, payload_off, payload_len, seq, 0, 0, 0);
-				return XDP_PASS;
-			}
-			// Any other segment -- the first one again, or one out of
-			// order -- takes the ordinary path.
-		}
+	int verdict = follow_flow(&flow_key, tcp, payload_off, payload_len);
+	if (verdict == FOLLOW_HAND_OVER) {
+		bpf_tail_call(ctx, &split_prog, 0);
+		return XDP_PASS; // the tail call failed: as without following
 	}
+	if (verdict != FOLLOW_NOT)
+		return verdict;
 
 	// TLS record header: content_type(1) version(2) length(2). Only a
 	// fresh handshake record starting exactly here can be a

@@ -43,6 +43,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from contextlib import contextmanager
@@ -521,6 +522,7 @@ def run(args: argparse.Namespace) -> int:
                                    "password_confirm": NEW_PASSWORD}) if landed else ""
     set_up = done.endswith("/segments?first_run=1")  # then the segments offer (security-lessons K4)
     check(set_up, f"setup renamed the account to {NEW_USERNAME!r} with a new password")
+    applied = ""
     if set_up:
         # Security-lessons K7: a fresh FR_OS listens on nothing its config
         # doesn't need.
@@ -552,7 +554,12 @@ def run(args: argparse.Namespace) -> int:
         # ROADMAP P4-1: the XDP SNI filter, on the image's own compiled
         # program, on the LAN port.
         post(opener, "/xdp/settings", {"enabled": "true", "interfaces": ["lan"], "blocklist": XDP_BLOCKED_NAME})
-        applied = urllib.parse.unquote_plus(post(opener, "/apply", {}))
+        try:
+            applied = urllib.parse.unquote_plus(post(opener, "/apply", {}))
+        except urllib.error.HTTPError as err:
+            # The checks below then fail by name, and the apply-helper's
+            # journal says why once the VM is off.
+            applied = f"POST /apply: HTTP {err.code}"
         check("XDP SNI filter attached to: ens4" in applied,
               "the XDP SNI filter loaded the image's compiled program and attached to the LAN port (ROADMAP P4-1)"
               + ("" if "XDP SNI filter attached" in applied else f": {applied[:300]}"))
@@ -593,6 +600,8 @@ def run(args: argparse.Namespace) -> int:
     check(vm.power_off(), "powered off")
     vm.kill()
     with persistence_partition(disk) as upper:
+        if applied.startswith("POST /apply: HTTP"):
+            print_journal(upper, "fr-apply-helper.service", "-b")
         this_boot = journal(upper, "-b", "-u", "fr-first-boot.service")
         check("running initial setup" not in this_boot, "fr-first-boot did not run again")
         check(not (upper / "etc" / "issue.d" / "fr_os-initial-admin.issue").exists()
