@@ -265,6 +265,7 @@ def test_an_unprivileged_reader_gets_an_xdp_error_not_a_crash(tmp_path):
         "import sys\n"
         "from pathlib import Path\n"
         "from frfw import xdp\n"
+        "print('module:', xdp.__file__)\n"
         f"xdp.PIN_STATS_PATH = Path({str(pins / 'fr_os_xdp' / 'stats')!r})\n"
         "try:\n"
         "    xdp.get_stats()\n"
@@ -275,5 +276,10 @@ def test_an_unprivileged_reader_gets_an_xdp_error_not_a_crash(tmp_path):
         ["setpriv", "--reuid=65534", "--regid=65534", "--clear-groups", sys.executable, "-c", code],
         capture_output=True, text=True, env={**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")}, cwd="/",
     )
+    imported = proc.stdout.splitlines()[0] if proc.stdout else ""
+    if not imported.startswith(f"module: {REPO_ROOT / 'src'}"):
+        # `nobody` couldn't read this checkout and imported frfw from
+        # somewhere else: that would test other code.
+        pytest.skip(f"the unprivileged user can't import this checkout's frfw ({imported or proc.stderr[-200:]})")
     assert proc.returncode == 0, proc.stderr
-    assert proc.stdout.startswith("XdpError:") and "bpffs is root's" in proc.stdout
+    assert proc.stdout.splitlines()[1].startswith("XdpError:") and "bpffs is root's" in proc.stdout
