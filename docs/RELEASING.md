@@ -14,7 +14,9 @@ The updater downloads the tarball, `SHA256SUMS` and the signature,
 checks the signature against the public keys in `src/frfw/release_keys/`
 of the version *already installed*, checks the tarball against the
 signed checksum, and only then extracts and installs it. It checks again
-when it reuses a cached copy (rollback).
+when it reuses a cached copy (rollback). It installs only a version
+newer than the one running (ROADMAP SEC-12), so release versions must
+always go up: a fix to an old line ships as a new, higher version.
 
 ## One-time setup: the signing key
 

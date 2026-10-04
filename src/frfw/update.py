@@ -32,9 +32,14 @@ from the local cache (a rollback re-verifies).
 Still trusted without verification: the Python dependencies `pip`
 resolves from PyPI for the release (`>=` floors in pyproject.toml).
 
-Rollback is a single level deep: applying an update remembers the
-version you were on as `previous_version`; rolling back reinstalls that
-version and clears it, so rolling back a rollback is not supported. If a
+Updates only go forward: `apply_update` refuses a version older than
+(or the same as) the installed one, however validly it is signed -- an
+old release brings back what has been fixed since (ROADMAP SEC-12).
+
+Rollback is the one way back, and a single level deep: applying an
+update remembers the version you were on as `previous_version`; rolling
+back reinstalls that version and clears it, so rolling back a rollback
+is not supported. If a
 release's extracted source is still present under `RELEASES_DIR` (which
 successful updates never delete), rollback reuses it directly with no
 network access needed -- useful precisely when the update that broke
@@ -585,7 +590,10 @@ def apply_update(
     releases_dir: Path = paths.RELEASES_DIR,
     timeout: float = 120.0,
 ) -> str:
-    """Download, install and activate `target_version` from `repo`.
+    """Download, install and activate `target_version` from `repo`. Only a
+    version newer than the installed one: an older one is refused before
+    anything is downloaded (ROADMAP SEC-12) -- rollback_update() is the
+    way back.
 
     Must run as root. Once the release is downloaded and verified --
     before `pip install` touches anything -- it records the running
@@ -598,12 +606,25 @@ def apply_update(
     failure the attempt and its error are recorded in `last_update` and
     re-raised as `UpdateError`.
     """
-    parse_version(target_version)  # validate shape before touching anything
+    target = parse_version(target_version)  # validate shape before touching anything
     current_version = _installed_version()
-    state = load_state(current_version=current_version, path=state_path)
-
-    if target_version == current_version:
+    # ROADMAP SEC-12 (review v0.2.0 R18): forward only. An older release
+    # can be signed just as validly -- it was, when it came out -- and
+    # installing it brings back whatever has been fixed since, so whoever
+    # can get one installed (a stolen webUI session, a tampered mirror or
+    # cache, a hand-typed CLI version) gets those holes back. The one way
+    # back is rollback_update(), to the version this router itself
+    # updated from. An installed version this can't parse fails closed.
+    current = parse_version(current_version)
+    if target == current:
         raise UpdateError(f"already running version {target_version}")
+    if target < current:
+        raise UpdateError(
+            f"refusing to install {target_version}: it is older than the installed {current_version}, "
+            "and an older release brings back what has been fixed since. To go back to the version "
+            "this router updated from, roll back (webUI Update screen, or `firewall-cli update rollback`)."
+        )
+    state = load_state(current_version=current_version, path=state_path)
 
     changes_started = False
 
