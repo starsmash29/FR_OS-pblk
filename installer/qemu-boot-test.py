@@ -628,6 +628,12 @@ def run(args: argparse.Namespace) -> int:
               and wrong_status == 401,
               "/metrics is off without a token, and answers only with the one generated (ROADMAP SEC-3): "
               f"HTTP {off_status} / {on_status} / {wrong_status}")
+        # ROADMAP SEC-12: the router's own update helper refuses an older
+        # release -- before downloading anything, so no network is needed.
+        refused = urllib.parse.unquote_plus(post(opener, "/update/apply", {"version": "0.0.1"}))
+        check("error=" in refused and "older than the installed" in refused,
+              "the update helper refuses to install an older release (ROADMAP SEC-12)"
+              + ("" if "older than the installed" in refused else f": {refused[:300]}"))
         score_page = get(opener, "/security")
         score = re.search(r'id="score">(\d+)%', score_page)
         check(score is not None, "the security score page works on the real router (security-lessons K8)"

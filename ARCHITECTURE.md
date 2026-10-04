@@ -718,9 +718,26 @@ process before it could send the response back to the caller; this is a
 documented, deliberate limitation (the daemon's own code only picks up
 updates on the next natural restart, e.g. a reboot).
 
+### Forward only (ROADMAP SEC-12)
+
+`apply_update` installs only a version newer than the installed one; an
+older one -- or the same -- is refused before anything is downloaded,
+verified, recorded or installed (review v0.2.0 R18). The signature check
+alone can't stop it: an old release is signed as validly as it was the
+day it came out, and installing it brings back whatever has been fixed
+since. So whoever could get one installed -- a stolen webUI session, a
+hand-typed CLI version, a tampered mirror or cache -- would get those
+holes back. The version compared is the one the signed `SHA256SUMS`
+names (the tarball's name), compared as numbers (0.10.0 is newer than
+0.9.0); an installed version that doesn't parse fails closed. Rollback,
+below, is the one way back, and only to the version this router itself
+updated from. `tests/test_update_downgrade_live.py` refuses a really
+signed older release sitting verified in the cache, and the boot test
+asks the router's own update helper for one through the webUI.
+
 ### Rollback
 
-Goes back exactly one level: `apply_update` saves the version from
+Goes back exactly one level, and is the only way back: `apply_update` saves the version from
 *before* the update as `previous_version` into persisted state
 (`paths.UPDATE_STATE_PATH`, `root:fr_os-webui`, 0640 -- the same pattern
 as `config.yaml`: only the privileged side writes it, the webUI only
