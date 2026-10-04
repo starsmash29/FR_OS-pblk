@@ -82,12 +82,18 @@ BRUTEFORCE_JAIL_SET_NAME = "bruteforce_jail"
 #: frfw.ids_quarantine.snapshot_before_reload).
 IDS_QUARANTINE_SET_NAME = "ids_quarantine"
 
-#: The ZTNA gate's kernel-resident set of currently-authorized source
-#: IPs (see frfw.ztna and Rule.require_ztna). A `dynamic,timeout` set:
-#: the kernel itself evicts an entry once its own `timeout` elapses, no
-#: userspace polling/cron involved. Only ever rendered into the ruleset
-#: when `config.ztna.enabled` -- an unused, always-empty set costs
-#: nothing, but there's no reason to declare it when the feature is off.
+#: The ZTNA gate's kernel-resident set of currently-authorized clients
+#: (see frfw.ztna and Rule.require_ztna) on the router's own networks:
+#: `ipv4_addr . ether_addr` pairs, the client's address *and* its MAC
+#: (ROADMAP SEC-6, review v0.2.0 R12). An address alone let everyone
+#: behind one NAT in once one person signed in, and let another device on
+#: the LAN take a signed-in address over; the pair names one device. The
+#: tunnel's clients are in ZTNA_TUNNEL_SET_NAME instead. A
+#: `dynamic,timeout` set: the kernel itself evicts an entry once its own
+#: `timeout` elapses, no userspace polling/cron involved. Declared even
+#: while `config.ztna.enabled` is off, then always empty: a `require_ztna`
+#: rule left in the config matches nothing instead of naming a set that
+#: isn't there (which made the whole ruleset fail to load).
 #:
 #: IMPORTANT: this set's *contents* do not survive a normal `apply`.
 #: `flush ruleset` (this module's very first line) drops literally every
@@ -101,6 +107,14 @@ IDS_QUARANTINE_SET_NAME = "ids_quarantine"
 #: in as RuntimeSets; each comes back in the same nft transaction with
 #: its remaining time as its timeout.
 ZTNA_SET_NAME = "authenticated_ztna_users"
+
+#: The ZTNA gate's WireGuard clients (ROADMAP SEC-6): their tunnel
+#: address alone. WireGuard ties a source address in the tunnel to one
+#: client's key (cryptokey routing: a peer can only send from its own
+#: allowed address), so on WIREGUARD_IFACE the address *is* the client,
+#: with no link-layer address to add. Matched only for traffic arriving
+#: on that interface. Same timeout and reload handling as ZTNA_SET_NAME.
+ZTNA_TUNNEL_SET_NAME = "authenticated_ztna_tunnel"
 
 #: IoT isolation set (phase 14, see frfw.iot_isolation and frfw.iot):
 #: MAC addresses (not IPs -- a DHCP renewal must not let a device slip
@@ -129,11 +143,12 @@ IOT_MDNS_REPLY_PORT = 53530
 @dataclass(frozen=True)
 class RuntimeSets:
     """The runtime members to carry into a new ruleset: (ip, seconds
-    left) for the timed sets, MACs for IoT isolation."""
+    left) for the timed sets, MACs for IoT isolation, and (ip, mac,
+    seconds left) for ZTNA sessions -- mac "" for a WireGuard client."""
 
     bruteforce_jail: tuple[tuple[str, int], ...] = ()
     ids_quarantine: tuple[tuple[str, int], ...] = ()
-    ztna: tuple[tuple[str, int], ...] = ()
+    ztna: tuple[tuple[str, str, int], ...] = ()
     iot_isolated: tuple[str, ...] = ()
 
 
@@ -161,9 +176,11 @@ def build_ruleset(config: Config, *, clock: ScheduleClock | None = None, now: fl
     lines.append("")
     lines.extend(_render_ids_quarantine_set(runtime.ids_quarantine))
 
-    if config.ztna.enabled:
-        lines.append("")
-        lines.extend(_render_ztna_set(config, runtime.ztna))
+    # Declared even while ZTNA is off, empty: a rule with require_ztna
+    # then matches nothing (fails closed) instead of naming a set that
+    # isn't there, which made the whole ruleset fail to load.
+    lines.append("")
+    lines.extend(_render_ztna_sets(config, runtime.ztna if config.ztna.enabled else ()))
 
     if config.iot.enabled:
         lines.append("")
@@ -378,19 +395,44 @@ def _render_ids_quarantine_forward_rule() -> str:
     return f"ip saddr @{IDS_QUARANTINE_SET_NAME} drop {_comment('ids-quarantine-forward')}"
 
 
-def _render_ztna_set(config: Config, members: tuple[tuple[str, int], ...] = ()) -> list[str]:
-    # This set's membership is 100% runtime state (added by frfw.ztna.
-    # authorize_ip via the privileged helper after a successful ZTNA
-    # login), never config-derived: its only elements are the sessions
-    # carried over a reload (see this module's ZTNA_SET_NAME comment).
-    return [
-        f"\tset {ZTNA_SET_NAME} {{",
-        "\t\ttype ipv4_addr",
-        "\t\tflags dynamic,timeout",
-        f"\t\ttimeout {config.ztna.session_ttl_seconds}s",
-        *_timed_elements(members),
-        "\t}",
-    ]
+def _render_ztna_sets(config: Config, members: tuple[tuple[str, str, int], ...] = ()) -> list[str]:
+    # Membership is 100% runtime state (added by frfw.ztna.authorize_client
+    # via the privileged helper after a successful ZTNA login), never
+    # config-derived: the only elements here are the sessions carried
+    # over a reload (see this module's ZTNA_SET_NAME comment).
+    ttl = config.ztna.session_ttl_seconds
+    device_items, tunnel_items = [], []
+    for ip, mac, left in members:
+        if int(left) <= 0:
+            continue
+        address = ipaddress.IPv4Address(ip)  # re-validated: it comes from `nft -j` output
+        if mac:
+            if not _MAC_RE.fullmatch(mac):
+                continue
+            device_items.append(f"{address} . {mac} timeout {int(left)}s")
+        else:
+            tunnel_items.append(f"{address} timeout {int(left)}s")
+    out = []
+    for name, kind, items in ((ZTNA_SET_NAME, "ipv4_addr . ether_addr", device_items),
+                              (ZTNA_TUNNEL_SET_NAME, "ipv4_addr", tunnel_items)):
+        out += [
+            f"\tset {name} {{",
+            f"\t\ttype {kind}",
+            "\t\tflags dynamic,timeout",
+            f"\t\ttimeout {ttl}s",
+            *([f"\t\telements = {{ {', '.join(items)} }}"] if items else []),
+            "\t}",
+        ]
+    return out
+
+
+#: What a `require_ztna` rule matches, one line each (ROADMAP SEC-6): a
+#: device on the router's own networks by its address and MAC, or a
+#: WireGuard client by its tunnel address, on the tunnel only.
+ZTNA_MATCHES = (
+    f"ip saddr . ether saddr @{ZTNA_SET_NAME}",
+    f'iifname "{WIREGUARD_IFACE}" ip saddr @{ZTNA_TUNNEL_SET_NAME}',
+)
 
 
 def _render_iot_isolated_set(members: tuple[str, ...] = ()) -> list[str]:
@@ -471,7 +513,16 @@ def _comment(text: str) -> str:
 
 def _render_rule(rule: Rule, clock: ScheduleClock | None = None) -> list[str]:
     """One nft line per rule -- or, for a scheduled rule, one per time
-    segment (frfw.nft.schedule.segments), all carrying the same comment."""
+    segment (frfw.nft.schedule.segments), all carrying the same comment.
+    A `require_ztna` rule is rendered once per way a client can be signed
+    in (ZTNA_MATCHES): nft has no "or" between set lookups of different
+    types."""
+    if rule.require_ztna:
+        return [line for match in ZTNA_MATCHES for line in _render_rule_lines(rule, clock, match)]
+    return _render_rule_lines(rule, clock, None)
+
+
+def _render_rule_lines(rule: Rule, clock: ScheduleClock | None, ztna_match: str | None) -> list[str]:
     exprs: list[str] = []
 
     if rule.expires is not None:
@@ -484,8 +535,8 @@ def _render_rule(rule: Rule, clock: ScheduleClock | None = None) -> list[str]:
     if rule.to_zone is not None and rule.to_zone != SELF_ZONE:
         exprs.append(f"oifname @{_iface_set_name(rule.to_zone)}")
 
-    if rule.require_ztna:
-        exprs.append(f"ip saddr @{ZTNA_SET_NAME}")
+    if ztna_match is not None:
+        exprs.append(ztna_match)
 
     if rule.dst_port is not None:
         exprs.append(f"{rule.proto.value} dport {rule.dst_port}")

@@ -134,7 +134,7 @@ def apply_all(
 
     bruteforce_preserved = sum(1 for _, left in runtime.bruteforce_jail if left > 0)
     ids_quarantine_preserved = sum(1 for _, left in runtime.ids_quarantine if left > 0)
-    ztna_preserved = sum(1 for _, left in runtime.ztna if left > 0) if config.ztna.enabled else 0
+    ztna_preserved = sum(1 for *_, left in runtime.ztna if left > 0) if config.ztna.enabled else 0
     iot_preserved = len(runtime.iot_isolated) if config.iot.enabled else 0
 
     # Routing only once the forward chain is loaded (frfw.forwarding).

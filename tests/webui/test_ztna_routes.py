@@ -191,6 +191,35 @@ def test_login_reports_helper_failure(logged_in_client, client, webui_env):
     assert "kernel+exploded" in response.headers["location"]
 
 
+def test_status_page_shows_what_the_sign_in_is_bound_to(logged_in_client, client):
+    """ROADMAP SEC-6: the user sees that the session is this device's --
+    the hardware address the router saw -- not their address's."""
+    from tests.webui.conftest import FAKE_CLIENT_MAC
+
+    _enable_ztna_with_user(logged_in_client)
+    client.post("/ztna/login", data={"username": "alice", "password": "zebra-lamp-42"})
+    status = client.get("/ztna/status")
+    bound = status.text.split('id="ztna-bound">')[1].split("</dd>")[0]
+    assert FAKE_CLIENT_MAC in bound
+
+
+def test_status_page_names_the_wireguard_key_for_a_tunnel_client(logged_in_client, client, webui_env):
+    _enable_ztna_with_user(logged_in_client)
+    webui_env["helper"].ztna_status = lambda ip: {"ok": True, "authorized": True, "username": "alice",
+                                                  "expires_in": 60, "mac": ""}
+    bound = client.get("/ztna/status").text.split('id="ztna-bound">')[1].split("</dd>")[0]
+    assert "your WireGuard key" in bound
+
+
+def test_a_client_behind_another_router_is_told_to_use_wireguard(logged_in_client, client, webui_env):
+    _enable_ztna_with_user(logged_in_client)
+    webui_env["helper"].ztna_status = lambda ip: {"ok": True, "authorized": False, "direct": False}
+    status = client.get("/ztna/status")
+    assert "Not authorized" in status.text
+    assert 'id="ztna-not-direct"' in status.text and "WireGuard VPN" in status.text
+    assert "not currently authorized" not in status.text
+
+
 def test_status_page_shows_not_authorized_before_login(logged_in_client, client):
     _enable_ztna_with_user(logged_in_client)
     response = client.get("/ztna/status")

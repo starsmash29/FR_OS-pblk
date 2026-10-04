@@ -65,6 +65,10 @@ BEYOND_NET = "198.51.100.0/24"
 BEYOND_HOST = "198.51.100.7"
 NEW_PASSWORD = "changed-in-boot-3"
 NEW_USERNAME = "netadmin"
+#: A ZTNA user made through the webUI, signed in from the host's tap
+#: (ROADMAP SEC-6).
+ZTNA_USERNAME = "fieldworker"
+ZTNA_PASSWORD = "otter-harbor-lamp-71"
 DISK_SIZE = 2 * 2**30
 ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
@@ -651,6 +655,9 @@ def run(args: argparse.Namespace) -> int:
         # ROADMAP P4-1: the XDP SNI filter, on the image's own compiled
         # program, on the LAN port.
         post(opener, "/xdp/settings", {"enabled": "true", "interfaces": ["lan"], "blocklist": XDP_BLOCKED_NAME})
+        # ROADMAP SEC-6: the ZTNA gate, with one user, signed in below.
+        post(opener, "/ztna/users/add", {"new_username": ZTNA_USERNAME, "new_password": ZTNA_PASSWORD})
+        post(opener, "/ztna/settings", {"enabled": "true", "session_ttl_seconds": "3600"})
         try:
             applied = urllib.parse.unquote_plus(post(opener, "/apply", {}))
         except urllib.error.HTTPError as err:
@@ -699,6 +706,17 @@ def run(args: argparse.Namespace) -> int:
         check(drops is not None and int(drops.group(1)) >= 1,
               "the XDP screen shows the drops, read through the apply-helper (ROADMAP P4-1)"
               + (f": {drops.group(1)}" if drops else ""))
+        # ROADMAP SEC-6: a ZTNA sign-in from the host (directly on the LAN
+        # port) is bound to the MAC the router sees it at -- the tap's --
+        # and the status page reads it back from the kernel's set.
+        get(opener, "/ztna/login")
+        post(opener, "/ztna/login", {"username": ZTNA_USERNAME, "password": ZTNA_PASSWORD})
+        tap_mac = Path(f"/sys/class/net/{LAN_TAP}/address").read_text().strip()
+        status_page = getattr(opener, "last_page", "")
+        bound = re.search(r'id="ztna-bound">(.*?)</dd>', status_page, re.S)
+        check(bound is not None and tap_mac in bound.group(1) and "badge-green" in status_page,
+              f"a ZTNA sign-in is bound to the signing-in device's MAC, {tap_mac} (ROADMAP SEC-6)"
+              + ("" if bound else ": " + " ".join(status_page.split())[:300]))
     check(vm.power_off(), "powered off")
     vm.kill()
     with persistence_partition(disk) as upper:

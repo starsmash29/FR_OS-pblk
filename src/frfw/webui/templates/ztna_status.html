@@ -11,6 +11,8 @@
   <dl>
     <dt class="muted">Device</dt>
     <dd style="margin:0 0 0.6rem;"><code>{{ client_ip }}</code></dd>
+    <dt class="muted">Bound to</dt>
+    <dd style="margin:0 0 0.6rem;" id="ztna-bound">{% if bound_mac %}this device's hardware address <code>{{ bound_mac }}</code>{% else %}your WireGuard key{% endif %}</dd>
     {% if ztna_username %}
     <dt class="muted">Signed in as</dt>
     <dd style="margin:0 0 0.6rem;">{{ ztna_username }}</dd>
@@ -28,11 +30,20 @@
   <p>
     <span class="badge badge-red">Not authorized</span>
   </p>
+  {% if not_direct %}
+  <p class="muted" id="ztna-not-direct">
+    <code>{{ client_ip }}</code> reaches the router through another router
+    or NAT, so the router can't tell the devices there apart, and won't
+    sign them all in at once. Connect through the router's WireGuard VPN
+    and sign in there.
+  </p>
+  {% else %}
   <p class="muted">
     <code>{{ client_ip }}</code> is not currently authorized for
     protected-zone access -- either you haven't signed in yet, or your
     session has expired.
   </p>
+  {% endif %}
   <p><a href="/ztna/login">Sign in</a></p>
   {% endif %}
 </div>

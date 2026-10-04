@@ -32,7 +32,18 @@ EXAMPLE_CONFIG = Path(__file__).resolve().parent.parent / "examples" / "config.y
 
 
 @pytest.fixture
-def running_server(tmp_path, monkeypatch):
+def neighbours(monkeypatch):
+    """The router's neighbour table as frfw.ztna.client_link reads it
+    (ROADMAP SEC-6): ip -> ClientLink. Empty -- nobody directly attached
+    -- until a test puts a device there; its real parsing of `ip -j
+    neigh` is in test_ztna.py."""
+    table: dict[str, ztna_mod.ClientLink] = {}
+    monkeypatch.setattr(ztna_mod, "client_link", lambda ip: table.get(ip))
+    return table
+
+
+@pytest.fixture
+def running_server(tmp_path, monkeypatch, neighbours):
     monkeypatch.setattr("os.geteuid", lambda: 0)
 
     # Simulate "a ruleset becomes loaded after the first real apply", so a
@@ -53,18 +64,20 @@ def running_server(tmp_path, monkeypatch):
     # frfw.ztna's own real-nft behavior is exercised directly in
     # test_ztna.py; here we only care about this socket protocol's
     # request/response mapping (bad IP, unknown user, disabled gate,
-    # ...), so a tiny in-memory fake stands in for the kernel set --
-    # same reasoning as apply_mod._run_nft being faked above.
-    ztna_set: dict[str, tuple[str, int]] = {}
+    # ...), so a tiny in-memory fake stands in for the kernel sets --
+    # same reasoning as apply_mod._run_nft being faked above. Keyed by
+    # set name: the device set holds "ip . mac", the tunnel set "ip".
+    ztna_sets: dict[str, dict[str, int]] = {ztna_mod.ZTNA_SET_NAME: {}, ztna_mod.ZTNA_TUNNEL_SET_NAME: {}}
 
     def fake_ztna_run_nft(args):
         if args[:2] == ["add", "element"]:
-            ip, ttl = args[-2].split(" timeout ")
-            ztna_set[ip] = (None, int(ttl.rstrip("s")))
+            key, ttl = args[-2].split(" timeout ")
+            ztna_sets[args[4]][key] = int(ttl.rstrip("s"))
             return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
         if args[:2] == ["-j", "list"]:
             import json as _json
-            elems = [{"elem": {"val": ip, "expires": ttl}} for ip, (_u, ttl) in ztna_set.items()]
+            elems = [{"elem": {"val": {"concat": key.split(" . ")} if " . " in key else key, "expires": ttl}}
+                     for key, ttl in ztna_sets[args[-1]].items()]
             return subprocess.CompletedProcess(
                 args, 0, stdout=_json.dumps({"nftables": [{"set": {"elem": elems}}]}), stderr=""
             )
@@ -162,17 +175,18 @@ def running_server(tmp_path, monkeypatch):
         server.server_close()
 
 
-def _enable_ztna(config_path: Path, username: str = "alice", password: str = "hunter22") -> None:
-    text = config_path.read_text()
-    text += (
-        "\nztna:\n"
-        "  enabled: true\n"
-        "  session_ttl_seconds: 3600\n"
-        "  users:\n"
-        f"    - username: {username}\n"
-        f"      password_hash: \"{hash_password(password)}\"\n"
-    )
-    config_path.write_text(text)
+def _enable_ztna(config_path: Path, username: str = "alice", password: str = "hunter22", *,
+                 wireguard: bool = False) -> None:
+    raw = yaml.safe_load(config_path.read_text())
+    raw["ztna"] = {"enabled": True, "session_ttl_seconds": 3600,
+                   "users": [{"username": username, "password_hash": hash_password(password)}]}
+    if wireguard:
+        raw["zones"]["vpn"] = {}
+        raw["wireguard"] = {"enabled": True, "address": "10.99.0.1/24"}
+    config_path.write_text(yaml.safe_dump(raw))
+
+
+LAPTOP = ztna_mod.ClientLink(mac="aa:bb:cc:00:11:22", device="eth1")
 
 
 def test_ping(running_server):
@@ -250,22 +264,64 @@ def test_authorize_ztna_fails_for_invalid_ip(running_server, tmp_path):
     assert "invalid" in response["message"].lower()
 
 
-def test_authorize_ztna_success_then_status_round_trip(running_server, tmp_path):
+def test_authorize_ztna_success_then_status_round_trip(running_server, tmp_path, neighbours):
     _enable_ztna(tmp_path / "config.yaml")
+    neighbours["10.0.0.5"] = LAPTOP
 
     authorize = client.authorize_ztna("10.0.0.5", "alice", running_server)
     assert authorize["ok"] is True
     assert authorize["expires_in"] == 3600
+    assert authorize["mac"] == LAPTOP.mac
 
     status = client.ztna_status("10.0.0.5", running_server)
-    assert status["ok"] is True
-    assert status["authorized"] is True
-    assert status["username"] == "alice"
-    assert status["expires_in"] == 3600
+    assert status == {"ok": True, "authorized": True, "username": "alice", "expires_in": 3600, "mac": LAPTOP.mac}
 
 
-def test_ztna_status_reports_unauthorized_for_unknown_ip(running_server, tmp_path):
+def test_ztna_binds_the_device_not_the_address(running_server, tmp_path, neighbours):
+    """ROADMAP SEC-6, review v0.2.0 R12: another device that takes over a
+    signed-in address is not signed in -- the session names the MAC the
+    router saw at sign-in, which root read from its own neighbour table."""
     _enable_ztna(tmp_path / "config.yaml")
+    neighbours["10.0.0.5"] = LAPTOP
+    assert client.authorize_ztna("10.0.0.5", "alice", running_server)["ok"] is True
+
+    neighbours["10.0.0.5"] = ztna_mod.ClientLink(mac="aa:bb:cc:00:11:99", device="eth1")
+    assert client.ztna_status("10.0.0.5", running_server) == {"ok": True, "authorized": False}
+
+
+def test_ztna_refuses_a_client_the_router_is_not_attached_to(running_server, tmp_path):
+    """A client behind another router or NAT is not in the neighbour
+    table: the gate can't tell the devices there apart, so it signs none
+    of them in, and says how to get in instead."""
+    _enable_ztna(tmp_path / "config.yaml")
+    response = client.authorize_ztna("198.51.100.7", "alice", running_server)
+    assert response["ok"] is False
+    assert "not on a network the router is attached to" in response["message"]
+    assert "WireGuard" in response["message"]
+    assert client.ztna_sessions_status(running_server)["count"] == 0
+    assert client.ztna_status("198.51.100.7", running_server) == {"ok": True, "authorized": False, "direct": False}
+
+
+def test_ztna_binds_a_wireguard_client_to_its_tunnel_address(running_server, tmp_path, neighbours):
+    _enable_ztna(tmp_path / "config.yaml", wireguard=True)
+    authorize = client.authorize_ztna("10.99.0.2", "alice", running_server)
+    assert authorize["ok"] is True and authorize["mac"] == ""
+    assert "WireGuard key" in authorize["message"]
+    assert client.ztna_status("10.99.0.2", running_server)["authorized"] is True
+    sessions = client.ztna_sessions_status(running_server)["sessions"]
+    assert sessions == [{"ip": "10.99.0.2", "mac": "", "expires_in": 3600}]
+
+
+def test_ztna_tunnel_addresses_are_not_special_without_wireguard(running_server, tmp_path):
+    """With WireGuard off nothing is bound to a key, so an address in
+    that range is just another address the router isn't attached to."""
+    _enable_ztna(tmp_path / "config.yaml")
+    assert client.authorize_ztna("10.99.0.2", "alice", running_server)["ok"] is False
+
+
+def test_ztna_status_reports_unauthorized_for_unknown_ip(running_server, tmp_path, neighbours):
+    _enable_ztna(tmp_path / "config.yaml")
+    neighbours["10.0.0.99"] = LAPTOP
     status = client.ztna_status("10.0.0.99", running_server)
     assert status == {"ok": True, "authorized": False}
 
@@ -450,14 +506,15 @@ def test_ztna_sessions_status_empty_when_gate_disabled(running_server):
     assert response == {"ok": True, "sessions": [], "count": 0}
 
 
-def test_ztna_sessions_status_reflects_kernel_state_after_authorization(running_server, tmp_path):
+def test_ztna_sessions_status_reflects_kernel_state_after_authorization(running_server, tmp_path, neighbours):
     _enable_ztna(tmp_path / "config.yaml")
+    neighbours["10.0.0.6"] = LAPTOP
     client.authorize_ztna("10.0.0.6", "alice", running_server)
 
     response = client.ztna_sessions_status(running_server)
     assert response["ok"] is True
     assert response["count"] == 1
-    assert response["sessions"][0]["ip"] == "10.0.0.6"
+    assert response["sessions"][0] == {"ip": "10.0.0.6", "mac": LAPTOP.mac, "expires_in": 3600}
 
 
 def test_hw_ram_info_empty_when_dmidecode_unavailable(running_server):
