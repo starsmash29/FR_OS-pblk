@@ -47,10 +47,18 @@ def test_invalid_config_does_not_make_a_protected_endpoint_public(client, webui_
     assert "fros_config_valid 0" in text and 'site_name="unknown"' in text
 
 
-def test_metrics_endpoint_stays_public_without_a_token(client, webui_env):
-    _write(webui_env)
-    text = client.get("/metrics").text
-    assert 'site_name="router-a"' in text  # defaults to the hostname
+def test_metrics_endpoint_is_off_without_a_token(client, webui_env):
+    """ROADMAP SEC-3: no token is not \"public\", it is off."""
+    _write(webui_env, site="szeged")
+    response = client.get("/metrics")
+    assert response.status_code == 404 and "szeged" not in response.text
+
+
+def test_site_name_defaults_to_the_hostname(client, webui_env):
+    token, digest = generate_metrics_token()
+    _write(webui_env, token_sha256=digest)
+    text = client.get("/metrics", headers={"Authorization": f"Bearer {token}"}).text
+    assert 'site_name="router-a"' in text
 
 
 def test_system_card_generates_a_token_once_and_stores_only_its_hash(logged_in_client, webui_env):

@@ -154,7 +154,7 @@ Measured and estimated, not yet validated on a range of real machines:
 
 ## 📊 Telemetry & Grafana
 
-`GET /metrics` (no login required, matching how every Prometheus scrape target works) exposes:
+`GET /metrics` exposes the list below to a Prometheus carrying the router's bearer token. It is off until you generate one (`firewall-cli metrics-token --generate`, or System → Multi-site monitoring); no login session is needed, as for any Prometheus scrape target:
 
 - `fros_xdp_status` & `fros_xdp_blocked_connections_total`
 - `fros_ztna_active_sessions` & `fros_ai_ids_quarantined_hosts`
@@ -166,7 +166,7 @@ Measured and estimated, not yet validated on a range of real machines:
 
 A real, importable dashboard (stat tiles, throughput graphs, hardware gauges) is checked into [`telemetry/grafana-dashboard.json`](telemetry/grafana-dashboard.json) — every panel queries a metric name this project actually emits, nothing aspirational.
 
-**Several sites?** One Prometheus can watch all your FR_OS routers: protect each router's `/metrics` with a token (`firewall-cli metrics-token --generate --site budapest`), scrape it over verified TLS as in [`telemetry/prometheus-multisite.yml`](telemetry/prometheus-multisite.yml), and import [`telemetry/grafana-fleet-dashboard.json`](telemetry/grafana-fleet-dashboard.json) for a read-only fleet overview that links into the per-router dashboard. Every query in both dashboards is evaluated against a real Prometheus scraping two routers in the test suite.
+**Several sites?** One Prometheus can watch all your FR_OS routers: give each router's `/metrics` a token (`firewall-cli metrics-token --generate --site budapest`), scrape it over verified TLS as in [`telemetry/prometheus-multisite.yml`](telemetry/prometheus-multisite.yml), and import [`telemetry/grafana-fleet-dashboard.json`](telemetry/grafana-fleet-dashboard.json) for a read-only fleet overview that links into the per-router dashboard. Every query in both dashboards is evaluated against a real Prometheus scraping two routers in the test suite.
 
 ---
 
@@ -437,7 +437,7 @@ quarantines a flagged IP in the kernel (`ids_quarantine` nftables set)
 via the privileged apply-helper.
 
 **Phase 12 (lightweight native Prometheus metrics exporter)** — done. A
-public, unauthenticated `GET /metrics` endpoint in Prometheus text
+`GET /metrics` endpoint (off until a bearer token is generated, ROADMAP SEC-3) in Prometheus text
 exposition format, zero external dependencies (no `prometheus_client`,
 no `psutil`) — software metrics (interfaces, XDP, ad-block, ZTNA,
 brute-force, AI IDS/IPS) read from state this project already computes,

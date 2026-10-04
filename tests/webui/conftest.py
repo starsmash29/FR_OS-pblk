@@ -301,3 +301,37 @@ def logged_in_client(client, webui_env):
     response = client.post("/login", data={"username": "admin", "password": "hunter22"})
     assert response.status_code == 303
     return client
+
+
+@pytest.fixture(autouse=True)
+def _fresh_metrics_cache():
+    """Each test scrapes /metrics without another test's cached text."""
+    from frfw.webui.routes import metrics as metrics_route
+
+    metrics_route.clear_cache()
+    yield
+    metrics_route.clear_cache()
+
+
+@pytest.fixture
+def scrape(webui_env):
+    """GET /metrics as a configured Prometheus does: /metrics is off until
+    a token is set (ROADMAP SEC-3), so this puts a token's digest into the
+    on-disk config -- as `firewall-cli metrics-token --generate` would --
+    and sends the token. Each call drops the cached text first, so it sees
+    the state the test just set up."""
+    from frfw.metrics import generate_metrics_token
+    from frfw.webui.routes import metrics as metrics_route
+
+    token, digest = generate_metrics_token()
+
+    def get(client):
+        path = webui_env["config_path"]
+        raw = (yaml.safe_load(path.read_text()) if path.exists() else None) or {}
+        section = raw.get("metrics") if isinstance(raw.get("metrics"), dict) else {}
+        raw["metrics"] = {**section, "token_sha256": digest}
+        path.write_text(yaml.safe_dump(raw))
+        metrics_route.clear_cache()
+        return client.get("/metrics", headers={"Authorization": f"Bearer {token}"})
+
+    return get

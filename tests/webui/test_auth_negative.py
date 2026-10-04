@@ -22,7 +22,7 @@ from frfw.helper import client as helper_client
 from frfw.helper.peer import PeerPolicy
 from frfw.helper.server import ApplyHelperServer
 from frfw.helper.update_server import UpdateHelperServer
-from frfw.metrics import generate_metrics_token, metrics_token_ok
+from frfw.metrics import METRICS_DENIED, METRICS_OFF, METRICS_OK, generate_metrics_token, metrics_access
 from frfw.webui.auth import COOKIE_NAME
 
 # -- webUI login ---------------------------------------------------------------------
@@ -208,8 +208,8 @@ def test_metrics_rejects_missing_forged_or_mangled_tokens(metrics_config, header
     token, raw = metrics_config
     if header is not None:
         header = header.format(token=token, upper=token.upper())
-    assert not metrics_token_ok(raw, header)
-    assert metrics_token_ok(raw, f"Bearer {token}")
+    assert metrics_access(raw, header) == METRICS_DENIED
+    assert metrics_access(raw, f"Bearer {token}") == METRICS_OK
 
 
 @pytest.mark.parametrize("digest", ["", "0" * 63, "not-hex" * 10, 12345, None])
@@ -217,8 +217,11 @@ def test_a_broken_configured_token_fails_closed(metrics_config, digest):
     token, _ = metrics_config
     raw = {"metrics": {"token_sha256": digest}}
     if digest is None:
-        pytest.skip("no token configured means a public endpoint (review triage E3)")
-    assert not metrics_token_ok(raw, f"Bearer {token}")
+        # No token configured: off, not public (ROADMAP SEC-3) -- a token
+        # someone sends turns nothing on.
+        assert metrics_access(raw, f"Bearer {token}") == METRICS_OFF
+        return
+    assert metrics_access(raw, f"Bearer {token}") == METRICS_DENIED
 
 
 # -- the helper sockets ------------------------------------------------------------------

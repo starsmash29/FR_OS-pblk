@@ -167,7 +167,7 @@
       <div class="meter-row"><span>Root filesystem &middot; {{ format_bytes(system.disk_used) }} / {{ format_bytes(system.disk_total) }}</span><strong>{{ "%d%%"|format(system.disk_ratio * 100) if system.disk_ratio is not none else "-" }}</strong></div>
       <div class="progress-track"><div class="progress-fill" style="width:{{ (system.disk_ratio or 0) * 100 }}%;"></div></div>
     </div>
-    <p class="muted" style="margin-top:1rem;">Ruleset backups available for rollback: {{ backup_count }} &middot; Prometheus metrics at <a href="/metrics">/metrics</a></p>
+    <p class="muted" style="margin-top:1rem;">Ruleset backups available for rollback: {{ backup_count }} &middot; Prometheus metrics: <a href="/system">System &rarr; Multi-site monitoring</a> (off until a token is generated)</p>
   </section>
 </div>
 

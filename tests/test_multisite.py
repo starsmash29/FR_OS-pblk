@@ -15,7 +15,14 @@ import pytest
 import yaml
 
 from frfw.config import ConfigError, parse_config
-from frfw.metrics import generate_metrics_token, hash_metrics_token, metrics_token_ok
+from frfw.metrics import (
+    METRICS_DENIED,
+    METRICS_OFF,
+    METRICS_OK,
+    generate_metrics_token,
+    hash_metrics_token,
+    metrics_access,
+)
 
 REPO = Path(__file__).resolve().parents[1]
 requires_openssl = pytest.mark.skipif(shutil.which("openssl") is None, reason="openssl not installed")
@@ -28,13 +35,15 @@ def test_token_check():
     token, digest = generate_metrics_token()
     assert len(token) >= 40 and digest == hash_metrics_token(token)
     raw = {"metrics": {"token_sha256": digest}}
-    assert metrics_token_ok(raw, f"Bearer {token}")
-    assert metrics_token_ok(raw, f"bearer {token}")
-    assert not metrics_token_ok(raw, None)
-    assert not metrics_token_ok(raw, "Bearer wrong")
-    assert not metrics_token_ok(raw, f"Basic {token}")
-    assert metrics_token_ok({}, None)                                    # no token configured: public
-    assert not metrics_token_ok({"metrics": {"token_sha256": "abc"}}, f"Bearer {token}")  # malformed: closed
+    assert metrics_access(raw, f"Bearer {token}") == METRICS_OK
+    assert metrics_access(raw, f"bearer {token}") == METRICS_OK
+    assert metrics_access(raw, None) == METRICS_DENIED
+    assert metrics_access(raw, "Bearer wrong") == METRICS_DENIED
+    assert metrics_access(raw, f"Basic {token}") == METRICS_DENIED
+    # ROADMAP SEC-3: no token configured is off, not public -- whatever the request carries.
+    assert metrics_access({}, None) == METRICS_OFF
+    assert metrics_access({"metrics": {}}, f"Bearer {token}") == METRICS_OFF
+    assert metrics_access({"metrics": {"token_sha256": "abc"}}, f"Bearer {token}") == METRICS_DENIED  # malformed: closed
 
 
 def test_metrics_config_validation(minimal_config_dict):

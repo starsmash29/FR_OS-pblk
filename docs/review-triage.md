@@ -64,7 +64,7 @@ in this batch.
 |---|---|---|---|---|
 | E1 | medium | No CI job runs the test suite | Reported | MiMo M18 |
 | E2 | low | No CSRF token (SameSite=Lax only), no security headers | Reported | MiMo L1, L3, BP4 |
-| E3 | low | `/metrics` unauthenticated by default | Reported | MiMo L2, BP7 |
+| E3 | low | `/metrics` unauthenticated by default | Fixed in ROADMAP SEC-3: off until a token is generated | MiMo L2, BP7 |
 | E4 | low | Unbounded `journalctl -f` per SSE client, reachable by viewers | Reported | MiMo L14, BP8 (medium) |
 | E5 | low | Session/password: logout is client-side only, 8-char length-only policy, PBKDF2 200k, in-memory brute-force counters, session secret temp file | Reported | MiMo L4–L6, BP12, BP13 |
 | E6 | low | Audit log writable by the audited identity; ZTNA grants not audited | Reported | MiMo L21, BP15 |
