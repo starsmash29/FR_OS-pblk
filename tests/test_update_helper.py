@@ -95,3 +95,28 @@ def test_unknown_command_returns_error(running_server):
 def test_client_reports_error_when_socket_missing(tmp_path):
     with pytest.raises(client.HelperError):
         client.ping(tmp_path / "no-such.sock")
+
+
+def test_a_downgrade_asked_over_the_socket_is_refused_by_the_real_updater(tmp_path, monkeypatch):
+    """ROADMAP SEC-12: whoever talks to the update helper -- the webUI for
+    a logged-in admin, or a stolen session -- gets the real apply_update's
+    refusal, with the way back named; nothing is fetched."""
+    monkeypatch.setattr(update_mod, "_installed_version", lambda: "0.5.0")
+
+    def must_not_fetch(*args, **kwargs):
+        raise AssertionError("fetched a release it was going to refuse")
+
+    monkeypatch.setattr(update_mod, "_fetch_release", must_not_fetch)
+    socket_path = tmp_path / "update.sock"
+    server = UpdateHelperServer(socket_path, repo="x/y", state_path=tmp_path / "state.json",
+                                releases_dir=tmp_path / "releases")
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        response = client.apply("0.4.0", socket_path=socket_path)
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+    assert response["ok"] is False
+    assert "older than the installed 0.5.0" in response["message"] and "roll back" in response["message"]

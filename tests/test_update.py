@@ -274,6 +274,62 @@ def test_apply_update_refuses_same_version(tmp_path, monkeypatch, fake_release, 
     assert no_op_privileged_steps["installed"] == []
 
 
+# --- ROADMAP SEC-12: forward only ------------------------------------------------------
+
+
+@pytest.mark.parametrize("older", ["0.1.9", "0.1.0", "0.0.99", "v0.1.9", "0.0.1"])
+def test_apply_update_refuses_an_older_version_before_fetching_anything(tmp_path, monkeypatch, older):
+    """Review v0.2.0 R18: an older release is as validly signed as it ever
+    was, and installing it brings back what has been fixed since. Refused
+    before anything is downloaded, verified, recorded or installed."""
+    monkeypatch.setattr(update_mod, "_installed_version", lambda: "0.2.0")
+
+    def must_not_fetch(*args, **kwargs):
+        raise AssertionError("fetched a release it was going to refuse")
+
+    monkeypatch.setattr(update_mod, "_fetch_release", must_not_fetch)
+    state_path = tmp_path / "state.json"
+    update_mod.save_state(update_mod.UpdateState(current_version="0.2.0", previous_version="0.1.0"), state_path)
+    before = state_path.read_bytes()
+    with pytest.raises(update_mod.UpdateError, match="older than the installed 0.2.0.*roll back"):
+        update_mod.apply_update(older, state_path=state_path, releases_dir=tmp_path / "releases")
+    assert state_path.read_bytes() == before, "a refused downgrade must leave the rollback target alone"
+
+
+def test_versions_compare_as_numbers_not_strings(tmp_path, monkeypatch, fake_release, no_op_privileged_steps):
+    """0.10.0 is newer than 0.9.0 (as text it would sort before it), and a
+    "v" prefix names the same version."""
+    monkeypatch.setattr(update_mod, "_installed_version", lambda: "0.9.0")
+    assert update_mod.apply_update("0.10.0", state_path=tmp_path / "s.json", releases_dir=tmp_path / "r") == "0.10.0"
+    monkeypatch.setattr(update_mod, "_installed_version", lambda: "0.10.0")
+    with pytest.raises(update_mod.UpdateError, match="older"):
+        update_mod.apply_update("0.9.9", state_path=tmp_path / "s.json", releases_dir=tmp_path / "r")
+    with pytest.raises(update_mod.UpdateError, match="already running"):
+        update_mod.apply_update("v0.10.0", state_path=tmp_path / "s.json", releases_dir=tmp_path / "r")
+
+
+def test_an_unparseable_installed_version_fails_closed(tmp_path, monkeypatch, fake_release, no_op_privileged_steps):
+    monkeypatch.setattr(update_mod, "_installed_version", lambda: "0.2.0.dev1")
+    with pytest.raises(update_mod.UpdateError, match="not a recognized"):
+        update_mod.apply_update("9.9.9", state_path=tmp_path / "s.json", releases_dir=tmp_path / "r")
+    assert no_op_privileged_steps["installed"] == []
+
+
+def test_rollback_is_still_the_way_back_and_the_newer_one_can_follow(
+    tmp_path, monkeypatch, fake_release, no_op_privileged_steps
+):
+    state_path, releases = tmp_path / "state.json", tmp_path / "releases"
+    monkeypatch.setattr(update_mod, "_installed_version", lambda: "0.1.0")
+    update_mod.apply_update("0.2.0", state_path=state_path, releases_dir=releases)
+    monkeypatch.setattr(update_mod, "_installed_version", lambda: "0.2.0")
+    with pytest.raises(update_mod.UpdateError, match="older"):
+        update_mod.apply_update("0.1.0", state_path=state_path, releases_dir=releases)
+    assert update_mod.rollback_update(state_path=state_path, releases_dir=releases) == "0.1.0"
+    monkeypatch.setattr(update_mod, "_installed_version", lambda: "0.1.0")
+    assert update_mod.apply_update("0.2.0", state_path=state_path, releases_dir=releases) == "0.2.0"
+    assert [d.name for d in no_op_privileged_steps["installed"]] == ["0.2.0", "0.1.0", "0.2.0"]
+
+
 def test_apply_update_failure_is_recorded_and_reraised(tmp_path, monkeypatch, fake_release):
     monkeypatch.setattr(update_mod, "_installed_version", lambda: "0.1.0")
 
