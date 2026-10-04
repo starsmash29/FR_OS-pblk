@@ -4,12 +4,13 @@ Description=FR_OS privileged apply-helper socket
 [Socket]
 ExecStartPre=/bin/mkdir -p /run/fr_os
 ListenStream=/run/fr_os/apply.sock
-# fr_os-webui and fr_os-sensor (a member of that group) can connect;
-# frfw.helper.server then allows each only its own commands, by the
-# peer uid the kernel reports (frfw.helper.peer).
+# fr_os-webui and fr_os-sensor (both in fr_os-feeds, the one group they
+# share, ROADMAP SEC-11) can connect; frfw.helper.server then allows each
+# only its own commands, by the peer uid the kernel reports
+# (frfw.helper.peer).
 SocketMode=0660
 SocketUser=root
-SocketGroup=fr_os-webui
+SocketGroup=fr_os-feeds
 RemoveOnStop=yes
 
 [Install]

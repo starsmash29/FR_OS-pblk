@@ -499,7 +499,7 @@ def test_real_dnsmasq_hands_the_query_log_to_itself_and_the_readers_group(tmp_pa
     the log before dropping to `nobody`, leaving it nobody:<group> 0640 --
     writable by dnsmasq alone, readable by the readers' group -- and keeps
     logging queries after the drop."""
-    group = 4321  # any group: it stands for fr_os-webui
+    group = 4321  # any group: it stands for fr_os-feeds
     log_dir = tmp_path / "fr_os-dns"
     log_dir.mkdir()
     os.chown(log_dir, 0, group)

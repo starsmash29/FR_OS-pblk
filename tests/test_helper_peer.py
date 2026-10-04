@@ -174,8 +174,17 @@ def test_parser_daemons_run_as_the_sensor_account(unit):
     service = _unit(unit)["Service"]
     assert service["User"] == paths.SENSOR_USER
     assert service["Group"] == paths.SENSOR_USER
-    assert "fr_os-webui" in service["SupplementaryGroups"].split()  # config.yaml + the socket
+    # ROADMAP SEC-11: the shared group (the socket, the event feeds) and
+    # nothing of the webUI's -- that group reads config.yaml's secrets.
+    assert service["SupplementaryGroups"].split() == [paths.FEEDS_GROUP]
     assert "/etc/fr_os/webui" not in service["ReadWritePaths"]
+    assert "fr-firewall.service" in _unit(unit)["Unit"]["After"].split()  # it writes their config copy
+
+
+def test_the_apply_helper_socket_is_the_shared_group_s():
+    socket = _unit("fr-apply-helper.socket")["Socket"]
+    assert (socket["SocketMode"], socket["SocketUser"], socket["SocketGroup"]) == ("0660", "root", paths.FEEDS_GROUP)
+    assert _unit("fr-webui.service")["Service"]["SupplementaryGroups"].split() == [paths.FEEDS_GROUP]
 
 
 def test_tls_fingerprinting_drops_to_the_sensor_account():
@@ -203,23 +212,40 @@ def test_sensor_output_is_not_next_to_the_webui_secrets():
     assert paths.WEBUI_SECRET_KEY_PATH.parent != paths.SENSOR_STATE_DIR
 
 
-def test_ensure_accounts_creates_users_and_private_state_dirs(tmp_path, monkeypatch):
+class _FakeAccounts:
+    """/etc/passwd and /etc/group as frfw.accounts sees them, changed only
+    through the commands it runs."""
+
+    def __init__(self, members: dict[str, list[str]] | None = None, users: set[str] | None = None):
+        self.users: set[str] = set(users or ())
+        self.members: dict[str, list[str]] = {k: list(v) for k, v in (members or {}).items()}
+        self.ran: list[list[str]] = []
+
+    def run(self, cmd):
+        self.ran.append(cmd)
+        if cmd[0] == "useradd":
+            self.users.add(cmd[-1])
+            self.members.setdefault(cmd[-1], [])
+        elif cmd[0] == "groupadd":
+            self.members.setdefault(cmd[-1], [])
+        elif cmd[0] == "usermod":  # usermod --append --groups GROUP -- USER
+            self.members.setdefault(cmd[3], []).append(cmd[-1])
+        elif cmd[0] == "gpasswd":  # gpasswd --delete USER GROUP
+            self.members[cmd[3]].remove(cmd[2])
+
+
+@pytest.fixture
+def fake_accounts(tmp_path, monkeypatch):
     me = pwd.getpwuid(os.geteuid()).pw_name
     my_group = grp.getgrgid(os.getegid()).gr_name
-    existing: set[str] = set()
-    members: list[str] = []
-    ran: list[list[str]] = []
 
-    def fake_run(cmd):
-        ran.append(cmd)
-        if cmd[0] == "useradd":
-            existing.add(cmd[-1])
-        if cmd[0] == "usermod":
-            members.append(cmd[-1])
+    def install(fake: _FakeAccounts) -> _FakeAccounts:
+        monkeypatch.setattr(accounts, "_run", fake.run)
+        monkeypatch.setattr(accounts, "_user_exists", lambda name: name in fake.users)
+        monkeypatch.setattr(accounts, "_group_exists", lambda name: name in fake.members)
+        monkeypatch.setattr(accounts, "_group_members", lambda name: list(fake.members.get(name, [])))
+        return fake
 
-    monkeypatch.setattr(accounts, "_run", fake_run)
-    monkeypatch.setattr(accounts, "_user_exists", lambda name: name in existing)
-    monkeypatch.setattr(accounts, "_group_members", lambda name: members)
     # Directories are owned by real accounts; map ours onto the running user.
     me_entry, my_group_entry = pwd.getpwnam(me), grp.getgrnam(my_group)
     monkeypatch.setattr(accounts.pwd, "getpwnam", lambda name: me_entry)
@@ -227,15 +253,57 @@ def test_ensure_accounts_creates_users_and_private_state_dirs(tmp_path, monkeypa
     monkeypatch.setattr(paths, "CONFIG_PATH", tmp_path / "config.yaml")
     monkeypatch.setattr(paths, "WEBUI_STATE_DIR", tmp_path / "webui")
     monkeypatch.setattr(paths, "SENSOR_STATE_DIR", tmp_path / "sensors")
+    monkeypatch.setattr(paths, "AUDIT_LOG_DIR", tmp_path / "audit")
+    for name in ("SNI_EVENTS_DIR", "DNS_QUERY_LOG_DIR"):
+        monkeypatch.setattr(paths, name, tmp_path / name.lower())
+    monkeypatch.setattr(paths, "SNI_EVENTS_PATH", tmp_path / "sni_events_dir" / "events.jsonl")
+    monkeypatch.setattr(paths, "DNS_QUERY_LOG_PATH", tmp_path / "dns_query_log_dir" / "queries.log")
+    monkeypatch.setattr(paths, "APPLY_SOCKET_PATH", tmp_path / "apply.sock")
+    return install
+
+
+def test_ensure_accounts_creates_users_and_private_state_dirs(tmp_path, fake_accounts):
+    fake = fake_accounts(_FakeAccounts(members={paths.SSH_GROUP: []}))
     (tmp_path / "webui").mkdir(mode=0o750)  # an older install's mode
 
     done = accounts.ensure()
-    assert existing == {paths.WEBUI_USER, paths.SENSOR_USER}
-    assert members == [paths.SENSOR_USER]
-    assert len(done) == 3
+    assert fake.users == {paths.WEBUI_USER, paths.SENSOR_USER}
+    # ROADMAP SEC-11: both in the shared group, the sensor in no group of the webUI's.
+    assert sorted(fake.members[paths.FEEDS_GROUP]) == sorted([paths.WEBUI_USER, paths.SENSOR_USER])
+    assert paths.SENSOR_USER not in fake.members[paths.WEBUI_USER]
+    assert len(done) == 5
     assert (tmp_path / "webui").stat().st_mode & 0o777 == 0o700
     assert (tmp_path / "sensors").stat().st_mode & 0o777 == 0o750
 
-    ran.clear()
+    fake.ran.clear()
     assert accounts.ensure() == []  # idempotent
-    assert ran == []
+    assert fake.ran == []
+
+
+def test_an_updated_router_moves_the_sensor_out_of_the_webui_group(tmp_path, fake_accounts):
+    """ROADMAP SEC-11: a router from before has fr_os-sensor in fr_os-webui
+    and its feeds -- and the live socket -- in that group. One ensure()
+    (fr-accounts, at boot and on an update) moves all of it."""
+    fake = fake_accounts(_FakeAccounts(users={paths.WEBUI_USER, paths.SENSOR_USER},
+                                       members={paths.WEBUI_USER: [paths.SENSOR_USER], paths.SENSOR_USER: [],
+                                                paths.SSH_GROUP: []}))
+    feeds_gid = grp.getgrgid(os.getegid()).gr_gid  # what the fake getgrnam answers for fr_os-feeds
+    other_gid = next(g.gr_gid for g in grp.getgrall() if g.gr_gid != feeds_gid)
+    old_files = [paths.SNI_EVENTS_DIR, paths.SNI_EVENTS_PATH, paths.DNS_QUERY_LOG_DIR, paths.DNS_QUERY_LOG_PATH,
+                 paths.APPLY_SOCKET_PATH]
+    for path in old_files:
+        if path.suffix:
+            path.parent.mkdir(exist_ok=True)
+            path.write_text("")
+        else:
+            path.mkdir(exist_ok=True)
+    if os.geteuid() == 0:
+        for path in old_files:
+            os.chown(path, -1, other_gid)
+    done = accounts.ensure()
+    assert ["gpasswd", "--delete", paths.SENSOR_USER, paths.WEBUI_USER] in fake.ran
+    assert fake.members[paths.WEBUI_USER] == []
+    assert sorted(fake.members[paths.FEEDS_GROUP]) == sorted([paths.WEBUI_USER, paths.SENSOR_USER])
+    if os.geteuid() == 0:
+        assert all(path.stat().st_gid == feeds_gid for path in old_files)
+        assert sum(line.startswith("moved ") for line in done) == len(old_files)

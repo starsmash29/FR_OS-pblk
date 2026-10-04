@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import http.cookiejar
 import os
 import re
@@ -175,23 +176,58 @@ def group_id(upper: Path, name: str) -> int | None:
     return None
 
 
+def group_members(upper: Path, name: str) -> set[str]:
+    group_file = upper / "etc" / "group"
+    for line in group_file.read_text().splitlines() if group_file.exists() else []:
+        fields = line.split(":")
+        if len(fields) >= 4 and fields[0] == name:
+            return {m for m in fields[3].split(",") if m}
+    return set()
+
+
 def check_sni_event_file(check, upper: Path) -> None:
     """ROADMAP SEC-4: fr-xdp-sni-logger's event file, which the webUI and
     the sensor daemons read instead of the journal, is root's and
-    readable by the fr_os-webui group only -- no reader can write it."""
+    readable by their shared group only (fr_os-feeds since ROADMAP
+    SEC-11) -- no reader can write it."""
     directory = upper / "var" / "log" / "fr_os-sni"
     events = directory / "events.jsonl"
-    webui_gid = group_id(upper, "fr_os-webui")
-    ok = (events.exists() and webui_gid is not None
-          and events.stat().st_uid == 0 and events.stat().st_gid == webui_gid
+    feeds_gid = group_id(upper, "fr_os-feeds")
+    ok = (events.exists() and feeds_gid is not None
+          and events.stat().st_uid == 0 and events.stat().st_gid == feeds_gid
           and events.stat().st_mode & 0o777 == 0o640
-          and directory.stat().st_uid == 0 and directory.stat().st_gid == webui_gid
+          and directory.stat().st_uid == 0 and directory.stat().st_gid == feeds_gid
           and directory.stat().st_mode & 0o777 == 0o750)
     detail = ""
     if not ok and events.exists():
         st = events.stat()
-        detail = f": {st.st_uid}:{st.st_gid} {oct(st.st_mode & 0o777)} (fr_os-webui is {webui_gid})"
-    check(ok, "the XDP SNI event file is root:fr_os-webui 0640 (ROADMAP SEC-4)" + detail)
+        detail = f": {st.st_uid}:{st.st_gid} {oct(st.st_mode & 0o777)} (fr_os-feeds is {feeds_gid})"
+    check(ok, "the XDP SNI event file is root:fr_os-feeds 0640 (ROADMAP SEC-4, SEC-11)" + detail)
+
+
+def check_sensor_isolation(check, upper: Path, *, secret: str | None = None) -> None:
+    """ROADMAP SEC-11: the parser daemons' account is in no group of the
+    webUI's -- only fr_os-feeds -- and reads its configuration from a copy
+    without secrets, root:fr_os-sensor 0640; config.yaml stays
+    root:fr_os-webui 0640. With `secret`, a value config.yaml has that
+    the copy must not."""
+    webui = group_members(upper, "fr_os-webui")
+    feeds = group_members(upper, "fr_os-feeds")
+    check("fr_os-sensor" not in webui and {"fr_os-sensor", "fr_os-webui"} <= feeds,
+          "the sensor account is in fr_os-feeds and not in the webUI's group (ROADMAP SEC-11)"
+          + f": fr_os-webui members {sorted(webui)}, fr_os-feeds members {sorted(feeds)}")
+    config, copy = upper / "etc" / "fr_os" / "config.yaml", upper / "etc" / "fr_os" / "sensor-config.yaml"
+    sensor_gid, webui_gid = group_id(upper, "fr_os-sensor"), group_id(upper, "fr_os-webui")
+
+    def owned(path: Path, gid: int | None) -> bool:
+        st = path.stat()
+        return st.st_uid == 0 and st.st_gid == gid and st.st_mode & 0o777 == 0o640
+
+    ok = copy.exists() and config.exists() and owned(copy, sensor_gid) and owned(config, webui_gid)
+    if ok and secret is not None:
+        ok = secret in config.read_text() and secret not in copy.read_text()
+    check(ok, "the sensors read a copy of the config without its secrets, root:fr_os-sensor 0640 (ROADMAP SEC-11)"
+          + ("" if secret is None else ", the metrics token's digest left out"))
 
 
 #: ROADMAP P4-1: the XDP SNI filter is turned on in boot 3 with this one
@@ -527,6 +563,7 @@ def run(args: argparse.Namespace) -> int:
             print_journal(upper, unit)
         check_sandboxed_services(check, upper)
         check_sni_event_file(check, upper)
+        check_sensor_isolation(check, upper)
         # ROADMAP SEC-4: the resolver's query log has a size cap of its own.
         check("Started" in journal(upper, "-u", "fr-dns-log-trim.timer"),
               "the hourly query-log size cap (fr-dns-log-trim.timer) is running")
@@ -563,6 +600,7 @@ def run(args: argparse.Namespace) -> int:
     set_up = done.endswith("/segments?first_run=1")  # then the segments offer (security-lessons K4)
     check(set_up, f"setup renamed the account to {NEW_USERNAME!r} with a new password")
     applied = ""
+    metrics_digest = None
     if set_up:
         # Security-lessons K7: a fresh FR_OS listens on nothing its config
         # doesn't need.
@@ -583,6 +621,8 @@ def run(args: argparse.Namespace) -> int:
         post(opener, "/system/metrics/token", {"action": "generate"})
         token = re.search(r'<code style="user-select:all;">([^<]+)</code>', opener.last_page)
         on_status, on_body = scrape_metrics(token.group(1)) if token else (0, "")
+        if token:  # config.yaml keeps its digest; the sensors' copy must not (ROADMAP SEC-11)
+            metrics_digest = hashlib.sha256(token.group(1).encode()).hexdigest()
         wrong_status, _ = scrape_metrics("not-the-token")
         check(off_status == 404 and on_status == 200 and "fros_bruteforce_banned_ips" in on_body
               and wrong_status == 401,
@@ -664,6 +704,7 @@ def run(args: argparse.Namespace) -> int:
     with persistence_partition(disk) as upper:
         if applied.startswith("POST /apply: HTTP"):
             print_journal(upper, "fr-apply-helper.service", "-b")
+        check_sensor_isolation(check, upper, secret=metrics_digest)
         this_boot = journal(upper, "-b", "-u", "fr-first-boot.service")
         check("running initial setup" not in this_boot, "fr-first-boot did not run again")
         check(not (upper / "etc" / "issue.d" / "fr_os-initial-admin.issue").exists()

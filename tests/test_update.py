@@ -454,3 +454,13 @@ def test_rollback_update_failure_is_recorded(tmp_path, monkeypatch, fake_release
     # a failed rollback must not lose the previous_version it needs to retry
     assert state.previous_version == "0.1.0"
     assert state.last_update["status"] == "failed"
+
+
+def test_an_update_restarts_the_accounts_first_and_the_sensors_after_the_apply():
+    """ROADMAP SEC-11: fr-accounts makes the release's groups before
+    anything restarts into them; the parser daemons come after
+    fr-firewall, whose apply writes the config copy they read."""
+    order = list(update_mod.SERVICES_TO_RESTART)
+    assert order[0] == "fr-accounts.service"
+    for sensor in ("fr-ai-ids.service", "fr-appid.service", "fr-tls-fp.service"):
+        assert order.index(sensor) > order.index("fr-firewall.service")

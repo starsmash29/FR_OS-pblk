@@ -5,7 +5,8 @@ The webUI (phase 3) will run unprivileged and never touch nftables or
 /etc/fr_os directly; instead it sends a one-line JSON request here and
 gets a one-line JSON response back. Two layers of access control: the
 socket file's permissions (systemd/fr-apply-helper.socket: 0660
-root:fr_os-webui) decide who can connect at all, and the kernel-reported
+root:fr_os-feeds, the one group the webUI and the sensors share --
+ROADMAP SEC-11) decide who can connect at all, and the kernel-reported
 peer uid (SO_PEERCRED) decides which commands that connection may send
 -- everything for the webUI, a short list for the network-parsing
 daemons, nothing for anyone else (see frfw.helper.peer).
@@ -38,6 +39,7 @@ from frfw.adblock import refresh as adblock_refresh
 from frfw.apply import NftError, rollback_last
 from frfw.bruteforce import BruteforceError
 from frfw.config import ConfigError, load_config, parse_config
+from frfw.config.export import refresh_sensor_copy, write_sensor_copy
 from frfw.conntrack import ConntrackError
 from frfw.helper.peer import PeerPolicy, gid_of, peer_credentials
 from frfw.helper.protocol import MAX_LINE_BYTES
@@ -78,13 +80,19 @@ def _handle_request(request: dict, server: "ApplyHelperServer") -> dict:
 
         if cmd == "apply":
             config = load_config(server.config_path)
+            dry_run = bool(request.get("dry_run", False))
             result = apply_all(
                 config,
-                dry_run=bool(request.get("dry_run", False)),
+                dry_run=dry_run,
                 backup_dir=server.backup_dir,
                 kea_config_path=server.kea_config_path,
             )
-            return {"ok": True, "message": "; ".join(result.messages)}
+            messages = list(result.messages)
+            if not dry_run:
+                problem = refresh_sensor_copy(server.config_path, server.sensor_config_path)
+                if problem:
+                    messages.append(problem)
+            return {"ok": True, "message": "; ".join(messages)}
 
         if cmd == "rollback":
             restored = rollback_last(server.backup_dir)
@@ -94,9 +102,17 @@ def _handle_request(request: dict, server: "ApplyHelperServer") -> dict:
             text = request.get("yaml")
             if not isinstance(text, str):
                 return {"ok": False, "message": "'yaml' must be a string"}
-            parse_config(yaml.safe_load(text))  # validate before writing anything
+            raw = yaml.safe_load(text)
+            parse_config(raw)  # validate before writing anything
             _write_atomic(server.config_path, text)
-            return {"ok": True, "message": f"Config saved to {server.config_path}"}
+            # ROADMAP SEC-11: the parser daemons' copy, without secrets --
+            # they re-read it, so a change reaches them without an apply.
+            message = f"Config saved to {server.config_path}"
+            try:
+                write_sensor_copy(raw, server.sensor_config_path)
+            except OSError as exc:
+                message += f"; could not refresh the sensors' config copy: {exc}"
+            return {"ok": True, "message": message}
 
         if cmd == "authorize_ztna":
             return _handle_authorize_ztna(request, server)
@@ -465,8 +481,11 @@ class ApplyHelperServer(socketserver.UnixStreamServer):
         audit_log_path: Path = paths.AUDIT_LOG_PATH,
         systemd_socket: socket.socket | None = None,
         peer_policy: PeerPolicy | None = None,
+        sensor_config_path: Path | None = None,
     ) -> None:
         self._peer_policy = peer_policy
+        # Resolved now, not at import: tests point paths at a temporary one.
+        self.sensor_config_path = sensor_config_path or paths.SENSOR_CONFIG_PATH
         self.audit_log_path = audit_log_path
         self.adblock_category_dir = adblock_category_dir
         self.config_path = config_path

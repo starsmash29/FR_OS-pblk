@@ -12,9 +12,11 @@ Type=simple
 User=fr_os-webui
 Group=fr_os-webui
 # No journal access (ROADMAP SEC-4, review v0.2.0 R10): the XDP screen's
-# live log follows fr-xdp-sni-logger's event file, readable by this
-# unit's own group (frfw.paths.SNI_EVENTS_PATH), and the dashboard's
-# recent drops come from the kernel log through the apply-helper.
+# live log follows fr-xdp-sni-logger's event file, readable by
+# fr_os-feeds (frfw.paths.SNI_EVENTS_PATH), and the dashboard's recent
+# drops come from the kernel log through the apply-helper. fr_os-feeds
+# also reaches the apply-helper socket (ROADMAP SEC-11).
+SupplementaryGroups=fr_os-feeds
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 # Points OpenSSL at the TLS group preference frfw.pqc regenerates on
 # every `apply` (see that module's docstring for why this -- rather

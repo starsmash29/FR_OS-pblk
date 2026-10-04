@@ -1,13 +1,15 @@
 [Unit]
 Description=FR_OS AI IDS/IPS anomaly detection daemon (phase 11, see frfw.ai_ids)
 Documentation=https://github.com/starsmash29/FR_OS-pblk
-After=fr-accounts.service fr-apply-helper.socket network.target
+After=fr-accounts.service fr-apply-helper.socket network.target fr-firewall.service
 Wants=fr-accounts.service fr-apply-helper.socket
 
 [Service]
 Type=simple
 # Parses untrusted network input, so it runs as fr_os-sensor, not as the
-# webUI: it can read config.yaml (group fr_os-webui), may send the
+# webUI: it reads the configuration without its secrets
+# (/etc/fr_os/sensor-config.yaml) and can't read config.yaml -- it is in
+# no group of the webUI's but fr_os-feeds (ROADMAP SEC-11) -- may send the
 # apply-helper only frfw.helper.peer.SENSOR_COMMANDS, and writes to
 # /etc/fr_os/sensors -- never to the webUI's own state (see frfw.accounts).
 User=fr_os-sensor
@@ -22,8 +24,8 @@ Group=fr_os-sensor
 # any capability beyond journal read.
 # No journal access (ROADMAP SEC-4, review v0.2.0 R10): the XDP SNI
 # events and the resolver's query log come from their writers' own
-# files, readable through the fr_os-webui group.
-SupplementaryGroups=fr_os-webui
+# files, readable through the fr_os-feeds group.
+SupplementaryGroups=fr_os-feeds
 ExecStart=fr-ai-ids
 Restart=on-failure
 RestartSec=5

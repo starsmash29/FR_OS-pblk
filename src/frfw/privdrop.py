@@ -21,15 +21,18 @@ RUN_AS_USER = paths.SENSOR_USER
 
 def drop_privileges(user: str = RUN_AS_USER) -> None:
     """Permanently become `user` (falling back to nobody on a dev box that
-    lacks it), keeping only the fr_os-webui group -- which lets it read
-    config.yaml and reach the apply-helper, where frfw.helper.peer limits
-    it to the sensor commands. Raises if root could not be left."""
+    lacks it), with its own group -- which reads paths.SENSOR_CONFIG_PATH,
+    the configuration without secrets -- and only paths.FEEDS_GROUP
+    besides, which reaches the apply-helper (where frfw.helper.peer limits
+    it to the sensor commands) and the event feeds. Not the webUI's group:
+    that reads config.yaml with its secrets (ROADMAP SEC-11). Raises if
+    root could not be left."""
     try:
         account = pwd.getpwnam(user)
     except KeyError:
         account = pwd.getpwnam("nobody")
     try:
-        extra = [grp.getgrnam(paths.WEBUI_USER).gr_gid]
+        extra = [grp.getgrnam(paths.FEEDS_GROUP).gr_gid]
     except KeyError:
         extra = []
     os.setgroups(extra)

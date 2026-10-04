@@ -444,10 +444,12 @@ def load_recent_events(path: Path = paths.AI_IDS_STATE_PATH, limit: int = RECENT
 def main() -> int:  # pragma: no cover -- process entry point
     from frfw.config import ConfigError, load_config
 
+    # The configuration without its secrets: this daemon parses untrusted
+    # input and can't read config.yaml itself (ROADMAP SEC-11).
     try:
-        config = load_config(paths.CONFIG_PATH)
-    except (FileNotFoundError, ConfigError) as exc:
-        print(f"fr-ai-ids: cannot load {paths.CONFIG_PATH}: {exc}", file=sys.stderr)
+        config = load_config(paths.SENSOR_CONFIG_PATH)
+    except (OSError, ConfigError) as exc:
+        print(f"fr-ai-ids: cannot load {paths.SENSOR_CONFIG_PATH}: {exc}", file=sys.stderr)
         return 1
 
     if not config.ai_ids.enabled:

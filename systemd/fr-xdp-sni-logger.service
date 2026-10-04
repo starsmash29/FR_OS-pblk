@@ -7,11 +7,11 @@ Wants=fr-accounts.service fr-firewall.service
 [Service]
 Type=simple
 # The event file the webUI, fr-ai-ids and fr-appid read instead of this
-# unit's journal (ROADMAP SEC-4): /var/log/fr_os-sni, root:fr_os-webui
+# unit's journal (ROADMAP SEC-4): /var/log/fr_os-sni, root:fr_os-feeds
 # 0750, the file in it 0640. Created while the process is still root, so
 # only this process can write it -- not fr_os-sensor, which it becomes
 # and the readers run as; Group= is what gives both the readers' group.
-Group=fr_os-webui
+Group=fr_os-feeds
 LogsDirectory=fr_os-sni
 LogsDirectoryMode=0750
 UMask=0027

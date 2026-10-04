@@ -165,10 +165,11 @@ def is_daemon_active() -> bool:
 def _load_config() -> Config | None:
     from frfw.config import ConfigError, load_config
 
+    # The configuration without its secrets (ROADMAP SEC-11).
     try:
-        return load_config(paths.CONFIG_PATH)
+        return load_config(paths.SENSOR_CONFIG_PATH)
     except (OSError, ConfigError) as exc:
-        print(f"fr-tls-fp: cannot load {paths.CONFIG_PATH}: {exc}", file=sys.stderr, flush=True)
+        print(f"fr-tls-fp: cannot load {paths.SENSOR_CONFIG_PATH}: {exc}", file=sys.stderr, flush=True)
         return None
 
 

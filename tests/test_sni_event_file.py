@@ -109,7 +109,7 @@ def test_the_boot_tests_event_file_check(tmp_path, file_mode, dir_mode, group, o
     boot_test = _boot_test()
     upper = tmp_path / "rw"
     (upper / "etc").mkdir(parents=True)
-    (upper / "etc" / "group").write_text("root:x:0:\nfr_os-webui:x:1234:\n")
+    (upper / "etc" / "group").write_text("root:x:0:\nfr_os-feeds:x:1234:\n")
     directory = upper / "var" / "log" / "fr_os-sni"
     directory.mkdir(parents=True)
     events = directory / "events.jsonl"

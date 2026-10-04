@@ -7,6 +7,10 @@ IoT scan, TLS fingerprinting), so one bug in a parser was one JSON line
 away from root: `save_config` + `apply` on the apply-helper, or an
 arbitrary `apply` on the update-helper.
 
+(Since ROADMAP SEC-11 the apply-helper socket is root:fr_os-feeds, a
+group the two share and nothing else, and the sensor account is no
+longer in fr_os-webui; the per-uid check below is unchanged.)
+
 Now the kernel tells each helper the connecting process's uid
 (`SO_PEERCRED`, which the peer cannot forge) and the helper decides per
 command:

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from frfw import privdrop, xdp
+from frfw import paths, privdrop, xdp
 
 
 def test_the_sni_event_logger_drops_root_before_the_first_poll(monkeypatch, tmp_path):
@@ -51,3 +51,22 @@ def test_drop_privileges_refuses_to_stay_root(monkeypatch):
         privdrop.drop_privileges()
     # Groups first, then the group, then the user: the order that works.
     assert [c[0] for c in calls] == ["setgroups", "setgid", "setuid"]
+
+
+def test_the_dropped_process_keeps_the_shared_group_not_the_webuis(monkeypatch):
+    """ROADMAP SEC-11: fr-tls-fp and fr-xdp-sni-logger keep fr_os-feeds
+    (the helper socket, the event feeds) -- never fr_os-webui, which reads
+    config.yaml's secrets."""
+    import grp as grp_mod
+
+    gids = {paths.FEEDS_GROUP: 3001, paths.WEBUI_USER: 3002}
+    monkeypatch.setattr(privdrop.grp, "getgrnam",
+                        lambda name: grp_mod.struct_group((name, "x", gids[name], [])))
+    calls = []
+    monkeypatch.setattr(privdrop.os, "setgroups", lambda groups: calls.append(list(groups)))
+    monkeypatch.setattr(privdrop.os, "setgid", lambda gid: None)
+    monkeypatch.setattr(privdrop.os, "setuid", lambda uid: None)
+    monkeypatch.setattr(privdrop.os, "getuid", lambda: 1000)
+    monkeypatch.setattr(privdrop.os, "geteuid", lambda: 1000)
+    privdrop.drop_privileges()
+    assert calls == [[gids[paths.FEEDS_GROUP]]]
