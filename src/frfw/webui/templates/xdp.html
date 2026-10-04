@@ -6,8 +6,9 @@
   Kernel-space (XDP/eBPF) TLS ClientHello inspection -- drops connections
   to blocklisted domains before they reach the kernel's normal network
   stack. See <code>bpf/xdp_sni_filter.c</code> for the real, verified
-  limitations (single-packet ClientHellos only, no ECH support, IPv4
-  only) before relying on this as a complete filter.
+  limitations (a ClientHello split across segments is followed in order
+  only, no ECH support, IPv4 only) before relying on this as a complete
+  filter.
 </p>
 
 <div class="card status-card">

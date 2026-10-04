@@ -112,3 +112,16 @@ def test_a_failed_apply_leaves_what_it_attached_recorded_and_disable_detaches_it
     xdp.sync_sni_filter(_config(enabled=False, devices=[DEV], blocklist=[]), state_path=state_path)
     assert xdp.live_attachment(DEV) is None, "disable left an attachment it didn't know about"
     assert not xdp.is_loaded()
+
+
+def test_unloading_leaves_no_pin_behind_so_the_filter_loads_again(kernel):
+    """The object pins a second program and its maps since ROADMAP SEC-17
+    (the split-ClientHello follower, one map named by the compiler).
+    unload() used to remove a fixed list of pins: the rest stayed, and the
+    next load failed on them ("File exists")."""
+    xdp.load_and_pin(kernel["obj"])
+    assert (xdp._PIN_PROG_DIR / "xdp_sni_split").exists()
+    xdp.unload()
+    assert not xdp._PIN_DIR.exists()
+    assert xdp.load_and_pin(kernel["obj"])
+    xdp.unload()

@@ -216,14 +216,32 @@ The file's own header comment (four separately highlighted "IMPORTANT"
 sections) documents the real, deliberate limits — these are not gaps,
 they're documented design decisions:
 
-1. **No TCP stream reassembly.** The program works *statically, packet by
-   packet*: it only sees a ClientHello that fits into a *single* TCP
-   segment (a TLS handshake record header, 0x16, starting at payload byte
-   0). A ClientHello fragmented across multiple segments (a large
-   `key_share`/`supported_groups` list, or Chrome's deliberate
-   ClientHello padding) remains invisible and fails open. This is a
-   deliberate, documented tradeoff ("never block something we don't see
-   in full"), not a bug.
+1. **No general TCP stream reassembly, but a split ClientHello is
+   followed (ROADMAP SEC-17).** A ClientHello's first segment is parsed
+   statelessly (a TLS handshake record header, 0x16, at payload byte 0).
+   Every browser's ClientHello is larger than one segment now -- a
+   post-quantum key share is over a kilobyte -- and browsers permute
+   their extensions, so the name is often in a later segment. Until
+   SEC-17 such a hello passed. Now, when the first segment ends before
+   the server_name extension does, the program records where its
+   extension walk stopped (an `sni_flow`: the bytes of an extension the
+   segment cut, or how much of a skipped one is still to come), and each
+   next in-order segment of the flow continues the walk until the name
+   is found. A blocked name's segment is dropped, and so is every later
+   data segment of that flow -- the client's retransmissions -- until an
+   RST or a new connection's SYN; a flow still being followed is
+   forgotten after 30 s.
+
+   This runs in a second XDP program, `xdp_sni_split`, reached by a tail
+   call (`split_prog`, filled by libbpf at load time): the verifier checks
+   each program against its own 1,000,000-instruction budget, and the
+   main program already uses about 770,000 of its own. The walk reads
+   the packet only through `bpf_xdp_load_bytes()` into a per-CPU buffer,
+   and its per-extension step is a `bpf_loop()` callback, verified once
+   rather than once per iteration (a plain loop exceeded the budget).
+   Still out of reach, and failing open: segments out of order, a hello
+   spread over several TLS records, one longer than 8 segments, and a
+   jumbo segment past the first.
 2. **No Encrypted Client Hello (ECH) support.** With ECH the real SNI is
    encrypted; this is an unavoidable limit of any cleartext-SNI filter,
    not something specific to this implementation.

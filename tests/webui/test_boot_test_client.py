@@ -112,3 +112,18 @@ def test_the_boot_tests_tls_handshake_names_the_host_it_is_given(boot_test, rout
     assert boot_test.tls_handshake(boot_test.XDP_ALLOWED_NAME, timeout=5)
     monkeypatch.setattr(boot_test, "WEBUI_PORT", 1)
     assert not boot_test.tls_handshake(boot_test.XDP_ALLOWED_NAME, timeout=2)
+
+
+def test_the_boot_tests_split_client_hello_gets_an_answer_from_the_webui(boot_test, router_webui):
+    """ROADMAP SEC-17: boot 3 tells a stopped split hello from a delivered
+    one by whether the webUI's TLS server answers; it must answer the
+    synthetic hello once it has all of it. The hello is a well-formed
+    ClientHello, its name last and wholly after the cut."""
+    from frfw.tlsfp.clienthello import parse_client_hello
+
+    record, cut = boot_test.split_client_hello(boot_test.XDP_ALLOWED_NAME)
+    assert len(record) > 1460 and cut < 1460
+    hello = parse_client_hello(record[5:])
+    assert hello.server_name == boot_test.XDP_ALLOWED_NAME and hello.extensions[-1] == 0
+    assert record.index(boot_test.XDP_ALLOWED_NAME.encode()) > cut
+    assert boot_test.split_hello_answered(boot_test.XDP_ALLOWED_NAME)

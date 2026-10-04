@@ -27,25 +27,18 @@
 //
 // IMPORTANT -- what this deliberately does NOT do (and why):
 //
-// 1. No TCP stream reassembly. A TLS ClientHello can span multiple TCP
-//    segments (common in practice: Chrome pads ClientHello specifically
-//    to exercise fragmentation and catch broken middleboxes, and a
-//    ClientHello with a large key_share/supported_groups list routinely
-//    exceeds one MTU). XDP sees one packet at a time with no per-flow
-//    state; correctly reassembling a TCP stream in-kernel is a
-//    fundamentally different architecture (per-flow buffering, typically
-//    at the TC/sockops layer, not XDP) and is out of scope here. This
-//    program only inspects a ClientHello that is *entirely contained in
-//    a single packet*, and does so completely statelessly: it looks at
-//    whatever TCP payload starts with a TLS handshake record header
-//    (byte 0x16) at offset 0. A mid-handshake continuation segment
-//    never starts with 0x16, so it is naturally and correctly ignored
-//    (XDP_PASS) without tracking any per-connection state at all. Net
-//    effect: some fraction of real-world ClientHellos are invisible to
-//    this filter and pass through unfiltered. This is a deliberate
-//    fail-open design (never block what we can't fully see), not an
-//    oversight -- see ARCHITECTURE.md's phase 4 section for the
-//    numbers/reasoning.
+// 1. No general TCP stream reassembly. A TLS ClientHello often spans
+//    several TCP segments (every browser's, with a post-quantum key share,
+//    and Chrome pads ClientHellos on purpose). Its first segment is parsed
+//    here, statelessly, as a ClientHello must start a TLS handshake record
+//    (byte 0x16) at payload offset 0. When that segment ends before the
+//    server_name extension does, the flow is followed in its next in-order
+//    segments by a second program, xdp_sni_split (ROADMAP SEC-17, see
+//    sni_flow below): only the extension walk's position is kept per
+//    flow, never the stream itself. What stays out of reach, and fails
+//    open: segments out of order, a hello spread over several TLS records,
+//    one longer than SPLIT_MAX_SEGMENTS segments, and a jumbo segment
+//    (over SPLIT_SEG_MAX bytes) past the first.
 //
 // 2. No Encrypted Client Hello (ECH) support. When the client and
 //    server negotiate ECH, the *real* SNI is inside an encrypted
@@ -120,7 +113,7 @@
 // itself (not a tunable) -- there is no version of this feature that
 // both fits that budget and accepts arbitrarily long hostnames. A
 // hostname over this length is treated as unparseable and fails open
-// (XDP_PASS), exactly like a segmented ClientHello.
+// (XDP_PASS); the configuration refuses such a blocklist entry by name.
 #define MAX_SNI_LEN 32
 #define LPM_KEY_LEN (MAX_SNI_LEN + 1)  // + 1 for the leading '.' (see above)
 #define MAX_TLS_EXTENSIONS 32    // bounded-loop cap for the extension walk
@@ -132,8 +125,8 @@
 // the walk is a `#pragma unroll` over this exact constant, so raising it
 // costs a fully unrolled copy of the bounds check per tag. A frame
 // carrying *more* tags than this is passed unfiltered, the same
-// deliberate fail-open this file already accepts for a segmented
-// ClientHello and for ECH ("does NOT do", points 1 and 2) -- see
+// deliberate fail-open this file already accepts for what point 1 leaves
+// out and for ECH ("does NOT do", points 1 and 2) -- see
 // "IMPORTANT -- VLAN tags" at the top of this file for why it is safe.
 #define MAX_VLAN_TAGS 2
 
@@ -155,7 +148,8 @@ struct vlan_tag_hdr {
 // deliberately separate from the (heavier) per-match ringbuf events.
 enum {
 	STAT_PASS_NOT_TLS = 0,   // not TCP/443, or payload doesn't start a TLS record
-	STAT_PASS_TRUNCATED,     // looked like a ClientHello but didn't fit in this packet
+	STAT_PASS_TRUNCATED,     // looked like a ClientHello but didn't fit in this packet (since
+	                         // SEC-17 its flow is followed, and the outcome counted too)
 	STAT_PASS_NO_SNI,        // complete ClientHello, no server_name extension
 	STAT_PASS_NO_MATCH,      // SNI extracted, not in the blocklist
 	STAT_DROP_MATCH,         // SNI extracted, matched the blocklist
@@ -269,6 +263,113 @@ struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
 	__uint(max_entries, 1024 * 1024);
 } hello_pkts SEC(".maps");
+
+// --- ROADMAP SEC-17: a ClientHello split across segments --------------------
+//
+// A ClientHello larger than one segment -- every browser's, with a post-
+// quantum key share -- used to pass whenever its server_name extension
+// was not wholly in the first segment ("does NOT do", point 1, at the top
+// of this file). Now the flow is followed: when the first segment's
+// extension walk ends without a name and the hello goes on, where it
+// stopped is recorded (sni_flow), and each next in-order segment of the
+// flow continues the walk from there until the name is found, the
+// extensions end, or SPLIT_MAX_SEGMENTS segments went by.
+//
+// The following runs in a second XDP program, xdp_sni_split, reached by
+// a tail call (split_prog): the kernel verifies each program on its own
+// 1,000,000-instruction budget, and xdp_sni_filter() alone already uses
+// most of its own. xdp_sni_filter() hands the segment over through the
+// per-CPU split_job (a tail call stays on the CPU), and passes the
+// packet itself if the tail call fails.
+//
+// xdp_sni_split reads the packet only through bpf_xdp_load_bytes() at
+// scalar offsets into split_job's buffer, never through packet pointers:
+// no range for the verifier to lose across segment boundaries, and a
+// read past the datagram simply fails. What one segment ends inside of is
+// kept in the flow's state: an extension's start (at most SPLIT_CARRY
+// bytes: an SNI extension's header, its three length/type fields and a
+// name under MAX_SNI_LEN), or how much of a skipped extension's body is
+// still to come.
+//
+// A blocked name's flow is remembered: its following data segments --
+// the client's retransmissions of the one carrying the name included --
+// are dropped too, so the server never completes the hello. That lasts
+// until the connection ends (an RST) or a new one starts on the same
+// addresses and ports (its SYN), with no time limit: TCP keeps
+// retransmitting for minutes, and a server may still be waiting for the
+// rest of the hello. Only a flow still being followed is forgotten after
+// SPLIT_TTL_NS. (The map is LRU: under pressure the oldest flows go.)
+// Out-of-order segments are not reassembled: the walk waits for the next
+// in-order one, and gives up (passes) after SPLIT_MAX_SEGMENTS. A hello
+// spread over several TLS records is not followed (fail open, as before).
+#define SPLIT_CARRY 48
+#define SPLIT_WINDOW 64
+#define SPLIT_SEG_MAX 2048 // a segment's bytes looked at (1460 on a 1500-byte MTU)
+#define SPLIT_MAX_SEGMENTS 8
+#define SPLIT_TTL_NS (30ULL * 1000000000ULL)
+
+struct sni_flow {
+	__u64 born;      // bpf_ktime_get_ns() when the first segment was seen
+	__u32 next_seq;  // the next in-order segment's sequence number
+	__u32 skip;      // bytes of an extension body still to skip at its start
+	__u32 ext_left;  // extension-block bytes from the pending extension on
+	__u32 carry_len; // bytes of a straddling extension's start, in carry[]
+	__u32 segments;  // continuation segments followed so far
+	__u32 blocked;   // the name matched: drop the flow's following segments
+	unsigned char carry[SPLIT_CARRY];
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__type(key, struct hello_flow_key);
+	__type(value, struct sni_flow);
+	__uint(max_entries, 4096);
+} sni_flows SEC(".maps");
+
+#define SPLIT_FIRST 1 // a ClientHello's first segment, with no name in it
+#define SPLIT_NEXT 2  // the next in-order segment of a followed flow
+
+// What xdp_sni_filter() hands xdp_sni_split, and xdp_sni_split's working
+// space: the segment's bytes from where the walk starts (seg), the flow's
+// state being worked on (st), and an extension's start assembled from a
+// carried prefix plus up to SPLIT_WINDOW bytes of the segment (buf).
+struct split_job {
+	__u32 mode;        // SPLIT_FIRST or SPLIT_NEXT
+	__u32 payload_off; // the segment's TCP payload: packet offset...
+	__u32 payload_len; // ...and length, to the datagram's end (SEC-7)
+	__u32 pos;         // SPLIT_FIRST: where the extension walk resumes
+	__u32 ext_total;   // SPLIT_FIRST: the extensions block's declared length
+	__u32 seq;         // the segment's sequence number
+	__s32 found;       // SPLIT_FIRST: extract_sni()'s result, for the stats
+	__u32 pad;
+	struct hello_flow_key key;
+	struct sni_flow st;
+	// The name and its LPM key: here, not on the stack, which
+	// build_lpm_key()'s own frame leaves little of (512 bytes for all).
+	char sni[MAX_SNI_LEN];
+	struct lpm_sni_key lpm;
+	unsigned char buf[128];
+	unsigned char seg[SPLIT_SEG_MAX + SPLIT_WINDOW]; // + room for a window read at its end
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+	__type(key, __u32);
+	__type(value, struct split_job);
+	__uint(max_entries, 1);
+} split_job SEC(".maps");
+
+int xdp_sni_split(struct xdp_md *ctx);
+
+// libbpf puts xdp_sni_split in slot 0 when it loads the object.
+struct {
+	__uint(type, BPF_MAP_TYPE_PROG_ARRAY);
+	__uint(max_entries, 1);
+	__uint(key_size, sizeof(__u32)); // sizes, not BTF types: a program
+	__array(values, int (struct xdp_md *)); // array takes none
+} split_prog SEC(".maps") = {
+	.values = { [0] = (void *)&xdp_sni_split },
+};
 
 static __always_inline void bump(__u32 idx)
 {
@@ -431,6 +532,13 @@ static int parse_sni_body(unsigned char *p, unsigned char *end, __u32 *name_len)
 
 // Where the SNI hostname is: its offset from the start of the ClientHello
 // body (extract_sni()'s `p`) and its length.
+//
+// When extract_sni() finds no name (returns -2, or -1 once it got as far
+// as the extensions), the same two fields say where the extensions block
+// starts and its declared length instead -- so that a ClientHello going
+// on in the flow's next segments can be followed from there (ROADMAP
+// SEC-17). Two more fields would cost the caller's frame the stack bytes
+// it doesn't have (see build_lpm_key()).
 struct sni_ref {
 	__u32 off;
 	__u32 len;
@@ -567,6 +675,8 @@ static int extract_sni(unsigned char *p, unsigned char *end, __u32 limit, struct
 	p += 2;
 	off += 2;
 	__u32 ext_off = off; // where the extensions start, from the body's start
+	ref->off = ext_off;  // overwritten below if a name is found
+	ref->len = ext_total;
 	// The datagram's bytes from here on (`off` <= `limit` was checked
 	// at every step above). One scalar for the walk below to compare
 	// `consumed` against, rather than two.
@@ -736,6 +846,117 @@ static int extract_sni(unsigned char *p, unsigned char *end, __u32 limit, struct
 	}
 
 	return -2; // walked all visible extensions, found no server_name
+}
+
+#define WALK_CONTINUE 0 // the walk goes on in the flow's next segment
+#define WALK_FOUND 1    // the name is at job->buf[9 .. 9 + name_len)
+#define WALK_NONE 2     // no server_name, or nothing this can follow: pass
+
+// The extension walk's position in job->seg, for walk_one().
+struct walk_loop {
+	__u32 pos;      // where the next extension starts
+	__u32 seg_len;  // the segment's bytes in job->seg
+	__u32 name_len; // on WALK_FOUND
+	int result;
+};
+
+// One extension of a split ClientHello's walk (ROADMAP SEC-17), as a
+// bpf_loop() callback: the kernel verifies it once, not once per
+// iteration -- a plain loop over MAX_TLS_EXTENSIONS of these exceeded the
+// verifier's budget. It reads only job->seg (the segment, already copied
+// out of the packet) and the flow's state job->st, at masked offsets; the
+// extension's start -- a carried prefix plus up to SPLIT_WINDOW bytes of
+// the segment -- is assembled in job->buf and read at constant offsets.
+// Returns 0 to go on with the next extension, 1 when wl->result is set.
+static long walk_one(__u32 index, void *ctx)
+{
+	struct walk_loop *wl = ctx;
+	__u32 zero = 0;
+	struct split_job *job = bpf_map_lookup_elem(&split_job, &zero);
+	if (!job) {
+		wl->result = WALK_NONE;
+		return 1;
+	}
+	struct sni_flow *st = &job->st;
+	__u32 carry = st->carry_len;
+	if (st->ext_left < 4 || carry > SPLIT_CARRY) {
+		wl->result = WALK_NONE;
+		return 1;
+	}
+	__u32 pos = wl->pos;
+	__u32 seg_len = wl->seg_len;
+	__u32 avail = seg_len > pos ? seg_len - pos : 0;
+	if (carry == 0 && avail == 0) {
+		wl->result = WALK_CONTINUE;
+		return 1;
+	}
+
+	// Whole buffers, not `carry` or `avail` bytes: a per-byte condition is
+	// a branch per byte for the verifier. Only the first `have` bytes of
+	// job->buf are read below. The masks keep the copies inside the
+	// buffers (pos < SPLIT_SEG_MAX whenever avail > 0).
+	__builtin_memcpy(job->buf, st->carry, SPLIT_CARRY);
+	__builtin_memcpy(job->buf + (carry & 63), job->seg + (pos & (SPLIT_SEG_MAX - 1)), SPLIT_WINDOW);
+	__u32 have = carry + (avail > SPLIT_WINDOW ? SPLIT_WINDOW : avail);
+
+	// How many bytes of this extension's start the decision needs: its
+	// header; for server_name also the list length, name type and name
+	// length; then the name itself.
+	__u32 need = 4;
+	__u32 total = 0;
+	int is_sni = 0;
+	__u32 nl = 0;
+	if (have >= 4) {
+		__u32 type = ((__u32)job->buf[0] << 8) | job->buf[1];
+		total = 4 + (((__u32)job->buf[2] << 8) | job->buf[3]);
+		if (total > st->ext_left) {
+			wl->result = WALK_NONE;
+			return 1;
+		}
+		is_sni = type == TLS_EXT_SERVER_NAME;
+		if (is_sni) {
+			need = 9;
+			if (have >= 9) {
+				nl = ((__u32)job->buf[7] << 8) | job->buf[8];
+				if (job->buf[6] != TLS_SNI_NAME_TYPE_HOST_NAME || nl == 0 ||
+				    nl >= MAX_SNI_LEN || 9 + nl > total) {
+					wl->result = WALK_NONE;
+					return 1;
+				}
+				need = 9 + nl;
+			}
+		}
+	}
+
+	if (have < need) {
+		// The segment ends inside the extension's start: carry it over.
+		if (have > SPLIT_CARRY) {
+			wl->result = WALK_NONE;
+			return 1;
+		}
+		__builtin_memcpy(st->carry, job->buf, SPLIT_CARRY);
+		st->carry_len = have;
+		wl->result = WALK_CONTINUE;
+		return 1;
+	}
+	if (is_sni) {
+		wl->name_len = nl;
+		wl->result = WALK_FOUND;
+		return 1;
+	}
+
+	// Any other extension is skipped: its bytes in this segment are what
+	// the carried prefix didn't already cover.
+	st->ext_left -= total;
+	st->carry_len = 0;
+	__u32 in_seg = total - carry;
+	if (in_seg > avail) {
+		st->skip = in_seg - avail;
+		wl->result = WALK_CONTINUE;
+		return 1;
+	}
+	wl->pos = pos + in_seg;
+	return 0;
 }
 
 // Normalizes the hostname xdp_sni_filter() copied out of the packet, in
@@ -956,6 +1177,158 @@ static __always_inline void emit_event(struct iphdr *ip, struct tcphdr *tcp,
 	bpf_ringbuf_submit(ev, 0);
 }
 
+// ROADMAP SEC-17: hand this segment to xdp_sni_split. Returns only if the
+// tail call failed -- then the caller goes on as without following.
+static __always_inline void hand_over(struct xdp_md *ctx, __u32 mode, struct hello_flow_key *key,
+				      __u32 payload_off, __u32 payload_len, __u32 seq,
+				      __u32 pos, __u32 ext_total, int found)
+{
+	__u32 zero = 0;
+	struct split_job *job = bpf_map_lookup_elem(&split_job, &zero);
+	if (!job)
+		return;
+	job->mode = mode;
+	job->payload_off = payload_off;
+	job->payload_len = payload_len;
+	job->pos = pos;
+	job->ext_total = ext_total;
+	job->seq = seq;
+	job->found = found;
+	job->key = *key;
+	bpf_tail_call(ctx, &split_prog, 0);
+}
+
+// emit_event() for xdp_sni_split, which has the flow's addresses and
+// ports from its job rather than the packet's headers.
+static __always_inline void emit_flow_event(struct hello_flow_key *key, const char *sni,
+					    __u32 name_len, __u8 action)
+{
+	struct sni_event *ev = bpf_ringbuf_reserve(&events, sizeof(*ev), 0);
+	if (!ev)
+		return;
+	ev->saddr = key->saddr;
+	ev->daddr = key->daddr;
+	ev->sport = bpf_ntohs(key->sport);
+	ev->dport = bpf_ntohs(key->dport);
+	ev->action = action;
+	ev->sni_len = name_len;
+	__builtin_memcpy(ev->sni, sni, MAX_SNI_LEN);
+	bpf_ringbuf_submit(ev, 0);
+}
+
+// ROADMAP SEC-17: the split-ClientHello follower (see sni_flow). Reached
+// only by xdp_sni_filter()'s tail call, with the segment in split_job:
+// SPLIT_FIRST for a hello's first segment that had no name in it,
+// SPLIT_NEXT for a followed flow's next in-order segment.
+SEC("xdp")
+int xdp_sni_split(struct xdp_md *ctx)
+{
+	__u32 zero = 0;
+	struct split_job *job = bpf_map_lookup_elem(&split_job, &zero);
+	if (!job)
+		return XDP_PASS;
+	struct hello_flow_key key = job->key;
+	int first = job->mode == SPLIT_FIRST;
+
+	// The flow's state is worked on in job->st: a fresh one for a first
+	// segment, a copy of the stored one for the next.
+	struct sni_flow *stored = NULL;
+	if (first) {
+		__builtin_memset(&job->st, 0, sizeof(job->st));
+		job->st.born = bpf_ktime_get_ns();
+		job->st.ext_left = job->ext_total;
+	} else {
+		stored = bpf_map_lookup_elem(&sni_flows, &key);
+		if (!stored)
+			return XDP_PASS;
+		job->st = *stored;
+		job->st.segments += 1;
+	}
+
+	int walk = WALK_NONE;
+	struct walk_loop wl = { .result = WALK_NONE };
+	__u32 seg_len = job->payload_len;
+	__u32 pos = first ? job->pos : 0;
+	if (!first && job->st.segments > SPLIT_MAX_SEGMENTS)
+		goto done;
+
+	// The rest of an extension body the previous segment didn't hold.
+	if (job->st.skip) {
+		__u32 avail = seg_len > pos ? seg_len - pos : 0;
+		if (job->st.skip >= avail) {
+			job->st.skip -= avail;
+			walk = WALK_CONTINUE;
+			goto done;
+		}
+		pos += job->st.skip;
+		job->st.skip = 0;
+	}
+
+	// Copy the segment from `pos` out of the packet once; walk_one()
+	// reads only that copy. A longer segment (jumbo frames) isn't
+	// followed.
+	__u32 rest = seg_len > pos ? seg_len - pos : 0;
+	if (rest > SPLIT_SEG_MAX)
+		goto done;
+	if (rest > 0) {
+		rest = ((rest - 1) & (SPLIT_SEG_MAX - 1)) + 1;
+		if (bpf_xdp_load_bytes(ctx, job->payload_off + pos, job->seg, rest) < 0)
+			goto done;
+	}
+	wl.seg_len = rest;
+	bpf_loop(MAX_TLS_EXTENSIONS, walk_one, &wl, 0);
+	walk = wl.result;
+
+done:
+	if (walk == WALK_CONTINUE) {
+		job->st.next_seq = job->seq + job->payload_len;
+		if (first) {
+			bpf_map_update_elem(&sni_flows, &key, &job->st, BPF_ANY);
+			bump(STAT_PASS_TRUNCATED); // as before: no name in this packet
+		} else if (stored) {
+			*stored = job->st;
+		}
+		return XDP_PASS;
+	}
+	if (walk != WALK_FOUND) {
+		if (!first)
+			bpf_map_delete_elem(&sni_flows, &key);
+		bump(first && job->found == -1 ? STAT_PASS_TRUNCATED : STAT_PASS_NO_SNI);
+		return XDP_PASS;
+	}
+
+	// All MAX_SNI_LEN bytes: normalize_name() reads only the first
+	// found_len and zeroes the rest.
+	char *sni = job->sni;
+	__builtin_memcpy(sni, job->buf + 9, MAX_SNI_LEN);
+	__u32 found_len = ((wl.name_len - 1) & (MAX_SNI_LEN - 1)) + 1;
+	int sni_len = normalize_name((unsigned char *)sni, found_len, sni);
+	if (sni_len < 1 || sni_len >= MAX_SNI_LEN) {
+		if (!first)
+			bpf_map_delete_elem(&sni_flows, &key);
+		bump(STAT_PASS_NO_SNI);
+		return XDP_PASS;
+	}
+	__u32 name_len = (__u32)sni_len & (MAX_SNI_LEN - 1);
+
+	build_lpm_key(&job->lpm, sni, name_len);
+	if (!bpf_map_lookup_elem(&sni_blocklist, &job->lpm)) {
+		if (!first)
+			bpf_map_delete_elem(&sni_flows, &key);
+		bump(STAT_PASS_NO_MATCH);
+		if (report_pass_enabled() &&
+		    bpf_ringbuf_query(&events, BPF_RB_AVAIL_DATA) < PASS_EVENT_MAX_BACKLOG)
+			emit_flow_event(&key, sni, name_len, 0);
+		return XDP_PASS;
+	}
+
+	bump(STAT_DROP_MATCH);
+	emit_flow_event(&key, sni, name_len, 1);
+	if (stored)
+		stored->blocked = 1; // and drop the rest of this hello
+	return XDP_DROP;
+}
+
 SEC("xdp")
 int xdp_sni_filter(struct xdp_md *ctx)
 {
@@ -1050,6 +1423,29 @@ int xdp_sni_filter(struct xdp_md *ctx)
 		}
 	}
 
+	// ROADMAP SEC-17: the next segment of a ClientHello being followed
+	// goes to xdp_sni_split (see sni_flow).
+	if (tcp->syn || tcp->rst) {
+		// A new connection on the same addresses and ports, or the end
+		// of this one.
+		bpf_map_delete_elem(&sni_flows, &flow_key);
+	} else if (payload_len > 0) {
+		struct sni_flow *split = bpf_map_lookup_elem(&sni_flows, &flow_key);
+		if (split) {
+			__u32 seq = bpf_ntohl(tcp->seq);
+			if (!split->blocked && bpf_ktime_get_ns() - split->born > SPLIT_TTL_NS) {
+				bpf_map_delete_elem(&sni_flows, &flow_key);
+			} else if (split->blocked) {
+				return XDP_DROP; // the rest of a blocked hello, retransmissions included
+			} else if (seq == split->next_seq) {
+				hand_over(ctx, SPLIT_NEXT, &flow_key, payload_off, payload_len, seq, 0, 0, 0);
+				return XDP_PASS;
+			}
+			// Any other segment -- the first one again, or one out of
+			// order -- takes the ordinary path.
+		}
+	}
+
 	// TLS record header: content_type(1) version(2) length(2). Only a
 	// fresh handshake record starting exactly here can be a
 	// ClientHello -- a mid-stream continuation segment never starts
@@ -1102,8 +1498,23 @@ int xdp_sni_filter(struct xdp_md *ctx)
 	// ClientHello may legally span records, and a short one is already
 	// caught by the datagram bound. It stays what it is above, the
 	// signal that the hello continues in the flow's next segments.
+	// ROADMAP SEC-17, below: does the ClientHello go on past this segment,
+	// in this one TLS record (its handshake length within the record's)?
+	// The walk that follows it reads the stream as one handshake message,
+	// which a record boundary would interrupt.
+	__u32 rec_len = ((__u32)payload[3] << 8) | payload[4];
+	__u32 hs_len = ((__u32)hs[1] << 16) | ((__u32)hs[2] << 8) | hs[3];
+	int goes_on = rec_len + 5 > payload_len && hs_len + 4 <= rec_len;
+
 	struct sni_ref ref = {};
 	int found = extract_sni(hs + 4, data_end, payload_len - 9, &ref);
+
+	// ROADMAP SEC-17: no name in this segment, but the ClientHello goes on
+	// in the flow's next ones -- xdp_sni_split follows it from where the
+	// extension walk stopped (ref: the extensions block, see sni_ref).
+	if (found != 1 && ref.off && goes_on)
+		hand_over(ctx, SPLIT_FIRST, &flow_key, payload_off, payload_len, bpf_ntohl(tcp->seq),
+			  9 + ref.off, ref.len, found);
 
 	if (found == -1) {
 		bump(STAT_PASS_TRUNCATED);
@@ -1154,10 +1565,18 @@ int xdp_sni_filter(struct xdp_md *ctx)
 	}
 	__u32 name_len = (__u32)sni_len & (MAX_SNI_LEN - 1);
 
-	struct lpm_sni_key key;
-	build_lpm_key(&key, sni, name_len);
+	// The LPM key lives in the per-CPU split_job, not on the stack: this
+	// frame and build_lpm_key()'s together may use 512 bytes, and ROADMAP
+	// SEC-17's hand-over to xdp_sni_split left too few.
+	__u32 zero = 0;
+	struct split_job *job = bpf_map_lookup_elem(&split_job, &zero);
+	if (!job) {
+		bump(STAT_PASS_NO_MATCH);
+		return XDP_PASS;
+	}
+	build_lpm_key(&job->lpm, sni, name_len);
 
-	__u8 *blocked = bpf_map_lookup_elem(&sni_blocklist, &key);
+	__u8 *blocked = bpf_map_lookup_elem(&sni_blocklist, &job->lpm);
 	if (!blocked) {
 		bump(STAT_PASS_NO_MATCH);
 		if (report_pass_enabled() &&
