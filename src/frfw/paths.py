@@ -33,6 +33,12 @@ APPLY_SOCKET_PATH = RUNTIME_DIR / "apply.sock"
 #: helper commands frfw.helper.peer.SENSOR_COMMANDS allows.
 WEBUI_USER = "fr_os-webui"
 SENSOR_USER = "fr_os-sensor"
+#: What the webUI and the parser daemons share, and nothing else (ROADMAP
+#: SEC-11): the apply-helper socket (where frfw.helper.peer then tells
+#: the two apart), the XDP SNI event file and the resolver's query log.
+#: Both accounts are members. The WEBUI_USER group -- config.yaml with
+#: its secrets, the audit log, the update state -- is the webUI's alone.
+FEEDS_GROUP = "fr_os-feeds"
 #: Who may log in over SSH (sshd AllowGroups, security-lessons F3).
 SSH_GROUP = "fr_os-ssh"
 
@@ -42,6 +48,15 @@ SSH_GROUP = "fr_os-ssh"
 #: from WEBUI_STATE_DIR, which holds the webUI's session secret, TLS key
 #: and accounts and is private to fr_os-webui (0700).
 SENSOR_STATE_DIR = Path("/etc/fr_os/sensors")
+
+#: The configuration as the parser daemons read it (ROADMAP SEC-11,
+#: review v0.2.0 R17): config.yaml without its secrets -- ZTNA password
+#: hashes, the metrics token digest (frfw.config.export.redacted) --
+#: root:fr_os-sensor 0640, rewritten by root whenever config.yaml is
+#: saved through the apply-helper or applied. The daemons can't read
+#: config.yaml itself: it is root:fr_os-webui 0640, and fr_os-sensor is
+#: not in that group.
+SENSOR_CONFIG_PATH = Path("/etc/fr_os/sensor-config.yaml")
 
 #: The webUI's own state: self-signed TLS keypair (generated on first run
 #: if missing, see frfw.webui.tls), the local admin account
@@ -208,21 +223,21 @@ IOT_INVENTORY_PATH = SENSOR_STATE_DIR / "iot_inventory.json"
 #: The XDP SNI filter's events, one JSON line each (frfw.xdp.format_event_json),
 #: for the readers that used to follow fr-xdp-sni-logger's journal: the
 #: webUI's live log, fr-ai-ids and fr-appid (ROADMAP SEC-4, review v0.2.0
-#: R10). Created by the logger while it is still root, root:fr_os-webui
-#: 0640 in a root:fr_os-webui 0750 directory (systemd's LogsDirectory=):
-#: the readers -- the fr_os-webui user, and fr_os-sensor through that
-#: group -- can read it, only the logger's open file can write it, so no
-#: reader can forge an event another one acts on. Capped in size by the
+#: R10). Created by the logger while it is still root, root:fr_os-feeds
+#: 0640 in a root:fr_os-feeds 0750 directory (systemd's LogsDirectory=):
+#: the readers -- fr_os-webui and fr_os-sensor, both in FEEDS_GROUP
+#: (ROADMAP SEC-11) -- can read it, only the logger's open file can write
+#: it, so no reader can forge an event another one acts on. Capped in size by the
 #: logger (frfw.xdp.EventFile), which empties it when it gets too big.
 SNI_EVENTS_DIR = Path("/var/log/fr_os-sni")
 SNI_EVENTS_PATH = SNI_EVENTS_DIR / "events.jsonl"
 
 #: The resolver's query log (with adblocker.query_logging), for fr-ai-ids
 #: and fr-appid instead of fr-adblock-dns's journal (ROADMAP SEC-4).
-#: dnsmasq opens it as root under the unit's Group=fr_os-webui and hands
-#: it to its own unprivileged user: nobody:fr_os-webui 0640 in a
-#: root:fr_os-webui 0750 directory. dnsmasq writes it, the readers can
-#: only read it. fr-dns-log-trim.timer keeps it under
+#: dnsmasq opens it as root under the unit's Group=fr_os-feeds and hands
+#: it to its own unprivileged user: nobody:fr_os-feeds 0640 in a
+#: root:fr_os-feeds 0750 directory. dnsmasq writes it, the readers (the
+#: FEEDS_GROUP members) can only read it. fr-dns-log-trim.timer keeps it under
 #: frfw.adblock.dns_service.QUERY_LOG_MAX_BYTES.
 DNS_QUERY_LOG_DIR = Path("/var/log/fr_os-dns")
 DNS_QUERY_LOG_PATH = DNS_QUERY_LOG_DIR / "queries.log"

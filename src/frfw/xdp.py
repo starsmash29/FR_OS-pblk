@@ -1000,12 +1000,16 @@ class EventFile:
     this open file can write it; the descriptor stays usable after the
     process drops to fr_os-sensor -- the same account fr-ai-ids and
     fr-appid run as, which is exactly why the file must not be theirs to
-    open for writing. Its group comes from the unit (Group=fr_os-webui),
-    the readers' group. Each event is one write() of one whole line with
-    O_APPEND, so a reader never sees half a line from this writer."""
+    open for writing. Its group is the process's own (the unit's
+    Group=fr_os-feeds, the readers' group), set on every open, so a file
+    an earlier version made with another group is moved over too (ROADMAP
+    SEC-11). Each event is one write() of one whole line with O_APPEND,
+    so a reader never sees half a line from this writer."""
 
     def __init__(self, path: Path, *, max_bytes: int = SNI_EVENTS_MAX_BYTES) -> None:
         self._fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_CLOEXEC, 0o640)
+        if os.geteuid() == 0:
+            os.fchown(self._fd, -1, os.getegid())
         os.fchmod(self._fd, 0o640)
         self._max_bytes = max_bytes
 

@@ -1,7 +1,7 @@
 [Unit]
 Description=FR_OS IoT device discovery and isolation scan (phase 14, see frfw.iot)
 Documentation=https://github.com/starsmash29/FR_OS-pblk
-After=fr-accounts.service fr-apply-helper.socket network.target
+After=fr-accounts.service fr-apply-helper.socket network.target fr-firewall.service
 Wants=fr-accounts.service fr-apply-helper.socket
 
 [Service]
@@ -12,12 +12,14 @@ Type=oneshot
 # iot_isolated set -- go through fr-apply-helper's Unix socket, the same
 # split fr-ai-ids.service uses. Exits immediately if iot.enabled is false.
 # Parses untrusted network input, so it runs as fr_os-sensor, not as the
-# webUI: it can read config.yaml (group fr_os-webui), may send the
+# webUI: it reads the configuration without its secrets
+# (/etc/fr_os/sensor-config.yaml) and can't read config.yaml -- it is in
+# no group of the webUI's but fr_os-feeds (ROADMAP SEC-11) -- may send the
 # apply-helper only frfw.helper.peer.SENSOR_COMMANDS, and writes to
 # /etc/fr_os/sensors -- never to the webUI's own state (see frfw.accounts).
 User=fr_os-sensor
 Group=fr_os-sensor
-SupplementaryGroups=fr_os-webui
+SupplementaryGroups=fr_os-feeds
 ExecStart=fr-iot-scan
 # Sandbox (security-lessons I1; checked by tests/test_systemd_sandbox.py).
 NoNewPrivileges=yes

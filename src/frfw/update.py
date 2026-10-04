@@ -71,8 +71,19 @@ DEFAULT_REPO = "starsmash29/FR_OS-pblk"
 #: `systemctl restart fr-update-helper`) -- a real, documented
 #: limitation rather than an oversight.
 SERVICES_TO_RESTART: tuple[str, ...] = (
+    # First: a release may change the accounts and groups the others run
+    # as (ROADMAP SEC-11 moved the sensors out of the webUI's group), and
+    # this oneshot is what makes them so.
+    "fr-accounts.service",
     "fr-apply-helper.service",
     "fr-firewall.service",
+    # After fr-firewall, whose apply writes their config copy: the parser
+    # daemons come back with the release's code and with the groups
+    # fr-accounts just gave them -- their old processes keep the old ones,
+    # and would lose the helper socket and the event feeds (ROADMAP SEC-11).
+    "fr-ai-ids.service",
+    "fr-appid.service",
+    "fr-tls-fp.service",
 )
 
 #: fr-webui.service is restarted separately, and deliberately delayed

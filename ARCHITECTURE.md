@@ -511,9 +511,10 @@ file, `/var/log/fr_os-sni/events.jsonl` (`tail -n 50 -F`). That used to
 be the logger's journal, read through the `systemd-journal` group --
 which reads *every* unit's log and the kernel's (review v0.2.0 R10). The
 event file is narrower (ROADMAP SEC-4): the logger opens it while still
-root, under `Group=fr_os-webui`, `LogsDirectory=fr_os-sni` (0750) and
-`UMask=0027`, so it is root:fr_os-webui 0640 -- the webUI and the sensor
-daemons (`fr_os-sensor`, in the `fr_os-webui` group) can read it, and
+root, under `Group=fr_os-feeds`, `LogsDirectory=fr_os-sni` (0750) and
+`UMask=0027`, so it is root:fr_os-feeds 0640 -- the webUI and the sensor
+daemons (`fr_os-webui` and `fr_os-sensor`, both in `fr_os-feeds`, ROADMAP
+SEC-11) can read it, and
 only the logger's already-open descriptor can write it, so no reader
 can forge an event that another one acts on (the AI IDS quarantines on
 them). The logger keeps it under 4 MiB by emptying it, which `tail -F`
@@ -798,6 +799,7 @@ Canonical paths (`frfw.paths`):
 | Ruleset backups | `/etc/fr_os/backups/ruleset-<timestamp>.nft` (10 kept by default, root-only) |
 | WebUI's own state | `/etc/fr_os/webui/` (TLS keypair, admin accounts, session secret, audit log — fr_os-webui, 0700, see below) |
 | Network-parsing daemons' output | `/etc/fr_os/sensors/` (AI IDS events, IoT inventory, App-ID usage, TLS fingerprints — fr_os-sensor:fr_os-webui, 0750) |
+| Network-parsing daemons' config | `/etc/fr_os/sensor-config.yaml` (config.yaml without its secrets — root:fr_os-sensor, 0640, ROADMAP SEC-11) |
 | Apply-helper socket | `/run/fr_os/apply.sock` |
 | ZTNA session state (display purposes only, see below) | `/etc/fr_os/ztna_state.json` |
 
@@ -880,7 +882,36 @@ The daemons that parse attacker-controlled input — `fr-ai-ids`,
 `fr_os-sensor`, not as the webUI, and write to `/etc/fr_os/sensors`. They
 can't read the webUI's session secret, TLS key or accounts
 (`/etc/fr_os/webui`, 0700), and a bug in one of them can quarantine a
-host but can't rewrite the config, apply it, or install an update. The
+host but can't rewrite the config, apply it, or install an update.
+
+**No secrets for the parsers either (ROADMAP SEC-11, review v0.2.0 R17).**
+`config.yaml` holds the ZTNA users' password hashes and the metrics token
+digest, and is root:fr_os-webui 0640. The sensor account used to be in
+`fr_os-webui` -- for the helper socket and the event feeds -- and so could
+read it, and the audit log and update state too. Now:
+
+- `fr_os-sensor` is in no group of the webUI's. What the two share has a
+  group of its own, `fr_os-feeds`: the apply-helper socket (where the
+  per-uid check above still applies), the XDP SNI event file and the
+  resolver's query log.
+- The daemons read `/etc/fr_os/sensor-config.yaml`, root:fr_os-sensor
+  0640: `config.yaml` without its secrets (`frfw.config.export.redacted`,
+  the same as `firewall-cli config-export`). Root rewrites it on every
+  save through the apply-helper (the daemons that re-read their config
+  see a change without an apply) and on every apply, the boot-time one
+  included -- the sensor units are ordered after `fr-firewall.service`.
+- `fr-accounts` moves an older router over: it takes `fr_os-sensor` out
+  of `fr_os-webui`, and moves the event files and the live helper socket
+  to `fr_os-feeds` (a writer keeps a file's group; the SNI logger also
+  sets it on every open). An update restarts `fr-accounts.service` first,
+  so this happens without a reboot.
+
+`tests/test_sensor_config_copy.py`, `tests/test_helper_peer.py` (the
+accounts, the migration) and `tests/test_systemd_sandbox.py` (no unit
+but the webUI's has its group) check it; the boot test checks the
+router's own `/etc/group`, the copy's owner and mode, and that the
+metrics token digest generated in boot 3 is in `config.yaml` and not in
+the copy. The
 webUI's "Scan now" on the IoT screen asks the helper (`iot_scan`) to run
 `fr-iot-scan.service` instead of scanning in the webUI process.
 `fr-accounts.service` (pulled in by every unit running as either account)

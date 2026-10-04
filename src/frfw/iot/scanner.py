@@ -276,7 +276,8 @@ def resync_from_inventory(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="fr-iot-scan", description="Scan the IoT zones once.")
-    parser.add_argument("--config", default=str(paths.CONFIG_PATH))
+    # The configuration without its secrets (ROADMAP SEC-11).
+    parser.add_argument("--config", default=str(paths.SENSOR_CONFIG_PATH))
     parser.add_argument("--state", default=str(paths.IOT_INVENTORY_PATH))
     args = parser.parse_args(argv)
 

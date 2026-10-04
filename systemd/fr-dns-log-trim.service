@@ -5,7 +5,7 @@ Documentation=https://github.com/starsmash29/FR_OS-pblk
 [Service]
 Type=oneshot
 # ROADMAP SEC-4: dnsmasq writes its query log to a file of its own,
-# nobody:fr_os-webui 0640 (see fr-adblock-dns.service), and appends to it
+# nobody:fr_os-feeds 0640 (see fr-adblock-dns.service), and appends to it
 # forever; this empties it once it is past its cap. Root with one
 # capability: the file is dnsmasq's (nobody's), and emptying it takes
 # writing it. No network, nothing writable but that directory.

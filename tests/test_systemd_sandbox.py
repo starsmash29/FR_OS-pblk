@@ -260,27 +260,37 @@ def test_only_the_listed_units_can_read_the_whole_journal(name):
 
 def test_the_sni_event_file_is_written_by_its_logger_and_read_by_one_group():
     """The logger creates paths.SNI_EVENTS_PATH as root, in a directory
-    systemd makes root:fr_os-webui 0750, under a umask that leaves the
-    file 0640: its readers (fr_os-webui, and fr_os-sensor through that
-    group) read it, none of them can write it (ROADMAP SEC-4)."""
+    systemd makes root:fr_os-feeds 0750, under a umask that leaves the
+    file 0640: its readers (fr_os-webui and fr_os-sensor, both in
+    fr_os-feeds) read it, none of them can write it (ROADMAP SEC-4, SEC-11)."""
     settings = service_section("fr-xdp-sni-logger.service")
     assert "User" not in settings  # root until it has opened the map and the file
-    assert one(settings, "Group") == paths.WEBUI_USER
+    assert one(settings, "Group") == paths.FEEDS_GROUP
     assert Path("/var/log") / one(settings, "LogsDirectory") == paths.SNI_EVENTS_DIR
     assert one(settings, "LogsDirectoryMode") == "0750"
     assert one(settings, "UMask") == "0027"
-    for reader in ("fr-ai-ids.service", "fr-appid.service"):
-        assert paths.WEBUI_USER in one(service_section(reader), "SupplementaryGroups").split()
+    for reader in ("fr-ai-ids.service", "fr-appid.service", "fr-webui.service"):
+        groups = one(service_section(reader), "SupplementaryGroups").split()
+        assert groups == [paths.FEEDS_GROUP], reader
     assert one(service_section("fr-webui.service"), "Group") == paths.WEBUI_USER
+
+
+def test_no_unit_but_the_webuis_has_the_webuis_group():
+    """ROADMAP SEC-11: fr_os-webui reads config.yaml with its secrets, the
+    audit log and the update state; a parser daemon must not."""
+    for name in SERVICES:
+        settings = service_section(name)
+        groups = set(" ".join(settings.get("SupplementaryGroups", [])).split()) | set(settings.get("Group", []))
+        assert (paths.WEBUI_USER in groups) == (name == "fr-webui.service"), name
 
 
 def test_the_query_log_is_written_by_dnsmasq_and_read_by_one_group():
     """dnsmasq opens paths.DNS_QUERY_LOG_PATH as root under the unit's
-    Group= and hands it to its own user (nobody:fr_os-webui 0640, checked
+    Group= and hands it to its own user (nobody:fr_os-feeds 0640, checked
     against real dnsmasq in tests/test_dns_filtering.py); the directory is
-    root:fr_os-webui 0750 (ROADMAP SEC-4)."""
+    root:fr_os-feeds 0750 (ROADMAP SEC-4, SEC-11)."""
     settings = service_section("fr-adblock-dns.service")
-    assert one(settings, "Group") == paths.WEBUI_USER
+    assert one(settings, "Group") == paths.FEEDS_GROUP
     assert Path("/var/log") / one(settings, "LogsDirectory") == paths.DNS_QUERY_LOG_DIR
     assert one(settings, "LogsDirectoryMode") == "0750"
 

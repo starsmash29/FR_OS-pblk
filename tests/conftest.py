@@ -61,6 +61,15 @@ def _never_touch_the_hosts_sshd(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _never_touch_the_hosts_sensor_config(tmp_path_factory, monkeypatch):
+    """The parser daemons' secrets-free config copy (ROADMAP SEC-11) is
+    written by every save and apply; never the machine's own /etc/fr_os."""
+    from frfw import paths
+
+    monkeypatch.setattr(paths, "SENSOR_CONFIG_PATH", tmp_path_factory.mktemp("etc_fr_os") / "sensor-config.yaml")
+
+
+@pytest.fixture(autouse=True)
 def _never_touch_the_hosts_audit_log(tmp_path_factory, monkeypatch):
     """The root-owned audit log (/var/log/fr_os) is a directory of its own
     per test, never the machine's."""

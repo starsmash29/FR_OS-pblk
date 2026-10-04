@@ -72,6 +72,7 @@ from frfw import apply as apply_mod
 from frfw.apply import NftError, list_backups, rollback_last
 from frfw.tlsfp.daemon import load_state as load_tlsfp_state
 from frfw.config import ConfigError, load_config, parse_config
+from frfw.config import export as export_mod
 from frfw.forwarding import ForwardingError
 from frfw.wireguard import WireguardError
 from frfw.metrics import generate_metrics_token
@@ -426,6 +427,12 @@ def _cmd_apply(args: argparse.Namespace) -> int:
     try:
         config = load_config(args.config)
         result = apply_all(config, dry_run=args.dry_run)
+        if not args.dry_run:
+            # ROADMAP SEC-11: the parser daemons' copy without secrets --
+            # also at boot, where fr-firewall.service runs this.
+            problem = export_mod.refresh_sensor_copy(Path(args.config))
+            if problem:
+                result.messages.append(problem)
     except Exception:
         # Never leave the box unfiltered because of a bad config or a
         # missing NIC -- but never replace a working ruleset either
@@ -727,6 +734,9 @@ def _cmd_metrics_token(args: argparse.Namespace) -> int:
     if os.geteuid() == 0:
         os.chown(tmp, stat.st_uid, stat.st_gid)
     tmp.replace(path)
+    problem = export_mod.refresh_sensor_copy(path)
+    if problem:
+        print(problem, file=sys.stderr)
     if token is not None:
         # The only time the token exists anywhere but in this output.
         print(token)
