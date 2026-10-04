@@ -78,8 +78,19 @@ def test_a_sensor_may_only_send_the_sensor_commands(apply_helper, tmp_path):
     refused = client.save_config("version: 1\nzones: {}\ninterfaces: {}\n", sock)
     assert not refused["ok"] and "not allowed" in refused["message"]
     assert (tmp_path / "config.yaml").read_text() == before
-    for cmd in ("apply", "rollback", "authorize_ztna", "ban_ip", "refresh_adblock", "iot_scan"):
+    for cmd in ("apply", "rollback", "authorize_ztna", "ban_ip", "refresh_adblock", "iot_scan", "xdp_stats"):
         assert not client.send_command({"cmd": cmd}, sock)["ok"], cmd
+
+
+def test_the_webui_role_reads_the_xdp_counters(apply_helper, monkeypatch):
+    """ROADMAP P4-1: the counters are on bpffs, root's; the helper reads
+    them for the webUI (here the filter was never loaded: all zero)."""
+    from frfw import xdp
+
+    monkeypatch.setattr(xdp, "PIN_STATS_PATH", Path("/nonexistent/fr_os_xdp/stats"))
+    sock = apply_helper(PeerPolicy(full_uids=frozenset({os.geteuid()})))
+    response = client.xdp_stats(sock)
+    assert response == {"ok": True, "stats": {name: 0 for name in xdp.STAT_NAMES}}
 
 
 def test_an_unknown_uid_gets_nothing_not_even_ping(apply_helper):

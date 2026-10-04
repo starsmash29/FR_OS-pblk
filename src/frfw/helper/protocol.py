@@ -69,6 +69,10 @@ from __future__ import annotations
 #: "wireguard_status" (security-lessons G8) reports the router's WireGuard
 #: public key -- its private key is root's -- and each peer's last
 #: handshake and traffic.
+#: "xdp_stats" (ROADMAP P4-1) reads the XDP SNI filter's packet counters
+#: from its pinned map: bpffs is root's (mode 0700), so the webUI's XDP
+#: screen and /metrics can't read them themselves. Read-only, no
+#: arguments.
 COMMANDS = (
     "ping",
     "apply",
@@ -92,6 +96,7 @@ COMMANDS = (
     "audit_append",
     "wireguard_status",
     "firewall_drops",
+    "xdp_stats",
 )
 
 #: Maximum accepted request/response line length, to bound memory use from

@@ -184,14 +184,17 @@ def _read_xdp_status_family(config: Config) -> MetricFamily:
     return fam
 
 
-def _read_xdp_blocked_family() -> MetricFamily:
+def _read_xdp_blocked_family(helper) -> MetricFamily:
+    """Through the apply-helper: the counters live on bpffs, which is
+    root's (ROADMAP P4-1)."""
     fam = MetricFamily(
         "fros_xdp_blocked_connections_total",
         "Total connections dropped by the XDP TLS SNI filter for matching the blocklist.",
         "counter",
     )
-    stats = xdp_mod.get_stats()
-    fam.add(stats.get("drop_match", 0))
+    status = helper.xdp_stats()
+    if status.get("ok"):
+        fam.add(status["stats"].get("drop_match", 0))
     return fam
 
 
@@ -626,7 +629,7 @@ def generate_metrics_text(
         collect(lambda: _read_appid_families(config, appid_usage_path))
         collect(lambda: _read_tlsfp_families(config, tlsfp_state_path))
 
-    collect(_read_xdp_blocked_family)
+    collect(lambda: _read_xdp_blocked_family(helper))
     collect(lambda: _read_adblock_family(adblock_hosts_path))
     collect(lambda: _read_ztna_family(helper))
     collect(lambda: _read_bruteforce_family(helper))

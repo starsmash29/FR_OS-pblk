@@ -371,10 +371,13 @@ read-side (it can never influence the drop decision).
   isn't, and the drop reaches the event file. Its first run found the XDP
   screen failing with HTTP 500 on every router: bpffs is root's (mode
   0700), so `Path.exists()` on a pin raised PermissionError in the
-  unprivileged webUI. `get_stats` now turns that into the XdpError its
-  callers handle, and the screen says the counters aren't readable by
-  the webUI (`firewall-cli xdp-status` shows them) instead of showing
-  zeros; reading them through the apply-helper is a follow-up.
+  unprivileged webUI. The screen and `/metrics` now read the counters
+  through the apply-helper's read-only `xdp_stats` (the webUI role only;
+  the sensor daemons' role can't send it), `get_stats` turns an
+  unreadable pin into the XdpError its callers handle, and if the helper
+  can't answer the screen says the counters are unavailable instead of
+  showing zeros that look like "nothing dropped". The boot test checks
+  the screen shows the drops it caused.
 - **Loading + pinning** (`load_and_pin`): loads and pins the program and
   ALL its maps once, under `/sys/fs/bpf/fr_os_xdp` (`bpftool prog loadall
   ... pinmaps ...`) — this is what lets it attach to multiple interfaces

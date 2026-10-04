@@ -530,6 +530,12 @@ def run(args: argparse.Namespace) -> int:
         check(allowed, "a TLS handshake naming an allowed host gets through the XDP filter")
         check(allowed and not tls_handshake(XDP_BLOCKED_NAME),
               "the XDP filter drops the ClientHello naming a blocked host (ROADMAP P4-1)")
+        # The screen's counters come through the apply-helper: bpffs is
+        # root's, and reading them in the webUI was an HTTP 500.
+        drops = re.search(r"Drops \(since last load\)</dt>\s*<dd>(\d+)</dd>", get(opener, "/xdp"))
+        check(drops is not None and int(drops.group(1)) >= 1,
+              "the XDP screen shows the drops, read through the apply-helper (ROADMAP P4-1)"
+              + (f": {drops.group(1)}" if drops else ""))
     check(vm.power_off(), "powered off")
     vm.kill()
     with persistence_partition(disk) as upper:
