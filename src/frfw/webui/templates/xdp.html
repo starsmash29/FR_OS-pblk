@@ -5,10 +5,9 @@
 <p class="muted">
   Kernel-space (XDP/eBPF) TLS ClientHello inspection -- drops connections
   to blocklisted domains before they reach the kernel's normal network
-  stack. See <code>bpf/xdp_sni_filter.c</code> for the real, verified
-  limitations (a ClientHello split across segments is followed in order
-  only, no ECH support, IPv4 only) before relying on this as a complete
-  filter.
+  stack. What it can't see is listed below, and in
+  <code>bpf/xdp_sni_filter.c</code> -- read that before relying on this as
+  a complete filter.
 </p>
 
 <div class="card status-card">
@@ -44,6 +43,29 @@
   </table>
 </div>
 {% endif %}
+
+<div class="card" id="filter-gaps">
+  <h3>What this filter doesn't see</h3>
+  <ul>
+    <li id="gap-quic"><strong>QUIC (HTTP/3, UDP/443).</strong> Its ClientHello is encrypted.
+      {% if quic_rejected %}
+      Rejected from {{ quic_rejected|join(", ") }} while the filter is on, so browsers fall
+      back to TLS over TCP, where the name is seen.
+      {% else %}
+      Rejected from the filtered ports and their VLANs once the filter is on and applied.
+      {% endif %}</li>
+    <li><strong>Encrypted Client Hello (ECH).</strong> The real name is encrypted; the filter
+      sees only the outer, public one.</li>
+    <li><strong>TLS on ports other than 443.</strong></li>
+    <li><strong>Some split ClientHellos.</strong> One split across segments is followed in
+      order only: segments out of order, a hello over several TLS records or longer than
+      8 segments pass, counted as truncated.</li>
+    <li><strong>Names of 32 bytes or more.</strong> Refused when you add them, so none is
+      silently ineffective.</li>
+    <li><strong>IPv6.</strong> The filter reads IPv4 only, and FR_OS routes IPv4 only, so
+      clients have no IPv6 path through the router around it.</li>
+  </ul>
+</div>
 
 <div class="card">
   <h3>Settings</h3>

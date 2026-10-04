@@ -127,3 +127,31 @@ def test_the_boot_tests_split_client_hello_gets_an_answer_from_the_webui(boot_te
     assert hello.server_name == boot_test.XDP_ALLOWED_NAME and hello.extensions[-1] == 0
     assert record.index(boot_test.XDP_ALLOWED_NAME.encode()) > cut
     assert boot_test.split_hello_answered(boot_test.XDP_ALLOWED_NAME)
+
+
+def test_udp_through_router_tells_a_reject_from_silence_and_an_answer(boot_test, monkeypatch):
+    """ROADMAP SEC-1's boot-test check reads a port unreachable as the
+    router's reject, and nothing else as one -- here on loopback, whose
+    closed ports answer with exactly that ICMP error."""
+    monkeypatch.setattr(boot_test, "BEYOND_HOST", "127.0.0.1")
+    echo = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    echo.bind(("127.0.0.1", 0))
+    silent = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    silent.bind(("127.0.0.1", 0))
+    closed = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    closed.bind(("127.0.0.1", 0))
+    closed_port = closed.getsockname()[1]
+    closed.close()
+
+    def reply():
+        data, peer = echo.recvfrom(2048)
+        echo.sendto(data[:1], peer)
+
+    threading.Thread(target=reply, daemon=True).start()
+    try:
+        assert boot_test.udp_through_router(echo.getsockname()[1]) == "answered"
+        assert boot_test.udp_through_router(silent.getsockname()[1], timeout=0.5) == "no answer"
+        assert boot_test.udp_through_router(closed_port) == "refused"
+    finally:
+        echo.close()
+        silent.close()

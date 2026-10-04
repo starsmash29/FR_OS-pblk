@@ -45,7 +45,9 @@ from fastapi.responses import StreamingResponse
 
 from frfw import paths
 from frfw import xdp as xdp_mod
+from frfw.config import ConfigError, parse_config
 from frfw.helper.client import HelperError
+from frfw.nft.builder import sni_filtered_devices
 from frfw.webui.actions import try_save
 from frfw.webui.auth import COOKIE_NAME
 from frfw.webui.deps import get_helper, get_raw_config, get_xdp_state_path, require_login
@@ -105,6 +107,12 @@ def show_xdp(
     except HelperError:
         result = {}
     stats = result.get("stats") if result.get("ok") else None
+    # ROADMAP SEC-1: where QUIC is rejected, as the next apply's ruleset
+    # will have it (frfw.nft.builder, from the same config).
+    try:
+        quic_rejected = sni_filtered_devices(parse_config(raw))
+    except ConfigError:
+        quic_rejected = []
 
     interfaces_status = [
         {
@@ -145,6 +153,7 @@ def show_xdp(
             "badge_class": badge_class,
             "interfaces_status": interfaces_status,
             "stats": stats,
+            "quic_rejected": quic_rejected,
             "error": request.query_params.get("error"),
             "success": request.query_params.get("success"),
         },

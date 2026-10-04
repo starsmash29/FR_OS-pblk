@@ -58,6 +58,10 @@ CLOSED_PORT = 4444
 #: The host's side of the VM's LAN port: a "laptop" with no DHCP server.
 LAN_TAP = "frtap0"
 LAN_TAP_ADDRESS = "192.168.1.2/24"
+#: An address beyond the router (TEST-NET-2, RFC 5737), routed from the
+#: host through the VM, so what the host sends it is forwarded traffic.
+BEYOND_NET = "198.51.100.0/24"
+BEYOND_HOST = "198.51.100.7"
 NEW_PASSWORD = "changed-in-boot-3"
 NEW_USERNAME = "netadmin"
 DISK_SIZE = 2 * 2**30
@@ -134,6 +138,7 @@ def lan_tap():
     try:
         subprocess.run(["ip", "addr", "add", LAN_TAP_ADDRESS, "dev", LAN_TAP], check=True)
         subprocess.run(["ip", "link", "set", LAN_TAP, "up"], check=True)
+        subprocess.run(["ip", "route", "add", BEYOND_NET, "via", WEBUI_HOST, "dev", LAN_TAP], check=True)
         yield
     finally:
         subprocess.run(["ip", "link", "del", LAN_TAP], capture_output=True)
@@ -255,6 +260,23 @@ def split_hello_answered(server_name: str, timeout: float = 5) -> bool:
             return len(conn.recv(1)) == 1
     except OSError:  # a timeout: no answer
         return False
+
+
+def udp_through_router(port: int, timeout: float = 3) -> str:
+    """Send one datagram to BEYOND_HOST, through the router: "refused"
+    when a port unreachable comes back (the router's `reject`), "answered"
+    or "no answer" (nothing, or another ICMP error from upstream)."""
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        sock.settimeout(timeout)
+        sock.connect((BEYOND_HOST, port))
+        try:
+            sock.send(b"\xc0" + os.urandom(1199))  # the size of a QUIC Initial
+            sock.recv(1)
+            return "answered"
+        except ConnectionRefusedError:
+            return "refused"
+        except OSError:
+            return "no answer"
 
 
 def xdp_blocked_events(upper: Path) -> list[str]:
@@ -591,6 +613,11 @@ def run(args: argparse.Namespace) -> int:
         check(split_allowed, "a split ClientHello naming an allowed host gets an answer")
         check(split_allowed and not split_hello_answered(XDP_BLOCKED_NAME),
               "the XDP filter stops a split ClientHello naming a blocked host (ROADMAP SEC-17)")
+        # ROADMAP SEC-1: QUIC hides the name, so while the filter is on the
+        # router refuses UDP/443 from its port -- and only that port.
+        quic, other = udp_through_router(443), udp_through_router(4443)
+        check(quic == "refused" and other != "refused",
+              f"the router refuses QUIC from the filtered LAN port (ROADMAP SEC-1): UDP/443 {quic}, UDP/4443 {other}")
         # The screen's counters come through the apply-helper: bpffs is
         # root's, and reading them in the webUI was an HTTP 500.
         drops = re.search(r"Drops \(since last load\)</dt>\s*<dd>(\d+)</dd>", get(opener, "/xdp"))

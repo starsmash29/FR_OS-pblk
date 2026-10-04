@@ -347,6 +347,11 @@ app_control:
 - XDP only sees packets an interface *receives*: for `observe_sni` and
   `block_via_xdp` to see LAN clients, `xdp_sni_filter.interfaces` must be
   the LAN-side interfaces, not the WAN.
+- While `xdp_sni_filter` is enabled, QUIC (HTTP/3, UDP/443) from its
+  interfaces and the VLANs on them is rejected, so browsers there use TLS
+  over TCP, whose name the filter sees (ROADMAP SEC-1). There is no key
+  to turn this off: QUIC's name is encrypted, so allowing it would let
+  any client get past the blocklist.
 - These cross-section requirements are only checked while `enabled` is
   true. Changes take effect on the next `apply`; the daemon picks up
   config changes by itself.

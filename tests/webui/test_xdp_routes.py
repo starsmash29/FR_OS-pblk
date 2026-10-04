@@ -491,3 +491,19 @@ def test_the_page_works_when_the_helper_cant_give_the_counters(logged_in_client,
     response = logged_in_client.get("/xdp")
     assert response.status_code == 200
     assert 'id="stats-unreadable"' in response.text
+
+
+def test_the_gaps_card_names_where_quic_is_rejected(logged_in_client):
+    """ROADMAP SEC-1: the screen says where QUIC is rejected -- the
+    filtered ports, as the next apply's ruleset will have them -- next to
+    what else the filter can't see."""
+    page = logged_in_client.get("/xdp")
+    assert 'id="filter-gaps"' in page.text
+    assert "once the filter is on and applied" in page.text
+
+    _add_wan(logged_in_client)
+    logged_in_client.post("/xdp/settings", data={"enabled": "true", "interfaces": ["wan"], "blocklist": ""})
+    gap = logged_in_client.get("/xdp").text.split('id="gap-quic"', 1)[1].split("</li>", 1)[0]
+    assert "Rejected from eth0 while the filter is on" in gap
+    for other in ("Encrypted Client Hello", "ports other than 443", "IPv6"):
+        assert other in logged_in_client.get("/xdp").text

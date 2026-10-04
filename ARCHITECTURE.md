@@ -296,6 +296,24 @@ they're documented design decisions:
    copy was tried first; its 32 unrolled iterations took the program past
    the 512-byte stack limit and to 98% of the verifier's instruction
    budget, the helper costs neither.
+8. **QUIC is rejected, not read (ROADMAP SEC-1, review R8).** HTTP/3
+   runs over UDP/443, and its ClientHello is encrypted, so the program
+   never sees the name in it -- and browsers use HTTP/3 with most large
+   sites, so a blocked name stayed reachable with no user action. While
+   the filter is on, the forward chain rejects UDP/443 from the filtered
+   devices and the VLAN segments on them
+   (`frfw.nft.builder.sni_filtered_devices()`): `reject`, not `drop`,
+   so a browser falls back to TLS over TCP at once, where the filter
+   sees the name. The rule comes right after the IDS quarantine drop,
+   ahead of the IoT rules (internet-only isolation accepts a device's
+   traffic to the WAN), of `ct state established,related accept` (a QUIC
+   connection open when the filter is turned on ends then, not when it
+   idles out) and of every admin rule. Reading QUIC instead would mean
+   deriving the Initial packet's keys and decrypting it with AES-GCM in
+   the XDP program, which the verifier budget has no room for. The XDP
+   screen lists what the filter doesn't see: QUIC (and where it is
+   rejected), ECH, TLS on ports other than 443, the split hellos point 1
+   leaves out, names of 32 bytes or more, and IPv6 (not routed).
 
 The actual kernel-space parser (TLS record → handshake → ClientHello
 fields → extension list → server_name extension → reading the SNI bytes)
@@ -3122,7 +3140,9 @@ completeness for any given app; v2fly's lists are community-maintained.
 - Blocking an app through DNS does not end connections already open, and a
   client with a cached answer keeps working until it expires.
 - QUIC/HTTP-3 SNIs are invisible to XDP; DNS observation still covers them
-  when the client uses the router's resolver.
+  when the client uses the router's resolver. While the SNI filter is on,
+  QUIC from its ports is rejected (phase 4, point 8), so clients there
+  use TLS over TCP, which XDP does see.
 
 ## Time-based rules (phase 17)
 
