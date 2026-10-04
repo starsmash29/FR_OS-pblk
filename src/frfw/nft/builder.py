@@ -241,6 +241,9 @@ def build_ruleset(config: Config, *, clock: ScheduleClock | None = None, now: fl
     # open sessions end at once. Its peers' packets to it may still pass,
     # but nothing it sends back does.
     lines.append(f"\t\t{_render_ids_quarantine_forward_rule()}")
+    quic = _render_sni_filter_quic_reject(config)
+    if quic:
+        lines.append(f"\t\t{quic}")
     if config.iot.enabled:
         # Same "before established" placement as the input chain above,
         # and before every config-derived rule: an admin rule can't
@@ -427,6 +430,39 @@ def _render_iot_forward_rules(config: Config) -> list[str]:
             )
     rules.append(f"{isolated} drop {_comment('iot-isolated-forward')}")
     return rules
+
+
+def sni_filtered_devices(config: Config) -> list[str]:
+    """The devices whose clients the XDP SNI filter covers: the devices of
+    `xdp_sni_filter.interfaces`, and the VLAN segments on them -- the
+    program on a port sees its VLANs' frames too (ROADMAP SEC-16), but
+    nft names them by their own device. Empty while the filter is off."""
+    sni = config.xdp_sni_filter
+    if not sni.enabled:
+        return []
+    ports = {config.interfaces[name].device for name in sni.interfaces if name in config.interfaces}
+    vlans = {i.device for i in config.interfaces.values() if i.vlan_parent in ports}
+    return sorted(ports | vlans)
+
+
+def _render_sni_filter_quic_reject(config: Config) -> str | None:
+    """ROADMAP SEC-1 (review R8): QUIC -- HTTP/3 over UDP/443 -- carries
+    its ClientHello encrypted, so the SNI filter can't see the name in it,
+    and a blocked name stayed reachable over HTTP/3 with no user action.
+    While the filter is on, UDP/443 from its devices is rejected, not
+    dropped: a browser falls back to TCP at once, where the name is
+    visible. Forward chain only -- the router serves no HTTP/3 itself.
+
+    Ahead of `ct state established,related accept`, so a QUIC connection
+    open when the filter is turned on ends then rather than whenever it
+    idles out, and ahead of the IoT rules and every config-derived rule:
+    an internet-only isolated device or an admin's "allow lan to wan" must
+    not reopen it."""
+    devices = sni_filtered_devices(config)
+    if not devices:
+        return None
+    names = ", ".join(f'"{d}"' for d in devices)
+    return f"iifname {{ {names} }} udp dport 443 reject {_comment('sni-filter-no-quic')}"
 
 
 def _comment(text: str) -> str:
