@@ -381,7 +381,14 @@ def _safe_extract(tarball: Path, dest: Path) -> Path:
     dest.mkdir(parents=True, exist_ok=True)
     dest_resolved = dest.resolve()
     with tarfile.open(tarball) as tar:
-        members = tar.getmembers()
+        # Only regular files and directories: an update installs nothing
+        # else. The source tree's links -- live-build's bootloader links,
+        # which point into the build host's /usr/lib -- are skipped, never
+        # created: filter="data" refuses an absolute link (every update
+        # failed on them, found by tests/test_update_xdp_live.py), and
+        # without that filter a link's *target* is not checked by the
+        # loop below at all.
+        members = [m for m in tar.getmembers() if m.isfile() or m.isdir()]
         for member in members:
             target = (dest / member.name).resolve()
             if target != dest_resolved and dest_resolved not in target.parents:

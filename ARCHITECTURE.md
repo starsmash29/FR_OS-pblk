@@ -724,10 +724,24 @@ currently-empty repo -- correctly returning a "no release" 404 --, the
 full apply/rollback flow on both the success and failure branch,
 path-traversal protection on tarball extraction, the update-helper
 socket protocol, webUI routes) is covered by unit tests (see
-`tests/test_update*.py`, `tests/webui/test_update_routes.py`). What has
-NOT been tried: an actual end-to-end update from a real older version to
-an actual, published GitHub release on a live VM -- for that, the repo
-first needs at least one real tagged release (see ROADMAP.md phase 6).
+`tests/test_update*.py`, `tests/webui/test_update_routes.py`).
+
+`tests/test_update_xdp_live.py` runs the path end to end, short of the
+download and of `pip`/systemd (ROADMAP P4-1): a release tarball made by
+the workflow's own `git archive` command, signed with a throwaway key
+the test points `trusted_keys()` at, found in the release cache,
+verified, extracted and installed by `apply_update`, and then its XDP
+program swapped into the kernel by the next apply. Its first run found
+every update failing: the source tree has symbolic links (live-build's
+bootloader links, absolute paths into the build host's `/usr/lib`), and
+`filter="data"` refuses an absolute link -- while on a Python without
+that filter, the extraction's own check looked at member names, not at
+where a link points. Extraction now takes regular files and directories
+only; links are skipped, never created or followed.
+
+What has NOT been tried: an update from a real older version to a
+published GitHub release on a live VM -- for that, the repo first needs
+a real tagged release built with P4-1 (see ROADMAP.md phase 6).
 
 ## System integration
 

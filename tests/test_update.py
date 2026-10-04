@@ -10,9 +10,12 @@ spawn a real `pip`/`systemctl`, mirroring the pattern already used for
 from __future__ import annotations
 
 import io
+import os
+import subprocess
 import json
 import tarfile
 import urllib.error
+from pathlib import Path
 
 import pytest
 
@@ -170,6 +173,39 @@ def test_safe_extract_normal_archive_returns_single_root_dir(tmp_path):
     root = update_mod._safe_extract(tarball, dest)
     assert root.name == "release-0.1.0"
     assert (root / "pyproject.toml").is_file()
+
+
+@pytest.mark.parametrize("linkname", ["/usr/lib/ISOLINUX/isolinux.bin", "/etc/shadow", "../../outside"])
+@pytest.mark.parametrize("kind", [tarfile.SYMTYPE, tarfile.LNKTYPE])
+def test_safe_extract_skips_links_instead_of_failing_or_following_them(tmp_path, linkname, kind):
+    """The source tree has links (live-build's bootloader links point into
+    the build host's /usr/lib). filter="data" refused an absolute one and
+    every update failed; without the filter, nothing checked where a link
+    points. Links are now skipped: never created, never followed."""
+    tarball = tmp_path / "release.tar.gz"
+    with tarfile.open(tarball, "w:gz") as tar:
+        data = b"[project]\n"
+        info = tarfile.TarInfo("frfw-0.3.0/pyproject.toml")
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
+        link = tarfile.TarInfo("frfw-0.3.0/installer/isolinux.bin")
+        link.type = kind
+        link.linkname = linkname
+        tar.addfile(link)
+    root = update_mod._safe_extract(tarball, tmp_path / "extract-here")
+    assert (root / "pyproject.toml").read_bytes() == b"[project]\n"
+    assert not os.path.lexists(root / "installer" / "isolinux.bin")
+
+
+def test_safe_extract_takes_the_real_release_tarball(tmp_path):
+    """`git archive` of this repository, as the release workflow makes the
+    tarball: it has those links, and it extracts."""
+    tarball = tmp_path / "frfw-0.3.0.tar.gz"
+    repo = Path(__file__).resolve().parents[1]
+    subprocess.run(["git", "-C", str(repo), "archive", "--format=tar.gz", "--prefix=frfw-0.3.0/",
+                    "-o", str(tarball), "HEAD"], check=True)
+    root = update_mod._safe_extract(tarball, tmp_path / "extract-here")
+    assert (root / "pyproject.toml").is_file() and (root / "requirements.lock").is_file()
 
 
 # --- apply_update / rollback_update (full flow, all I/O monkeypatched) -----
