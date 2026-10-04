@@ -747,8 +747,13 @@ def test_live_attachment_parses_ip_json(monkeypatch, stdout, rc, expected):
     assert xdp_mod.live_attachment("frv0") == expected
 
 
+#: The machine's own compiled program, if it has one (tests/conftest.py
+#: points paths.XDP_BPF_OBJ_PATH elsewhere while a test runs).
+HOST_XDP_OBJECT = paths.XDP_BPF_OBJ_PATH
+
+
 @pytest.mark.skipif(
-    os.geteuid() != 0 or not shutil.which("ip") or not paths.XDP_BPF_OBJ_PATH.is_file(),
+    os.geteuid() != 0 or not shutil.which("ip") or not HOST_XDP_OBJECT.is_file(),
     reason="needs root, iproute2 and the compiled XDP object",
 )
 def test_live_attachment_and_status_against_a_real_kernel(tmp_path):
@@ -765,7 +770,7 @@ def test_live_attachment_and_status_against_a_real_kernel(tmp_path):
         assert xdp_mod.live_attachment(dev) is None
         assert xdp_mod.get_attached(state_path=state_path) == {}  # "after the reboot"
 
-        sp.run(["ip", "link", "set", "dev", dev, "xdpgeneric", "obj", str(paths.XDP_BPF_OBJ_PATH), "sec", "xdp"],
+        sp.run(["ip", "link", "set", "dev", dev, "xdpgeneric", "obj", str(HOST_XDP_OBJECT), "sec", "xdp"],
                check=True, capture_output=True)
         mode, prog_id = xdp_mod.live_attachment(dev)
         assert mode is xdp_mod.AttachMode.GENERIC and prog_id > 0

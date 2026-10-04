@@ -467,6 +467,33 @@ def _stage_systemd_units(release_dir: Path) -> None:
 #: The release's hash-pinned dependencies (review FR-001).
 LOCK_FILE = "requirements.lock"
 
+#: The release's compiled XDP SNI filter, added to the signed tarball by
+#: the release build (ROADMAP P4-1, scripts/build-xdp-object.sh).
+XDP_OBJECT = Path("bpf") / "xdp_sni_filter.o"
+
+
+def _install_xdp_object(release_dir: Path, dest: Path) -> None:
+    """Put the release's compiled XDP program where frfw.xdp loads it
+    from, replacing the previous release's (ROADMAP P4-1). A router never
+    compiles it, so without this an update kept running the old program:
+    the new source was never looked at, and the unchanged object gave
+    SEC-19's digest check nothing to notice. The next apply (fr-firewall
+    restarts below) sees the new digest and swaps the program in.
+
+    A release built before P4-1 has no object: the previous one is
+    removed rather than left to run under code it wasn't built for, and
+    turning the filter on says there is no compiled program -- as on
+    every image of those releases."""
+    obj = release_dir / XDP_OBJECT
+    if not obj.is_file():
+        dest.unlink(missing_ok=True)
+        return
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    staged = dest.with_name(dest.name + ".new")
+    shutil.copyfile(obj, staged)
+    staged.chmod(0o644)
+    staged.replace(dest)
+
 
 def _install_release_dir(release_dir: Path) -> None:
     """pip-install a verified release as root. Review FR-001: the
@@ -483,6 +510,7 @@ def _install_release_dir(release_dir: Path) -> None:
     pip = ["pip3", "install", "--break-system-packages", "--no-cache-dir"]
     _run([*pip, "--require-hashes", "--only-binary=:all:", "-r", str(lock)])
     _run([*pip, "--no-deps", "--no-build-isolation", "--", str(release_dir)])
+    _install_xdp_object(release_dir, paths.XDP_BPF_OBJ_PATH)
     _stage_systemd_units(release_dir)
     _run(["systemctl", "daemon-reload"])
 

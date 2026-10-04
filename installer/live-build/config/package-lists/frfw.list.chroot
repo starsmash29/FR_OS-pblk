@@ -24,3 +24,10 @@ dnsmasq-base
 # kernel module itself ships with Debian's kernel
 wireguard-tools
 unattended-upgrades
+# The XDP SNI filter (ROADMAP P4-1): `bpftool` loads and pins the
+# image's compiled program and its maps (frfw.xdp), and libbpf is what
+# the event logger and the TLS fingerprinting reader read its ring
+# buffers through (ctypes). Neither was in the image, so the filter could
+# not have loaded even with its program compiled.
+bpftool
+libbpf1

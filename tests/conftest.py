@@ -110,6 +110,15 @@ def _never_touch_the_hosts_wireguard(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _never_touch_the_hosts_xdp_object(tmp_path_factory, monkeypatch):
+    """The compiled XDP program an update installs (ROADMAP P4-1,
+    /usr/local/share/fr_os/bpf/xdp_sni_filter.o)."""
+    from frfw import paths
+
+    monkeypatch.setattr(paths, "XDP_BPF_OBJ_PATH", tmp_path_factory.mktemp("share_fr_os_bpf") / "xdp_sni_filter.o")
+
+
+@pytest.fixture(autouse=True)
 def _never_touch_the_hosts_rule_hits(tmp_path_factory, monkeypatch):
     """The per-rule hit record (security-lessons K2, /etc/fr_os/rule_hits.json)."""
     from frfw import paths

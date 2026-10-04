@@ -89,5 +89,11 @@ systemctl enable fr-firewall.service
 # started, enabled or pulled in. The package stays: it provides `nft`.
 systemctl mask nftables.service
 
+# ROADMAP P4-1: the XDP SNI filter's program, compiled by the image build
+# (installer/build-live-image.sh) -- the image has no compiler, so
+# frfw.xdp loads exactly this file (frfw.paths.XDP_BPF_OBJ_PATH). An
+# update replaces it with the release's own (frfw.update).
+install -D -m 0644 /opt/frfw-src/bpf/xdp_sni_filter.o /usr/local/share/fr_os/bpf/xdp_sni_filter.o
+
 echo "frfw: removing bundled source (already installed via pip)..."
 rm -rf /opt/frfw-src

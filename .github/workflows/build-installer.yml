@@ -55,7 +55,8 @@ jobs:
             live-build debootstrap xorriso squashfs-tools isolinux \
             syslinux-common syslinux-efi syslinux-utils librsvg2-bin \
             grub-pc-bin grub-efi-amd64-bin grub-common mtools dosfstools \
-            debian-archive-keyring rsync
+            debian-archive-keyring rsync \
+            clang libbpf-dev  # the XDP SNI filter's program (ROADMAP P4-1)
 
       - name: Build hybrid live/installer ISO
         run: sudo ./installer/build-live-image.sh
@@ -67,9 +68,14 @@ jobs:
           name="FR_OS-${version}-amd64.iso"
           sudo mv installer/live-build/binary.hybrid.iso "$name"
           sudo chown "$(id -u):$(id -g)" "$name"
-          # What the router's updater installs (frfw.release_signing).
+          # What the router's updater installs (frfw.release_signing):
+          # the tagged tree, plus the XDP SNI filter's program the image
+          # build compiled -- a router has no compiler (ROADMAP P4-1,
+          # frfw.update._install_xdp_object).
           source="frfw-${version}.tar.gz"
-          git archive --format=tar.gz --prefix="frfw-${version}/" -o "$source" HEAD
+          git archive --format=tar.gz -o "$source" \
+            --prefix="frfw-${version}/bpf/" --add-file=bpf/xdp_sni_filter.o \
+            --prefix="frfw-${version}/" HEAD
           sha256sum "$name" "$source" > SHA256SUMS
           {
             echo
