@@ -78,7 +78,10 @@ def _regroup_feeds() -> list[str]:
     socket keeps the one it was created with until the unit restarts --
     on an update, fr-accounts.service is run again (frfw.update) and moves
     it here, so the sensors keep reaching the helper without a reboot."""
-    gid = grp.getgrnam(paths.FEEDS_GROUP).gr_gid
+    try:
+        gid = grp.getgrnam(paths.FEEDS_GROUP).gr_gid
+    except KeyError:  # not created (groupadd failed, or a dry run): nothing to move to
+        return []
     done = []
     for path in (paths.SNI_EVENTS_DIR, paths.SNI_EVENTS_PATH, paths.DNS_QUERY_LOG_DIR, paths.DNS_QUERY_LOG_PATH,
                  paths.APPLY_SOCKET_PATH):
