@@ -51,6 +51,8 @@ for unit in \
     fr-first-boot.service \
     fr-persistence-setup.service \
     fr-kernel-confirm.service \
+    fr-kernel-prepare.service \
+    fr-kernel-prepare.timer \
     fr-accounts.service \
     fr-firewall.service \
     fr-apply-helper.socket \

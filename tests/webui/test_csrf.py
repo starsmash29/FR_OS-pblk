@@ -406,7 +406,9 @@ def test_destructive_forms_still_ask_for_confirmation():
     checkbox is ticked)."""
     templates = Path(TEMPLATES_DIR)
     text = "".join(t.read_text() for t in templates.glob("*.html"))
-    assert text.count("data-confirm=") == 12
+    # 14: ROADMAP SEC-14 added two -- trying a kernel reboots the router,
+    # and going back to the image's kernel.
+    assert text.count("data-confirm=") == 14
     assert 'data-confirm-when-checked="allow_wan"' in text
 
 

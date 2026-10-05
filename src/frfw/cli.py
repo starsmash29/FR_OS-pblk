@@ -333,6 +333,17 @@ def _build_parser() -> argparse.ArgumentParser:
     kernel_sub.add_parser(
         "confirm-boot", help="boot-time step (fr-kernel-confirm.service): keep a staged kernel the router came up on"
     ).set_defaults(handler=_cmd_kernel_confirm_boot)
+    p_kernel_prepare = kernel_sub.add_parser(
+        "prepare", help="install Debian's newer kernel and get it ready to try (fr-kernel-prepare.timer; root)"
+    )
+    p_kernel_prepare.add_argument("--version", help="prepare this kernel (installed or in the archive) instead")
+    p_kernel_prepare.add_argument("--config", default=str(paths.CONFIG_PATH), help="for update.kernel_updates")
+    p_kernel_prepare.set_defaults(handler=_cmd_kernel_prepare)
+    p_kernel_try = kernel_sub.add_parser(
+        "try", help="stage the kernel that is ready and reboot into its trial (root)"
+    )
+    p_kernel_try.add_argument("--no-reboot", action="store_true", help="stage it; the next reboot tries it")
+    p_kernel_try.set_defaults(handler=_cmd_kernel_try)
 
     p_mtoken = sub.add_parser(
         "metrics-token",
@@ -828,6 +839,51 @@ def _cmd_kernel_unstage(args: argparse.Namespace) -> int:
     _console_alert("staged kernel removed: the image's own kernel boots from the next reboot (firewall-cli kernel "
                    "unstage)")
     print("Staged kernel removed: the image's own kernel boots from the next reboot.")
+    return 0
+
+
+def _cmd_kernel_prepare(args: argparse.Namespace) -> int:
+    from frfw import kernel_boot, kernel_update
+
+    boot_dir = kernel_boot.boot_dir()
+    if boot_dir is None:
+        print("fr-kernel: no persistence partition in use; nothing to prepare")
+        return 0
+    enabled = True
+    try:
+        enabled = read_config(args.config)[0].update.kernel_updates
+    except Exception:  # noqa: BLE001 -- no or a broken config: the default
+        pass
+    try:
+        outcome = kernel_update.prepare(version=args.version, enabled=enabled, boot_dir=boot_dir)
+    except (kernel_update.KernelUpdateError, kernel_boot.KernelBootError, OSError) as exc:
+        kernel_update.record_check(str(exc), error=True)
+        print(f"fr-kernel: could not prepare a kernel: {exc}")
+        return 1
+    kernel_update.record_check(outcome.message)
+    print(f"fr-kernel: {outcome.message}")
+    if outcome.alert:
+        _console_alert(outcome.alert, user="fr-kernel-prepare", client="timer")
+    return 0
+
+
+def _cmd_kernel_try(args: argparse.Namespace) -> int:
+    from frfw import kernel_boot, kernel_update
+
+    path = _kernel_boot_dir()
+    if path is None:
+        return 1
+    try:
+        version = kernel_update.try_prepared(boot_dir=path)
+    except (kernel_update.KernelUpdateError, kernel_boot.KernelBootError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    _console_alert(f"kernel {version} staged for its trial boot (firewall-cli kernel try)")
+    if args.no_reboot:
+        print(f"Kernel {version} staged: the next reboot tries it once.")
+        return 0
+    print(f"Kernel {version} staged: rebooting into its trial.")
+    subprocess.run(["systemctl", "reboot"], check=False)
     return 0
 
 

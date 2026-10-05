@@ -114,6 +114,7 @@ class UpdateHelperClient(Protocol):
     def ping(self) -> dict: ...
     def apply(self, version: str) -> dict: ...
     def rollback(self) -> dict: ...
+    def kernel(self, cmd: str) -> dict: ...
 
 
 class SocketUpdateHelperClient:
@@ -128,3 +129,7 @@ class SocketUpdateHelperClient:
 
     def rollback(self) -> dict:
         return update_client.rollback(socket_path=self.socket_path)
+
+    def kernel(self, cmd: str) -> dict:
+        """ROADMAP SEC-14: kernel_status / kernel_check / kernel_try / kernel_cancel."""
+        return update_client.kernel(cmd, socket_path=self.socket_path)

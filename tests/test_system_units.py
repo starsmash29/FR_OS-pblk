@@ -26,10 +26,11 @@ FIRST_BOOT = REPO_ROOT / "scripts" / "fr-first-boot.sh"
 TIMERS = [u for u in UNITS if u.endswith(".timer")]
 
 #: fr-first-boot and fr-persistence-setup only make sense inside the live
-#: image; so does fr-kernel-confirm, a kernel staged on the persistence
-#: partition (ROADMAP SEC-14) -- an installed system updates its kernel in
-#: place.
-_LIVE_IMAGE_ONLY = {"fr-first-boot.service", "fr-persistence-setup.service", "fr-kernel-confirm.service"}
+#: image; so do fr-kernel-confirm and fr-kernel-prepare, a kernel staged
+#: on the persistence partition (ROADMAP SEC-14) -- an installed system
+#: updates its kernel in place.
+_LIVE_IMAGE_ONLY = {"fr-first-boot.service", "fr-persistence-setup.service", "fr-kernel-confirm.service",
+                    "fr-kernel-prepare.service", "fr-kernel-prepare.timer"}
 
 
 @pytest.mark.parametrize("unit", [u for u in UNITS if u not in _LIVE_IMAGE_ONLY])
@@ -62,7 +63,7 @@ def test_first_boot_enables_timer(timer: str):
     assert timer in _first_boot_units()
 
 
-@pytest.mark.parametrize("timer", TIMERS)
+@pytest.mark.parametrize("timer", [t for t in TIMERS if t not in _LIVE_IMAGE_ONLY])
 def test_install_script_enables_timer(timer: str):
     assert re.search(rf"^\s*systemctl enable --now {re.escape(timer)}\b", INSTALL_SCRIPT.read_text(), re.M)
 

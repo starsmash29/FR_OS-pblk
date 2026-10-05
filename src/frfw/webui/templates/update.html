@@ -38,10 +38,53 @@
   {% if periodic and periodic.auto_install_error %}<div class="flash-error">Installing security release {{ periodic.latest_version }} automatically failed: {{ periodic.auto_install_error }}</div>{% endif %}
   <form method="post" action="/update/auto-security">
     {{ csrf_input(request) }}
-    <label><input type="checkbox" name="enabled" value="true"{% if auto_install_security %} checked{% endif %}>
+    <label><input type="checkbox" id="auto-security" name="enabled" value="true"{% if auto_install_security %} checked{% endif %}>
       Install security updates automatically</label>
     <p class="muted">Only releases marked as security releases, and only after their signature verifies. The webUI restarts
       afterwards, and the dashboard shows an alert saying what was installed.</p>
+    <button type="submit">Save</button>
+  </form>
+</div>
+
+<div class="card" id="kernel">
+  <h3>Kernel</h3>
+  {% if kernel_error %}
+  <div class="flash-error">Kernel status unavailable: {{ kernel_error }}</div>
+  {% elif kernel %}
+  <p id="kernel-summary">{{ kernel.summary }}</p>
+  {% if kernel.last_check %}
+  <p class="muted">Last check for Debian's kernel fixes ({{ kernel.last_check.at }}):
+    {% if kernel.last_check.error %}<span class="badge badge-red">failed</span>{% endif %} {{ kernel.last_check.message }}</p>
+  {% endif %}
+  {% if kernel.ready and kernel.available %}
+  <p><strong>Kernel {{ kernel.ready }} is ready to try.</strong>
+    Trying it reboots the router into it once; the router keeps it only if it comes up on it -- the firewall loaded,
+    its network ports there, this webUI answering. Otherwise the image's own kernel boots again by itself, with a
+    security alert.</p>
+  <form method="post" action="/update/kernel/try" data-confirm="Reboot the router now to try kernel {{ kernel.ready }}?">
+    {{ csrf_input(request) }}
+    <button type="submit" id="kernel-try">Try kernel {{ kernel.ready }} (reboots the router)</button>
+  </form>
+  {% endif %}
+  {% if kernel.state in ("trial", "good") %}
+  <form method="post" action="/update/kernel/cancel" data-confirm="Go back to the image's own kernel at the next reboot?">
+    {{ csrf_input(request) }}
+    <button type="submit" class="danger">Back to the image's kernel</button>
+  </form>
+  {% endif %}
+  {% if kernel.available %}
+  <form method="post" action="/update/kernel/check">
+    {{ csrf_input(request) }}
+    <button type="submit" id="kernel-check">Check for a newer kernel now</button>
+  </form>
+  {% endif %}
+  {% endif %}
+  <form method="post" action="/update/kernel-updates">
+    {{ csrf_input(request) }}
+    <label><input type="checkbox" id="kernel-updates" name="enabled" value="true"{% if kernel_updates %} checked{% endif %}>
+      Fetch Debian's kernel fixes daily</label>
+    <p class="muted">From the Debian archive, its signatures checked by apt -- the same archive the daily userspace
+      security updates come from. A new kernel is only made ready; nothing reboots until you press "Try".</p>
     <button type="submit">Save</button>
   </form>
 </div>

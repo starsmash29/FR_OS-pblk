@@ -19,7 +19,7 @@ from __future__ import annotations
 #: so it is called directly, in-process, by whatever wants it (the
 #: webUI, `firewall-cli update check`) instead of round-tripping through
 #: a root daemon for no reason.
-COMMANDS = ("ping", "apply", "rollback")
+COMMANDS = ("ping", "apply", "rollback", "kernel_status", "kernel_check", "kernel_try", "kernel_cancel")
 
 #: Maximum accepted request/response line length -- same bound as the
 #: apply-helper's, for the same reason (see frfw.helper.protocol).
