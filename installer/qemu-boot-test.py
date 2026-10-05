@@ -65,6 +65,10 @@ LAN_TAP = "frtap0"
 LAN_TAP_ADDRESS = "192.168.1.2/24"
 #: An address beyond the router (TEST-NET-2, RFC 5737), routed from the
 #: host through the VM, so what the host sends it is forwarded traffic.
+#: The router's address in the VPN tunnel (security-lessons G8/K5), set
+#: in boot 3. Reached from the host through the router: only the webUI
+#: restarted by that apply listens on it.
+VPN_ADDRESS = "10.99.0.1"
 BEYOND_NET = "198.51.100.0/24"
 BEYOND_HOST = "198.51.100.7"
 NEW_PASSWORD = "changed-in-boot-3"
@@ -152,6 +156,7 @@ def lan_tap():
         subprocess.run(["ip", "addr", "add", LAN_TAP_ADDRESS, "dev", LAN_TAP], check=True)
         subprocess.run(["ip", "link", "set", LAN_TAP, "up"], check=True)
         subprocess.run(["ip", "route", "add", BEYOND_NET, "via", WEBUI_HOST, "dev", LAN_TAP], check=True)
+        subprocess.run(["ip", "route", "add", f"{VPN_ADDRESS}/32", "via", WEBUI_HOST, "dev", LAN_TAP], check=True)
         yield
     finally:
         subprocess.run(["ip", "link", "del", LAN_TAP], capture_output=True)
@@ -450,6 +455,22 @@ def webui_opener() -> urllib.request.OpenerDirector:
     )
 
 
+def wait_for_rebind(timeout: float) -> bool:
+    """Whether the webUI restarted onto the VPN's address within `timeout`.
+    The apply that turns the VPN on schedules that restart a few seconds
+    later; until it has happened, the old process still answers on the
+    LAN address -- waiting for that one let the checks after it run into
+    the restart. Only the new process listens on VPN_ADDRESS."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            socket.create_connection((VPN_ADDRESS, WEBUI_PORT), timeout=3).close()
+            return True
+        except OSError:
+            time.sleep(1)
+    return False
+
+
 def wait_for_webui(opener, timeout: float) -> str | None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -653,7 +674,7 @@ def run(args: argparse.Namespace) -> int:
         post(opener, "/rules/timezone", {"timezone": "Europe/Budapest"})
         # Security-lessons G8: the WireGuard VPN on Debian's own kernel
         # module (the unit tests use the userspace implementation).
-        post(opener, "/vpn/settings", {"enabled": "true", "address": "10.99.0.1/24", "listen_port": "51820",
+        post(opener, "/vpn/settings", {"enabled": "true", "address": f"{VPN_ADDRESS}/24", "listen_port": "51820",
                                        "endpoint": "vpn.example.net"})
         # Security-lessons K4: the segments offered after setup, on real
         # VLAN devices (802.1Q on the LAN port).
@@ -690,8 +711,11 @@ def run(args: argparse.Namespace) -> int:
         except OSError:
             pass
         time.sleep(5)  # fr-initial-password.path reacts to the account file
-        # The webUI is back from its rebind; the filter drops the
-        # ClientHello naming the blocked name, and only that one.
+        # The webUI is back from its rebind -- the restarted process, the
+        # one on the VPN's address too (security-lessons K5); the filter
+        # drops the ClientHello naming the blocked name, and only that one.
+        check(wait_for_rebind(boot_timeout), f"the restarted webUI answers on the VPN's address {VPN_ADDRESS} "
+              "(security-lessons K5)")
         wait_for_webui(opener, boot_timeout)
         allowed = any(tls_handshake(XDP_ALLOWED_NAME) for _ in range(3))
         check(allowed, "a TLS handshake naming an allowed host gets through the XDP filter")
