@@ -101,3 +101,23 @@ def test_a_newer_signed_release_goes_through_and_the_way_back_is_rollback(router
             update_mod.apply_update(older, state_path=router["state"], releases_dir=router["releases"])
     assert update_mod.rollback_update(state_path=router["state"], releases_dir=router["releases"]) == "0.5.0"
     assert (router["releases"] / "0.5.0" / "src").is_dir()
+
+
+def test_an_installed_release_stays_readable_for_the_integrity_check(router, signer):
+    """ROADMAP SEC-15: the webUI (unprivileged) checks the installed files
+    against the release the updater keeps -- readable whatever umask the
+    updater runs with (a sandboxed unit may well set UMask=0077)."""
+    import os
+    import stat
+
+    signer(router["releases"], "0.6.0")
+    old = os.umask(0o077)
+    try:
+        update_mod.apply_update("0.6.0", state_path=router["state"], releases_dir=router["releases"])
+    finally:
+        os.umask(old)
+    cache = router["releases"] / "0.6.0"
+    assert stat.S_IMODE(cache.stat().st_mode) == 0o755
+    for name in (release_signing.source_tarball_name("0.6.0"), release_signing.SUMS_NAME,
+                 release_signing.SIGNATURE_NAME):
+        assert stat.S_IMODE((cache / name).stat().st_mode) == 0o644, name

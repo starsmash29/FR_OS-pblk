@@ -271,7 +271,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p_surface.set_defaults(handler=_cmd_surface)
 
     p_integrity = sub.add_parser(
-        "integrity", help="check FR_OS's installed files against the hashes recorded at install time",
+        "integrity",
+        help="check FR_OS's installed files against the signed release they came from (ROADMAP SEC-15)",
+        description="Compares FR_OS's installed files -- the Python package and its compiled files, the "
+                    "systemd units, the scripts, the XDP program -- with the signed release of the running "
+                    "version under /opt/fr_os/releases, and pip's install record for the rest. Without a "
+                    "signed release on the router, pip's record only. A check that doesn't trust the "
+                    "router at all: scripts/verify-medium.py, from another computer.",
     )
     p_integrity.set_defaults(handler=_cmd_integrity)
 
@@ -673,6 +679,10 @@ def _cmd_integrity(args: argparse.Namespace) -> int:
         print(f"  modified: {name}")
     for name in report.missing:
         print(f"  missing:  {name}")
+    for name in report.added:
+        print(f"  added:    {name}")
+    if report.ok and not report.basis:
+        print("  (against pip's install record only -- see `firewall-cli integrity --help`)")
     if not report.verifiable:
         return 2
     return 0 if report.ok else 1

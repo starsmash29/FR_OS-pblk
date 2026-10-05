@@ -87,6 +87,15 @@ def _never_touch_the_hosts_webui_listen_record(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _never_read_the_hosts_releases(tmp_path_factory, monkeypatch):
+    """The releases the integrity check compares with (ROADMAP SEC-15,
+    /opt/fr_os/releases): none, unless a test puts one there."""
+    from frfw import paths
+
+    monkeypatch.setattr(paths, "RELEASES_DIR", tmp_path_factory.mktemp("opt_fr_os_releases"))
+
+
+@pytest.fixture(autouse=True)
 def _every_device_a_config_names_exists(monkeypatch):
     """An apply's preflight requires the network devices its steps act on
     (ROADMAP SEC-5); test configs name eth0/eth1, which this machine need

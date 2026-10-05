@@ -217,7 +217,7 @@ def _fake_install(tmp_path: Path, files: dict[str, bytes]) -> metadata.Distribut
 
 def test_an_untouched_install_is_ok(tmp_path):
     dist = _fake_install(tmp_path, {"frfw/__init__.py": b"x = 1\n", "frfw/cli.py": b"print(1)\n"})
-    report = integrity.check(dist)
+    report = integrity.check_record(dist)
     assert report.ok and report.checked == 2
 
 
@@ -226,7 +226,7 @@ def test_a_patched_or_deleted_file_is_found(tmp_path):
                                     "frfw/cli.py": b"print(1)\n"})
     (tmp_path / "site" / "frfw" / "admin_account.py").write_bytes(b"def verify(): return True  # implant\n")
     (tmp_path / "site" / "frfw" / "cli.py").unlink()
-    report = integrity.check(dist)
+    report = integrity.check_record(dist)
     assert not report.ok
     assert report.modified == ["frfw/admin_account.py"] and report.missing == ["frfw/cli.py"]
     assert report.summary == "1 modified and 1 missing of 3 installed files"
@@ -234,7 +234,7 @@ def test_a_patched_or_deleted_file_is_found(tmp_path):
 
 def test_a_development_install_is_not_called_clean(tmp_path):
     dist = _fake_install(tmp_path, {"bin/firewall-cli": b"#!/bin/sh\n"})
-    report = integrity.check(dist)
+    report = integrity.check_record(dist)
     assert not report.verifiable and not report.ok
 
 
@@ -246,6 +246,22 @@ def test_a_changed_install_shows_on_the_dashboard_and_system_screen(env, monkeyp
     assert "frfw/admin_account.py" in admin.get("/system").text
 
 
+def test_an_added_module_and_an_unsigned_release_show_on_the_screens(env, monkeypatch):
+    """ROADMAP SEC-15: a module the signed release doesn't have is a change
+    on the dashboard; a router checked against pip's record only says so."""
+    changed = integrity.IntegrityReport(300, added=["/usr/lib/frfw/zz_implant.py"],
+                                        basis="the signed release 0.2.0 (fros-release-1.pem)")
+    monkeypatch.setattr(integrity, "cached_check", lambda: changed)
+    admin = _signed_in(create_app(**env))
+    assert "zz_implant.py" in admin.get("/").text
+    system = admin.get("/system").text
+    assert "1 added of 300 installed files against the signed release 0.2.0" in system
+    record_only = integrity.IntegrityReport(10, note="no signed release of 0.2.0 on this router "
+                                            "(a development or local build): checked against pip's install record only")
+    monkeypatch.setattr(integrity, "cached_check", lambda: record_only)
+    assert "checked against pip&#39;s install record only" in admin.get("/system").text
+
+
 def test_the_cli_exit_code(monkeypatch, capsys):
     from frfw import cli
 
@@ -254,3 +270,8 @@ def test_the_cli_exit_code(monkeypatch, capsys):
     assert "missing:  frfw/x.py" in capsys.readouterr().out
     monkeypatch.setattr(integrity, "check", lambda: integrity.IntegrityReport(3))
     assert cli.main(["integrity"]) == 0
+    # ROADMAP SEC-15: a module added to the package is a change too.
+    monkeypatch.setattr(integrity, "check", lambda: integrity.IntegrityReport(
+        3, added=["/usr/lib/frfw/zz_implant.py"], basis="the signed release 0.2.0"))
+    assert cli.main(["integrity"]) == 1
+    assert "added:    /usr/lib/frfw/zz_implant.py" in capsys.readouterr().out
