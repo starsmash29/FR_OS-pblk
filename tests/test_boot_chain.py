@@ -31,7 +31,7 @@ from pathlib import Path
 
 import pytest
 
-from frfw import persistence
+from frfw import kernel_boot, persistence
 
 REPO = Path(__file__).resolve().parent.parent
 LB = REPO / "installer" / "live-build"
@@ -63,7 +63,7 @@ function initrd {
 """
 
 TOOLS = ("grub-mkstandalone", "grub-mkimage", "mkfs.vfat", "mmd", "mcopy", "xorriso", "sfdisk",
-         "qemu-system-x86_64")
+         "qemu-system-x86_64", "mkfs.ext4", "debugfs")
 missing = [t for t in TOOLS if shutil.which(t) is None]
 pytestmark = pytest.mark.skipif(
     bool(missing) or not ISOHDPFX.is_file() or not Path("/usr/lib/grub/i386-pc/lnxboot.img").is_file()
@@ -119,7 +119,8 @@ def iso(tmp_path_factory) -> Path:
 
 def _stick(iso: Path, where: Path) -> Path:
     """The ISO written to a stick, with the persistence partition
-    frfw.persistence.create_on_boot_medium appends after it."""
+    frfw.persistence.create_on_boot_medium appends after it (no file
+    system on it yet: _persistence_fs makes one)."""
     stick = where / "stick.img"
     shutil.copyfile(iso, stick)
     with stick.open("r+b") as fh:
@@ -135,8 +136,40 @@ def _stick(iso: Path, where: Path) -> Path:
     return stick
 
 
-def _boot(medium: Path, *, firmware: str, cdrom: bool, where: Path) -> str:
-    serial = where / f"{firmware}-{'cd' if cdrom else 'stick'}.log"
+def _partition_3(stick: Path) -> tuple[int, int]:
+    table = json.loads(subprocess.run(["sfdisk", "--json", str(stick)], capture_output=True, text=True,
+                                      check=True).stdout)["partitiontable"]
+    part = table["partitions"][-1]
+    return part["start"] * table["sectorsize"], part["size"] * table["sectorsize"]
+
+
+def _persistence_fs(stick: Path, root: Path) -> None:
+    """Partition 3 becomes an ext4 file system labelled "persistence"
+    (as frfw.persistence makes it) holding the tree `root`."""
+    start, size = _partition_3(stick)
+    image = stick.with_name("persistence.ext4")
+    image.unlink(missing_ok=True)
+    subprocess.run(["mkfs.ext4", "-q", "-F", "-L", persistence.LABEL, "-d", str(root), str(image),
+                    f"{size // 1024}k"], check=True, capture_output=True)
+    with stick.open("r+b") as fh:
+        fh.seek(start)
+        fh.write(image.read_bytes())
+
+
+def _grubenv(stick: Path) -> dict[str, str]:
+    """The block GRUB left on the stick's persistence partition."""
+    start, size = _partition_3(stick)
+    image = stick.with_name("persistence.ext4")
+    with stick.open("rb") as fh:
+        fh.seek(start)
+        image.write_bytes(fh.read(size))
+    proc = subprocess.run(["debugfs", "-R", f"cat /{kernel_boot.BOOT_DIR_NAME}/{kernel_boot.ENV_NAME}", str(image)],
+                          capture_output=True, check=True)
+    return kernel_boot.parse_env(proc.stdout)
+
+
+def _boot(medium: Path, *, firmware: str, cdrom: bool, where: Path, name: str = "") -> str:
+    serial = where / f"{firmware}-{'cd' if cdrom else 'stick'}{name}.log"
     cmd = ["qemu-system-x86_64", "-m", "512", "-display", "none", "-no-reboot", "-nic", "none",
            "-serial", f"file:{serial}"]
     if cdrom:
@@ -147,7 +180,8 @@ def _boot(medium: Path, *, firmware: str, cdrom: bool, where: Path) -> str:
                 "-device", "virtio-blk-pci,drive=medium,bootindex=0"]
     if firmware == "uefi":
         code, variables = next((c, v) for c, v in OVMF if c.is_file() and v.is_file())
-        shutil.copyfile(variables, where / "vars.fd")
+        if not (where / "vars.fd").exists():  # one machine, booted again and again
+            shutil.copyfile(variables, where / "vars.fd")
         cmd += ["-drive", f"if=pflash,format=raw,readonly=on,file={code}",
                 "-drive", f"if=pflash,format=raw,file={where / 'vars.fd'}"]
     try:
@@ -168,7 +202,101 @@ def test_both_firmwares_boot_the_default_entry_of_one_grub_menu(iso, tmp_path, f
     args = re.findall(r"^FROS-ARG (\S+)$", log.split("FROS-PROBE linux", 1)[1], re.M)
     loader = "grub-pc" if firmware == "bios" else "grub-efi"
     # The default entry -- not the fail-safe one -- with the options the
-    # BIOS menu had before GRUB came in front of it.
-    assert args == ["/live/vmlinuz", "boot=live", "config", *_bootappend_live().split(),
-                    f"fr_os.loader={loader}"], log[-3000:]
+    # BIOS menu had before GRUB came in front of it; nothing staged
+    # (ROADMAP SEC-14), so the image's own kernel.
+    assert _image_kernel_line(args, loader, "image"), log[-3000:]
     assert "FROS-PROBE initrd /live/initrd.img" in log
+
+
+# -- a kernel staged on the persistence partition (ROADMAP SEC-14) ----------------------
+
+#: Enough of a kernel for frfw.kernel_boot.stage(): the setup header's
+#: magic. GRUB never loads it here -- the probe stands in for `linux`.
+FAKE_KERNEL = b"\0" * 0x202 + b"HdrS" + b"k" * 4096
+
+
+def _kernel_args(log: str) -> list[str]:
+    assert "FROS-PROBE linux" in log, log[-3000:]
+    return re.findall(r"^FROS-ARG (\S+)$", log.split("FROS-PROBE linux", 1)[1], re.M)
+
+
+def _staged_stick(iso: Path, where: Path, *, state: str | None = None, damage: bool = False) -> Path:
+    """A stick whose persistence partition has a kernel staged by
+    frfw.kernel_boot.stage() -- in state `state` instead of "trial", or
+    with its initrd damaged after its hashes were taken."""
+    stick = _stick(iso, where)
+    root = where / "persistence-root"
+    (root / "rw").mkdir(parents=True)
+    (root / "persistence.conf").write_text(persistence.CONF_CONTENT)
+    (where / "vmlinuz-new").write_bytes(FAKE_KERNEL)
+    (where / "initrd-new").write_bytes(b"initrd" * 1000)
+    boot_dir = root / kernel_boot.BOOT_DIR_NAME
+    kernel_boot.stage(where / "vmlinuz-new", where / "initrd-new", "6.1.0-99-amd64", boot_dir=boot_dir)
+    if state:
+        kernel_boot.write_env(boot_dir / kernel_boot.ENV_NAME,
+                              {kernel_boot.STATE: state, kernel_boot.STAGED: "6.1.0-99-amd64"})
+    if damage:
+        (boot_dir / kernel_boot.SLOT / kernel_boot.INITRD).write_bytes(b"damaged" * 1000)
+    _persistence_fs(stick, root)
+    return stick
+
+
+def _staged_kernel_line(args: list[str], loader: str, mode: str) -> bool:
+    return (args[0].endswith(f"/{kernel_boot.BOOT_DIR_NAME}/{kernel_boot.SLOT}/{kernel_boot.KERNEL}")
+            and args[1:] == ["boot=live", "config", *_bootappend_live().split(), f"fr_os.loader={loader}",
+                             f"fr_os.kernel={mode}", "panic=10"])
+
+
+def _image_kernel_line(args: list[str], loader: str, mode: str) -> bool:
+    return args == ["/live/vmlinuz", "boot=live", "config", *_bootappend_live().split(), f"fr_os.loader={loader}",
+                    f"fr_os.kernel={mode}"]
+
+
+def _needs(firmware: str) -> None:
+    if firmware == "uefi" and not any(c.is_file() and v.is_file() for c, v in OVMF):
+        pytest.skip("needs OVMF (the ovmf package)")
+
+
+@pytest.mark.parametrize("firmware", ["bios", "uefi"])
+def test_a_staged_kernel_is_tried_once_then_the_images_kernel_boots(iso, tmp_path, firmware):
+    """Its trial boot never confirms (a panic, a hang): the next boot is
+    the image's kernel, marked as a fallback, and the one after it too."""
+    _needs(firmware)
+    loader = "grub-pc" if firmware == "bios" else "grub-efi"
+    stick = _staged_stick(iso, tmp_path)
+    assert _grubenv(stick) == {"fr_os_state": "trial", "fr_os_staged": "6.1.0-99-amd64"}
+
+    log = _boot(stick, firmware=firmware, cdrom=False, where=tmp_path, name="-1")
+    assert _staged_kernel_line(_kernel_args(log), loader, "trial"), log[-3000:]
+    assert re.search(r"^FROS-PROBE initrd \S+/fr_os-boot/staged/initrd\.img$", log, re.M), log[-3000:]
+    # Written before the kernel ran, so a kernel that never comes back
+    # is not tried again.
+    assert _grubenv(stick)["fr_os_state"] == "trying"
+
+    log = _boot(stick, firmware=firmware, cdrom=False, where=tmp_path, name="-2")
+    assert _image_kernel_line(_kernel_args(log), loader, "fallback"), log[-3000:]
+    assert _grubenv(stick) == {"fr_os_state": "failed", "fr_os_staged": "6.1.0-99-amd64"}
+
+    log = _boot(stick, firmware=firmware, cdrom=False, where=tmp_path, name="-3")
+    assert _image_kernel_line(_kernel_args(log), loader, "image"), log[-3000:]
+    assert _grubenv(stick)["fr_os_state"] == "failed"
+
+
+@pytest.mark.parametrize("firmware", ["bios", "uefi"])
+def test_a_confirmed_kernel_boots_by_default_and_every_boot_is_checked(iso, tmp_path, firmware):
+    _needs(firmware)
+    loader = "grub-pc" if firmware == "bios" else "grub-efi"
+    stick = _staged_stick(iso, tmp_path, state="good")
+    log = _boot(stick, firmware=firmware, cdrom=False, where=tmp_path)
+    assert _staged_kernel_line(_kernel_args(log), loader, "staged"), log[-3000:]
+    assert _grubenv(stick)["fr_os_state"] == "booting"  # until the router confirms this boot too
+
+
+@pytest.mark.parametrize("firmware", ["bios", "uefi"])
+def test_a_staged_kernel_whose_files_dont_match_their_hashes_is_never_booted(iso, tmp_path, firmware):
+    _needs(firmware)
+    loader = "grub-pc" if firmware == "bios" else "grub-efi"
+    stick = _staged_stick(iso, tmp_path, damage=True)
+    log = _boot(stick, firmware=firmware, cdrom=False, where=tmp_path)
+    assert _image_kernel_line(_kernel_args(log), loader, "fallback"), log[-3000:]
+    assert _grubenv(stick)["fr_os_state"] == "failed"

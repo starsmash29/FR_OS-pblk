@@ -102,6 +102,8 @@ ROOT = {
     "fr-tls-fp.service": "opens a pinned BPF map, then drops to fr_os-sensor (frfw.privdrop)",
     "fr-xdp-sni-logger.service": "opens a pinned BPF map, then drops to fr_os-sensor (frfw.privdrop)",
     "fr-dns-log-trim.service": "empties dnsmasq's (nobody's) query log; CAP_DAC_OVERRIDE only, no network",
+    "fr-kernel-confirm.service": "writes the boot environment on the persistence partition, reads the ruleset "
+                                 "(ROADMAP SEC-14)",
 }
 
 UNPRIVILEGED = {
@@ -308,3 +310,15 @@ def test_the_query_log_trim_can_do_nothing_but_empty_that_file():
     assert one(settings, "ReadWritePaths") == f"-{paths.DNS_QUERY_LOG_DIR}"
     assert one(settings, "PrivateNetwork") == "yes"
     assert one(settings, "RestrictAddressFamilies") == "AF_UNIX"
+
+
+def test_the_kernel_trial_writes_only_the_boot_environment_and_the_audit_log():
+    """ROADMAP SEC-14: fr-kernel-confirm writes the GRUB environment block
+    on the persistence partition's own root (outside the overlay) and a
+    security alert; it reads the ruleset, and asks systemd -- never the
+    kernel itself -- to reboot after a failed trial."""
+    settings = service_section("fr-kernel-confirm.service")
+    assert one(settings, "ReadWritePaths").split() == ["-/run/live/persistence", "-/var/log/fr_os"]
+    assert one(settings, "CapabilityBoundingSet") == "CAP_NET_ADMIN"
+    assert "@reboot" in one(settings, "SystemCallFilter")
+    assert one(settings, "IPAddressDeny") == "any" and one(settings, "IPAddressAllow") == "localhost"

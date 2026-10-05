@@ -74,6 +74,11 @@ if [[ -f "$REPO_ROOT/systemd/journald-fr_os.conf" ]]; then
     install -D -m 0644 "$REPO_ROOT/systemd/journald-fr_os.conf" /etc/systemd/journald.conf.d/fr_os.conf
 fi
 
+if [[ -f "$REPO_ROOT/systemd/watchdog-fr_os.conf" ]]; then
+    echo "==> Hardware watchdog, when the machine has one (ROADMAP SEC-14)"
+    install -D -m 0644 "$REPO_ROOT/systemd/watchdog-fr_os.conf" /etc/systemd/system.conf.d/fr_os-watchdog.conf
+fi
+
 echo "==> Installing systemd units"
 if [[ -d "$REPO_ROOT/systemd" ]]; then
     install -m 0644 "$REPO_ROOT/systemd/fr-accounts.service" "$SYSTEMD_DIR/"

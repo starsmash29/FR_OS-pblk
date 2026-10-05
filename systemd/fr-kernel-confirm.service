@@ -1,0 +1,54 @@
+[Unit]
+Description=FR_OS kernel trial: keep a staged kernel the router came up on (ROADMAP SEC-14)
+Documentation=https://github.com/starsmash29/FR_OS-pblk
+# Only on a boot FR_OS's GRUB menu started (grub.cfg puts fr_os.kernel= on
+# every kernel line). On the staged kernel it checks the router came up --
+# the ruleset loaded, the applied config's devices there, the webUI
+# answering, persistence active -- and records it in the boot environment
+# on the persistence partition (frfw.kernel_boot). A trial boot that
+# doesn't come up reboots once into the image's own kernel; a fallback
+# boot raises a security alert. Waits up to 3 minutes for the router.
+ConditionKernelCommandLine=fr_os.kernel
+After=fr-firewall.service fr-webui.service fr-persistence-setup.service network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=firewall-cli kernel confirm-boot
+TimeoutStartSec=6min
+StandardOutput=journal+console
+# Sandbox (security-lessons I1; checked by tests/test_systemd_sandbox.py).
+# Root, because it writes the boot environment on the persistence
+# partition (outside the overlay, /run/live/persistence), reads the
+# ruleset (nft: CAP_NET_ADMIN) and may ask systemd to reboot (a failed
+# trial). Writes nothing else but the audit log's security alert; talks
+# to nothing but the webUI on loopback (which it always listens on).
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=-/run/live/persistence -/var/log/fr_os
+ProtectHome=yes
+UMask=0077
+ProtectProc=invisible
+IPAddressDeny=any
+IPAddressAllow=localhost
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+MemoryDenyWriteExecute=yes
+SystemCallFilter=~@privileged @resources @clock @cpu-emulation @debug @module @obsolete @raw-io @reboot @swap @mount
+SystemCallErrorNumber=EPERM
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
+CapabilityBoundingSet=CAP_NET_ADMIN
+
+[Install]
+WantedBy=multi-user.target

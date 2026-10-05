@@ -27,6 +27,11 @@ root and the persistence partition's `rw`.
 Compiled files (.pyc) are checked only when this Python is the router's
 (3.11 on Debian 12); otherwise they are counted and the result says so.
 
+A kernel staged on the persistence partition (ROADMAP SEC-14) is listed
+with its version, its state and the SHA256 of its files. It is not part
+of the signed release, so it is shown, not judged: compare the hashes
+with the Debian package it came from.
+
 Exit status: 0 = every file matches the signed release, 1 = files were
 changed, added or are missing, 2 = it could not be verified.
 """
@@ -45,7 +50,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "src"))
 
-from frfw import integrity, release_signing  # noqa: E402
+from frfw import integrity, kernel_boot, release_signing  # noqa: E402
 
 XDP_OBJECT = "/usr/local/share/fr_os/bpf/xdp_sni_filter.o"
 RELEASES = "/opt/fr_os/releases"
@@ -153,6 +158,7 @@ def verify(lower: Path, upper: Path, *, keys: list[Path], release_dir: Path | No
     result = integrity.compare_with_release(view, source, package_dir=package_dir, xdp_object=XDP_OBJECT,
                                             pyc_tag=pyc_tag)
     return {
+        "staged_kernel": staged_kernel(upper.parent / kernel_boot.BOOT_DIR_NAME),
         "version": version,
         "key": key.name,
         "checked": result.checked,
@@ -161,6 +167,19 @@ def verify(lower: Path, upper: Path, *, keys: list[Path], release_dir: Path | No
         "added": result.added,
         "unchecked_pyc": result.unchecked_pyc,
         "pyc_tag": pyc_tag,
+    }
+
+
+def staged_kernel(boot_dir: Path) -> dict | None:
+    """The kernel staged next to the persistence partition's rw/, if any."""
+    env = kernel_boot.read_env(boot_dir / kernel_boot.ENV_NAME)
+    if not env.get(kernel_boot.STATE):
+        return None
+    return {
+        "version": env.get(kernel_boot.STAGED),
+        "state": env[kernel_boot.STATE],
+        "sha256": kernel_boot.staged_files(boot_dir),
+        "intact": kernel_boot.files_intact(boot_dir),
     }
 
 
@@ -201,6 +220,13 @@ def main(argv: list[str] | None = None) -> int:
         for what in ("modified", "missing", "added"):
             for path in result[what]:
                 print(f"  {what + ':':10} {path}")
+        kernel = result["staged_kernel"]
+        if kernel:
+            print(f"  staged kernel {kernel['version']} ({kernel['state']}), not part of the signed release -- "
+                  "compare with its Debian package"
+                  + ("" if kernel["intact"] else "; ITS FILES DON'T MATCH THEIR SHA256SUMS"))
+            for name, digest in sorted(kernel["sha256"].items()):
+                print(f"    {name}: sha256 {digest}")
         if result["unchecked_pyc"]:
             print(f"  {result['unchecked_pyc']} compiled files are for {result['pyc_tag']}, not this Python: "
                   "not checked (run this with the router's Python, 3.11, to check them too)")

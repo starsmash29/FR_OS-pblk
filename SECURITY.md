@@ -61,7 +61,13 @@ its boot medium, so a kernel package upgrade on the router would never
 be used. Kernel fixes arrive with a new FR_OS image: we publish one when
 a Debian kernel security update matters for a router (remote reachable,
 netfilter, network drivers), and the release notes say so. Writing the
-new image to the boot medium is the way to install it today.
+new image to the boot medium is one way to install it. The other keeps
+the router's medium: a kernel (and an initrd built for it) staged on the
+persistence partition with `firewall-cli kernel stage` is tried once at
+the next reboot -- the admin's, the router never reboots by itself for
+it -- and kept only if the router comes up on it; otherwise the image's
+own kernel boots again, with a security alert (ROADMAP SEC-14). Fetching
+Debian's kernel package for that is still to come.
 
 ## Scope
 

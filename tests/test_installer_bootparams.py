@@ -100,9 +100,22 @@ def test_only_the_grub_entry_is_the_menu_default():
 
 
 def test_both_firmwares_say_which_grub_started_the_kernel():
-    # installer/qemu-boot-test.py looks for it in the kernel command line.
-    linux_lines = [line for line in GRUB_CFG.read_text().splitlines() if line.strip().startswith("linux ")]
-    assert linux_lines and all(line.endswith(" fr_os.loader=grub-${grub_platform}") for line in linux_lines)
+    # installer/qemu-boot-test.py looks for it in the kernel command line,
+    # frfw.kernel_boot for fr_os.kernel= (ROADMAP SEC-14).
+    linux_lines = [line.strip() for line in GRUB_CFG.read_text().splitlines() if line.strip().startswith("linux ")]
+    image = [line for line in linux_lines if line.startswith("linux /live/vmlinuz ")]
+    staged = [line for line in linux_lines if line.startswith("linux ($fr_os_pers)/fr_os-boot/staged/vmlinuz ")]
+    assert len(image) == 2 and len(staged) == 1 and len(linux_lines) == 3
+    assert all(line.endswith(" fr_os.loader=grub-${grub_platform} fr_os.kernel=${fr_os_image}") for line in image)
+    # A staged kernel that panics reboots by itself: that is a failed trial.
+    assert staged[0].endswith(" fr_os.loader=grub-${grub_platform} fr_os.kernel=${fr_os_kernel} panic=10")
+
+
+def test_grub_loads_only_its_two_variables_from_the_persistence_partition():
+    """ROADMAP SEC-14: the router writes grubenv; GRUB takes fr_os_state and
+    fr_os_staged from it and nothing else (no `default`, no `prefix`)."""
+    loads = [line.split() for line in GRUB_CFG.read_text().splitlines() if line.strip().startswith("load_env")]
+    assert loads == [["load_env", "--file", '"$fr_os_env"', "fr_os_state", "fr_os_staged"]]
 
 
 def test_grub_menu_on_the_serial_console_on_bios():
@@ -119,12 +132,15 @@ def test_the_iso_script_builds_grub_for_bios():
     # grub.cfg calls is built in.
     modules = re.search(r'^GRUB_MODULES="([^"]+)"', script, re.M).group(1).split()
     commands = {"serial": "serial", "terminal_input": "terminal", "terminal_output": "terminal",
-                "linux": "linux", "initrd": "linux", "[": "test", "search": "search"}
+                "linux": "linux", "initrd": "linux", "[": "test", "search": "search",
+                "load_env": "loadenv", "save_env": "loadenv", "hashsum": "hashsum"}
     used = {word for line in GRUB_CFG.read_text().splitlines() if not line.lstrip().startswith("#")
-            for word in line.split()[:2]}
+            for word in line.split()}
+    assert {"load_env", "save_env", "hashsum"} <= used  # ROADMAP SEC-14
     for command, module in commands.items():
         if command in used:
             assert module in modules, command
+    assert "gcry_sha256" in modules  # hashsum --hash sha256
 
 
 @pytest.mark.skipif(shutil.which("grub-script-check") is None, reason="grub-script-check not installed")

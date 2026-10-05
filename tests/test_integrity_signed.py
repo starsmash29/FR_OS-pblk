@@ -295,6 +295,29 @@ def test_the_offline_check_finds_what_the_persistence_layer_changed(medium):
     assert result["modified"] == [f"{PACKAGE}/cli.py"]
 
 
+def test_the_offline_check_lists_a_staged_kernel(medium, tmp_path):
+    """ROADMAP SEC-14: a kernel staged next to the persistence layer is
+    shown with its hashes -- not judged, it isn't in the signed release."""
+    from frfw import kernel_boot
+
+    xdp = medium["lower"] / "usr/local/share/fr_os/bpf/xdp_sni_filter.o"
+    xdp.parent.mkdir(parents=True, exist_ok=True)
+    xdp.write_bytes(b"\x7fELF fake xdp program")
+    (tmp_path / "vmlinuz").write_bytes(b"\0" * 0x202 + b"HdrS" + b"k" * 100)
+    (tmp_path / "initrd.img").write_bytes(b"initrd")
+    boot_dir = medium["upper"].parent / kernel_boot.BOOT_DIR_NAME
+    kernel_boot.stage(tmp_path / "vmlinuz", tmp_path / "initrd.img", "6.1.0-99-amd64", boot_dir=boot_dir)
+    code, result = _verify(medium)
+    assert code == 0, result
+    kernel = result["staged_kernel"]
+    assert kernel["version"] == "6.1.0-99-amd64" and kernel["state"] == "trial" and kernel["intact"]
+    assert kernel["sha256"] == kernel_boot.staged_files(boot_dir) and set(kernel["sha256"]) == {"vmlinuz", "initrd.img"}
+
+    (boot_dir / "staged" / "initrd.img").write_bytes(b"changed")
+    _code, result = _verify(medium)
+    assert result["staged_kernel"]["intact"] is False
+
+
 @pytest.mark.skipif(os.geteuid() != 0, reason="whiteouts are character devices: mknod needs root")
 def test_a_file_deleted_on_the_persistence_layer_is_missing(medium):
     up = medium["upper"] / PACKAGE.lstrip("/")
