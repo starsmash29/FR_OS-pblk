@@ -159,6 +159,11 @@ def status_page(
             "ztna_username": result.get("username") if authorized else None,
             "expires_in_seconds": expires_in,
             "expires_in_display": _format_duration(expires_in) if expires_in is not None else None,
+            # ROADMAP SEC-6: what the sign-in is bound to -- this device's
+            # MAC, or (empty) a WireGuard key -- and whether this client
+            # can sign in here at all.
+            "bound_mac": result.get("mac") if authorized else None,
+            "not_direct": result.get("direct") is False,
             "error": request.query_params.get("error"),
             "success": request.query_params.get("success"),
         },

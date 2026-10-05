@@ -15,6 +15,10 @@ from frfw.webui.auth_rate_limiter import BruteforceGuard
 from frfw.webui.deps import CSRF_FIELD, _SAFE_METHODS
 
 
+#: The MAC the fake helper "sees" the test client at (ROADMAP SEC-6).
+FAKE_CLIENT_MAC = "02:00:00:00:00:01"
+
+
 class FakeHelper:
     """An in-memory stand-in for the real Unix-socket apply-helper.
 
@@ -81,7 +85,9 @@ class FakeHelper:
             return {"ok": False, "message": f"no such ZTNA user {username!r}"}
         ttl = config.ztna.session_ttl_seconds
         self._ztna_authorizations[ip] = (username, time.time() + ttl)
-        return {"ok": True, "message": f"{ip} authorized", "expires_in": ttl}
+        # The real helper binds the sign-in to the MAC it sees the client
+        # at (ROADMAP SEC-6); the test client is one fixed device.
+        return {"ok": True, "message": f"{ip} authorized", "expires_in": ttl, "mac": FAKE_CLIENT_MAC}
 
     def ztna_status(self, ip: str) -> dict:
         entry = self._ztna_authorizations.get(ip)
@@ -92,7 +98,8 @@ class FakeHelper:
         if remaining <= 0:
             del self._ztna_authorizations[ip]
             return {"ok": True, "authorized": False}
-        return {"ok": True, "authorized": True, "username": username, "expires_in": remaining}
+        return {"ok": True, "authorized": True, "username": username, "expires_in": remaining,
+                "mac": FAKE_CLIENT_MAC}
 
     def refresh_adblock(self) -> dict:
         self.refresh_adblock_calls += 1

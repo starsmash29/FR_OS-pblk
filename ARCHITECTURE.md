@@ -1492,23 +1492,65 @@ usernames and password hashes -- separate from the webUI's admin account
 the administrator). Instead of introducing a new "protected zone"
 concept, the existing `Rule` dataclass got a `require_ztna: bool` field
 -- a rule can thus *optionally* require, alongside its
-from_zone/to_zone/proto/port/address match, that the source IP be in the
-ZTNA set, reusing the same engine rather than a parallel abstraction.
-Passwords are stored as a PBKDF2-HMAC-SHA256 hash (the same 200k-iteration
-scheme as `frfw.admin_account`) -- this is *hashing*, not reversible
-encryption, which is the right approach for stored passwords.
+from_zone/to_zone/proto/port/address match, that the client be signed in
+(in one of the ZTNA sets below), reusing the same engine rather than a
+parallel abstraction. Passwords are hashed the same way as the webUI's
+accounts (`hashlib.scrypt`, security-lessons G2) -- *hashing*, not
+reversible encryption.
 
-### Data plane: an nftables named set with a kernel-native timeout
+### Data plane: nftables sets with a kernel-native timeout, one device per session
 
-`frfw.nft.builder` renders a set named `authenticated_ztna_users` with
-`flags dynamic,timeout` (only if `ztna.enabled`), and appends an `ip
-saddr @authenticated_ztna_users` match to every `require_ztna: true`
-rule. Elements added to the set carry their own individual timeout (`add
-element ... { <ip> timeout <n>s }`) -- meaning expired IPs are evicted by
-the **kernel** itself, with zero cron jobs or userspace background
-processes. This has also been confirmed with a real test: an element
-added with a 5-second timeout was gone from the set within 6 seconds,
-with no code running (see `tests/test_ztna.py`).
+What a session lets in is one *device*, not a source address (ROADMAP
+SEC-6, review v0.2.0 R12). An address alone let everyone behind one NAT
+in once one person signed in, and let another device on the LAN take a
+signed-in address over. `frfw.nft.builder` renders two sets, both
+`flags dynamic,timeout`:
+
+- `authenticated_ztna_users`, `type ipv4_addr . ether_addr`: a device on
+  the router's own networks, by its address *and* the MAC the router
+  sees it at;
+- `authenticated_ztna_tunnel`, `type ipv4_addr`: a WireGuard client, by
+  its tunnel address. WireGuard binds that address to the client's key
+  (cryptokey routing: a peer can only send from its allowed address), so
+  in the tunnel the address *is* the client, and there is no MAC to add.
+
+A `require_ztna: true` rule is rendered once for each (nft has no "or"
+between lookups of different set types): `ip saddr . ether saddr
+@authenticated_ztna_users`, and `iifname "wg0" ip saddr
+@authenticated_ztna_tunnel` -- a tunnel session counts only for traffic
+that came out of the tunnel. Both sets are declared even while ZTNA is
+off, empty: a `require_ztna` rule left in the config then matches
+nothing (fails closed) instead of naming a set that isn't there, which
+made the whole ruleset fail to load.
+
+Elements carry their own timeout (`add element ... { <ip> . <mac>
+timeout <n>s }`), so expired sessions are evicted by the **kernel**
+itself, with zero cron jobs or userspace background processes. Confirmed
+with a real test: an element added with a 2-second timeout is gone
+within 3 seconds, with no code running (`tests/test_ztna.py`).
+
+**Who decides which device signed in: root, from the router's own view.**
+The webUI passes only the connecting address (`request.client.host`,
+never a header). The apply-helper (`_ztna_client_mac` in
+`frfw.helper.server`) then decides:
+
+1. an address in the WireGuard tunnel's network while WireGuard is on:
+   the tunnel set. A TCP connection from such an address can't be
+   completed from anywhere else -- the router's replies go into the
+   tunnel;
+2. otherwise the MAC in the router's own neighbour table (`ip -j neigh
+   show to <ip>`, `frfw.ztna.client_link`). The sign-in request has just
+   reached the router, so a client on the LAN has a fresh entry;
+3. no usable neighbour entry: the client is behind another router or a
+   NAT the router can't see into, so it can't tell the devices there
+   apart. The sign-in is **refused** (`ClientNotDirect`), and the user is
+   told to connect through the WireGuard VPN instead.
+
+Limits, stated: a NAT device *on* the LAN is still one device to the
+router, so whoever is behind it shares its sign-in; and a device on the
+same LAN that clones both the address and the MAC of a signed-in one is
+indistinguishable from it at layer 2 -- as for any L2 access control.
+Per-client credentials beyond that (device posture, FIDO2) are THR-5.
 
 ### Control plane: login via the privileged helper
 
@@ -1519,10 +1561,10 @@ Security model above). `GET/POST /ztna/login`
 `ZtnaConfig.users` (in a timing-safe way -- the hash computation also runs
 for an unknown username, so the response time can't be used to guess a
 username), then on a successful login sends the client request's source
-IP via a new `authorize_ztna` unix-socket command
+IP via the `authorize_ztna` unix-socket command
 (`frfw.helper.protocol/server/client`) to the root-running
-`fr-apply-helper`, which adds the IP to the kernel set with the TTL set
-in the config.
+`fr-apply-helper`, which binds the session to the device as above and
+adds it to the kernel set with the TTL set in the config.
 
 An important finding, confirmed with a direct test: even a *read-only*
 `nft list` requires root/`CAP_NET_ADMIN` (`runuser -u nobody -- nft list
@@ -1531,11 +1573,14 @@ ruleset` → "Operation not permitted"). Because of this, `GET
 also can't read kernel state directly -- it too goes through a new
 `ztna_status` helper command, just like `authorize_ztna`. There's no
 separate browser-side session cookie: the sole source of truth is whether
-the source IP is *currently* in the kernel set, which every
+the client -- its address at the MAC the router sees it at now, or its
+tunnel address -- is *currently* in the kernel sets, which every
 `/ztna/status` call queries live through the helper -- deliberately, so
-there's no second, driftable state source living in the browser.
+there's no second, driftable state source living in the browser. The
+page shows what the session is bound to (the MAC, or the WireGuard key),
+and tells a client behind another router to use WireGuard.
 
-The display-only `/etc/fr_os/ztna_state.json` (ip → {username,
+The display-only `/etc/fr_os/ztna_state.json` (ip → {username, mac,
 authorized_at}) is *not* a source of truth, it only exists so the `/ztna`
 admin screen can show a human name next to an IP -- the actual
 authorization decision is always made by the kernel set.
@@ -1546,16 +1591,17 @@ authorization decision is always made by the kernel set.
 `flush ruleset`, which clears the *entire* kernel nftables state (every
 table/family) on every apply -- this would log out a logged-in ZTNA
 session as a side effect of a completely unrelated config change (e.g.
-saving a DHCP setting). `frfw.provision.apply_all` fixes this: the
-nftables-apply step is bracketed by
-`frfw.ztna.snapshot_before_reload()` / `restore_after_reload()` (only if
-`ztna.enabled` and not a dry run) -- the snapshot fetches the currently
-live elements along with their *remaining* TTL before the `flush`, and
-the restore writes them back after the new ruleset is loaded, so an
-admin-side config save doesn't accidentally null out another user's
-active session. This is also covered by a real, non-mocked integration
-test (`test_ztna.py`): it flushes a real nft set, then confirms the
-restore brings the sessions back with the correct remaining TTL.
+saving a DHCP setting). `frfw.provision.apply_all` fixes this:
+`frfw.ztna.snapshot_before_reload()` (only if `ztna.enabled` and not a
+dry run) reads the live sessions -- (address, MAC or "" for the tunnel,
+*remaining* TTL) -- before the reload, and the new ruleset declares them
+again in their own set, in the same nft transaction as the `flush`
+(`frfw.nft.RuntimeSets`, review FR-002), so an admin-side config save
+doesn't null out another user's active session. The address-only set of
+a version before SEC-6 yields nothing: those sessions name no device, so
+their users sign in again. Covered by real, non-mocked tests
+(`tests/test_builder.py::test_real_reload_keeps_bans_quarantines_and_sessions`,
+`tests/test_ztna.py`).
 
 ### Open issues
 

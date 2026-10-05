@@ -410,7 +410,8 @@ def test_runtime_sets_come_back_in_the_same_ruleset(minimal_config_dict, tmp_pat
     raw["ztna"] = {"enabled": True, "users": [{"username": "a", "password_hash": "x"}]}
     calls = []
     _runtime_readers(monkeypatch, calls, bruteforce=[("203.0.113.5", 300), ("203.0.113.6", 0)],
-                     ids_quarantine=[("10.0.0.9", 7000)], ztna=[("10.0.0.20", 100)],
+                     ids_quarantine=[("10.0.0.9", 7000)],
+                     ztna=[("10.0.0.20", "aa:bb:cc:dd:ee:0f", 100), ("10.99.0.2", "", 90), ("10.0.0.21", "aa:bb:cc:dd:ee:0e", 0)],
                      iot=["aa:bb:cc:dd:ee:01", "aa:bb:cc:dd:ee:02"])
 
     result = apply_all(parse_config(raw), **_apply_kwargs(tmp_path))
@@ -420,21 +421,23 @@ def test_runtime_sets_come_back_in_the_same_ruleset(minimal_config_dict, tmp_pat
     ruleset = loaded[0]
     assert "elements = { 203.0.113.5 timeout 300s }" in ruleset   # the expired ban is dropped
     assert "elements = { 10.0.0.9 timeout 7000s }" in ruleset
-    assert "elements = { 10.0.0.20 timeout 100s }" in ruleset
+    assert "elements = { 10.0.0.20 . aa:bb:cc:dd:ee:0f timeout 100s }" in ruleset
+    assert "elements = { 10.99.0.2 timeout 90s }" in ruleset
+    assert "10.0.0.21" not in ruleset   # the expired session is dropped
     assert "elements = { aa:bb:cc:dd:ee:01, aa:bb:cc:dd:ee:02 }" in ruleset
     # Nothing is re-added after the load: there is no window, and no step to fail.
     assert not [a for a in other if a[:2] == ["add", "element"]]
     assert sorted(calls) == ["bruteforce", "ids_quarantine", "iot", "ztna"]
     assert "Brute-force jail: 1 active ban(s) preserved across reload" in result.messages
     assert "AI IDS quarantine: 1 active quarantine(s) preserved across reload" in result.messages
-    assert "ZTNA gate: 1 active session(s) preserved across reload" in result.messages
+    assert "ZTNA gate: 2 active session(s) preserved across reload" in result.messages
     assert "IoT isolation: 2 isolated device(s) preserved across reload" in result.messages
 
 
 @pytest.mark.reads_runtime_sets
 def test_ztna_and_iot_sets_are_read_only_while_on(minimal_config_dict, tmp_path, monkeypatch, loaded_rulesets):
     calls = []
-    _runtime_readers(monkeypatch, calls, ztna=[("10.0.0.20", 100)], iot=["aa:bb:cc:dd:ee:01"])
+    _runtime_readers(monkeypatch, calls, ztna=[("10.0.0.20", "aa:bb:cc:dd:ee:0f", 100)], iot=["aa:bb:cc:dd:ee:01"])
     apply_all(parse_config(minimal_config_dict), **_apply_kwargs(tmp_path))
     assert sorted(calls) == ["bruteforce", "ids_quarantine"]
     assert "10.0.0.20" not in loaded_rulesets[0][0]

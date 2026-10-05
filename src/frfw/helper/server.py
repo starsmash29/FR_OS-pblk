@@ -180,6 +180,28 @@ def _handle_request(request: dict, server: "ApplyHelperServer") -> dict:
         return {"ok": False, "message": str(exc)}
 
 
+def _ztna_client_mac(ip: str, config) -> str:
+    """Which client `ip` is, for the ZTNA gate (ROADMAP SEC-6): "" for a
+    WireGuard client -- an address in the tunnel's network, bound to its
+    key by WireGuard, and only ever matched on the tunnel (a TCP
+    connection from such an address can't complete from anywhere else:
+    the router's replies go into the tunnel) -- else the MAC the router
+    sees `ip` at in its own neighbour table. A client not directly
+    attached -- behind another router or NAT -- raises ztna.ClientNotDirect."""
+    address = ipaddress.IPv4Address(ip)
+    if config.wireguard.enabled and config.wireguard.address:
+        if address in ipaddress.IPv4Interface(config.wireguard.address).network:
+            return ""
+    link = ztna.client_link(ip)
+    if link is None:
+        raise ztna.ClientNotDirect(
+            f"{ip} is not on a network the router is attached to -- it came through another router or "
+            "NAT, so the router can't tell its devices apart and won't sign them all in at once. "
+            "From outside, connect through the router's WireGuard VPN and sign in there."
+        )
+    return link.mac
+
+
 def _handle_authorize_ztna(request: dict, server: "ApplyHelperServer") -> dict:
     ip = request.get("ip")
     username = request.get("username")
@@ -203,11 +225,19 @@ def _handle_authorize_ztna(request: dict, server: "ApplyHelperServer") -> dict:
         # exists, not a second authentication step.
         return {"ok": False, "message": f"no such ZTNA user {username!r}"}
 
-    ztna.authorize_ip(ip, config.ztna.session_ttl_seconds, username, state_path=server.ztna_state_path)
+    # ROADMAP SEC-6: the device, not just its address. Decided here, by
+    # root, from the router's own view -- never from the request.
+    try:
+        mac = _ztna_client_mac(ip, config)
+    except ztna.ClientNotDirect as exc:
+        return {"ok": False, "message": str(exc)}
+    ztna.authorize_client(ip, mac, config.ztna.session_ttl_seconds, username, state_path=server.ztna_state_path)
+    basis = f"this device ({mac})" if mac else "your WireGuard key"
     return {
         "ok": True,
-        "message": f"{ip} authorized as {username!r} for {config.ztna.session_ttl_seconds}s",
+        "message": f"{ip} authorized as {username!r} for {config.ztna.session_ttl_seconds}s, bound to {basis}",
         "expires_in": config.ztna.session_ttl_seconds,
+        "mac": mac,
     }
 
 
@@ -215,8 +245,16 @@ def _handle_ztna_status(request: dict, server: "ApplyHelperServer") -> dict:
     ip = request.get("ip")
     if not isinstance(ip, str) or not ip:
         return {"ok": False, "message": "'ip' is required"}
+    try:
+        ipaddress.IPv4Address(ip)
+    except ValueError as exc:
+        return {"ok": False, "message": f"invalid IPv4 address {ip!r}: {exc}"}
+    try:
+        mac = _ztna_client_mac(ip, load_config(server.config_path))
+    except ztna.ClientNotDirect:
+        return {"ok": True, "authorized": False, "direct": False}
 
-    auth = ztna.get_authorization(ip, state_path=server.ztna_state_path)
+    auth = ztna.get_authorization(ip, mac, state_path=server.ztna_state_path)
     if auth is None:
         return {"ok": True, "authorized": False}
     return {
@@ -224,6 +262,7 @@ def _handle_ztna_status(request: dict, server: "ApplyHelperServer") -> dict:
         "authorized": True,
         "username": auth.username,
         "expires_in": auth.expires_in_seconds,
+        "mac": auth.mac,
     }
 
 
@@ -308,7 +347,7 @@ def _handle_bruteforce_status() -> dict:
 
 
 def _handle_ztna_sessions_status() -> dict:
-    sessions = [{"ip": ip, "expires_in": remaining} for ip, remaining in ztna.list_authorized()]
+    sessions = [{"ip": ip, "mac": mac, "expires_in": remaining} for ip, mac, remaining in ztna.list_authorized()]
     return {"ok": True, "sessions": sessions, "count": len(sessions)}
 
 
