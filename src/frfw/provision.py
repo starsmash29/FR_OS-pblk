@@ -63,6 +63,7 @@ before anything else comes up:
 from __future__ import annotations
 
 import dataclasses
+import json
 import shutil
 import tempfile
 from dataclasses import dataclass
@@ -202,7 +203,7 @@ def preflight(config: Config, *, adblock_hosts_path: Path = paths.ADBLOCK_HOSTS_
         ("network devices", lambda: _check_devices(config)),
     ]
     if config.dhcp.zones:
-        checks.append(("DHCP (Kea)", lambda: kea.check_syntax(kea.render_kea_config(config))))
+        checks.append(("DHCP (Kea)", lambda: _check_kea(config)))
     if config.adblocker.enabled:
         checks.append(("the ad-block DNS resolver", lambda: _check_dnsmasq(
             config, adblock_hosts_path, adblock_category_dir)))
@@ -232,6 +233,18 @@ def _check_devices(config: Config) -> None:
     missing = sorted(d for d in wanted if not ifaddr.device_exists(d))
     if missing:
         raise ifaddr.IfaddrError(f"no such network device on this machine: {', '.join(missing)}")
+
+
+def _check_kea(config: Config) -> None:
+    """`kea-dhcp4 -t` of the config, listening only on the devices that
+    are there now: Kea's check refuses a device that doesn't exist, and a
+    VLAN device (security-lessons K4) is only created by this apply's
+    address step. The DHCP step itself checks again with every device,
+    once they exist -- and a failure there is rolled back."""
+    rendered = kea.build_kea_config(config)
+    listen = rendered["Dhcp4"]["interfaces-config"]
+    listen["interfaces"] = [d for d in listen["interfaces"] if ifaddr.device_exists(d)]
+    kea.check_syntax(json.dumps(rendered, indent=2) + "\n")
 
 
 def _check_dnsmasq(config: Config, hosts_path: Path, category_dir: Path) -> None:

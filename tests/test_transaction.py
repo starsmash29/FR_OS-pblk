@@ -228,6 +228,21 @@ def test_the_preflight_refuses_before_anything_changes(dhcp_config_dict, tmp_pat
     assert loaded == [] and not (tmp_path / "kea.json").exists()
 
 
+@pytest.mark.skipif(shutil.which("kea-dhcp4") is None, reason="needs kea-dhcp4")
+def test_the_preflight_takes_a_vlan_the_apply_will_create(dhcp_config_dict, tmp_path, loaded, monkeypatch):
+    """Found by the boot test: Kea's own check refuses a device that isn't
+    there, and the segments' VLAN devices (security-lessons K4) are only
+    created by the apply's address step -- so the real kea-dhcp4 -t
+    refused every config with a segment before anything ran."""
+    dhcp_config_dict["zones"]["iot"] = {}
+    dhcp_config_dict["interfaces"]["iot"] = {"device": "lo.30", "zone": "iot", "address": "10.0.30.1/24",
+                                             "vlan": {"parent": "lo", "id": 30}}
+    dhcp_config_dict["dhcp"]["iot"] = {"range_start": "10.0.30.100", "range_end": "10.0.30.200",
+                                       "dns_servers": ["1.1.1.1"]}
+    monkeypatch.setattr(ifaddr, "device_exists", lambda device: device != "lo.30")
+    provision.preflight(parse_config(dhcp_config_dict))  # real kea-dhcp4 -t; raises if refused
+
+
 # --- the boot's fallback (firewall-cli apply --fail-closed) ----------------------
 
 
