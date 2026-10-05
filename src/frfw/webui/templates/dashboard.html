@@ -78,8 +78,9 @@
 <section class="card" style="border-color: var(--error);">
   <div class="card-head"><h3>{{ icon("error") }}Installed software changed</h3></div>
   <p>{{ integrity.summary }} -- files of FR_OS itself no longer match what was installed. If you didn't change them,
-    treat the router as compromised: reinstall from a verified image.</p>
-  <ul>{% for f in (integrity.modified + integrity.missing)[:10] %}<li><code>{{ f }}</code></li>{% endfor %}</ul>
+    treat the router as compromised: check its boot medium from another computer (scripts/verify-medium.py)
+    and reinstall from a verified image.</p>
+  <ul>{% for f in integrity.changes[:10] %}<li><code>{{ f }}</code></li>{% endfor %}</ul>
 </section>
 {% endif %}
 

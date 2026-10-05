@@ -104,13 +104,16 @@
 </div>
 <div class="card">
   <h3>Software integrity</h3>
-  <p class="muted">Every file of FR_OS is compared with the SHA-256 recorded when it was installed
-    (security-lessons G9). This catches a patched or deleted file; it can't catch someone with root who
-    rewrites the record too.</p>
+  <p class="muted">FR_OS's files -- the program, its compiled files, its systemd units and scripts, the XDP
+    program -- are compared with the signed release they came from (security-lessons G9, ROADMAP SEC-15),
+    so rewriting pip's install record doesn't hide a change. Someone with root can still change this check
+    itself: the check that doesn't trust the router reads its boot medium from another computer
+    (scripts/verify-medium.py).</p>
   {% if not integrity.verifiable %}<p><span class="badge">not verifiable</span> {{ integrity.note }}</p>
-  {% elif integrity.ok %}<p><span class="badge badge-green">ok</span> {{ integrity.summary }}</p>
-  {% else %}<p><span class="badge badge-red">changed</span> {{ integrity.summary }}</p>
-  <ul>{% for f in (integrity.modified + integrity.missing)[:20] %}<li><code>{{ f }}</code></li>{% endfor %}</ul>
+  {% elif integrity.ok %}<p id="integrity-summary"><span class="badge badge-green">ok</span> {{ integrity.summary }}</p>
+  {% if integrity.note %}<p class="muted">{{ integrity.note }}</p>{% endif %}
+  {% else %}<p id="integrity-summary"><span class="badge badge-red">changed</span> {{ integrity.summary }}</p>
+  <ul>{% for f in integrity.changes[:20] %}<li><code>{{ f }}</code></li>{% endfor %}</ul>
   {% endif %}
 </div>
 

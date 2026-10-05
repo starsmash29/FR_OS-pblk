@@ -14,7 +14,7 @@ on:
         required: false
         default: ""
       boot_test:
-        description: "Boot the ISO in QEMU three times before publishing it (installer/qemu-boot-test.py)"
+        description: "Boot the ISO in QEMU four times before publishing it (installer/qemu-boot-test.py)"
         type: boolean
         default: true
 
@@ -58,8 +58,35 @@ jobs:
             debian-archive-keyring rsync \
             clang libbpf-dev  # the XDP SNI filter's program (ROADMAP P4-1)
 
+      - name: Package and sign the source the image installs (ROADMAP SEC-15)
+        # The image installs exactly this signed tarball and keeps it, so
+        # a router checks its files against a signed release from its
+        # first boot (frfw.integrity) -- signed here, before the ISO is
+        # built, because the published SHA256SUMS can't be inside the
+        # ISO it covers.
+        id: source
+        env:
+          SIGNING_KEY: ${{ secrets.FROS_RELEASE_SIGNING_KEY }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          version=$(python3 -c "import re;print(re.search(r'__version__ = \"([^\"]+)\"', open('src/frfw/__init__.py').read()).group(1))")
+          # What the router's updater installs too (frfw.release_signing):
+          # the tagged tree, plus the XDP SNI filter's program compiled
+          # here -- a router has no compiler (ROADMAP P4-1,
+          # frfw.update._install_xdp_object).
+          ./scripts/build-xdp-object.sh bpf/xdp_sni_filter.c bpf/xdp_sni_filter.o
+          mkdir -p signed-source
+          source="frfw-${version}.tar.gz"
+          git archive --format=tar.gz -o "signed-source/$source" \
+            --prefix="frfw-${version}/bpf/" --add-file=bpf/xdp_sni_filter.o \
+            --prefix="frfw-${version}/" HEAD
+          (cd signed-source && sha256sum "$source" > SHA256SUMS)
+          ./scripts/sign-sums.sh signed-source/SHA256SUMS
+          echo "dir=$PWD/signed-source" >> "$GITHUB_OUTPUT"
+          echo "source=$source" >> "$GITHUB_OUTPUT"
+
       - name: Build hybrid live/installer ISO
-        run: sudo ./installer/build-live-image.sh
+        run: sudo ./installer/build-live-image.sh --signed-source "${{ steps.source.outputs.dir }}"
 
       - name: Name the ISO, package the source
         id: iso
@@ -68,14 +95,9 @@ jobs:
           name="FR_OS-${version}-amd64.iso"
           sudo mv installer/live-build/binary.hybrid.iso "$name"
           sudo chown "$(id -u):$(id -g)" "$name"
-          # What the router's updater installs (frfw.release_signing):
-          # the tagged tree, plus the XDP SNI filter's program the image
-          # build compiled -- a router has no compiler (ROADMAP P4-1,
-          # frfw.update._install_xdp_object).
-          source="frfw-${version}.tar.gz"
-          git archive --format=tar.gz -o "$source" \
-            --prefix="frfw-${version}/bpf/" --add-file=bpf/xdp_sni_filter.o \
-            --prefix="frfw-${version}/" HEAD
+          # The very tarball the image installed and carries.
+          source="${{ steps.source.outputs.source }}"
+          cp "signed-source/$source" "$source"
           sha256sum "$name" "$source" > SHA256SUMS
           {
             echo
@@ -93,34 +115,11 @@ jobs:
         env:
           SIGNING_KEY: ${{ secrets.FROS_RELEASE_SIGNING_KEY }}
           RELEASE_TAG: ${{ inputs.release_tag }}
-        run: |
-          if [ -z "$SIGNING_KEY" ]; then
-            if [ -n "$RELEASE_TAG" ]; then
-              echo "::error::release_tag is set but the FROS_RELEASE_SIGNING_KEY secret is not -- refusing to publish an unsigned release (docs/RELEASING.md)"
-              exit 1
-            fi
-            echo "::notice::no FROS_RELEASE_SIGNING_KEY secret: this test build is unsigned (fine for an artifact, not for a release)"
-            exit 0
-          fi
-          umask 077
-          printf '%s\n' "$SIGNING_KEY" > "$RUNNER_TEMP/release.key"
-          openssl pkeyutl -sign -rawin -inkey "$RUNNER_TEMP/release.key" -in SHA256SUMS -out SHA256SUMS.sig
-          openssl pkey -in "$RUNNER_TEMP/release.key" -pubout > "$RUNNER_TEMP/release.pub"
-          rm -f "$RUNNER_TEMP/release.key"
-          # Only publish what a router will accept: the key must be one
-          # this very commit ships.
-          python3 - "$RUNNER_TEMP/release.pub" <<'PY'
-          import sys
-          from pathlib import Path
-          sys.path.insert(0, "src")
-          from frfw.release_signing import trusted_keys, verify_signature
-          pub = Path(sys.argv[1]).read_text()
-          if not any(k.read_text() == pub for k in trusted_keys()):
-              sys.exit("::error::the signing key's public half is not in src/frfw/release_keys/")
-          print("signed by", verify_signature(Path("SHA256SUMS"), Path("SHA256SUMS.sig"), trusted_keys()).name)
-          PY
+        # Only what a router will accept is published: the key must be one
+        # this very commit ships (scripts/sign-sums.sh checks).
+        run: ./scripts/sign-sums.sh SHA256SUMS
 
-      - name: Boot test in QEMU (three boots, persistence, first boot, webUI)
+      - name: Boot test in QEMU (four boots, persistence, first boot, webUI)
         if: ${{ inputs.boot_test }}
         run: |
           sudo apt-get install -y qemu-system-x86

@@ -1063,13 +1063,56 @@ The dashboard lists the alerts an admin hasn't marked as seen (per
 admin; viewers don't get them), and the audit table on the Users screen
 marks them.
 
-The software-integrity check (`frfw.integrity`) compares every file of
-the installed package with the SHA-256 `pip` recorded in its `RECORD`:
-a patched or deleted file shows on the dashboard and the System screen,
-and `firewall-cli integrity` exits 1. It can't catch an attacker with
-root who rewrites `RECORD` too -- that needs a manifest signed with the
-release key -- and a development install (`pip install -e`) is reported
-as not verifiable, not as clean.
+The software-integrity check (`frfw.integrity`, ROADMAP SEC-15) compares
+FR_OS's installed files with the **signed release** they came from, so
+rewriting pip's `RECORD` along with a patched file no longer hides it:
+
+- **The release is on the router from its first boot.** The CI signs
+  the source tarball (with the XDP program it compiled) *before* it
+  builds the ISO -- the published `SHA256SUMS` covers the ISO, so it
+  can't be inside it -- and the image installs exactly that tarball and
+  keeps it, with its `SHA256SUMS` and signature, in
+  `/opt/fr_os/releases/<version>/` (`installer/build-live-image.sh
+  --signed-source`, `scripts/sign-sums.sh`). Every update keeps its own
+  there too, readable by all (it is a published release).
+- **Every check verifies the signature again**, with the keys the
+  package ships, then works out from the tarball what must be on disk:
+  the package as `pip install` lays it out (the modules and the
+  package-data globs of the release's own `pyproject.toml` -- checked
+  against a real wheel by the tests), the `systemd/fr-*` units, the
+  scripts in `/usr/local/sbin`, the journald drop-in and the XDP
+  program. Each is compared byte for byte; a file in the package the
+  release doesn't have is reported as *added* (an implant module).
+- **Compiled files.** Python runs a `.pyc` without reading its `.py`
+  when the header fits, so a patched `.pyc` is an implant the source
+  never shows. Each `.pyc` the router's Python would load must hold the
+  code object compiled from the signed source (code objects compare
+  their bytecode, constants and names, not the file name).
+- What the release can't vouch for -- pip's console scripts and the
+  package metadata -- is still checked against `RECORD`, and `RECORD`
+  is the whole check where there is no signed release (a local build,
+  or a test build without the signing key), which the System screen and
+  `firewall-cli integrity` say.
+
+A changed file shows on the dashboard and the System screen, and
+`firewall-cli integrity` exits 1. A release that doesn't verify is
+itself an alert.
+
+**What it can't do, and the check that can.** An attacker with root can
+change this check too, or the public keys it trusts, and make it say
+anything -- no check running on the router can rule that out. The one
+that doesn't trust the router at all runs on another computer, from a
+checkout of this repository: `sudo scripts/verify-medium.py /dev/sdX`
+with the router's USB stick (or an image of it). It mounts everything
+read-only -- the squashfs on the stick and the persistence partition,
+whose `rw` directory holds every change since (updates included) --
+puts them together as overlayfs does (whiteouts, opaque directories),
+verifies the release with *this checkout's* public keys (never keys
+from the stick), and runs the same comparison. Compiled files are
+checked when that computer's Python is the router's (3.11); otherwise
+they are counted and the result says so. The boot test runs it on the
+VM's disk image, plants a module on the persistence partition, and
+requires both this check and the router's own (next boot) to find it.
 
 ### The security score (security-lessons K8)
 

@@ -96,11 +96,22 @@ Review the diff of `requirements.lock` like code: it is what runs as root.
    record (above).
 2. Create the GitHub release with its tag (`vX.Y.Z`) on that commit.
 3. Run the *Build installer ISO* workflow on `main` with `release_tag` =
-   `vX.Y.Z`. It checks the review record, builds the ISO, packages the
-   source, writes `SHA256SUMS`, signs it, checks that the signing key's
-   public half is one this commit ships, boot-tests the ISO and uploads
-   all four assets.
-   Without the `FROS_RELEASE_SIGNING_KEY` secret it refuses to publish.
+   `vX.Y.Z`. It checks the review record, packages the source (with the
+   XDP program it compiles) and signs a `SHA256SUMS` of it, builds the
+   ISO -- which installs exactly that tarball and carries it with its
+   signature, so a router checks its files against a signed release from
+   the first boot (ROADMAP SEC-15) -- writes the published `SHA256SUMS`
+   of the ISO and the source, signs it, boot-tests the ISO and uploads
+   all four assets. Both signatures go through `scripts/sign-sums.sh`,
+   which checks that the signing key's public half is one this commit
+   ships. Without the `FROS_RELEASE_SIGNING_KEY` secret it refuses to
+   publish; a test build without it is unsigned throughout, and its
+   routers say they check against pip's record only.
+
+A router's USB stick can be checked against its signed release from
+another computer, with the keys of a checkout of this repository:
+`sudo scripts/verify-medium.py /dev/sdX` (ARCHITECTURE.md, "Detecting
+persistence").
 
 Users can check a download the same way:
 

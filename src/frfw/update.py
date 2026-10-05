@@ -467,6 +467,12 @@ def _fetch_release(repo: str, version: str, releases_dir: Path, timeout: float) 
         if cache.exists():
             shutil.rmtree(cache)
         shutil.move(str(artifacts), str(cache))
+    # Readable by everyone, like any published release: the webUI checks
+    # the installed files against it (ROADMAP SEC-15, frfw.integrity).
+    # The temporary directory it was made in is 0700.
+    cache.chmod(0o755)
+    for name in cached:
+        (cache / name.name).chmod(0o644)
 
     return next(p for p in (cache / "src").iterdir() if p.is_dir())
 

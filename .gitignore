@@ -43,6 +43,8 @@ installer/live-build/*.log
 installer/live-build/*.files
 installer/live-build/*.packages
 installer/live-build/config/includes.chroot/opt/frfw-src/
+# The signed release build-live-image.sh --signed-source embeds (ROADMAP SEC-15).
+installer/live-build/config/includes.chroot/opt/fr_os/releases/
 
 # Never committed: a local, verification-only CA bundle used to get one
 # real end-to-end build to complete inside this sandbox's own

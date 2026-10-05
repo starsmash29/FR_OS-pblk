@@ -60,23 +60,49 @@ unset PIP_CERT REQUESTS_CA_BUNDLE CURL_CA_BUNDLE SSL_CERT_FILE \
     CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE GRPC_DEFAULT_SSL_ROOTS_FILE_PATH \
     HEX_CACERTS_PATH
 
-# ROADMAP P4-1: the image ships the XDP SNI filter compiled -- a router
-# has no compiler. Built fresh from this checkout's source, then staged
-# with it; the release tarball carries this same file
-# (.github/workflows/build-installer.yml).
-echo "==> Compiling the XDP SNI filter (bpf/xdp_sni_filter.o)"
-"$REPO_ROOT/scripts/build-xdp-object.sh" "$REPO_ROOT/bpf/xdp_sni_filter.c" "$REPO_ROOT/bpf/xdp_sni_filter.o"
-
-echo "==> Staging repo source into $STAGE_DIR"
-rm -rf "$STAGE_DIR"
+# ROADMAP SEC-15: `--signed-source DIR` (the CI's build) names a directory
+# with frfw-<version>.tar.gz, its SHA256SUMS and, when the build is signed,
+# SHA256SUMS.sig. The image then installs exactly that tarball -- the XDP
+# program compiled into it included -- and keeps the three files under
+# /opt/fr_os/releases/<version>/, where frfw.integrity checks the installed
+# files against them from the first boot. Without it (a local build) the
+# checkout is staged as it is, and the router has no signed release to
+# check against until its first update.
+SIGNED_SOURCE=""
+if [[ "${1:-}" == "--signed-source" ]]; then
+    SIGNED_SOURCE="$(cd "$2" && pwd)"
+fi
+RELEASES_STAGE="$LB_DIR/config/includes.chroot/opt/fr_os/releases"
+rm -rf "$STAGE_DIR" "$RELEASES_STAGE"
 mkdir -p "$STAGE_DIR"
-rsync -a \
-    --exclude ".git" \
-    --exclude "installer" \
-    --exclude "__pycache__" \
-    --exclude "*.egg-info" \
-    --exclude ".pytest_cache" \
-    "$REPO_ROOT/" "$STAGE_DIR/"
+
+if [[ -n "$SIGNED_SOURCE" ]]; then
+    version=$(python3 -c "import re;print(re.search(r'__version__ = \"([^\"]+)\"', open('$REPO_ROOT/src/frfw/__init__.py').read()).group(1))")
+    tarball="$SIGNED_SOURCE/frfw-${version}.tar.gz"
+    echo "==> Staging the signed source $tarball into $STAGE_DIR"
+    tar -xzf "$tarball" -C "$STAGE_DIR" --strip-components=1 --exclude="frfw-${version}/installer"
+    install -d -m 0755 "$RELEASES_STAGE/$version"
+    for name in "frfw-${version}.tar.gz" SHA256SUMS SHA256SUMS.sig; do
+        if [[ -f "$SIGNED_SOURCE/$name" ]]; then
+            install -m 0644 "$SIGNED_SOURCE/$name" "$RELEASES_STAGE/$version/$name"
+        fi
+    done
+else
+    # ROADMAP P4-1: the image ships the XDP SNI filter compiled -- a router
+    # has no compiler. Built fresh from this checkout's source, then staged
+    # with it.
+    echo "==> Compiling the XDP SNI filter (bpf/xdp_sni_filter.o)"
+    "$REPO_ROOT/scripts/build-xdp-object.sh" "$REPO_ROOT/bpf/xdp_sni_filter.c" "$REPO_ROOT/bpf/xdp_sni_filter.o"
+
+    echo "==> Staging repo source into $STAGE_DIR"
+    rsync -a \
+        --exclude ".git" \
+        --exclude "installer" \
+        --exclude "__pycache__" \
+        --exclude "*.egg-info" \
+        --exclude ".pytest_cache" \
+        "$REPO_ROOT/" "$STAGE_DIR/"
+fi
 
 cd "$LB_DIR"
 

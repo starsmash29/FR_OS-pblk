@@ -38,6 +38,7 @@ import argparse
 import base64
 import hashlib
 import http.cookiejar
+import json
 import os
 import re
 import shutil
@@ -163,8 +164,9 @@ def lan_tap():
 
 
 @contextmanager
-def persistence_partition(disk: Path):
-    """Mount partition 3 (the persistence one) of the disk image read-only."""
+def persistence_partition(disk: Path, *, writable: bool = False):
+    """Mount partition 3 (the persistence one) of the disk image -- read-only
+    unless `writable` (planting the boot test's implant, ROADMAP SEC-15)."""
     loop = subprocess.run(["losetup", "--find", "--show", str(disk)], check=True,
                           capture_output=True, text=True).stdout.strip()
     mountpoint = Path(tempfile.mkdtemp(prefix="fros-p3-"))
@@ -172,7 +174,7 @@ def persistence_partition(disk: Path):
         # The hybrid ISO's partition 1 starts at sector 0; the kernel's
         # own scan skips partition 2, so add partition 3 explicitly.
         subprocess.run(["partx", "--add", "--nr", "3", loop], capture_output=True)
-        subprocess.run(["mount", "-o", "ro", f"{loop}p3", str(mountpoint)], check=True)
+        subprocess.run(["mount", "-o", "rw" if writable else "ro", f"{loop}p3", str(mountpoint)], check=True)
         try:
             yield mountpoint / "rw"  # live-boot's overlay upper directory
         finally:
@@ -180,6 +182,23 @@ def persistence_partition(disk: Path):
     finally:
         subprocess.run(["losetup", "--detach", loop], check=False)
         mountpoint.rmdir()
+
+
+#: ROADMAP SEC-15: a module planted on the persistence partition after
+#: boot 3, the way an attacker's implant would sit next to FR_OS's own;
+#: the router's own check (boot 4) and the offline one must find it.
+IMPLANT = "usr/local/lib/python3.11/dist-packages/frfw/zz_implant.py"
+
+
+def verify_medium(disk: Path) -> dict:
+    """scripts/verify-medium.py on the stick, as from another computer:
+    the result, or {"error": ...}."""
+    proc = subprocess.run([sys.executable, str(Path(__file__).resolve().parents[1] / "scripts" / "verify-medium.py"),
+                           str(disk), "--json"], capture_output=True, text=True)
+    try:
+        return json.loads(proc.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        return {"error": (proc.stderr or proc.stdout).strip()[-300:]}
 
 
 def group_id(upper: Path, name: str) -> int | None:
@@ -551,6 +570,10 @@ def main() -> int:
 def run(args: argparse.Namespace) -> int:
     workdir = args.workdir or Path(tempfile.mkdtemp(prefix="fros-qemu-"))
     workdir.mkdir(parents=True, exist_ok=True)
+    # ROADMAP SEC-15: the CI signs the source the image carries when it
+    # has the key; then SHA256SUMS.sig sits next to the ISO.
+    signed_build = (Path(args.iso).resolve().parent / "SHA256SUMS.sig").is_file()
+    print(f"signed build: {signed_build}")
     disk = workdir / "stick.img"
     shutil.copyfile(args.iso, disk)
     with disk.open("r+b") as fh:
@@ -640,6 +663,18 @@ def run(args: argparse.Namespace) -> int:
         surface_page = get(opener, "/surface")
         clean = 'class="flash-success" id="unneeded"' in surface_page
         found = re.search(r'id="unneeded">(.*?)</div>', surface_page, re.S)
+        # ROADMAP SEC-15: from the first boot, FR_OS's files are checked
+        # against the signed release the image carries (or, in a build
+        # without the signing key, said to be unsigned).
+        system_page = get(opener, "/system")
+        integrity = re.search(r'id="integrity-summary">(.*?)</p>', system_page, re.S)
+        integrity_text = " ".join(re.sub(r"<[^>]+>", " ", integrity.group(1)).split()) if integrity else ""
+        if signed_build:
+            check("installed files match the signed release" in integrity_text,
+                  f"the router checks its files against the signed release in the image (ROADMAP SEC-15): "
+                  f"{integrity_text[:200] or system_page[:200]}")
+        else:
+            check("not signed" in system_page, "an unsigned test build says its release is not signed (ROADMAP SEC-15)")
         check(clean, "nothing listens that the config doesn't need (security-lessons K7)"
               + ("" if clean else ": " + " ".join((found.group(1) if found else surface_page[:300]).split())))
         # ROADMAP SEC-4: the webUI has no journal access any more; its
@@ -802,6 +837,24 @@ def run(args: argparse.Namespace) -> int:
         check("IPv4 forwarding" in journal(upper, "-b", "-u", "fr-firewall.service"),
               "the boot-time apply turned IPv4 forwarding on (the router routes)")
 
+    # ROADMAP SEC-15: the stick, checked from "another computer" -- the
+    # host -- with this checkout's keys: clean; then an implant is planted
+    # on the persistence partition, which the check must find, and which
+    # the router's own check must find in boot 4.
+    if signed_build:
+        clean_medium = verify_medium(disk)
+        check(clean_medium.get("checked", 0) > 100 and not clean_medium.get("modified")
+              and not clean_medium.get("missing") and not clean_medium.get("added"),
+              f"the stick verifies against the signed release from another computer (ROADMAP SEC-15): "
+              f"{clean_medium.get('error') or str(clean_medium.get('checked')) + ' files'}")
+        with persistence_partition(disk, writable=True) as upper:
+            implant = upper / IMPLANT
+            implant.parent.mkdir(parents=True, exist_ok=True)
+            implant.write_text("import os  # stands in for an attacker's module\n")
+        tampered = verify_medium(disk)
+        check(tampered.get("added") == ["/" + IMPLANT],
+              f"...and finds the module planted on it (ROADMAP SEC-15): {tampered.get('added') or tampered}")
+
     # ROADMAP SEC-5: config.yaml now names a device this machine doesn't
     # have. The boot falls back to the config last applied in full (boot
     # 3's), says so, and the webUI listens where that config says.
@@ -812,6 +865,10 @@ def run(args: argparse.Namespace) -> int:
     check(page is not None, "the webUI is reachable at the LAN address of the last applied config")
     landed = post(opener, "/login", {"username": NEW_USERNAME, "password": NEW_PASSWORD}) if page else ""
     check(landed.endswith("/"), "...and the account from boot 3 signs in")
+    if signed_build and landed:
+        system_page = get(opener, "/system")
+        check("badge-red" in system_page and IMPLANT.rsplit("/", 1)[1] in system_page,
+              "the router's own check finds the planted module too, and says the software changed (ROADMAP SEC-15)")
     check(vm.power_off(), "powered off")
     vm.kill()
     with persistence_partition(disk) as upper:
