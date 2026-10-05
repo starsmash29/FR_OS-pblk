@@ -718,13 +718,41 @@ def run_kernel_trials(check, workdir: Path, disk: Path, iso: Path, kvm: bool, ue
               "GRUB recorded the try first ('trying'): the next boot is the image's own kernel")
 
 
+def print_serial_tail(log: str, lines: int = 120) -> None:
+    """The end of a boot's serial console, in the CI log (its artifacts
+    can't always be fetched)."""
+    print("---- serial console, last lines ----")
+    print("\n".join(log.replace("\r", "").splitlines()[-lines:]))
+    print("---- end of serial console ----")
+
+
+def compare_initrds(iso: Path, built: Path) -> None:
+    """What the initrd the router built has, or lacks, compared with the
+    image's own -- printed, for a trial that doesn't come up."""
+    if not shutil.which("lsinitramfs") or not built.is_file():
+        print(f"(initrd comparison skipped: lsinitramfs {'missing' if not shutil.which('lsinitramfs') else 'ok'}, "
+              f"{built} {'there' if built.is_file() else 'missing'})")
+        return
+    with iso_contents(iso) as contents:
+        image = set(subprocess.run(["lsinitramfs", str(contents / "live" / "initrd.img")],
+                                   capture_output=True, text=True).stdout.split())
+    router = set(subprocess.run(["lsinitramfs", str(built)], capture_output=True, text=True).stdout.split())
+    print(f"initrd: image {len(image)} entries, router-built {len(router)} ({built.stat().st_size} bytes)")
+    only_image = sorted(path for path in image - router if "/kernel/" not in path)
+    only_router = sorted(path for path in router - image if "/kernel/" not in path)
+    print("  only in the image's (not modules):", only_image[:80])
+    print("  only in the router's (not modules):", only_router[:80])
+    print(f"  modules: image {sum('/kernel/' in p for p in image)}, router {sum('/kernel/' in p for p in router)}")
+
+
 #: Points fr-kernel-prepare at the running kernel for boots 9-10: the
 #: router prepares it without the network (no newer Debian kernel is
 #: needed to test the path).
 PREPARE_DROPIN = Path("etc") / "systemd" / "system" / "fr-kernel-prepare.service.d" / "boot-test.conf"
 
 
-def run_kernel_update_from_the_webui(check, workdir: Path, disk: Path, kvm: bool, uefi, boot_timeout: float) -> None:
+def run_kernel_update_from_the_webui(check, workdir: Path, disk: Path, iso_path: Path, kvm: bool, uefi,
+                                     boot_timeout: float) -> None:
     """Boots 9-10: the Update screen's kernel card -- "Check now", the
     router builds the kernel's initrd itself, "Try it" reboots into the
     trial, and the router keeps it (ROADMAP SEC-14, step 3)."""
@@ -772,6 +800,7 @@ def run_kernel_update_from_the_webui(check, workdir: Path, disk: Path, kvm: bool
               "both are in the security alerts: the kernel ready, and the trial started from the webUI")
         (upper / PREPARE_DROPIN).unlink()
         (upper / PREPARE_DROPIN).parent.rmdir()
+        compare_initrds(iso_path, upper.parent / kernel_boot.BOOT_DIR_NAME / kernel_boot.SLOT / kernel_boot.INITRD)
     if not ready:
         return
 
@@ -791,10 +820,17 @@ def run_kernel_update_from_the_webui(check, workdir: Path, disk: Path, kvm: bool
             break
         time.sleep(5)
     check(confirmed, "...and the Update screen says it is confirmed: the router's kernel now")
-    check(vm.power_off(), "powered off")
+    running = vm.proc.poll() is None
+    check(running and vm.power_off(), "powered off" if running else "powered off (it had already stopped by itself)")
     vm.kill()
+    if page is None or not confirmed:
+        print_serial_tail(vm.log())
     with persistence_partition(disk) as upper:
-        check(kernel_env(upper).get("fr_os_state") == "good", "the boot environment agrees ('good')")
+        check(kernel_env(upper).get("fr_os_state") == "good", "the boot environment agrees ('good')"
+              + f": {kernel_env(upper).get('fr_os_state')!r}")
+        if page is None or not confirmed:
+            print(journal(upper, "-b", "-p", "warning")[-4000:])
+            print_journal(upper, "fr-kernel-confirm.service", "-b")
 
 
 def main() -> int:
@@ -1147,7 +1183,7 @@ def run(args: argparse.Namespace) -> int:
         check(not failed, f"no unit failed to start{': ' + ', '.join(failed) if failed else ''}")
 
     run_kernel_trials(check, workdir, disk, Path(args.iso), kvm, uefi, boot_timeout)
-    run_kernel_update_from_the_webui(check, workdir, disk, kvm, uefi, boot_timeout)
+    run_kernel_update_from_the_webui(check, workdir, disk, Path(args.iso), kvm, uefi, boot_timeout)
 
     print()
     if check.failures:
