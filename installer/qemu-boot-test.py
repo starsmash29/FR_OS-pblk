@@ -37,7 +37,7 @@ https://192.168.1.1/ over the tap, as a LAN client does.
 6. Ninth and tenth boot: the Update screen's kernel card (ROADMAP SEC-14,
    step 3). "Check now" runs fr-kernel-prepare on the router -- pointed
    at the running kernel by a drop-in, so no Debian download is needed:
-   mkinitramfs with live-boot runs on the router itself -- and the
+   the router makes the initrd from the image's own -- and the
    kernel is "ready to try"; "Try it" reboots the router into its trial,
    and boot 10 comes up on the router-built initrd and confirms it.
 
@@ -651,6 +651,11 @@ def run_kernel_trials(check, workdir: Path, disk: Path, iso: Path, kvm: bool, ue
     check("fr_os.kernel=trial" in cmdline and "panic=10" in cmdline,
           "GRUB booted the staged kernel for its trial (fr_os.kernel=trial, panic=10)")
     check(page is not None, "...and the router came up on it")
+    # Not powered off before the router confirmed it: a trial cut short
+    # is a trial that didn't come up (the next boot falls back).
+    opener = webui_opener()
+    landed = post(opener, "/login", {"username": NEW_USERNAME, "password": NEW_PASSWORD}) if page else ""
+    check(landed.endswith("/") and wait_confirmed(opener), "...and the Update screen says it is confirmed")
     check(vm.power_off(), "powered off")
     vm.kill()
     with persistence_partition(disk) as upper:
@@ -718,6 +723,16 @@ def run_kernel_trials(check, workdir: Path, disk: Path, iso: Path, kvm: bool, ue
               "GRUB recorded the try first ('trying'): the next boot is the image's own kernel")
 
 
+def wait_confirmed(opener, timeout: float = kernel_boot.HEALTH_TIMEOUT) -> bool:
+    """Until the Update screen says the staged kernel is confirmed."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if "confirmed: boots by default" in get(opener, "/update"):
+            return True
+        time.sleep(3)
+    return False
+
+
 def print_serial_tail(log: str, lines: int = 120) -> None:
     """The end of a boot's serial console, in the CI log (its artifacts
     can't always be fetched)."""
@@ -783,8 +798,8 @@ def run_kernel_update_from_the_webui(check, workdir: Path, disk: Path, iso_path:
                 break
             time.sleep(10)
         ready = 'id="kernel-try"' in card
-        check(ready, f"the router prepared kernel {version} itself -- its live-boot initrd built with "
-                     "mkinitramfs -- and the Update screen offers to try it"
+        check(ready, f"the router prepared kernel {version} itself -- its initrd the image's own with that "
+                     "kernel's modules -- and the Update screen offers to try it"
               + ("" if ready else f": {re.sub(r'<[^>]+>', ' ', card)[:400]}"))
     if ready:
         post(opener, "/update/kernel/try", {})
@@ -812,13 +827,7 @@ def run_kernel_update_from_the_webui(check, workdir: Path, disk: Path, iso_path:
     check("fr_os.kernel=trial" in command_line(log), "GRUB booted it for its trial")
     check(page is not None, "...the router came up on its own initrd")
     landed = post(opener, "/login", {"username": NEW_USERNAME, "password": NEW_PASSWORD}) if page else ""
-    confirmed = False
-    deadline = time.monotonic() + kernel_boot.HEALTH_TIMEOUT
-    while landed and time.monotonic() < deadline:
-        if "confirmed: boots by default" in get(opener, "/update"):
-            confirmed = True
-            break
-        time.sleep(5)
+    confirmed = bool(landed) and wait_confirmed(opener)
     check(confirmed, "...and the Update screen says it is confirmed: the router's kernel now")
     running = vm.proc.poll() is None
     check(running and vm.power_off(), "powered off" if running else "powered off (it had already stopped by itself)")

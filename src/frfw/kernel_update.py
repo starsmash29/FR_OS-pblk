@@ -10,10 +10,16 @@ against debian-archive-keyring, the same chain as every other package.
 
 Installed into the live system's persistent root, the package puts
 `/boot/vmlinuz-<v>` and its modules (`/usr/lib/modules/<v>`) on the
-persistence partition; `mkinitramfs` then builds `/boot/initrd.img-<v>`
-with the image's live-boot hooks -- the modules are in the overlay when
-that kernel boots. The initrd is checked for live-boot before anything
-calls the kernel ready: without it the kernel could never find its root.
+persistence partition. Its initrd is *not* built on the router: an
+initrd made by mkinitramfs inside the running live system lacked
+libmount (copy_exec resolved libraries through live-boot's own mounts)
+and the kernel panicked -- found by the boot test. Instead it is the
+image's own initrd, the one the medium boots with, with its kernel
+modules exchanged for the new kernel's: the same modules plus what they
+depend on, `depmod` run for the new kernel. Nothing else in an initrd
+(busybox, live-boot, the libraries) depends on the kernel version. It is
+checked for live-boot and the new kernel's modules before anything calls
+the kernel ready.
 
 It never stages and never reboots: the kernel is "ready to try". The
 admin's "Try it" on the Update screen (the update-helper's `kernel_try`)
@@ -29,10 +35,13 @@ boots with.
 
 from __future__ import annotations
 
+import gzip
 import json
 import os
 import re
+import shutil
 import subprocess
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -45,8 +54,17 @@ BOOT = Path("/boot")
 #: Where live-boot mounted the image's root (the squashfs): its kernel's
 #: modules are the image's own kernel.
 IMAGE_ROOT = Path("/run/live/rootfs")
-#: The image's own kernel on the boot medium, when /boot doesn't have it.
+#: The image's own kernel on the boot medium, when /boot doesn't have it,
+#: and the initrd every prepared kernel's is made from.
 MEDIUM_KERNEL = Path("/run/live/medium/live/vmlinuz")
+MEDIUM_INITRD = Path("/run/live/medium/live/initrd.img")
+#: The installed kernels' modules (merged /usr).
+MODULES_ROOT = Path("/usr/lib/modules")
+#: Where the initrds it makes go (root's, on the persistence partition).
+INITRD_DIR = Path("/var/lib/fr_os/kernels")
+#: What depmod needs next to the modules.
+_MODULE_INDEX = ("modules.order", "modules.builtin", "modules.builtin.modinfo")
+_MODULE_SUFFIX = re.compile(r"\.ko(\.(xz|zst|gz))?\Z")
 
 _ABI = re.compile(r"(\d+)\.(\d+)\.(\d+)-(\d+)-amd64\Z")
 
@@ -142,7 +160,8 @@ class Outcome:
 def prepare(*, version: str | None = None, enabled: bool = True, run: Runner = _run,
             state_path: Path = paths.KERNEL_UPDATE_STATE_PATH, boot_dir: Path | None = None,
             boot: Path = BOOT, running: str | None = None, image: set[str] | None = None,
-            medium_kernel: Path = MEDIUM_KERNEL) -> Outcome:
+            medium_kernel: Path = MEDIUM_KERNEL, medium_initrd: Path = MEDIUM_INITRD,
+            modules_root: Path = MODULES_ROOT, initrd_dir: Path = INITRD_DIR) -> Outcome:
     """Get the kernel to try ready. `version`: that one (an admin's
     choice; also how the boot test prepares the running kernel without
     the network), else Debian's newest when it is newer than everything
@@ -183,15 +202,8 @@ def prepare(*, version: str | None = None, enabled: bool = True, run: Runner = _
         kernel = medium_kernel  # the image's own, as the medium boots it
     if not kernel.is_file():
         raise KernelUpdateError(f"{package} is installed but {kernel} is not there")
-    # mkinitramfs itself, not update-initramfs: on a live system live-tools
-    # may divert that to a no-op ("disabled on read-only media") -- the
-    # kernel package's own postinst then made no initrd either.
-    initrd = boot / f"initrd.img-{version}"
-    run(["mkinitramfs", "-o", str(initrd), version])
-    if not initrd.is_file():
-        raise KernelUpdateError(f"mkinitramfs made no {initrd}")
-    if "scripts/live" not in run(["lsinitramfs", "--", str(initrd)]):
-        raise KernelUpdateError(f"{initrd} has no live-boot: that kernel could not find the router's root")
+    initrd = initrd_dir / f"initrd.img-{version}"
+    build_initrd(medium_initrd, modules_root / version, version, initrd, run=run)
 
     state["prepared"] = {"version": version, "kernel": str(kernel), "initrd": str(initrd), "prepared_at": _now()}
     save_state(state, state_path)
@@ -201,6 +213,89 @@ def prepare(*, version: str | None = None, enabled: bool = True, run: Runner = _
     note = f"; removed {', '.join(removed)}" if removed else ""
     return Outcome(f"kernel {version} is ready to try{note}", ready=version,
                    alert=f"kernel {version} is ready to try (Update screen: trying it reboots the router)")
+
+
+def _archives(unpacked: Path) -> tuple[list[Path], Path]:
+    """unmkinitramfs's output: early (uncompressed, e.g. microcode)
+    archives and the main one, or just the main one."""
+    if (unpacked / "main").is_dir():
+        return sorted(p for p in unpacked.iterdir() if p.name.startswith("early")), unpacked / "main"
+    return [], unpacked
+
+
+def _cpio(root: Path) -> bytes:
+    names = ["."] + sorted(str(p.relative_to(root)) for p in root.rglob("*"))
+    proc = subprocess.run(["cpio", "--quiet", "-o", "-H", "newc"], cwd=root, input="\n".join(names).encode(),
+                          capture_output=True)
+    if proc.returncode != 0:
+        raise KernelUpdateError(f"cpio failed: {proc.stderr.decode(errors='replace').strip()}")
+    return proc.stdout
+
+
+def _bare(relative: str) -> str:
+    return _MODULE_SUFFIX.sub("", relative)
+
+
+def build_initrd(base: Path, modules: Path, version: str, out: Path, *, run: Runner = _run) -> None:
+    """`base` (the image's initrd) with its kernel modules exchanged for
+    the same ones -- and what they depend on -- from `modules`
+    (/usr/lib/modules/<version>), written to `out`."""
+    if not base.is_file():
+        raise KernelUpdateError(f"no initrd to start from: {base}")
+    if not (modules / "modules.dep").is_file():
+        raise KernelUpdateError(f"no modules for kernel {version} in {modules}")
+    with tempfile.TemporaryDirectory(prefix="fros-initrd-") as tmp:
+        unpacked = Path(tmp) / "unpacked"
+        proc = subprocess.run(["unmkinitramfs", str(base), str(unpacked)], capture_output=True, text=True)
+        if proc.returncode != 0:
+            raise KernelUpdateError(f"unmkinitramfs {base} failed: {proc.stderr.strip()}")
+        early, main = _archives(unpacked)
+        module_dirs = [d for d in (main / "usr" / "lib" / "modules").glob("*") if d.is_dir() and not d.is_symlink()]
+        if len(module_dirs) != 1:
+            raise KernelUpdateError(f"{base} has {len(module_dirs)} kernels' modules, not one")
+        old = module_dirs[0]
+        wanted = {_bare(str(p.relative_to(old))) for p in old.rglob("*.ko*") if _MODULE_SUFFIX.search(p.name)}
+
+        # The new kernel's module files and dependencies, by bare name.
+        available, depends = {}, {}
+        for line in (modules / "modules.dep").read_text().splitlines():
+            if ":" not in line:
+                continue
+            module, deps = line.split(":", 1)
+            available[_bare(module)] = module
+            depends[_bare(module)] = [_bare(d) for d in deps.split()]
+        chosen, todo = set(), [m for m in wanted if m in available]
+        while todo:
+            module = todo.pop()
+            if module not in chosen:
+                chosen.add(module)
+                todo.extend(d for d in depends.get(module, ()) if d in available)
+
+        shutil.rmtree(old)
+        new = main / "usr" / "lib" / "modules" / version
+        new.mkdir(parents=True)
+        for module in chosen:
+            target = new / available[module]
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(modules / available[module], target)
+        for name in _MODULE_INDEX:
+            if (modules / name).is_file():
+                shutil.copy2(modules / name, new / name)
+        run(["depmod", "-b", str(main), version])
+
+        out.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        tmp_out = out.with_name(f".{out.name}.tmp")
+        with tmp_out.open("wb") as fh:
+            for archive in early:
+                fh.write(_cpio(archive))
+            fh.write(gzip.compress(_cpio(main), compresslevel=6))
+        tmp_out.replace(out)
+
+    listing = run(["lsinitramfs", "--", str(out)])
+    if "scripts/live" not in listing:
+        raise KernelUpdateError(f"{out} has no live-boot: that kernel could not find the router's root")
+    if f"usr/lib/modules/{version}/modules.dep" not in listing:
+        raise KernelUpdateError(f"{out} has no modules for kernel {version}")
 
 
 def clean_up(state: dict, *, keep: set[str], run: Runner = _run,

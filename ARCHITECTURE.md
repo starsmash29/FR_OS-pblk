@@ -3007,11 +3007,19 @@ staged -- and isn't one that failed its trial here, it installs it with
 `apt-get install` into the persistent root: Debian's signatures checked
 by apt against debian-archive-keyring, `/boot/vmlinuz-<v>` and the
 modules on the persistence partition, where they are when that kernel
-boots. It builds the initrd with `mkinitramfs` itself (live-tools may
-turn `update-initramfs` into a no-op on a live system, the package's
-postinst included) and refuses to call the kernel ready unless the
-initrd has live-boot (`lsinitramfs` lists `scripts/live`): without it
-the kernel could never find the router's root.
+boots. Its initrd is not built on the router: the first version ran
+`mkinitramfs` in the live system, and the boot test showed that initrd
+without `libmount` (copy_exec resolved libraries through live-boot's own
+mounts) -- `mount` failed in the initrd and the trial kernel panicked,
+then fell back as designed. Instead `build_initrd` takes the image's own
+initrd (the medium's `live/initrd.img`, the one every boot so far came
+up with), exchanges its kernel modules for the same ones from the new
+kernel -- plus what they depend on, from its `modules.dep`, whatever
+their compression -- runs `depmod -b` for the new kernel and packs it
+again (an early microcode archive kept in front, uncompressed). Nothing
+else in an initrd depends on the kernel version. It refuses to call the
+kernel ready unless the result has live-boot and the new kernel's
+`modules.dep` (`lsinitramfs`).
 
 It never stages and never reboots: the kernel is *ready to try*, an
 alert says so, and a power cut still boots the known kernel. The Update
@@ -3038,7 +3046,10 @@ test's BROAD set with that reason, exposure 6.5.
 
 Tested: `tests/test_kernel_update.py` (the candidate, the ABI compared as
 numbers, an install, nothing when up to date or switched off, a failed
-kernel not prepared again, an initrd without live-boot refused, the
+kernel not prepared again, the initrd really rebuilt from a small one
+with unmkinitramfs and cpio -- the same modules from the new kernel and
+their dependencies, nothing else, an early archive kept in front, one
+without live-boot refused --, the
 image's kernel prepared without the network, the clean-up never
 touching what it didn't install, the helper's commands over its socket
 -- a failed try never reboots, a sensor account is refused);
@@ -3046,9 +3057,11 @@ touching what it didn't install, the helper's commands over its socket
 confirmation, the switch, a page that renders without the helper). The
 boot test's boots 9-10 press the buttons: "Check now" with the prepare
 unit pointed at the running kernel by a drop-in (no download needed;
-`mkinitramfs` with live-boot runs on the router itself), "Try it"
-reboots into the trial, and boot 10 comes up on the router-built initrd
-and the Update screen says it is confirmed.
+the router makes the initrd from the image's own), "Try it" reboots
+into the trial, and boot 10 comes up on that initrd and the Update
+screen says it is confirmed. The boot test now also waits for the
+confirmation before it powers a trial off: a trial cut short before the
+check finished is, by design, one that didn't come up.
 
 ### Open issues
 

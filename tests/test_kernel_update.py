@@ -3,13 +3,18 @@ frfw.kernel_update, and the update-helper's kernel commands behind the
 Update screen.
 
 apt and dpkg are a fake here (`Apt`): it answers like them and records
-what was asked. The real chain -- mkinitramfs with live-boot on the
-router, the webUI's "Try", the trial -- is the boot test's boots 9-10.
+what was asked. The initrd is really built here, from a small initrd
+made for the test, with the real unmkinitramfs and cpio. The real chain
+-- the image's own initrd with the router's modules, the webUI's "Try",
+the trial -- is the boot test's boots 9-10.
 """
 
 from __future__ import annotations
 
+import gzip
 import os
+import shutil
+import subprocess
 import threading
 from pathlib import Path
 
@@ -34,7 +39,7 @@ Description: Linux for 64-bit PCs (meta-package)
 
 
 class Apt:
-    """apt-get/apt-cache/dpkg-query/mkinitramfs/lsinitramfs, faked."""
+    """apt-get/apt-cache/dpkg-query, faked."""
 
     def __init__(self, boot: Path, *, installed=(RUNNING,), show: str = SHOW, live_boot: bool = True) -> None:
         self.boot, self.installed, self.show, self.live_boot = boot, set(installed), show, live_boot
@@ -59,10 +64,6 @@ class Apt:
             version = argv[-1][len("linux-image-"):]
             self.installed.discard(version)
             (self.boot / f"vmlinuz-{version}").unlink(missing_ok=True)
-        elif tool == "mkinitramfs":
-            Path(argv[2]).write_bytes(b"rebuilt initrd")
-        elif tool == "lsinitramfs":
-            return "init\nscripts/live\nscripts/live-bottom\n" if self.live_boot else "init\nscripts/local\n"
         return ""
 
     def asked(self, *prefix: str) -> list[list[str]]:
@@ -70,20 +71,29 @@ class Apt:
 
 
 @pytest.fixture
-def router(tmp_path):
+def router(tmp_path, monkeypatch):
+    built = []
+
+    def fake_build(base, modules, version, out, *, run):
+        built.append((base, modules, version))
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(b"initrd for " + version.encode())
+
+    monkeypatch.setattr(kernel_update, "build_initrd", fake_build)
     boot = tmp_path / "boot"
     boot.mkdir()
     (boot / f"vmlinuz-{RUNNING}").write_bytes(KERNEL)
     persistence = tmp_path / "persistence"
     (persistence / "rw").mkdir(parents=True)
     return {"boot": boot, "boot_dir": persistence / kernel_boot.BOOT_DIR_NAME, "state": tmp_path / "kernel.json",
-            "medium": tmp_path / "medium-vmlinuz"}
+            "medium": tmp_path / "medium-vmlinuz", "initrds": tmp_path / "kernels", "built": built}
 
 
 def _prepare(router, apt, **kwargs):
     return kernel_update.prepare(run=apt, state_path=router["state"], boot_dir=router["boot_dir"],
                                  boot=router["boot"], running=RUNNING, image={RUNNING},
-                                 medium_kernel=router["medium"], **kwargs)
+                                 medium_kernel=router["medium"], medium_initrd=Path("/medium/initrd.img"),
+                                 modules_root=Path("/modules"), initrd_dir=router["initrds"], **kwargs)
 
 
 # -- which kernel ---------------------------------------------------------------------
@@ -151,10 +161,23 @@ def test_switched_off_it_doesnt_even_ask_apt(router):
     assert "off" in outcome.message and apt.calls == []
 
 
-def test_an_initrd_without_live_boot_is_never_called_ready(router):
-    apt = Apt(router["boot"], live_boot=False)
+def test_the_initrd_is_made_from_the_images_own(router):
+    apt = Apt(router["boot"])
+    _prepare(router, apt)
+    assert router["built"] == [(Path("/medium/initrd.img"), Path(f"/modules/{NEWER}"), NEWER)]
+    assert kernel_update.load_state(router["state"])["prepared"]["initrd"] == str(
+        router["initrds"] / f"initrd.img-{NEWER}")
+    # Not mkinitramfs inside the live system: that initrd lacked libmount.
+    assert not apt.asked("mkinitramfs") and not apt.asked("update-initramfs")
+
+
+def test_a_kernel_whose_initrd_cant_be_made_is_never_called_ready(router, monkeypatch):
+    def broken(*args, **kwargs):
+        raise KernelUpdateError("no live-boot")
+
+    monkeypatch.setattr(kernel_update, "build_initrd", broken)
     with pytest.raises(KernelUpdateError, match="no live-boot"):
-        _prepare(router, apt)
+        _prepare(router, Apt(router["boot"]))
     assert "prepared" not in kernel_update.load_state(router["state"])
 
 
@@ -167,8 +190,7 @@ def test_the_running_image_kernel_can_be_prepared_without_the_network(router):
     outcome = _prepare(router, apt, version=RUNNING)
     assert outcome.ready == RUNNING
     assert not apt.asked("apt-get")
-    assert apt.asked("mkinitramfs") == [["mkinitramfs", "-o", str(router["boot"] / f"initrd.img-{RUNNING}"),
-                                         RUNNING]]
+    assert router["built"][-1][2] == RUNNING
     state = kernel_update.load_state(router["state"])
     assert state["prepared"]["kernel"] == str(router["medium"]) and state["installed"] == []
 
@@ -201,6 +223,116 @@ def test_a_staged_kernel_is_kept_too(router):
 def test_the_state_file_is_roots_alone(router):
     _prepare(router, Apt(router["boot"]))
     assert router["state"].stat().st_mode & 0o777 == 0o600
+
+
+# -- the initrd: the image's own, with the new kernel's modules -----------------------------
+
+OLD, NEW = "6.1.0-53-amd64", "6.1.0-54-amd64"
+needs_initramfs_tools = pytest.mark.skipif(
+    not all(shutil.which(t) for t in ("unmkinitramfs", "lsinitramfs", "cpio")),
+    reason="needs initramfs-tools and cpio",
+)
+
+
+def _pack(root: Path) -> bytes:
+    names = ["."] + sorted(str(p.relative_to(root)) for p in root.rglob("*"))
+    return subprocess.run(["cpio", "--quiet", "-o", "-H", "newc"], cwd=root, input="\n".join(names).encode(),
+                          capture_output=True, check=True).stdout
+
+
+def _tree(root: Path, files: dict[str, bytes]) -> Path:
+    for name, data in files.items():
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_bytes(data)
+    return root
+
+
+@pytest.fixture
+def initrd_parts(tmp_path):
+    """An initrd like the image's (live-boot, merged /usr, the old
+    kernel's modules), and the new kernel's module tree."""
+    main = _tree(tmp_path / "main", {
+        "init": b"#!/bin/sh\n",
+        "scripts/live": b"live-boot\n",
+        "usr/lib/x86_64-linux-gnu/libmount.so.1": b"libmount",
+        f"usr/lib/modules/{OLD}/kernel/drivers/net/virtio_net.ko": b"old virtio_net",
+        f"usr/lib/modules/{OLD}/kernel/fs/squashfs/squashfs.ko": b"old squashfs",
+        f"usr/lib/modules/{OLD}/modules.dep": b"old",
+    })
+    (main / "lib").symlink_to("usr/lib")
+    modules = _tree(tmp_path / "modules" / NEW, {
+        "kernel/drivers/net/virtio_net.ko": b"new virtio_net",
+        "kernel/drivers/net/net_failover.ko": b"new net_failover",
+        "kernel/fs/squashfs/squashfs.ko.xz": b"new squashfs, compressed",
+        "kernel/sound/unrelated.ko": b"not in the image's initrd",
+        "modules.order": b"order", "modules.builtin": b"builtin",
+        "modules.dep": ("kernel/drivers/net/virtio_net.ko: kernel/drivers/net/net_failover.ko\n"
+                        "kernel/drivers/net/net_failover.ko:\n"
+                        "kernel/fs/squashfs/squashfs.ko.xz:\n"
+                        "kernel/sound/unrelated.ko:\n").encode(),
+    })
+    return tmp_path, main, modules
+
+
+def _depmod_then_list(calls):
+    def run(argv):
+        calls.append(argv)
+        if argv[0] == "depmod":  # what depmod -b writes, minimally
+            Path(argv[2], "lib", "modules", argv[3], "modules.dep").write_text("generated\n")
+            return ""
+        return subprocess.run(argv, capture_output=True, text=True, check=True).stdout
+    return run
+
+
+@needs_initramfs_tools
+def test_the_new_initrd_has_the_same_modules_from_the_new_kernel(initrd_parts):
+    tmp, main, modules = initrd_parts
+    base = tmp / "initrd.img"
+    base.write_bytes(gzip.compress(_pack(main)))
+    out, calls = tmp / "out" / f"initrd.img-{NEW}", []
+    kernel_update.build_initrd(base, modules, NEW, out, run=_depmod_then_list(calls))
+    listing = subprocess.run(["lsinitramfs", str(out)], capture_output=True, text=True, check=True).stdout.split()
+    new = f"usr/lib/modules/{NEW}/kernel"
+    assert {f"{new}/drivers/net/virtio_net.ko", f"{new}/drivers/net/net_failover.ko",  # its dependency
+            f"{new}/fs/squashfs/squashfs.ko.xz"} <= set(listing)
+    assert f"{new}/sound/unrelated.ko" not in listing  # only what the image's initrd had
+    assert not any(path.startswith(f"usr/lib/modules/{OLD}") for path in listing)
+    # Everything else is the image's, untouched: live-boot, the libraries.
+    assert {"scripts/live", "usr/lib/x86_64-linux-gnu/libmount.so.1", f"usr/lib/modules/{NEW}/modules.order"} <= set(listing)
+    assert ["depmod", "-b"] == calls[0][:2] and calls[0][3] == NEW
+
+
+@needs_initramfs_tools
+def test_an_early_microcode_archive_is_kept_in_front(initrd_parts):
+    tmp, main, modules = initrd_parts
+    early = _tree(tmp / "early", {"kernel/x86/microcode/AuthenticAMD.bin": b"microcode"})
+    base = tmp / "initrd.img"
+    base.write_bytes(_pack(early) + gzip.compress(_pack(main)))
+    out = tmp / "out" / f"initrd.img-{NEW}"
+    kernel_update.build_initrd(base, modules, NEW, out, run=_depmod_then_list([]))
+    data = out.read_bytes()
+    # Uncompressed and first, as the kernel wants it; then the main archive, compressed.
+    assert data.startswith(b"070701") and b"kernel/x86/microcode/AuthenticAMD.bin" in data[:data.index(b"\x1f\x8b")]
+    unpacked = tmp / "check"
+    subprocess.run(["unmkinitramfs", str(out), str(unpacked)], check=True, capture_output=True)
+    assert (unpacked / "early" / "kernel/x86/microcode/AuthenticAMD.bin").read_bytes() == b"microcode"
+    assert (unpacked / "main" / f"usr/lib/modules/{NEW}/kernel/drivers/net/virtio_net.ko").read_bytes() == b"new virtio_net"
+
+
+@needs_initramfs_tools
+def test_an_initrd_without_live_boot_is_refused(initrd_parts):
+    tmp, main, modules = initrd_parts
+    (main / "scripts" / "live").unlink()
+    base = tmp / "initrd.img"
+    base.write_bytes(gzip.compress(_pack(main)))
+    with pytest.raises(KernelUpdateError, match="no live-boot"):
+        kernel_update.build_initrd(base, modules, NEW, tmp / "out" / "initrd", run=_depmod_then_list([]))
+
+
+def test_no_modules_for_the_kernel_no_initrd(tmp_path):
+    (tmp_path / "initrd.img").write_bytes(b"x")
+    with pytest.raises(KernelUpdateError, match="no modules"):
+        kernel_update.build_initrd(tmp_path / "initrd.img", tmp_path / "nothing", NEW, tmp_path / "out")
 
 
 # -- the Update screen's view and its "Try" ---------------------------------------------------
