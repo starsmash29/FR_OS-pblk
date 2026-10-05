@@ -146,17 +146,33 @@ def test_while_sshd_is_stopped_its_own_start_check_decides(tmp_path, fake_sshd, 
 # -- the real webUI process --------------------------------------------------------
 
 
-@pytest.mark.skipif(not shutil.which("ss") or not shutil.which("openssl"), reason="needs ss and openssl")
-def test_the_webui_does_not_listen_on_every_address(tmp_path):
-    """Start the real fr-webui with a skeleton config: it must listen on
-    loopback and the LAN address (not configured on this machine --
-    IP_FREEBIND), and not on 0.0.0.0."""
+def test_an_apply_records_where_the_webui_listens(tmp_path, monkeypatch):
+    """ROADMAP SEC-5: fr-webui binds the applied config's addresses, which
+    after a rollback or a boot fallback are not config.yaml's."""
+    monkeypatch.setattr(management, "webui_listening", lambda port=443: None)
+    record = tmp_path / "webui-listen.json"
+    management.sync_webui(_config(), listen_path=record)
+    assert management.recorded_webui_listen(record) == management.listen_addresses(_config())
+    assert record.stat().st_mode & 0o777 == 0o644
+    management.sync_webui(_config(), dry_run=True, listen_path=tmp_path / "dry.json")
+    assert not (tmp_path / "dry.json").exists()
+
+
+@pytest.mark.parametrize("text", ["", "not json", '{"addresses": []}', '{"addresses": ["10.0.0.1; reboot"]}',
+                                  '{"addresses": "10.0.0.1"}'])
+def test_a_listen_record_that_is_not_one_is_ignored(tmp_path, text):
+    (tmp_path / "webui-listen.json").write_text(text)
+    assert management.recorded_webui_listen(tmp_path / "webui-listen.json") is None
+
+
+def _run_webui(tmp_path, config_text: str, *, port_offset: int = 0):
     config_path = tmp_path / "config.yaml"
-    config_path.write_text(build_skeleton_config("eth0", "eth1", lan_address="10.99.0.1/24"))
-    port = 18000 + os.getpid() % 1000
+    config_path.write_text(config_text)
+    port = 18000 + (os.getpid() + port_offset) % 1000
     proc = subprocess.Popen(
         [sys.executable, "-m", "frfw.webui.server", "--config", str(config_path), "--port", str(port),
-         "--cert", str(tmp_path / "cert.pem"), "--key", str(tmp_path / "key.pem")],
+         "--cert", str(tmp_path / "cert.pem"), "--key", str(tmp_path / "key.pem"),
+         "--listen-record", str(tmp_path / "webui-listen.json")],
         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
         env={**os.environ, "OPENSSL_CONF": "/dev/null"},
     )
@@ -169,7 +185,26 @@ def test_the_webui_does_not_listen_on_every_address(tmp_path):
             if proc.poll() is not None:
                 pytest.fail(proc.stderr.read())
             time.sleep(0.2)
-        assert listening == {"127.0.0.1", "10.99.0.1"}
+        return listening
     finally:
         proc.send_signal(signal.SIGTERM)
         proc.wait(timeout=10)
+
+
+@pytest.mark.skipif(not shutil.which("ss") or not shutil.which("openssl"), reason="needs ss and openssl")
+def test_the_webui_listens_where_the_applied_config_says(tmp_path):
+    """config.yaml names a LAN address the router doesn't run (a failed
+    apply, rolled back): the real fr-webui listens where the last apply
+    recorded, so it stays reachable."""
+    management.record_webui_listen(["127.0.0.1", "10.98.0.1"], tmp_path / "webui-listen.json")
+    listening = _run_webui(tmp_path, build_skeleton_config("eth0", "eth1", lan_address="10.99.0.1/24"))
+    assert listening == {"127.0.0.1", "10.98.0.1"}
+
+
+@pytest.mark.skipif(not shutil.which("ss") or not shutil.which("openssl"), reason="needs ss and openssl")
+def test_the_webui_does_not_listen_on_every_address(tmp_path):
+    """Start the real fr-webui with a skeleton config: it must listen on
+    loopback and the LAN address (not configured on this machine --
+    IP_FREEBIND), and not on 0.0.0.0."""
+    listening = _run_webui(tmp_path, build_skeleton_config("eth0", "eth1", lan_address="10.99.0.1/24"), port_offset=1)
+    assert listening == {"127.0.0.1", "10.99.0.1"}

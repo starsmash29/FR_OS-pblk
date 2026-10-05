@@ -137,6 +137,15 @@ def load_baseline() -> None:
     _run_nft(["-f", "-"], BASELINE_RULESET)
 
 
+def load_captured(ruleset_listing: str) -> None:
+    """Put back a ruleset read with `capture_running_ruleset()` -- a whole
+    replacement, set elements with the time they had left included (nft
+    reads its own `expires`). The rollback of an apply when no config was
+    recorded as applied before (ROADMAP SEC-5, frfw.provision)."""
+    _require_root()
+    _run_nft(["-f", "-"], f"flush ruleset\n\n{ruleset_listing}")
+
+
 def list_backups(backup_dir: Path = paths.BACKUP_DIR) -> list[Path]:
     """Return known ruleset backups, oldest first."""
     if not backup_dir.is_dir():

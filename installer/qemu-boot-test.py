@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Boot the FR_OS ISO in QEMU the way a user would, three times, and check
+"""Boot the FR_OS ISO in QEMU the way a user would, four times, and check
 that it actually works and remembers what it was told.
 
     sudo installer/qemu-boot-test.py installer/live-build/binary.hybrid.iso
@@ -20,7 +20,11 @@ https://192.168.1.1/ over the tap, as a LAN client does.
    second boot still works, a setting changed through the webUI is on the
    persistence partition afterwards. The first sign-in goes through
    first-run setup (own username and password), after which the generated
-   password is gone from the console.
+   password is gone from the console. At its end a config is saved that
+   names a device the VM doesn't have; its apply changes nothing.
+4. Fourth boot: config.yaml can't be applied (that device), so the router
+   comes up with the config last applied in full, says so, raises a
+   security alert, and the webUI is reachable (ROADMAP SEC-5).
 
 Between boots the persistence partition is mounted on the host to read the
 journal and files, so a failure says what went wrong. Needs root (losetup,
@@ -69,6 +73,10 @@ NEW_USERNAME = "netadmin"
 #: (ROADMAP SEC-6).
 ZTNA_USERNAME = "fieldworker"
 ZTNA_PASSWORD = "otter-harbor-lamp-71"
+#: An interface on a device the VM doesn't have, saved in boot 3: its
+#: apply is refused, and boot 4 can't apply config.yaml (ROADMAP SEC-5).
+SPARE_DEVICE = "ens9"
+SPARE_ADDRESS = "10.250.0.1/24"
 DISK_SIZE = 2 * 2**30
 ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
@@ -717,6 +725,16 @@ def run(args: argparse.Namespace) -> int:
         check(bound is not None and tap_mac in bound.group(1) and "badge-green" in status_page,
               f"a ZTNA sign-in is bound to the signing-in device's MAC, {tap_mac} (ROADMAP SEC-6)"
               + ("" if bound else ": " + " ".join(status_page.split())[:300]))
+        # ROADMAP SEC-5: a config that can't be applied on this machine (a
+        # device it doesn't have) changes nothing -- the ZTNA session in the
+        # running ruleset is still there. It stays saved for boot 4.
+        post(opener, "/interfaces/save", {"name": "spare", "device": SPARE_DEVICE, "zone": "spare",
+                                          "address": SPARE_ADDRESS})
+        refused = urllib.parse.unquote_plus(post(opener, "/apply", {}))
+        check(f"Nothing was applied -- network devices: no such network device on this machine: {SPARE_DEVICE}"
+              in refused and "badge-green" in get(opener, "/ztna/status"),
+              "an apply the preflight refuses changes nothing on the running router (ROADMAP SEC-5)"
+              + ("" if "Nothing was applied" in refused else f": {refused[:300]}"))
     check(vm.power_off(), "powered off")
     vm.kill()
     with persistence_partition(disk) as upper:
@@ -759,6 +777,35 @@ def run(args: argparse.Namespace) -> int:
         check("Started" in timer, "the periodic update check (fr-update-check.timer) is armed (security-lessons G10)")
         check("IPv4 forwarding" in journal(upper, "-b", "-u", "fr-firewall.service"),
               "the boot-time apply turned IPv4 forwarding on (the router routes)")
+
+    # ROADMAP SEC-5: config.yaml now names a device this machine doesn't
+    # have. The boot falls back to the config last applied in full (boot
+    # 3's), says so, and the webUI listens where that config says.
+    print("boot 4: config.yaml can't be applied")
+    vm = Vm(workdir, disk, 4, kvm)
+    opener = webui_opener()
+    page = wait_for_webui(opener, boot_timeout)
+    check(page is not None, "the webUI is reachable at the LAN address of the last applied config")
+    landed = post(opener, "/login", {"username": NEW_USERNAME, "password": NEW_PASSWORD}) if page else ""
+    check(landed.endswith("/"), "...and the account from boot 3 signs in")
+    check(vm.power_off(), "powered off")
+    vm.kill()
+    with persistence_partition(disk) as upper:
+        firewall = journal(upper, "-b", "-u", "fr-firewall.service")
+        check("WARNING: config.yaml could not be applied at boot, so the router runs the last config" in firewall
+              and SPARE_DEVICE in firewall and "WireGuard up" in firewall,
+              "config.yaml failed at boot, and the router came up with the last config applied in full (ROADMAP SEC-5)")
+        if "WARNING" not in firewall:
+            print_journal(upper, "fr-firewall.service", "-b")
+        audit_log = upper / "var" / "log" / "fr_os" / "audit.log"
+        check("runs the last config that was applied in full" in audit_log.read_text(),
+              "...and that is a security alert in the audit log")
+        listening = re.findall(r"fr-webui: listening on (.*) port", journal(upper, "-b", "-u", "fr-webui.service"))
+        check(bool(listening) and "192.168.1.1" in listening[-1] and SPARE_ADDRESS.split("/")[0] not in listening[-1],
+              "the webUI listens on the applied config's addresses, not config.yaml's (ROADMAP SEC-5)"
+              + (f": {listening[-1]}" if listening else ""))
+        failed = sorted(set(re.findall(r"Failed to start (\S+)", journal(upper, "-b"))))
+        check(not failed, f"no unit failed to start{': ' + ', '.join(failed) if failed else ''}")
 
     print()
     if check.failures:

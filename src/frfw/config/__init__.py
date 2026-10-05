@@ -1,5 +1,5 @@
 from frfw.config.errors import ConfigError
-from frfw.config.loader import load_config, parse_config
+from frfw.config.loader import load_config, parse_config, read_config
 from frfw.config.schema import (
     Action,
     AiIdsConfig,
@@ -33,4 +33,5 @@ __all__ = [
     "Zone",
     "load_config",
     "parse_config",
+    "read_config",
 ]

@@ -99,7 +99,7 @@ def test_firewall_cli_apply_refreshes_the_copy_and_a_dry_run_does_not(tmp_path, 
     raw, digest = _raw_with_secrets()
     config_path = tmp_path / "config.yaml"
     config_path.write_text(yaml.safe_dump(raw))
-    monkeypatch.setattr(cli, "apply_all", lambda config, dry_run=False: ProvisionResult(messages=[]))
+    monkeypatch.setattr(cli, "apply_all", lambda config, dry_run=False, **kw: ProvisionResult(messages=[]))
     assert cli.main(["apply", "--dry-run", str(config_path)]) == 0
     assert not paths.SENSOR_CONFIG_PATH.exists()
     assert cli.main(["apply", str(config_path)]) == 0

@@ -38,7 +38,7 @@ from frfw.iot_isolation import IotIsolationError
 from frfw.adblock import refresh as adblock_refresh
 from frfw.apply import NftError, rollback_last
 from frfw.bruteforce import BruteforceError
-from frfw.config import ConfigError, load_config, parse_config
+from frfw.config import ConfigError, load_config, parse_config, read_config
 from frfw.config.export import refresh_sensor_copy, write_sensor_copy
 from frfw.conntrack import ConntrackError
 from frfw.helper.peer import PeerPolicy, gid_of, peer_credentials
@@ -49,6 +49,7 @@ from frfw.ifaddr import IfaddrError
 from frfw.kea import KeaError
 from frfw.pqc import PqcError
 from frfw.provision import apply_all
+from frfw.transaction import ApplyError
 from frfw.surface import SurfaceError
 from frfw.webui import audit as webui_audit
 from frfw.forwarding import ForwardingError
@@ -79,13 +80,14 @@ def _handle_request(request: dict, server: "ApplyHelperServer") -> dict:
             return {"ok": True, "message": "pong"}
 
         if cmd == "apply":
-            config = load_config(server.config_path)
+            config, text = read_config(server.config_path)
             dry_run = bool(request.get("dry_run", False))
             result = apply_all(
                 config,
                 dry_run=dry_run,
                 backup_dir=server.backup_dir,
                 kea_config_path=server.kea_config_path,
+                source_text=text,
             )
             messages = list(result.messages)
             if not dry_run:
@@ -176,6 +178,7 @@ def _handle_request(request: dict, server: "ApplyHelperServer") -> dict:
         ConfigError, NftError, IfaddrError, KeaError, ZtnaError, PqcError, AdblockError,
         BruteforceError, IdsQuarantineError, ConntrackError, HwInfoError, IotIsolationError,
         SurfaceError, ForwardingError, WireguardError, xdp.XdpError, FileNotFoundError, yaml.YAMLError,
+        ApplyError,
     ) as exc:
         return {"ok": False, "message": str(exc)}
 

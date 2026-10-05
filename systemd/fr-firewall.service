@@ -25,10 +25,12 @@ ExecReload=firewall-cli apply --fail-closed /etc/fr_os/config.yaml
 # Root, because this is what changes the network: nft, ip, Kea's and
 # sshd's config, XDP pins. Everything else is shut: only the paths an
 # apply writes, no kernel modules/logs/clock, no namespaces, a reduced
-# capability set. /sys stays writable for the XDP pins on bpffs.
+# capability set. /sys stays writable for the XDP pins on bpffs;
+# /var/log/fr_os for the audit log's security alert when config.yaml
+# fails at boot and the router falls back (ROADMAP SEC-5).
 NoNewPrivileges=yes
 ProtectSystem=strict
-ReadWritePaths=-/etc/fr_os -/etc/kea -/etc/ssh/sshd_config.d -/usr/local/share/fr_os -/sys/fs/bpf
+ReadWritePaths=-/etc/fr_os -/etc/kea -/etc/ssh/sshd_config.d -/usr/local/share/fr_os -/sys/fs/bpf -/var/log/fr_os
 ProtectHome=yes
 # No PrivateTmp here (it would order this early unit after the /tmp and
 # /var/tmp mounts), and /tmp is read-only under ProtectSystem=strict: an

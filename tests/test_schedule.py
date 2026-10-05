@@ -259,7 +259,7 @@ def test_schedule_check_cli(monkeypatch, capsys, tmp_path, minimal_config_dict):
     cfg = tmp_path / "config.yaml"
     cfg.write_text(yaml.safe_dump(_raw(minimal_config_dict, _bedtime())))
     applied = []
-    monkeypatch.setattr(cli_mod, "apply_all", lambda config: applied.append(config) or type("R", (), {"messages": ["applied"]})())
+    monkeypatch.setattr(cli_mod, "apply_all", lambda config, **kw: applied.append(config) or type("R", (), {"messages": ["applied"]})())
 
     def fake_check(status):
         return lambda config: schedule_refresh.CheckResult(status, f"status {status}")

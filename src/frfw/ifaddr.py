@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 
 from frfw import validate
 from frfw.config.schema import Config, Interface
@@ -53,6 +54,16 @@ def sync_addresses(config: Config, *, dry_run: bool = False) -> SyncResult:
         _apply_one(iface)
 
     return SyncResult(applied=True, message=f"Addresses applied: {summary}")
+
+
+#: Where the kernel lists this namespace's network devices.
+NET_CLASS_DIR = Path("/sys/class/net")
+
+
+def device_exists(device: str) -> bool:
+    """Whether this machine has network device `device` (the preflight of
+    an apply, ROADMAP SEC-5)."""
+    return (NET_CLASS_DIR / validate.ifname(device)).exists()
 
 
 def _apply_one(iface: Interface) -> None:

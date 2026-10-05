@@ -199,6 +199,28 @@ def test_apply_dry_run(running_server):
     assert "dry-run" in response["message"].lower()
 
 
+def test_an_apply_through_the_helper_records_the_config_it_applied(running_server, tmp_path):
+    """ROADMAP SEC-5: the text applied in full is what a later failure is
+    rolled back to, and what a failed boot falls back to."""
+    from frfw import paths
+
+    assert client.apply_config(dry_run=False, socket_path=running_server)["ok"] is True
+    assert paths.APPLIED_CONFIG_PATH.read_text() == (tmp_path / "config.yaml").read_text()
+
+
+def test_a_failed_apply_answers_with_what_was_rolled_back(running_server, monkeypatch):
+    from frfw import wireguard
+
+    def no_tunnel_driver(config, **kw):
+        raise wireguard.WireguardError("RTNETLINK answers: Operation not supported")
+
+    monkeypatch.setattr(wireguard, "sync", no_tunnel_driver)
+    response = client.apply_config(dry_run=False, socket_path=running_server)
+    assert response["ok"] is False
+    assert response["message"].startswith("Apply failed at WireGuard: RTNETLINK answers: Operation not supported.")
+    assert "Rolled back to the previous state: IPv4 forwarding" in response["message"]
+
+
 def test_apply_real_then_rollback_roundtrip(running_server):
     first = client.apply_config(dry_run=False, socket_path=running_server)
     assert first["ok"] is True
