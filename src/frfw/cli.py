@@ -71,7 +71,7 @@ from frfw.appid.daemon import load_usage
 from frfw import apply as apply_mod
 from frfw.apply import NftError, list_backups, rollback_last
 from frfw.tlsfp.daemon import load_state as load_tlsfp_state
-from frfw.config import ConfigError, load_config, parse_config
+from frfw.config import ConfigError, load_config, parse_config, read_config
 from frfw.config import export as export_mod
 from frfw.forwarding import ForwardingError
 from frfw.wireguard import WireguardError
@@ -81,7 +81,9 @@ from frfw.iot_isolation import IotIsolationError, list_isolated
 from frfw.ifaddr import IfaddrError
 from frfw.kea import KeaError
 from frfw.nft import build_ruleset
+from frfw import provision
 from frfw.provision import apply_all
+from frfw.transaction import ApplyError
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -121,6 +123,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     except WireguardError as exc:
         print(f"WireGuard error: {exc}", file=sys.stderr)
+        return 1
+    except ApplyError as exc:
+        print(f"apply error: {exc}", file=sys.stderr)
         return 1
 
 
@@ -425,8 +430,13 @@ def _cmd_apply(args: argparse.Namespace) -> int:
               "(only loopback and replies to the router's own connections get in; nothing is forwarded)")
         return 0
     try:
-        config = load_config(args.config)
-        result = apply_all(config, dry_run=args.dry_run)
+        config, text = read_config(args.config)
+        try:
+            result = apply_all(config, dry_run=args.dry_run, source_text=text)
+        except ApplyError as exc:
+            if not fail_closed:
+                raise
+            result = _boot_without(config, exc)
         if not args.dry_run:
             # ROADMAP SEC-11: the parser daemons' copy without secrets --
             # also at boot, where fr-firewall.service runs this.
@@ -444,6 +454,31 @@ def _cmd_apply(args: argparse.Namespace) -> int:
     for message in result.messages:
         print(message)
     return 0
+
+
+def _boot_without(config, failure: ApplyError):
+    """config.yaml failed at boot (`apply --fail-closed`) and was rolled
+    back (ROADMAP SEC-5). Boot into the last config applied in full, if
+    there is one and it is another config; and when that fails too, or
+    there is none, apply config.yaml as far as it goes, without a
+    preflight or rollback -- the ruleset first, so the router is filtered
+    whatever fails after it. Either way it is a security alert."""
+    print(f"config.yaml could not be applied: {failure}", file=sys.stderr)
+    last = provision.load_applied_config()
+    if last is not None and last != config:
+        try:
+            result = apply_all(last)
+        except ApplyError as again:
+            print(f"the last applied config could not be applied either: {again}", file=sys.stderr)
+        else:
+            warning = ("config.yaml could not be applied at boot, so the router runs the last config that was "
+                       f"applied in full: {failure}")
+            _console_alert(warning, user="boot", client="boot")
+            result.messages.insert(0, "WARNING: " + warning)
+            return result
+    _console_alert(f"config.yaml could not be applied at boot; applied as far as it goes: {failure}",
+                   user="boot", client="boot")
+    return apply_all(config, transactional=False)
 
 
 def _cmd_rollback(args: argparse.Namespace) -> int:
@@ -768,7 +803,7 @@ def _cmd_tls_fingerprints(args: argparse.Namespace) -> int:
 
 
 def _cmd_schedule_check(args: argparse.Namespace) -> int:
-    config = load_config(args.config)
+    config, text = read_config(args.config)
     # Security-lessons K2: the same hourly run keeps the per-rule hit
     # record the rule check uses for "unused for 90 days".
     try:
@@ -781,7 +816,7 @@ def _cmd_schedule_check(args: argparse.Namespace) -> int:
         return 1
     if result.status != "refresh":
         return 0
-    for message in apply_all(config).messages:
+    for message in apply_all(config, source_text=text).messages:
         print(message)
     return 0
 

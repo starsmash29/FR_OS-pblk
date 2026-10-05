@@ -60,11 +60,20 @@ def tls_minimum_1_2_context_factory(uvicorn_config: object, default_factory) -> 
     return ctx
 
 
-def listen_addresses(config_path: Path) -> list[str]:
+def listen_addresses(config_path: Path, listen_path: Path | None = None) -> list[str]:
     """Security-lessons F2/G4: loopback and the management zones'
     addresses (frfw.management), never 0.0.0.0 unless management.allow_wan
-    says so. Without a readable config: loopback only -- the console is
-    the way in then, not the network."""
+    says so -- of the config last applied in full, as its apply recorded
+    them (ROADMAP SEC-5): after a failed apply was rolled back, or a boot
+    that fell back to the last applied config, config.yaml names
+    addresses the router doesn't have. Before any apply recorded them:
+    config.yaml's. Without a readable config either: loopback only -- the
+    console is the way in then, not the network."""
+    recorded = management.recorded_webui_listen(listen_path)
+    if recorded is not None:
+        if management.ANY in recorded:
+            print(f"fr-webui: WARNING: {management.WAN_WARNING}", file=sys.stderr, flush=True)
+        return recorded
     try:
         config = load_config(config_path)
     except (OSError, ConfigError):
@@ -98,6 +107,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--cert", default=str(paths.WEBUI_CERT_PATH))
     parser.add_argument("--key", default=str(paths.WEBUI_KEY_PATH))
     parser.add_argument("--config", default=str(paths.CONFIG_PATH))
+    parser.add_argument("--listen-record", default=str(paths.WEBUI_LISTEN_PATH),
+                        help="where the last apply recorded the addresses to listen on (ROADMAP SEC-5)")
     args = parser.parse_args(argv)
 
     cert_path, key_path = Path(args.cert), Path(args.key)
@@ -117,7 +128,7 @@ def main(argv: list[str] | None = None) -> int:
         pqc.tls_ssl_context_factory if _pqc_enabled(config_path) else tls_minimum_1_2_context_factory
     )
 
-    addresses = args.host or listen_addresses(config_path)
+    addresses = args.host or listen_addresses(config_path, Path(args.listen_record))
     print(f"fr-webui: listening on {', '.join(addresses)} port {args.port}", file=sys.stderr, flush=True)
     server = uvicorn.Server(server_config(
         app, port=args.port, cert_path=cert_path, key_path=key_path,

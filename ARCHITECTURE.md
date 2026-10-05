@@ -817,6 +817,8 @@ Canonical paths (`frfw.paths`):
 | WebUI's own state | `/etc/fr_os/webui/` (TLS keypair, admin accounts, session secret, audit log — fr_os-webui, 0700, see below) |
 | Network-parsing daemons' output | `/etc/fr_os/sensors/` (AI IDS events, IoT inventory, App-ID usage, TLS fingerprints — fr_os-sensor:fr_os-webui, 0750) |
 | Network-parsing daemons' config | `/etc/fr_os/sensor-config.yaml` (config.yaml without its secrets — root:fr_os-sensor, 0640, ROADMAP SEC-11) |
+| The config last applied in full | `/etc/fr_os/applied-config.yaml` (root-only, 0600 — what a failed apply's reconciling steps go back to, and what a failed boot falls back to; ROADMAP SEC-5) |
+| Where the webUI listens | `/etc/fr_os/webui-listen.json` (the applied config's management addresses, 0644 — fr-webui binds these, not config.yaml's; ROADMAP SEC-5) |
 | Apply-helper socket | `/run/fr_os/apply.sock` |
 | ZTNA session state (display purposes only, see below) | `/etc/fr_os/ztna_state.json` |
 
@@ -841,7 +843,9 @@ systemd units (`systemd/`):
   failed reload never replaces a working ruleset, and stopping or
   restarting the unit leaves the ruleset loaded (no `ExecStop`). The
   live image enables it from the very first boot, so the WAN that
-  live-boot brings up by DHCP is never unfiltered.
+  live-boot brings up by DHCP is never unfiltered. When `config.yaml`
+  can't be applied at boot, the router comes up with the config last
+  applied in full instead -- see "One apply, one transaction" below.
 - `fr-apply-helper.socket` + `fr-apply-helper.service` — the privileged
   apply-helper, with socket activation (see Security model below).
 - `fr-webui.service` — the actual FastAPI app (`fr-webui` binary), runs
@@ -871,6 +875,80 @@ The webUI never creates an account itself: with none on disk its sign-in
 page only says to run that command on the console. (It used to let the
 first visitor create the admin account over the network, unthrottled, on
 every interface — review triage A3.)
+
+### One apply, one transaction (ROADMAP SEC-5)
+
+Review v0.2.0 R6: `frfw.provision.apply_all` stopped at the first failing
+step and left the steps before it applied -- a new ruleset with the old
+DHCP server, addresses half changed, the resolver of one config and the
+XDP filter of another. Only the firewall was always safe: it goes first,
+and `nft -f` is atomic. Now an apply is one transaction
+(`frfw.transaction`):
+
+1. **Preflight.** Before anything changes, everything that can be
+   checked without changing anything is: the ruleset (`nft -c`), Kea's
+   config (`kea-dhcp4 -t`), the resolver's (`dnsmasq --test`), the
+   network devices the steps act on (a device only named in a rule
+   isn't needed -- nft matches by name), the XDP blocklist. A failure
+   here changes nothing: "Nothing was applied -- network devices: no
+   such network device on this machine: ens9".
+2. **Journal.** Each step records how to undo itself before it changes
+   anything, the step that fails included (it may have done part of its
+   work). There are two kinds of undo:
+   - *Reconcile with the last applied config.* For the steps that make
+     the system match a config: the ruleset, rebuilt from that config
+     with the bans, quarantines, ZTNA sessions and isolated devices read
+     again at rollback time (a ban added in the seconds between isn't
+     lost; review FR-002); WireGuard; the XDP filter. The config is the
+     text the last fully successful apply recorded,
+     `/etc/fr_os/applied-config.yaml`, root-only.
+   - *Put back what was there.* For the steps that only ever add, or
+     whose state is a file and a service: addresses an apply added are
+     removed and a device it created is deleted (`LinkState`); Kea's and
+     the resolver's config files come back byte for byte with their
+     mode and owner, and the service is restarted or stopped as it was
+     (`FileState`, `ServiceState`); the sshd drop-ins, their reload and
+     the units' enabled state; the PQC fragment; IPv4 forwarding.
+3. **Rollback.** On a failure the journal is undone last-first, so the
+   firewall is put back last: the new ruleset keeps filtering until the
+   previous one is loaded, and the router is never without one. Every
+   undo runs even if one before it failed; the error names the failed
+   step, what was rolled back, and anything that wasn't, with why:
+   "Apply failed at DHCP (Kea): ... Rolled back to the previous state:
+   DHCP (Kea), the ad-block DNS resolver, interface addresses, WireGuard,
+   IPv4 forwarding, the firewall."
+
+Without a recorded config (the first apply after an update to this
+version, or after a failed first boot), the ruleset that was loaded is
+put back as `nft list ruleset` read it -- nft reads back its own
+`expires`, so bans keep the time they had left -- WireGuard and XDP are
+switched off again if they weren't there before, and otherwise left as
+the failed apply made them, which the error says. When nothing at all
+was loaded before (a boot), the new ruleset stays: never unfiltered.
+
+**At boot** (`firewall-cli apply --fail-closed`) there is nothing running
+to go back to. When `config.yaml` fails there, the router comes up with
+the config last applied in full -- a security alert in the audit log and
+a WARNING in fr-firewall's journal say so, with why config.yaml failed.
+When there is none, or it is the same config, or it fails too, the boot
+applies `config.yaml` as far as it goes, the ruleset first, without
+preflight or rollback (`transactional=False`) -- what every boot did
+before, so a missing NIC never leaves the box unfiltered or unreachable
+-- and raises the alert too. An apply from the console or the webUI never
+falls back: its author sees the failure.
+
+**Where the webUI listens.** fr-webui used to bind config.yaml's
+management addresses. After a rollback, or a boot that fell back, those
+are not the router's; the webUI then listened nowhere reachable (with
+`IP_FREEBIND` it doesn't even fail). The apply's last step records the
+applied config's addresses (`/etc/fr_os/webui-listen.json`), and fr-webui
+binds those; before any apply recorded them, config.yaml's.
+
+Not covered: the ad-block lists' allowlist filtering (the lists are data,
+refreshed daily, and an allowlist removal only removes), and the webUI
+restart the last step schedules -- it runs only when everything before it
+succeeded. config.yaml is not changed by a failed apply: the webUI still
+shows what was saved, and the error says it wasn't applied.
 
 ## Security model
 

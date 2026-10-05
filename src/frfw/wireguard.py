@@ -188,6 +188,12 @@ def _link_exists(run: Runner) -> bool:
     return run(["ip", "link", "show", "dev", IFACE], check=False).returncode == 0
 
 
+def tunnel_exists(*, run: Runner | None = None) -> bool:
+    """Whether wg0 is there now (what an apply's rollback puts back when
+    no config was recorded as applied before it, ROADMAP SEC-5)."""
+    return _link_exists(run or _run)
+
+
 def sync(config: Config, *, dry_run: bool = False, key_path: Path | None = None,
          run: Runner | None = None) -> SyncResult:
     run = run or _run

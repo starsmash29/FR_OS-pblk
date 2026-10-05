@@ -245,6 +245,12 @@ def _test_dnsmasq_config(conf_path: Path, *, dnsmasq_binary: str = "dnsmasq") ->
         raise DnsServiceError(proc.stderr.strip() or proc.stdout.strip() or "dnsmasq --test failed")
 
 
+def test_dnsmasq_config(conf_path: Path, *, dnsmasq_binary: str = "dnsmasq") -> None:
+    """`dnsmasq --test` of a config file, running nothing (the preflight of
+    an apply, ROADMAP SEC-5). Raises DnsServiceError."""
+    _test_dnsmasq_config(conf_path, dnsmasq_binary=dnsmasq_binary)
+
+
 def _restart_dns_service() -> None:
     try:
         proc = svc.systemctl("restart", paths.ADBLOCK_DNS_SERVICE_NAME)

@@ -82,6 +82,21 @@ _ZTNA_MAX_TTL_SECONDS = 30 * 24 * 3600
 _MAX_SNI_LEN = 32
 
 
+def read_config(path: str | Path) -> tuple[Config, str]:
+    """`load_config`, also returning the text the config was parsed from
+    -- read once, so the two always match (an apply records that text,
+    ROADMAP SEC-5)."""
+    path = Path(path)
+    if not path.is_file():
+        raise FileNotFoundError(f"Config file not found: {path}")
+    text = path.read_text()
+    try:
+        raw = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        raise ConfigError(f"Invalid YAML in {path}: {exc}") from exc
+    return parse_config(raw), text
+
+
 def load_config(path: str | Path) -> Config:
     """Read a YAML file from `path` and return a validated `Config`.
 

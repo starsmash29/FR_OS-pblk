@@ -22,6 +22,10 @@ from frfw.adblock import write_hosts_file
 from frfw.config import parse_config
 from frfw.config.schema import AppControlConfig
 from frfw.provision import apply_all
+from frfw.transaction import ApplyError
+
+#: Taken before tests/conftest.py stands it in for every test.
+_REAL_DEVICE_EXISTS = ifaddr_mod.device_exists
 
 
 @pytest.fixture(autouse=True)
@@ -297,10 +301,14 @@ def test_apply_all_reports_names_it_could_not_put_in_the_xdp_blocklist(
     assert too_long in reported[0]
 
 
-def test_a_missing_interface_does_not_stop_the_ruleset_from_loading(minimal_config_dict, tmp_path, monkeypatch):
+def test_a_missing_interface_still_loads_the_ruleset_in_the_boots_last_resort(minimal_config_dict, tmp_path,
+                                                                              monkeypatch):
     """A2 (review triage): addresses used to be synced first, so a device
     name the machine doesn't have (e.g. the example config's eth0 on a box
-    with enp1s0) aborted the apply before any ruleset was loaded."""
+    with enp1s0) aborted the apply before any ruleset was loaded. At boot,
+    when neither config.yaml nor the last applied config can be applied
+    (ROADMAP SEC-5, firewall-cli apply --fail-closed), the last resort
+    still loads the ruleset first, and nothing rolls it back."""
     loaded = []
     monkeypatch.setattr(apply_mod, "_run_nft", lambda args, stdin: loaded.append(args))
 
@@ -308,14 +316,25 @@ def test_a_missing_interface_does_not_stop_the_ruleset_from_loading(minimal_conf
         raise ifaddr_mod.IfaddrError("Cannot find device \"eth9\"")
 
     monkeypatch.setattr(ifaddr_mod, "sync_addresses", missing_device)
-    with pytest.raises(ifaddr_mod.IfaddrError):
-        apply_all(
-            parse_config(minimal_config_dict),
-            backup_dir=tmp_path / "backups",
-            kea_config_path=tmp_path / "kea.json",
-            xdp_state_path=tmp_path / "xdp_state.json",
-        )
-    assert ["-f", "-"] in loaded
+    with pytest.raises(ApplyError, match="eth9") as raised:
+        apply_all(parse_config(minimal_config_dict), transactional=False, **_apply_kwargs(tmp_path))
+    assert loaded.count(["-f", "-"]) == 1
+    assert raised.value.step == "interface addresses" and raised.value.rolled_back == ()
+
+
+def test_a_missing_device_changes_nothing_on_a_running_router(dhcp_config_dict, tmp_path, monkeypatch):
+    """ROADMAP SEC-5: the preflight finds a device the steps would act on
+    missing before anything is touched -- the firewall included."""
+    sysfs = tmp_path / "class_net"
+    (sysfs / "eth0").mkdir(parents=True)  # lo, which the config addresses, is not there
+    monkeypatch.setattr(ifaddr_mod, "NET_CLASS_DIR", sysfs)
+    monkeypatch.setattr(ifaddr_mod, "device_exists", _REAL_DEVICE_EXISTS)
+    loaded = []
+    monkeypatch.setattr(apply_mod, "_run_nft", lambda args, stdin: loaded.append(args))
+    with pytest.raises(ApplyError, match="no such network device on this machine: lo") as raised:
+        apply_all(parse_config(dhcp_config_dict), **_apply_kwargs(tmp_path))
+    assert raised.value.changed is False and "Nothing was applied" in str(raised.value)
+    assert ["-f", "-"] not in loaded
 
 
 def test_forwarding_is_turned_on_only_after_the_ruleset_loads(minimal_config_dict, tmp_path, monkeypatch):
@@ -339,7 +358,7 @@ def test_forwarding_is_turned_on_only_after_the_ruleset_loads(minimal_config_dic
         raise apply_mod.NftError("syntax error")
 
     monkeypatch.setattr(apply_mod, "_run_nft", nft_fails)
-    with pytest.raises(apply_mod.NftError):
+    with pytest.raises(ApplyError, match="syntax error"):
         apply_all(parse_config(minimal_config_dict), backup_dir=tmp_path / "b", kea_config_path=tmp_path / "k.json",
                   xdp_state_path=tmp_path / "x.json")
     assert forwarding.IP_FORWARD_PATH.read_text().strip() == "0"
@@ -364,7 +383,7 @@ def test_the_vpn_comes_up_only_behind_the_ruleset(minimal_config_dict, tmp_path,
         raise apply_mod.NftError("syntax error")
 
     monkeypatch.setattr(apply_mod, "_run_nft", nft_fails)
-    with pytest.raises(apply_mod.NftError):
+    with pytest.raises(ApplyError, match="syntax error"):
         apply_all(parse_config(minimal_config_dict), backup_dir=tmp_path / "b", kea_config_path=tmp_path / "k.json",
                   xdp_state_path=tmp_path / "x.json")
     assert "wireguard" not in order
@@ -461,6 +480,7 @@ def test_an_unreadable_set_stops_the_apply_before_the_reload(minimal_config_dict
         raise ids_quarantine_mod.IdsQuarantineError("netlink: Error: Could not process rule")
 
     monkeypatch.setattr(ids_quarantine_mod, "snapshot_before_reload", broken)
-    with pytest.raises(apply_mod.NftError, match="could not read the AI IDS quarantine .* nothing was changed"):
+    with pytest.raises(ApplyError, match="could not read the AI IDS quarantine .* nothing was changed") as raised:
         apply_all(parse_config(minimal_config_dict), **_apply_kwargs(tmp_path))
     assert loaded_rulesets[0] == []
+    assert raised.value.changed is False

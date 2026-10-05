@@ -20,6 +20,7 @@ out; the webUI and `apply` warn while that is on.
 from __future__ import annotations
 
 import grp
+import json
 import ipaddress
 import os
 import pwd
@@ -276,14 +277,39 @@ def webui_listening(port: int = WEBUI_PORT) -> set[str] | None:
     return found
 
 
-def sync_webui(config: Config, *, dry_run: bool = False) -> SyncResult:
+def record_webui_listen(addresses: list[str], path: Path | None = None) -> None:
+    path = paths.WEBUI_LISTEN_PATH if path is None else path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_text(json.dumps({"addresses": addresses}) + "\n")
+    os.chmod(tmp, 0o644)
+    tmp.replace(path)
+
+
+def recorded_webui_listen(path: Path | None = None) -> list[str] | None:
+    """The addresses the last applied config has the webUI listen on, or
+    None when none are recorded (or the record is not one)."""
+    path = paths.WEBUI_LISTEN_PATH if path is None else path
+    try:
+        addresses = json.loads(path.read_text())["addresses"]
+        if not isinstance(addresses, list) or not addresses:
+            return None
+        return [str(ipaddress.IPv4Address(a)) for a in addresses]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def sync_webui(config: Config, *, dry_run: bool = False, listen_path: Path | None = None) -> SyncResult:
     """The webUI binds its addresses at start; when they should change
     (a new LAN address, allow_wan toggled), restart it -- a few seconds
     later, so the request that triggered this apply still gets its
-    answer."""
+    answer. The addresses are recorded for it first (paths.WEBUI_LISTEN_PATH):
+    it binds those, the applied config's, rather than config.yaml's
+    (ROADMAP SEC-5)."""
     wanted = set(listen_addresses(config))
     if dry_run:
         return SyncResult("Would make the webUI listen on " + ", ".join(sorted(wanted)) + " (dry-run)")
+    record_webui_listen(listen_addresses(config), listen_path)
     running = webui_listening()
     if not running or running == wanted:
         return SyncResult("webUI listens on " + ", ".join(sorted(wanted)))

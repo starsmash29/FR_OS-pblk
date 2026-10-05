@@ -256,6 +256,19 @@ APPID_USAGE_PATH = SENSOR_STATE_DIR / "appid_usage.json"
 #: Root-only, written by apply.
 SCHEDULE_STATE_PATH = Path("/etc/fr_os/schedule_state.json")
 
+#: The text of the last config applied in full (ROADMAP SEC-5,
+#: frfw.provision): what a failed apply's reconciling steps are rolled
+#: back to, and what the router boots into when config.yaml fails at
+#: boot. Root's alone (0600): it holds what config.yaml holds.
+APPLIED_CONFIG_PATH = Path("/etc/fr_os/applied-config.yaml")
+
+#: Where the last applied config has the webUI listen (ROADMAP SEC-5,
+#: frfw.management.sync_webui). fr-webui binds these, not config.yaml's:
+#: after a failed apply was rolled back, or a boot that fell back to the
+#: last applied config, the two differ -- and only these addresses are on
+#: the router. Not secret (0644).
+WEBUI_LISTEN_PATH = Path("/etc/fr_os/webui-listen.json")
+
 #: When each firewall rule last matched (security-lessons K2,
 #: frfw.rule_hits), kept by fr-schedule-check.timer, read by the webUI.
 RULE_HITS_PATH = Path("/etc/fr_os/rule_hits.json")

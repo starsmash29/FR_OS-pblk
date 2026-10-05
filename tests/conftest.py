@@ -70,6 +70,34 @@ def _never_touch_the_hosts_sensor_config(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _never_touch_the_hosts_applied_config(tmp_path_factory, monkeypatch):
+    """The record of the last applied config (ROADMAP SEC-5,
+    /etc/fr_os/applied-config.yaml) is a file of each test's own."""
+    from frfw import paths
+
+    monkeypatch.setattr(paths, "APPLIED_CONFIG_PATH", tmp_path_factory.mktemp("etc_fr_os_applied") / "applied-config.yaml")
+
+
+@pytest.fixture(autouse=True)
+def _never_touch_the_hosts_webui_listen_record(tmp_path_factory, monkeypatch):
+    """Where an apply records the webUI's listen addresses (ROADMAP SEC-5)."""
+    from frfw import paths
+
+    monkeypatch.setattr(paths, "WEBUI_LISTEN_PATH", tmp_path_factory.mktemp("etc_fr_os_listen") / "webui-listen.json")
+
+
+@pytest.fixture(autouse=True)
+def _every_device_a_config_names_exists(monkeypatch):
+    """An apply's preflight requires the network devices its steps act on
+    (ROADMAP SEC-5); test configs name eth0/eth1, which this machine need
+    not have. Tests of the check itself use the real one
+    (frfw.ifaddr.NET_CLASS_DIR) or real network namespaces."""
+    from frfw import ifaddr
+
+    monkeypatch.setattr(ifaddr, "device_exists", lambda device: True)
+
+
+@pytest.fixture(autouse=True)
 def _never_touch_the_hosts_audit_log(tmp_path_factory, monkeypatch):
     """The root-owned audit log (/var/log/fr_os) is a directory of its own
     per test, never the machine's."""

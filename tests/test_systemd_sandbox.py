@@ -238,6 +238,13 @@ def test_every_service_has_a_writable_temp_dir(name):
     assert f"TMPDIR=/run/{runtime}" in settings.get("Environment", []), name
 
 
+@pytest.mark.parametrize("name", ["fr-firewall.service", "fr-apply-helper.service"])
+def test_the_units_that_can_fall_back_or_alert_reach_the_audit_log(name):
+    """ROADMAP SEC-5: when config.yaml fails at boot, fr-firewall raises a
+    security alert in the root-owned audit log; it must be able to."""
+    assert "-/var/log/fr_os" in one(service_section(name), "ReadWritePaths").split()
+
+
 @pytest.mark.parametrize("name", ["fr-firewall.service", "fr-apply-helper.service", "fr-schedule-check.service"])
 def test_the_units_that_apply_can_turn_routing_on(name):
     """An apply writes /proc/sys/net/ipv4/ip_forward (frfw.forwarding):
