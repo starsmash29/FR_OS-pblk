@@ -17,9 +17,11 @@ and the kernel panicked -- found by the boot test. Instead it is the
 image's own initrd, the one the medium boots with, with its kernel
 modules exchanged for the new kernel's: the same modules plus what they
 depend on, `depmod` run for the new kernel. Nothing else in an initrd
-(busybox, live-boot, the libraries) depends on the kernel version. It is
-checked for live-boot and the new kernel's modules before anything calls
-the kernel ready.
+(busybox, live-boot, the libraries) depends on the kernel version. The
+archive is edited, not unpacked -- every other entry is copied byte for
+byte, setuid `mount` and device nodes included -- and checked for
+live-boot and the new kernel's modules before anything calls the kernel
+ready.
 
 It never stages and never reboots: the kernel is "ready to try". The
 admin's "Try it" on the Update screen (the update-helper's `kernel_try`)
@@ -215,21 +217,75 @@ def prepare(*, version: str | None = None, enabled: bool = True, run: Runner = _
                    alert=f"kernel {version} is ready to try (Update screen: trying it reboots the router)")
 
 
-def _archives(unpacked: Path) -> tuple[list[Path], Path]:
-    """unmkinitramfs's output: early (uncompressed, e.g. microcode)
-    archives and the main one, or just the main one."""
-    if (unpacked / "main").is_dir():
-        return sorted(p for p in unpacked.iterdir() if p.name.startswith("early")), unpacked / "main"
-    return [], unpacked
+# -- the initrd: the image's own, its kernel modules exchanged ----------------------------
+#
+# The archive is edited, never unpacked: unpacking it on the router would
+# have to recreate its setuid `mount` (refused in fr-kernel-prepare's
+# sandbox, RestrictSUIDSGID) and its device nodes. Every entry but the
+# old kernel's modules is copied as it is, byte for byte.
+
+_NEWC = b"070701"
+_TRAILER = "TRAILER!!!"
 
 
-def _cpio(root: Path) -> bytes:
-    names = ["."] + sorted(str(p.relative_to(root)) for p in root.rglob("*"))
-    proc = subprocess.run(["cpio", "--quiet", "-o", "-H", "newc"], cwd=root, input="\n".join(names).encode(),
-                          capture_output=True)
-    if proc.returncode != 0:
-        raise KernelUpdateError(f"cpio failed: {proc.stderr.decode(errors='replace').strip()}")
-    return proc.stdout
+def _pad4(n: int) -> int:
+    return (4 - n % 4) % 4
+
+
+class _Entry:
+    __slots__ = ("raw", "name", "ino")
+
+    def __init__(self, raw: bytes, name: str, ino: int) -> None:
+        self.raw, self.name, self.ino = raw, name, ino
+
+
+def _read_newc(data: bytes, offset: int = 0) -> tuple[list[_Entry], int]:
+    """The entries of one newc cpio archive at `offset` (trailer left
+    out), and where it ends."""
+    entries = []
+    while True:
+        if data[offset:offset + 6] != _NEWC:
+            raise KernelUpdateError(f"not a newc cpio archive at byte {offset}")
+        fields = [int(data[offset + 6 + 8 * i:offset + 14 + 8 * i], 16) for i in range(13)]
+        namesize, filesize = fields[11], fields[6]
+        name_start = offset + 110
+        name = data[name_start:name_start + namesize - 1].decode("utf-8", "surrogateescape")
+        data_start = name_start + namesize + _pad4(110 + namesize)
+        end = data_start + filesize + _pad4(filesize)
+        if name == _TRAILER:
+            return entries, end
+        entries.append(_Entry(data[offset:end], name, fields[0]))
+        offset = end
+
+
+def _newc_entry(name: str, mode: int, data: bytes, ino: int, mtime: int) -> bytes:
+    encoded = name.encode() + b"\0"
+    header = _NEWC + b"".join(b"%08X" % v for v in (ino, mode, 0, 0, 2 if mode & 0o040000 else 1, mtime,
+                                                     len(data), 0, 0, 0, 0, len(encoded), 0))
+    return (header + encoded + b"\0" * _pad4(110 + len(encoded)) + data + b"\0" * _pad4(len(data)))
+
+
+def _split_initrd(blob: bytes) -> tuple[bytes, bytes]:
+    """(the uncompressed early archives, e.g. microcode, as they are; the
+    main archive, decompressed)."""
+    offset = 0
+    while blob[offset:offset + 6] == _NEWC:
+        _entries, offset = _read_newc(blob, offset)
+        while offset < len(blob) and blob[offset] == 0:  # padding between archives
+            offset += 1
+    early, compressed = blob[:offset], blob[offset:]
+    if compressed[:2] == b"\x1f\x8b":
+        return early, gzip.decompress(compressed)
+    if compressed[:6] == b"\xfd7zXZ\x00":
+        import lzma
+
+        return early, lzma.decompress(compressed)
+    if compressed[:4] == b"\x28\xb5\x2f\xfd":
+        proc = subprocess.run(["zstd", "-dc"], input=compressed, capture_output=True)
+        if proc.returncode != 0:
+            raise KernelUpdateError(f"zstd could not decompress the initrd: {proc.stderr.decode(errors='replace')}")
+        return early, proc.stdout
+    raise KernelUpdateError("the initrd's main archive is in a compression this router can't read")
 
 
 def _bare(relative: str) -> str:
@@ -244,58 +300,68 @@ def build_initrd(base: Path, modules: Path, version: str, out: Path, *, run: Run
         raise KernelUpdateError(f"no initrd to start from: {base}")
     if not (modules / "modules.dep").is_file():
         raise KernelUpdateError(f"no modules for kernel {version} in {modules}")
+    early, main = _split_initrd(base.read_bytes())
+    entries, _end = _read_newc(main)
+    names = {e.name for e in entries}
+    if "scripts/live" not in names:
+        raise KernelUpdateError(f"{base} has no live-boot: no kernel could find the router's root with it")
+    olds = {e.name.split("/")[3] for e in entries if e.name.startswith("usr/lib/modules/") and e.name.count("/") >= 3}
+    if len(olds) != 1:
+        raise KernelUpdateError(f"{base} has {len(olds)} kernels' modules, not one")
+    old_prefix = f"usr/lib/modules/{olds.pop()}"
+    wanted = {_bare(e.name[len(old_prefix) + 1:]) for e in entries
+              if e.name.startswith(old_prefix + "/") and _MODULE_SUFFIX.search(e.name)}
+
+    # The new kernel's module files and dependencies, by bare name.
+    available, depends = {}, {}
+    for line in (modules / "modules.dep").read_text().splitlines():
+        if ":" not in line:
+            continue
+        module, deps = line.split(":", 1)
+        available[_bare(module)] = module
+        depends[_bare(module)] = [_bare(d) for d in deps.split()]
+    chosen, todo = set(), [m for m in wanted if m in available]
+    while todo:
+        module = todo.pop()
+        if module not in chosen:
+            chosen.add(module)
+            todo.extend(d for d in depends.get(module, ()) if d in available)
+
     with tempfile.TemporaryDirectory(prefix="fros-initrd-") as tmp:
-        unpacked = Path(tmp) / "unpacked"
-        proc = subprocess.run(["unmkinitramfs", str(base), str(unpacked)], capture_output=True, text=True)
-        if proc.returncode != 0:
-            raise KernelUpdateError(f"unmkinitramfs {base} failed: {proc.stderr.strip()}")
-        early, main = _archives(unpacked)
-        module_dirs = [d for d in (main / "usr" / "lib" / "modules").glob("*") if d.is_dir() and not d.is_symlink()]
-        if len(module_dirs) != 1:
-            raise KernelUpdateError(f"{base} has {len(module_dirs)} kernels' modules, not one")
-        old = module_dirs[0]
-        wanted = {_bare(str(p.relative_to(old))) for p in old.rglob("*.ko*") if _MODULE_SUFFIX.search(p.name)}
-
-        # The new kernel's module files and dependencies, by bare name.
-        available, depends = {}, {}
-        for line in (modules / "modules.dep").read_text().splitlines():
-            if ":" not in line:
-                continue
-            module, deps = line.split(":", 1)
-            available[_bare(module)] = module
-            depends[_bare(module)] = [_bare(d) for d in deps.split()]
-        chosen, todo = set(), [m for m in wanted if m in available]
-        while todo:
-            module = todo.pop()
-            if module not in chosen:
-                chosen.add(module)
-                todo.extend(d for d in depends.get(module, ()) if d in available)
-
-        shutil.rmtree(old)
-        new = main / "usr" / "lib" / "modules" / version
-        new.mkdir(parents=True)
+        tree = Path(tmp) / "lib" / "modules" / version
+        tree.mkdir(parents=True)
         for module in chosen:
-            target = new / available[module]
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(modules / available[module], target)
+            (tree / available[module]).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(modules / available[module], tree / available[module])
         for name in _MODULE_INDEX:
             if (modules / name).is_file():
-                shutil.copy2(modules / name, new / name)
-        run(["depmod", "-b", str(main), version])
+                shutil.copyfile(modules / name, tree / name)
+        run(["depmod", "-b", tmp, version])
 
-        out.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        tmp_out = out.with_name(f".{out.name}.tmp")
-        with tmp_out.open("wb") as fh:
-            for archive in early:
-                fh.write(_cpio(archive))
-            fh.write(gzip.compress(_cpio(main), compresslevel=6))
-        tmp_out.replace(out)
+        kept = [e for e in entries if e.name != old_prefix and not e.name.startswith(old_prefix + "/")]
+        ino = max((e.ino for e in kept), default=0) + 1
+        mtime = int(base.stat().st_mtime)
+        added = []
+        new_prefix = f"usr/lib/modules/{version}"
+        present = {e.name for e in kept}
+        for path in [tree, *sorted(tree.rglob("*"))]:
+            name = new_prefix + ("" if path == tree else "/" + str(path.relative_to(tree)))
+            if path.is_dir():
+                added.append(_newc_entry(name, 0o040755, b"", ino, mtime))
+            else:
+                added.append(_newc_entry(name, 0o100644, path.read_bytes(), ino, mtime))
+            ino += 1
+        if "usr/lib/modules" not in present:
+            added.insert(0, _newc_entry("usr/lib/modules", 0o040755, b"", ino, mtime))
+        archive = b"".join(e.raw for e in kept) + b"".join(added) + _newc_entry(_TRAILER, 0, b"", 0, 0)
 
-    listing = run(["lsinitramfs", "--", str(out)])
-    if "scripts/live" not in listing:
-        raise KernelUpdateError(f"{out} has no live-boot: that kernel could not find the router's root")
-    if f"usr/lib/modules/{version}/modules.dep" not in listing:
-        raise KernelUpdateError(f"{out} has no modules for kernel {version}")
+    out.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    tmp_out = out.with_name(f".{out.name}.tmp")
+    tmp_out.write_bytes(early + gzip.compress(archive, compresslevel=6))
+    tmp_out.replace(out)
+    written = {e.name for e in _read_newc(_split_initrd(out.read_bytes())[1])[0]}
+    if f"{new_prefix}/modules.dep" not in written or "scripts/live" not in written:
+        raise KernelUpdateError(f"{out} came out without live-boot or the modules of kernel {version}")
 
 
 def clean_up(state: dict, *, keep: set[str], run: Runner = _run,

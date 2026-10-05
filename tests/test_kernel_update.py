@@ -4,7 +4,8 @@ Update screen.
 
 apt and dpkg are a fake here (`Apt`): it answers like them and records
 what was asked. The initrd is really built here, from a small initrd
-made for the test, with the real unmkinitramfs and cpio. The real chain
+made for the test with cpio (and checked with lsinitramfs/unmkinitramfs
+where they exist). The real chain
 -- the image's own initrd with the router's modules, the webUI's "Try",
 the trial -- is the boot test's boots 9-10.
 """
@@ -260,6 +261,10 @@ def initrd_parts(tmp_path):
         f"usr/lib/modules/{OLD}/modules.dep": b"old",
     })
     (main / "lib").symlink_to("usr/lib")
+    # What the image's initrd really has and the router must not unpack:
+    # a setuid binary (RestrictSUIDSGID in fr-kernel-prepare's sandbox).
+    _tree(main, {"usr/bin/mount": b"\x7fELF mount"})
+    os.chmod(main / "usr/bin/mount", 0o4755)
     modules = _tree(tmp_path / "modules" / NEW, {
         "kernel/drivers/net/virtio_net.ko": b"new virtio_net",
         "kernel/drivers/net/net_failover.ko": b"new net_failover",
@@ -277,11 +282,16 @@ def initrd_parts(tmp_path):
 def _depmod_then_list(calls):
     def run(argv):
         calls.append(argv)
-        if argv[0] == "depmod":  # what depmod -b writes, minimally
-            Path(argv[2], "lib", "modules", argv[3], "modules.dep").write_text("generated\n")
-            return ""
-        return subprocess.run(argv, capture_output=True, text=True, check=True).stdout
+        assert argv[0] == "depmod"  # nothing else runs: the archive is edited in Python
+        Path(argv[2], "lib", "modules", argv[3], "modules.dep").write_text("generated\n")
+        return ""
     return run
+
+
+def _entries(initrd: Path) -> dict[str, int]:
+    """name -> mode of the main archive's entries (frfw's own reader)."""
+    _early, main = kernel_update._split_initrd(initrd.read_bytes())
+    return {e.name: int(e.raw[14:22], 16) for e in kernel_update._read_newc(main)[0]}
 
 
 @needs_initramfs_tools
@@ -300,6 +310,8 @@ def test_the_new_initrd_has_the_same_modules_from_the_new_kernel(initrd_parts):
     # Everything else is the image's, untouched: live-boot, the libraries.
     assert {"scripts/live", "usr/lib/x86_64-linux-gnu/libmount.so.1", f"usr/lib/modules/{NEW}/modules.order"} <= set(listing)
     assert ["depmod", "-b"] == calls[0][:2] and calls[0][3] == NEW
+    # Copied, not unpacked: the setuid bit is still there.
+    assert _entries(out)["usr/bin/mount"] == 0o104755
 
 
 @needs_initramfs_tools
@@ -327,6 +339,21 @@ def test_an_initrd_without_live_boot_is_refused(initrd_parts):
     base.write_bytes(gzip.compress(_pack(main)))
     with pytest.raises(KernelUpdateError, match="no live-boot"):
         kernel_update.build_initrd(base, modules, NEW, tmp / "out" / "initrd", run=_depmod_then_list([]))
+    assert not (tmp / "out" / "initrd").exists()
+
+
+@needs_initramfs_tools
+def test_a_zstd_initrd_is_read_too(initrd_parts):
+    """Debian 12's mkinitramfs compresses with zstd when it can."""
+    if not shutil.which("zstd"):
+        pytest.skip("needs zstd")
+    tmp, main, modules = initrd_parts
+    base = tmp / "initrd.img"
+    base.write_bytes(subprocess.run(["zstd", "-q", "-c"], input=_pack(main), capture_output=True,
+                                    check=True).stdout)
+    out = tmp / "out" / f"initrd.img-{NEW}"
+    kernel_update.build_initrd(base, modules, NEW, out, run=_depmod_then_list([]))
+    assert f"usr/lib/modules/{NEW}/modules.dep" in _entries(out)
 
 
 def test_no_modules_for_the_kernel_no_initrd(tmp_path):
