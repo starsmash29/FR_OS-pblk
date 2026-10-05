@@ -111,16 +111,18 @@ class Vm:
         self.monitor = workdir / f"mon{n}.sock"
         cmd = [
             "qemu-system-x86_64", "-m", "2048", "-smp", "2", "-no-reboot",
-            # The stick first, whatever the firmware's own order (OVMF
-            # would try the NICs' network boot too).
-            "-drive", f"file={disk},format=raw,if=none,id=stick",
-            "-device", "virtio-blk-pci,drive=stick,bootindex=0",
             "-nic", "user,model=virtio-net-pci,mac=52:54:00:00:00:01",
             # The LAN port: the host's tap, no DHCP server on it -- QEMU's
             # user network always runs one, which would make both ports
             # look like an upstream (ROADMAP SEC-8).
             "-netdev", f"tap,id=lan,ifname={LAN_TAP},script=no,downscript=no",
             "-device", "virtio-net-pci,netdev=lan,mac=52:54:00:00:00:02",
+            # The stick, booted first whatever the firmware's own order
+            # (OVMF would try the NICs' network boot too). After the NICs:
+            # devices take PCI slots in this order, and the NICs' slots are
+            # their names -- WAN ens3, LAN ens4.
+            "-drive", f"file={disk},format=raw,if=none,id=stick",
+            "-device", "virtio-blk-pci,drive=stick,bootindex=0",
             "-display", "none", "-serial", f"file:{self.serial}",
             "-monitor", f"unix:{self.monitor},server,nowait",
         ]
