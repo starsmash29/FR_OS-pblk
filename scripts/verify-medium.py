@@ -62,16 +62,34 @@ def _run(*argv: str) -> str:
     return proc.stdout.strip()
 
 
+def _partition(target: Path, number: int) -> tuple[int, int] | None:
+    """(start, sectors) of partition `number` of a device or image, in
+    512-byte sectors -- None if it has none."""
+    proc = subprocess.run(["partx", "--show", "--noheadings", "--bytes", "--nr", str(number),
+                           "--output", "START,SECTORS", str(target)], capture_output=True, text=True)
+    fields = proc.stdout.split()
+    return (int(fields[0]), int(fields[1])) if proc.returncode == 0 and len(fields) == 2 else None
+
+
 @contextlib.contextmanager
 def mounted_medium(target: Path):
     """(lower, upper) of a boot medium: the squashfs it boots, and its
     persistence partition's `rw` (an empty directory without one).
-    Everything read-only, everything undone afterwards."""
+    Everything read-only, everything undone afterwards.
+
+    The image and the persistence partition each get a loop device of
+    their own -- the partition one at its offset: a mounted whole device
+    can't have one of its partitions mounted too (EBUSY), on a real stick
+    as on an image."""
     with tempfile.TemporaryDirectory(prefix="fros-verify-") as tmp:
         tmp = Path(tmp)
-        loop = _run("losetup", "--read-only", "--find", "--show", "--partscan", str(target))
-        mounts = []
+        loops, mounts = [], []
         try:
+            def loop(*options: str) -> str:
+                device = _run("losetup", "--read-only", "--find", "--show", *options, str(target))
+                loops.append(device)
+                return device
+
             def mount(source: str, where: Path, *options: str) -> Path:
                 where.mkdir()
                 _run("mount", "-o", ",".join(("ro",) + options), source, str(where))
@@ -79,23 +97,24 @@ def mounted_medium(target: Path):
                 return where
 
             # A hybrid ISO: its ISO 9660 filesystem starts at sector 0.
-            iso = mount(loop, tmp / "iso")
+            iso = mount(loop(), tmp / "iso")
             squashfs = iso / "live" / "filesystem.squashfs"
             if not squashfs.is_file():
                 raise VerifyError(f"{target} has no live/filesystem.squashfs: not an FR_OS boot medium")
             lower = mount(str(squashfs), tmp / "lower", "loop")
-            persistence = Path(f"{loop}p3")
-            if not persistence.exists():
-                subprocess.run(["partx", "--add", "--nr", "3", loop], capture_output=True)
             upper = tmp / "empty"
             upper.mkdir()
-            if persistence.exists():
-                upper = mount(str(persistence), tmp / "persistence") / "rw"
+            persistence = _partition(target, 3)
+            if persistence is not None:
+                start, sectors = persistence
+                device = loop("--offset", str(start * 512), "--sizelimit", str(sectors * 512))
+                upper = mount(device, tmp / "persistence") / "rw"
             yield lower, upper
         finally:
             for where in reversed(mounts):
                 subprocess.run(["umount", str(where)], capture_output=True)
-            subprocess.run(["losetup", "-d", loop], capture_output=True)
+            for device in loops:
+                subprocess.run(["losetup", "-d", device], capture_output=True)
 
 
 def verify(lower: Path, upper: Path, *, keys: list[Path], release_dir: Path | None = None) -> dict:

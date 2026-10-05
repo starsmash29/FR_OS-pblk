@@ -333,3 +333,22 @@ def test_the_offline_check_without_a_release_on_the_medium(medium):
     shutil.rmtree(medium["lower"] / "opt/fr_os/releases")
     code, result = _verify(medium)
     assert code == 2 and "--release DIR" in result["error"]
+
+
+@pytest.mark.skipif(not all(shutil.which(t) for t in ("sfdisk", "partx")), reason="needs sfdisk and partx")
+def test_the_offline_check_finds_the_persistence_partition_by_its_offset(tmp_path):
+    """The stick's persistence partition gets a loop device of its own, at
+    its offset: mounting partition 3 of a whole device that is itself
+    mounted (the ISO 9660 image) is refused (EBUSY) -- found by the boot
+    test. The offset comes from the partition table, as partx reads it."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("verify_medium", VERIFY_MEDIUM)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    image = tmp_path / "stick.img"
+    image.write_bytes(b"\0" * (4096 * 512))
+    subprocess.run(["sfdisk", "-q", str(image)], input=f"label: dos\n{image}3 : start=2048, size=1024, type=83\n",
+                   text=True, check=True, capture_output=True)
+    assert module._partition(image, 3) == (2048, 1024)
+    assert module._partition(image, 2) is None
