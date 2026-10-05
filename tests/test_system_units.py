@@ -25,8 +25,11 @@ LIVE_BUILD_HOOK = REPO_ROOT / "installer" / "live-build" / "config" / "hooks" / 
 FIRST_BOOT = REPO_ROOT / "scripts" / "fr-first-boot.sh"
 TIMERS = [u for u in UNITS if u.endswith(".timer")]
 
-#: fr-first-boot and fr-persistence-setup only make sense inside the live image.
-_LIVE_IMAGE_ONLY = {"fr-first-boot.service", "fr-persistence-setup.service"}
+#: fr-first-boot and fr-persistence-setup only make sense inside the live
+#: image; so does fr-kernel-confirm, a kernel staged on the persistence
+#: partition (ROADMAP SEC-14) -- an installed system updates its kernel in
+#: place.
+_LIVE_IMAGE_ONLY = {"fr-first-boot.service", "fr-persistence-setup.service", "fr-kernel-confirm.service"}
 
 
 @pytest.mark.parametrize("unit", [u for u in UNITS if u not in _LIVE_IMAGE_ONLY])
@@ -73,3 +76,17 @@ def test_new_daemon_units_are_valid(unit):
         text=True,
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_the_image_confirms_a_staged_kernels_boot_from_its_first_boot():
+    """ROADMAP SEC-14: enabled by the image itself, not by fr-first-boot --
+    a router that never finished first boot can still try a kernel."""
+    assert re.search(r"^systemctl enable fr-kernel-confirm\.service$", LIVE_BUILD_HOOK.read_text(), re.M)
+
+
+@pytest.mark.parametrize("installer", [LIVE_BUILD_HOOK, INSTALL_SCRIPT])
+def test_both_installers_set_up_the_hardware_watchdog(installer):
+    assert re.search(r"install -D -m 0644 \S*systemd/watchdog-fr_os\.conf\"? /etc/systemd/system\.conf\.d/"
+                     r"fr_os-watchdog\.conf$", installer.read_text(), re.M)
+    conf = (REPO_ROOT / "systemd" / "watchdog-fr_os.conf").read_text()
+    assert re.search(r"^RuntimeWatchdogSec=30s$", conf, re.M)

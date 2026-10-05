@@ -5,7 +5,8 @@
 # runs -- see that script), stages the systemd units and scripts, and
 # enables what the image starts on its first real boot: fr-first-boot
 # (which enables everything else, see scripts/fr-first-boot.sh),
-# fr-persistence-setup and fr-firewall (the fail-closed baseline).
+# fr-persistence-setup, fr-firewall (the fail-closed baseline) and
+# fr-kernel-confirm (a staged kernel's trial boot, ROADMAP SEC-14).
 set -e
 
 echo "frfw: installing from bundled source (/opt/frfw-src)..."
@@ -26,6 +27,10 @@ echo wireguard > /etc/modules-load.d/fr_os-wireguard.conf
 echo nf_log_syslog > /etc/modules-load.d/fr_os-logging.conf
 install -D -m 0644 /opt/frfw-src/systemd/journald-fr_os.conf /etc/systemd/journald.conf.d/fr_os.conf
 
+# The hardware watchdog, when the machine has one: a hang -- a staged
+# kernel's trial boot included -- resets the machine (ROADMAP SEC-14).
+install -D -m 0644 /opt/frfw-src/systemd/watchdog-fr_os.conf /etc/systemd/system.conf.d/fr_os-watchdog.conf
+
 # Loopback only: FR_OS owns the network ports (frfw.ifaddr gives the LAN
 # its address), and fr-first-boot adds a DHCP client for the WAN port
 # alone. live-boot keeps this file because of `ip=frommedia` (auto/config).
@@ -45,6 +50,7 @@ install -m 0755 /opt/frfw-src/scripts/install-system-integration.sh /usr/local/s
 for unit in \
     fr-first-boot.service \
     fr-persistence-setup.service \
+    fr-kernel-confirm.service \
     fr-accounts.service \
     fr-firewall.service \
     fr-apply-helper.socket \
@@ -77,6 +83,10 @@ install -d -m 0755 /opt/fr_os/releases
 
 systemctl enable fr-first-boot.service
 systemctl enable fr-persistence-setup.service
+# Every boot FR_OS's GRUB starts: keeps a staged kernel only when the
+# router came up on it (ROADMAP SEC-14). Does nothing on the image's own
+# kernel but note a fallback.
+systemctl enable fr-kernel-confirm.service
 # From the very first boot: until fr-first-boot has written a config this
 # loads the fail-closed baseline, so the WAN (DHCP'd by live-boot) is
 # never up unfiltered.

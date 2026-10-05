@@ -2922,6 +2922,83 @@ key -- a headless router would sit there. The trial boot of a staged
 kernel (next) must therefore never let GRUB fail on a missing file: it
 checks the file exists before it picks the entry.
 
+### A staged kernel, tried once (ROADMAP SEC-14, step 2)
+
+`frfw.kernel_boot` copies a kernel and its initrd to the persistence
+partition's own root, next to the overlay's `rw/` (never inside it, so
+the running system's files don't change):
+`fr_os-boot/staged/{vmlinuz,initrd.img,SHA256SUMS}`, and
+`fr_os-boot/grubenv`, a GRUB environment block (1024 bytes,
+`grub-editenv`'s format; tested both ways). `firewall-cli kernel stage`
+does it (root, never reboots; a security alert). GRUB finds that
+filesystem by the file (`search --file /fr_os-boot/grubenv`), loads
+exactly two variables from it (`fr_os_state`, `fr_os_staged` -- nothing
+like `default` or `prefix` can come from there) and runs:
+
+| state found | GRUB writes | boots | `fr_os.kernel=` |
+|---|---|---|---|
+| `trial` | `trying` | the staged kernel, `panic=10` | `trial` |
+| `good` | `booting` | the staged kernel, `panic=10` | `staged` |
+| `trying` / `booting` | `failed` | the image's kernel | `fallback` |
+| `failed`, nothing | -- | the image's kernel | `image` |
+
+Three rules make it safe: GRUB writes the new state *before* it boots
+the staged kernel and boots it only if that write worked (a kernel that
+can't be recorded as tried is never tried, so a broken one can't boot
+over and over); it checks the files against SHA256SUMS first
+(`hashsum`; a missing or damaged file is a failure like any other, never
+GRUB's "press any key"); and the image's kernel is always in the menu.
+
+`fr-kernel-confirm.service` runs late in every boot GRUB started
+(`ConditionKernelCommandLine=fr_os.kernel`). On the staged kernel it
+waits up to 3 minutes for the router: the firewall's ruleset loaded,
+the applied config's network devices present (`provision.missing_devices`,
+the SEC-5 preflight's check -- a kernel without a NIC's driver is not
+kept), the webUI answering on loopback, persistence active. Then it
+writes `good`. A *trial* that doesn't come up reboots once, by itself,
+into the image's kernel (the admin rebooted into the trial; a router
+left unreachable is worse); a confirmed kernel that later comes up badly
+stays up with an alert, and the next boot -- the admin's -- falls back.
+A fallback boot is a security alert. The image's kernel picked from the
+menu during a trial is not a failure: the state goes back to `trial` or
+`good`. Nothing else ever reboots the router. The unit is root (it
+writes the boot environment, reads the ruleset, asks systemd to reboot)
+in a strict sandbox: `CAP_NET_ADMIN` only, writes nothing but
+`/run/live/persistence` and the audit log, IP traffic to localhost only;
+`systemd-analyze security` 1.7. A bug in the step never fails the unit
+or reboots: the reboot is one explicit `systemctl reboot` for the one
+case, not `FailureAction=`.
+
+A kernel that hangs instead of panicking is reset by the hardware
+watchdog, when the machine has one: `systemd/watchdog-fr_os.conf`
+(`RuntimeWatchdogSec=30s`), installed by both installers. Then GRUB sees
+`trying` and falls back, as after a panic.
+
+What the hashes don't do: protect against root. Whoever is root on the
+router can rewrite the stick, the image included; `scripts/verify-medium.py`
+(SEC-15), run on another computer, lists the staged kernel's version,
+state and hashes to compare with the Debian package -- it isn't part of
+the signed release, so it is shown, not judged.
+
+Tested: `tests/test_kernel_boot.py` (the block, staging -- a copy that
+fails halfway leaves nothing staged --, every branch of the boot check,
+the CLI reboots for a failed trial only); `tests/test_boot_chain.py`
+boots the real grub.cfg under SeaBIOS and OVMF on a stick whose ext4
+persistence partition was staged by `kernel_boot.stage()`: a trial is
+booted once, then the fallback, then the image's kernel; a confirmed
+kernel boots as `booting`; damaged files are never booted. The boot
+test's boots 5-8 stage the image's own kernel from the host: a trial the
+router confirms (and the watchdog in use), a trial with the webUI masked
+that reboots itself into the fallback (two security alerts), and one
+with a broken initrd that panics.
+
+Still open (step 3): the webUI's "kernel ready, reboot to try it" and
+the alert there, and fetching Debian's kernel security package (the
+update helper) -- until then a kernel is staged with
+`firewall-cli kernel stage`. Only one kernel is staged at a time: a
+failed trial of the next one falls back to the image's kernel, not to
+the previous staged one.
+
 ### Open issues
 
 - A UEFI boot is tested in QEMU (OVMF), not yet on physical UEFI

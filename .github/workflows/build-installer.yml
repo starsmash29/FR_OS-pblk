@@ -14,7 +14,7 @@ on:
         required: false
         default: ""
       boot_test:
-        description: "Boot the ISO in QEMU four times with BIOS and four times with UEFI before publishing it (installer/qemu-boot-test.py)"
+        description: "Boot the ISO in QEMU eight times with BIOS and eight times with UEFI before publishing it (installer/qemu-boot-test.py)"
         type: boolean
         default: true
 
@@ -119,13 +119,13 @@ jobs:
         # this very commit ships (scripts/sign-sums.sh checks).
         run: ./scripts/sign-sums.sh SHA256SUMS
 
-      - name: Boot test in QEMU with BIOS (four boots, persistence, first boot, webUI)
+      - name: Boot test in QEMU with BIOS (eight boots, persistence, first boot, webUI, kernel trial)
         if: ${{ inputs.boot_test }}
         run: |
           sudo apt-get install -y qemu-system-x86 ovmf
           sudo python3 installer/qemu-boot-test.py "${{ steps.iso.outputs.name }}" --kvm --workdir qemu-test
 
-      # The same four boots from a fresh stick with UEFI firmware (OVMF):
+      # The same eight boots from a fresh stick with UEFI firmware (OVMF):
       # both firmwares boot from the same GRUB menu (ROADMAP SEC-14).
       - name: Boot test in QEMU with UEFI
         if: ${{ inputs.boot_test }}

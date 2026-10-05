@@ -217,9 +217,17 @@ def preflight(config: Config, *, adblock_hosts_path: Path = paths.ADBLOCK_HOSTS_
 
 
 def _check_devices(config: Config) -> None:
-    """The devices a step will act on must be there (a VLAN device is
-    created from its parent, so the parent must be). Devices only named
-    in rules are not required: nft matches interfaces by name."""
+    missing = missing_devices(config)
+    if missing:
+        raise ifaddr.IfaddrError(f"no such network device on this machine: {', '.join(missing)}")
+
+
+def missing_devices(config: Config) -> list[str]:
+    """The devices a step will act on that this machine doesn't have (a
+    VLAN device is created from its parent, so the parent must be there).
+    Devices only named in rules are not required: nft matches interfaces
+    by name. Also what a staged kernel's boot is checked for (ROADMAP
+    SEC-14): a kernel without a NIC's driver must not be kept."""
     wanted = set()
     for iface in config.interfaces.values():
         if iface.vlan_id is not None:
@@ -230,9 +238,7 @@ def _check_devices(config: Config) -> None:
     if config.xdp_sni_filter.enabled:
         wanted.update(config.interfaces[name].device for name in config.xdp_sni_filter.interfaces
                       if config.interfaces[name].device not in vlans)
-    missing = sorted(d for d in wanted if not ifaddr.device_exists(d))
-    if missing:
-        raise ifaddr.IfaddrError(f"no such network device on this machine: {', '.join(missing)}")
+    return sorted(d for d in wanted if not ifaddr.device_exists(d))
 
 
 def _check_kea(config: Config) -> None:

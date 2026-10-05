@@ -313,6 +313,27 @@ def _build_parser() -> argparse.ArgumentParser:
     p_persist_create.add_argument("--yes", action="store_true", help="confirm: everything on DISK is erased")
     p_persist_create.set_defaults(handler=_cmd_persistence_create)
 
+    p_kernel = sub.add_parser(
+        "kernel", help="a kernel staged on the persistence partition, tried once at the next reboot (ROADMAP SEC-14)"
+    )
+    kernel_sub = p_kernel.add_subparsers(dest="kernel_command", required=True)
+    kernel_sub.add_parser("status", help="the running kernel and the staged one").set_defaults(
+        handler=_cmd_kernel_status
+    )
+    p_kernel_stage = kernel_sub.add_parser(
+        "stage", help="stage a kernel and its initrd; the next reboot tries it once (root; never reboots)"
+    )
+    p_kernel_stage.add_argument("kernel", type=Path, help="the kernel image (vmlinuz)")
+    p_kernel_stage.add_argument("initrd", type=Path, help="its initrd, built with live-boot")
+    p_kernel_stage.add_argument("--version", required=True, help="its release, e.g. 6.1.0-28-amd64")
+    p_kernel_stage.set_defaults(handler=_cmd_kernel_stage)
+    kernel_sub.add_parser("unstage", help="back to the image's own kernel at the next reboot (root)").set_defaults(
+        handler=_cmd_kernel_unstage
+    )
+    kernel_sub.add_parser(
+        "confirm-boot", help="boot-time step (fr-kernel-confirm.service): keep a staged kernel the router came up on"
+    ).set_defaults(handler=_cmd_kernel_confirm_boot)
+
     p_mtoken = sub.add_parser(
         "metrics-token",
         help="turn GET /metrics on with a bearer token for a Prometheus (phase 20; off without one, ROADMAP SEC-3)",
@@ -752,6 +773,83 @@ def _cmd_persistence_create(args: argparse.Namespace) -> int:
     print(f"Created the persistence filesystem on {partition}.")
     print("Reboot: FR_OS will keep its state there from the next boot on.")
     print("Note: what was changed during this boot is not copied over.")
+    return 0
+
+
+def _cmd_kernel_status(args: argparse.Namespace) -> int:
+    from frfw import kernel_boot
+
+    state = kernel_boot.status()
+    print(f"Kernel: {state.summary}")
+    path = kernel_boot.boot_dir()
+    if state.state and path is not None:
+        for name, digest in sorted(kernel_boot.staged_files(path).items()):
+            print(f"  {name}: sha256 {digest}")
+    return 0
+
+
+def _kernel_boot_dir():
+    from frfw import kernel_boot
+
+    path = kernel_boot.boot_dir()
+    if path is None:
+        print("error: no persistence partition in use -- a kernel can only be staged on a live router with "
+              "persistence (firewall-cli persistence status)", file=sys.stderr)
+    return path
+
+
+def _cmd_kernel_stage(args: argparse.Namespace) -> int:
+    from frfw import kernel_boot
+
+    path = _kernel_boot_dir()
+    if path is None:
+        return 1
+    try:
+        kernel_boot.stage(args.kernel, args.initrd, args.version, boot_dir=path)
+    except (kernel_boot.KernelBootError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    # Security-lessons G9: what boots the router is the most valuable thing to change.
+    _console_alert(f"kernel {args.version} staged: the next reboot tries it once (firewall-cli kernel stage)")
+    print(f"Kernel {args.version} staged. The router does not reboot by itself: the next reboot tries it once,")
+    print("and keeps it only if the router comes up on it; otherwise the image's own kernel boots again.")
+    return 0
+
+
+def _cmd_kernel_unstage(args: argparse.Namespace) -> int:
+    from frfw import kernel_boot
+
+    path = _kernel_boot_dir()
+    if path is None:
+        return 1
+    if not kernel_boot.unstage(boot_dir=path):
+        print("Nothing was staged.")
+        return 0
+    _console_alert("staged kernel removed: the image's own kernel boots from the next reboot (firewall-cli kernel "
+                   "unstage)")
+    print("Staged kernel removed: the image's own kernel boots from the next reboot.")
+    return 0
+
+
+def _cmd_kernel_confirm_boot(args: argparse.Namespace) -> int:
+    """Never fails the unit and never reboots, but for the one case the
+    design asks for: a trial boot the router didn't come up on."""
+    from frfw import kernel_boot
+
+    path = kernel_boot.boot_dir()
+    if path is None:
+        print("fr-kernel: no persistence partition in use; nothing to confirm")
+        return 0
+    try:
+        outcome = kernel_boot.confirm_boot(boot_dir_path=path)
+    except Exception as exc:  # noqa: BLE001 -- a bug here must not cost the router its boot
+        print(f"fr-kernel: could not check this boot: {exc}")
+        return 0
+    print(f"fr-kernel: {outcome.message}")
+    if outcome.alert:
+        _console_alert(outcome.alert, user="fr-kernel-confirm", client="boot")
+    if outcome.reboot:
+        subprocess.run(["systemctl", "reboot"], check=False)
     return 0
 
 

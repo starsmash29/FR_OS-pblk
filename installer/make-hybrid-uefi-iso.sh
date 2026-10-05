@@ -131,11 +131,11 @@ WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
 # What both GRUBs carry built in: reading the ISO and the persistence
-# partition (ext2 reads ext4), the menu, the serial console, and the
+# partition (ext2 reads ext4), the menu, the serial console, the
 # environment block a trial boot of a new kernel keeps its state in
-# (loadenv, ROADMAP SEC-14). The BIOS core image loads nothing from the
+# (loadenv) and the check of its files (hashsum, ROADMAP SEC-14). The BIOS core image loads nothing from the
 # medium afterwards, so everything grub.cfg uses has to be in this list.
-GRUB_MODULES="part_gpt part_msdos fat iso9660 ext2 linux normal configfile search search_label search_fs_file echo test serial terminal halt loadenv"
+GRUB_MODULES="part_gpt part_msdos fat iso9660 ext2 linux normal configfile search search_label search_fs_file echo test serial terminal halt loadenv hashsum gcry_sha256"
 
 # The same for both: find this ISO by its volume label, wherever the
 # firmware put it (a stick, a CD, a disk's El Torito image), and read
