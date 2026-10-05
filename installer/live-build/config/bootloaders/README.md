@@ -15,8 +15,12 @@ fix it.
 
 This directory is a copy of that same bundled theme with the two symlinks
 repointed at the correct modern paths, and the SVG splash graphic dropped
-(see below); everything else (`isolinux.cfg`, `menu.cfg`, ...) is
-untouched.
+(see below); `menu.cfg` and `stdmenu.cfg` are otherwise untouched.
+`live.cfg.in` and `isolinux.cfg` are FR_OS's own: the default entry
+starts GRUB (`linux /boot/grub/grub.lnx`, built by
+`installer/make-hybrid-uefi-iso.sh`), so BIOS boots from the same
+`grub.cfg` as UEFI (ROADMAP SEC-14); the entries that start the kernel
+directly stay as a way out, and the timeout is 3 seconds.
 
 **`splash.svg.in` removed, `menu background splash.png` line dropped from
 `stdmenu.cfg`:** rendering the splash graphic (`lb_binary_syslinux`,

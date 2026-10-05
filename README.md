@@ -109,7 +109,9 @@ only, refuses root and passwords, and admits only members of the
 starts sshd.
 
 A screen, a serial console (115200 baud) or neither: the boot menu
-continues by itself after 5 seconds. Booting from something read-only (a
+(GRUB's, on BIOS and UEFI alike) continues by itself after 5 seconds; on
+BIOS a 3-second isolinux menu comes first, whose other entries start the
+kernel without GRUB. Booting from something read-only (a
 CD, a VM's virtual CD) there is no room for persistence -- the System
 screen says so; use an internal disk instead:
 

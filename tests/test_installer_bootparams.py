@@ -5,11 +5,16 @@ from __future__ import annotations
 
 import re
 import shlex
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
 
 REPO = Path(__file__).resolve().parent.parent
 LB = REPO / "installer" / "live-build"
 ISOLINUX = LB / "config" / "bootloaders" / "isolinux"
+GRUB_CFG = LB / "config" / "includes.binary" / "boot" / "grub" / "grub.cfg"
 
 
 def _auto_config_option(name: str) -> str:
@@ -42,7 +47,7 @@ def test_boot_options():
 
 
 def test_uefi_menu_uses_the_same_options_as_bios():
-    grub = (LB / "config" / "includes.binary" / "boot" / "grub" / "grub.cfg").read_text()
+    grub = GRUB_CFG.read_text()
     wanted = "boot=live config " + _auto_config_option("bootappend-live")
     linux_lines = [line.strip() for line in grub.splitlines() if line.strip().startswith("linux ")]
     assert linux_lines, "no kernel line in grub.cfg"
@@ -75,12 +80,57 @@ def test_persistence_unit_is_installed_and_runs_before_first_boot():
     assert "fdisk" in packages  # sfdisk, for the persistence partition
 
 
-def test_only_the_normal_entry_is_the_menu_default():
-    # With "menu default" on the fail-safe entry too, vesamenu booted that
-    # one: a single CPU (nosmp), no APIC, and a reboot that hangs.
+def _isolinux_entries() -> dict[str, str]:
     entries = re.split(r"^label ", (ISOLINUX / "live.cfg.in").read_text(), flags=re.M)[1:]
-    defaults = [e.splitlines()[0] for e in entries if "menu default" in e]
-    assert defaults == ["live-@FLAVOUR@"]
+    return {e.splitlines()[0]: e for e in entries}
+
+
+def test_only_the_grub_entry_is_the_menu_default():
+    # With "menu default" on the fail-safe entry too, vesamenu booted that
+    # one: a single CPU (nosmp), no APIC, and a reboot that hangs. The
+    # default starts GRUB, so BIOS boots from the same menu as UEFI
+    # (ROADMAP SEC-14).
+    entries = _isolinux_entries()
+    assert [label for label, e in entries.items() if "menu default" in e] == ["fr-os-grub"]
+    assert re.search(r"^\s*linux /boot/grub/grub\.lnx$", entries["fr-os-grub"], re.M)
+    # ...and the kernel can still be started without GRUB, from the menu.
+    for label in ("live-@FLAVOUR@", "live-@FLAVOUR@-failsafe"):
+        assert "kernel @KERNEL@" in entries[label]
+        assert "boot=live config @LB_BOOTAPPEND_LIVE@" in entries[label]
+
+
+def test_both_firmwares_say_which_grub_started_the_kernel():
+    # installer/qemu-boot-test.py looks for it in the kernel command line.
+    linux_lines = [line for line in GRUB_CFG.read_text().splitlines() if line.strip().startswith("linux ")]
+    assert linux_lines and all(line.endswith(" fr_os.loader=grub-${grub_platform}") for line in linux_lines)
+
+
+def test_grub_menu_on_the_serial_console_on_bios():
+    text = GRUB_CFG.read_text()
+    block = text.split('if [ "${grub_platform}" = "pc" ]; then', 1)[1].split("\nfi\n", 1)[0]
+    assert "serial --unit=0 --speed=115200" in block
+    assert "terminal_output console serial" in block and "terminal_input console serial" in block
+
+
+def test_the_iso_script_builds_grub_for_bios():
+    script = (REPO / "installer" / "make-hybrid-uefi-iso.sh").read_text()
+    assert 'cat "$GRUB_PC_DIR/lnxboot.img" "$WORK_DIR/core.img" > "$BINARY_DIR/boot/grub/grub.lnx"' in script
+    # The BIOS core image reads no modules from the medium: everything
+    # grub.cfg calls is built in.
+    modules = re.search(r'^GRUB_MODULES="([^"]+)"', script, re.M).group(1).split()
+    commands = {"serial": "serial", "terminal_input": "terminal", "terminal_output": "terminal",
+                "linux": "linux", "initrd": "linux", "[": "test", "search": "search"}
+    used = {word for line in GRUB_CFG.read_text().splitlines() if not line.lstrip().startswith("#")
+            for word in line.split()[:2]}
+    for command, module in commands.items():
+        if command in used:
+            assert module in modules, command
+
+
+@pytest.mark.skipif(shutil.which("grub-script-check") is None, reason="grub-script-check not installed")
+def test_grub_menu_parses():
+    proc = subprocess.run(["grub-script-check", str(GRUB_CFG)], capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
 
 
 def test_packages_the_booted_image_turned_out_to_need():

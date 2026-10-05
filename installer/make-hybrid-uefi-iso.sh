@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Adds real UEFI boot support to the FR_OS live ISO (phase 13, see
-# ARCHITECTURE.md's "Hybrid BIOS + UEFI boot support" section) and
+# ARCHITECTURE.md's "Hybrid BIOS + UEFI boot support" section), puts
+# GRUB in front of the kernel on BIOS machines too (ROADMAP SEC-14), and
 # repackages installer/live-build/binary.hybrid.iso.
 #
 # Why this exists as a separate, hand-rolled step instead of a
@@ -32,7 +33,18 @@
 #      own includes.binary step by the time this script runs);
 #   2. packs it into a small FAT-formatted EFI System Partition image
 #      (binary/boot/grub/efi.img);
-#   3. re-invokes the ISO packaging step itself, via xorriso -as
+#   3. builds the same GRUB for BIOS as binary/boot/grub/grub.lnx, a
+#      GRUB core image behind a Linux boot header (lnxboot.img), which
+#      isolinux's default menu entry starts like a kernel
+#      (config/bootloaders/isolinux/live.cfg.in). So both firmwares end
+#      up in the same grub.cfg -- the one place that decides which kernel
+#      boots, which is what a kernel update with a fallback to the
+#      image's own kernel needs (ROADMAP SEC-14). isolinux stays the El
+#      Torito/MBR boot program, so the medium's layout (and the
+#      persistence partition frfw.persistence appends to it) doesn't
+#      change; its other entries start the kernel directly, without
+#      GRUB, as a way out;
+#   4. re-invokes the ISO packaging step itself, via xorriso -as
 #      mkisofs, with BOTH the original BIOS El Torito entry
 #      (identical flags to what lb_binary_iso already used) AND a
 #      second, UEFI El Torito entry pointing at that ESP image, plus
@@ -50,15 +62,20 @@
 #      image.
 #
 # Host tool requirements beyond what installer/build-live-image.sh
-# already documents: `grub-common` (grub-mkstandalone), `grub-efi-
-# amd64-bin` (the x86_64-efi module tree grub-mkstandalone embeds),
+# already documents: `grub-common` (grub-mkstandalone, grub-mkimage),
+# `grub-efi-amd64-bin` (the x86_64-efi module tree grub-mkstandalone
+# embeds), `grub-pc-bin` (the i386-pc modules and lnxboot.img),
 # `mtools` + `dosfstools` (mmd/mcopy/mkfs.vfat, to build the FAT ESP
 # image), `xorriso` (the actual ISO repackaging tool). All are already
 # named in build-live-image.sh's header comment.
+#
+# FROS_LB_DIR points it at another live-build directory (config/binary,
+# binary/, chroot/usr/lib/ISOLINUX/isohdpfx.bin): tests/test_boot_chain.py
+# runs this very script on a small tree and boots the result in QEMU.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LB_DIR="$REPO_ROOT/installer/live-build"
+LB_DIR="${FROS_LB_DIR:-$REPO_ROOT/installer/live-build}"
 BINARY_DIR="$LB_DIR/binary"
 CHROOT_DIR="$LB_DIR/chroot"
 ISO_PATH="$LB_DIR/binary.hybrid.iso"
@@ -81,7 +98,7 @@ if [[ "${LB_BOOTLOADER:-}" != "syslinux" ]]; then
     exit 1
 fi
 
-for tool in grub-mkstandalone mkfs.vfat mmd mcopy xorriso; do
+for tool in grub-mkstandalone grub-mkimage mkfs.vfat mmd mcopy xorriso; do
     if ! command -v "$tool" >/dev/null 2>&1; then
         echo "error: '$tool' not found -- see this script's header comment for required host packages" >&2
         exit 1
@@ -98,6 +115,12 @@ if [[ ! -f "$BINARY_DIR/boot/grub/grub.cfg" ]]; then
     exit 1
 fi
 
+GRUB_PC_DIR=/usr/lib/grub/i386-pc
+if [[ ! -f "$GRUB_PC_DIR/lnxboot.img" ]]; then
+    echo "error: $GRUB_PC_DIR/lnxboot.img missing -- install grub-pc-bin, see this script's header comment" >&2
+    exit 1
+fi
+
 ISOHDPFX="$CHROOT_DIR/usr/lib/ISOLINUX/isohdpfx.bin"
 if [[ ! -f "$ISOHDPFX" ]]; then
     echo "error: $ISOHDPFX missing -- expected from the 'isolinux' chroot package (config/package-lists/frfw.list.chroot)" >&2
@@ -107,19 +130,39 @@ fi
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
-echo "==> Building standalone GRUB EFI binary (chainloads boot/grub/grub.cfg by volume label '${LB_ISO_VOLUME}')"
+# What both GRUBs carry built in: reading the ISO and the persistence
+# partition (ext2 reads ext4), the menu, the serial console, and the
+# environment block a trial boot of a new kernel keeps its state in
+# (loadenv, ROADMAP SEC-14). The BIOS core image loads nothing from the
+# medium afterwards, so everything grub.cfg uses has to be in this list.
+GRUB_MODULES="part_gpt part_msdos fat iso9660 ext2 linux normal configfile search search_label search_fs_file echo test serial terminal halt loadenv"
+
+# The same for both: find this ISO by its volume label, wherever the
+# firmware put it (a stick, a CD, a disk's El Torito image), and read
+# the real menu from it.
 cat > "$WORK_DIR/grub-embed.cfg" <<EOF
 search --no-floppy --set=root --label ${LB_ISO_VOLUME}
 set prefix=(\$root)/boot/grub
 configfile (\$root)/boot/grub/grub.cfg
 EOF
 
+echo "==> Building standalone GRUB EFI binary (chainloads boot/grub/grub.cfg by volume label '${LB_ISO_VOLUME}')"
 mkdir -p "$WORK_DIR/EFI/BOOT"
 grub-mkstandalone \
     -O x86_64-efi \
     -o "$WORK_DIR/EFI/BOOT/BOOTX64.EFI" \
-    --modules="part_gpt part_msdos fat iso9660 linux normal configfile search search_label search_fs_file echo test" \
+    --modules="$GRUB_MODULES" \
     "boot/grub/grub.cfg=$WORK_DIR/grub-embed.cfg"
+
+echo "==> Building GRUB for BIOS (boot/grub/grub.lnx, started by isolinux's default entry)"
+# shellcheck disable=SC2086  # GRUB_MODULES is a word list
+grub-mkimage \
+    -O i386-pc \
+    -o "$WORK_DIR/core.img" \
+    -p /boot/grub \
+    -c "$WORK_DIR/grub-embed.cfg" \
+    biosdisk $GRUB_MODULES
+cat "$GRUB_PC_DIR/lnxboot.img" "$WORK_DIR/core.img" > "$BINARY_DIR/boot/grub/grub.lnx"
 
 echo "==> Packing it into a FAT EFI System Partition image (boot/grub/efi.img)"
 # 10 MiB is comfortably larger than grub-mkstandalone's own output

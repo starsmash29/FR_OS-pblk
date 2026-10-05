@@ -1,10 +1,19 @@
-label live-@FLAVOUR@
-	menu label ^Live (@FLAVOUR@)
+# The default starts GRUB (boot/grub/grub.lnx, built by
+# installer/make-hybrid-uefi-iso.sh), so a BIOS machine boots from the
+# same menu as a UEFI one: boot/grub/grub.cfg decides which kernel
+# boots (ROADMAP SEC-14). The two entries below it start the image's
+# kernel directly, without GRUB -- a way out, never the default.
+label fr-os-grub
+	menu label ^FR_OS
 	menu default
+	linux /boot/grub/grub.lnx
+
+label live-@FLAVOUR@
+	menu label ^Live (@FLAVOUR@), without GRUB
 	kernel @KERNEL@
 	append initrd=@INITRD@ boot=live config @LB_BOOTAPPEND_LIVE@
 
 label live-@FLAVOUR@-failsafe
-	menu label ^Live (@FLAVOUR@ failsafe)
+	menu label ^Live (@FLAVOUR@ failsafe), without GRUB
 	kernel @KERNEL@
 	append initrd=@INITRD@ boot=live config @LB_BOOTAPPEND_LIVE@ @LB_BOOTAPPEND_FAILSAFE@
