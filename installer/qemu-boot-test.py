@@ -26,6 +26,11 @@ https://192.168.1.1/ over the tap, as a LAN client does.
    comes up with the config last applied in full, says so, raises a
    security alert, and the webUI is reachable (ROADMAP SEC-5).
 
+With --uefi the VM boots with UEFI firmware (OVMF, the `ovmf` package)
+instead of BIOS; the CI runs the test both ways. Either way the kernel has
+to come from GRUB's menu -- isolinux's default entry starts GRUB on BIOS
+(ROADMAP SEC-14) -- which the first boot checks in the kernel command line.
+
 Between boots the persistence partition is mounted on the host to read the
 journal and files, so a failure says what went wrong. Needs root (losetup,
 mount), qemu-system-x86_64 and curl. Takes a few minutes with KVM, ~15
@@ -83,6 +88,9 @@ ZTNA_PASSWORD = "otter-harbor-lamp-71"
 SPARE_DEVICE = "ens9"
 SPARE_ADDRESS = "10.250.0.1/24"
 DISK_SIZE = 2 * 2**30
+#: UEFI firmware for --uefi: Debian 12 / Ubuntu 24.04 name it with _4M.
+OVMF = [(Path("/usr/share/OVMF") / f"OVMF_CODE{s}.fd", Path("/usr/share/OVMF") / f"OVMF_VARS{s}.fd")
+        for s in ("_4M", "")]
 ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 
@@ -98,12 +106,15 @@ class Check:
 
 
 class Vm:
-    def __init__(self, workdir: Path, disk: Path, n: int, kvm: bool) -> None:
+    def __init__(self, workdir: Path, disk: Path, n: int, kvm: bool, uefi: tuple[Path, Path] | None = None) -> None:
         self.serial = workdir / f"boot{n}.log"
         self.monitor = workdir / f"mon{n}.sock"
         cmd = [
             "qemu-system-x86_64", "-m", "2048", "-smp", "2", "-no-reboot",
-            "-drive", f"file={disk},format=raw,if=virtio",
+            # The stick first, whatever the firmware's own order (OVMF
+            # would try the NICs' network boot too).
+            "-drive", f"file={disk},format=raw,if=none,id=stick",
+            "-device", "virtio-blk-pci,drive=stick,bootindex=0",
             "-nic", "user,model=virtio-net-pci,mac=52:54:00:00:00:01",
             # The LAN port: the host's tap, no DHCP server on it -- QEMU's
             # user network always runs one, which would make both ports
@@ -115,6 +126,11 @@ class Vm:
         ]
         if kvm:
             cmd[1:1] = ["-enable-kvm", "-cpu", "host"]
+        if uefi:
+            # The machine's own firmware variables, kept across its boots.
+            code, variables = uefi
+            cmd += ["-drive", f"if=pflash,format=raw,readonly=on,file={code}",
+                    "-drive", f"if=pflash,format=raw,file={variables}"]
         self.proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def log(self) -> str:
@@ -559,9 +575,13 @@ def main() -> int:
     parser.add_argument("iso", type=Path)
     parser.add_argument("--workdir", type=Path, help="keep the disk image and serial logs here")
     parser.add_argument("--kvm", action="store_true", help="use KVM (much faster) if /dev/kvm exists")
+    parser.add_argument("--uefi", action="store_true", help="boot with UEFI firmware (OVMF) instead of BIOS")
     args = parser.parse_args()
     if not shutil.which("qemu-system-x86_64"):
         print("qemu-system-x86_64 not found", file=sys.stderr)
+        return 2
+    if args.uefi and not any(c.is_file() and v.is_file() for c, v in OVMF):
+        print("--uefi: no OVMF firmware (install the ovmf package)", file=sys.stderr)
         return 2
     with lan_tap():
         return run(args)
@@ -579,22 +599,32 @@ def run(args: argparse.Namespace) -> int:
     with disk.open("r+b") as fh:
         fh.truncate(DISK_SIZE)
     kvm = args.kvm and Path("/dev/kvm").exists()
+    uefi = None
+    if args.uefi:
+        code, variables = next((c, v) for c, v in OVMF if c.is_file() and v.is_file())
+        uefi = (code, workdir / "OVMF_VARS.fd")
+        shutil.copyfile(variables, uefi[1])
     boot_timeout = 300 if kvm else 900
     check = Check()
-    print(f"work directory: {workdir} ({'KVM' if kvm else 'TCG, slow'})")
+    print(f"work directory: {workdir} ({'KVM' if kvm else 'TCG, slow'}, {'UEFI' if uefi else 'BIOS'})")
 
     print("boot 1: persistence setup")
-    vm = Vm(workdir, disk, 1, kvm)
+    vm = Vm(workdir, disk, 1, kvm, uefi)
     rebooted = vm.wait_exit(boot_timeout)
     vm.kill()
     log = vm.log()
-    check("boot=live" in log and "persistence" in log.split("Command line:", 1)[-1].split("\n", 1)[0],
+    cmdline = log.split("Command line:", 1)[-1].split("\n", 1)[0].split()
+    check("boot=live" in cmdline and "persistence" in cmdline and "nosmp" not in cmdline,
           "booted the normal menu entry with the persistence option")
+    loader = "grub-efi" if uefi else "grub-pc"
+    check(f"fr_os.loader={loader}" in cmdline,
+          f"the kernel came from GRUB's menu ({loader}, ROADMAP SEC-14): "
+          + next((o for o in cmdline if o.startswith("fr_os.loader=")), "no fr_os.loader= option"))
     check("fr-persistence: created" in log, "created the persistence partition on the boot medium")
     check(rebooted, "rebooted by itself to start using it")
 
     print("boot 2: first boot")
-    vm = Vm(workdir, disk, 2, kvm)
+    vm = Vm(workdir, disk, 2, kvm, uefi)
     opener = webui_opener()
     page = wait_for_webui(opener, boot_timeout)
     log = vm.log()
@@ -645,7 +675,7 @@ def run(args: argparse.Namespace) -> int:
               "a DHCP client on the WAN port (ens3) only, never on the LAN port")
 
     print("boot 3: everything still there")
-    vm = Vm(workdir, disk, 3, kvm)
+    vm = Vm(workdir, disk, 3, kvm, uefi)
     opener = webui_opener()
     page = wait_for_webui(opener, boot_timeout)
     check(page is not None, "webUI up again")
@@ -859,7 +889,7 @@ def run(args: argparse.Namespace) -> int:
     # have. The boot falls back to the config last applied in full (boot
     # 3's), says so, and the webUI listens where that config says.
     print("boot 4: config.yaml can't be applied")
-    vm = Vm(workdir, disk, 4, kvm)
+    vm = Vm(workdir, disk, 4, kvm, uefi)
     opener = webui_opener()
     page = wait_for_webui(opener, boot_timeout)
     check(page is not None, "the webUI is reachable at the LAN address of the last applied config")

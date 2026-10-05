@@ -2856,14 +2856,10 @@ different `binary/` trees:
   the appended `efi.img` mounts as a valid FAT filesystem containing a
   real, `file`-confirmed "PE32+ executable (EFI application) x86-64"
   binary at `EFI/BOOT/BOOTX64.EFI`.
-- **Not verified**: actually booting the resulting ISO on a real or
-  virtual UEFI machine (no such hardware/hypervisor access in this
-  sandbox) -- the same class of disclosed gap as phase 5's own "not
-  yet verified: actually booting the ISO" note. The boot *records*
-  (El Torito catalog, GPT partition table, a valid signed... unsigned,
-  see below... PE32+ binary) are all independently, structurally
-  confirmed; a live UEFI boot exercising firmware's own El
-  Torito/GPT parsing is the one remaining step.
+- **Booted since** (ROADMAP SEC-14, below): `tests/test_boot_chain.py`
+  boots an ISO this script makes under SeaBIOS and OVMF, from a stick
+  and from a CD, and the CI's boot test runs its four boots of the real
+  image with UEFI firmware too (`installer/qemu-boot-test.py --uefi`).
 - **Secure Boot is explicitly out of scope and will not work as-is**:
   the `BOOTX64.EFI` built by `grub-mkstandalone` here is unsigned. A
   UEFI firmware with Secure Boot enabled will refuse to execute it.
@@ -2876,9 +2872,60 @@ different `binary/` trees:
   UEFI, exactly the same situation as most small, from-scratch Linux
   live images.
 
+### GRUB on BIOS too (ROADMAP SEC-14)
+
+A kernel fix should not need a new image (SEC-14, review R3): the router
+will stage a new kernel on its persistence partition and try it once,
+falling back to the image's own kernel when it doesn't come up. That
+choice has to be made by one boot loader that both firmwares run -- and
+until now only UEFI machines ran GRUB; BIOS machines booted the kernel
+straight from isolinux. So, before any of that logic exists:
+
+- `make-hybrid-uefi-iso.sh` also builds GRUB for BIOS:
+  `boot/grub/grub.lnx`, a core image (`grub-mkimage -O i386-pc`) behind
+  GRUB's Linux boot header (`lnxboot.img`). It carries the same embedded
+  "find this ISO by its label, read its grub.cfg" as the EFI binary, and
+  every module that menu uses (`GRUB_MODULES`, one list for both): it
+  never loads a module from the medium.
+- isolinux's default entry starts it like a kernel
+  (`linux /boot/grub/grub.lnx`). isolinux stays the El Torito and MBR
+  boot program -- replacing it would change the medium's layout, and the
+  persistence partition frfw.persistence appends must stay partition 3
+  (live-boot and `scripts/verify-medium.py` look for it there). Its
+  other two entries start the image's kernel directly, without GRUB: a
+  way out from the menu, never the default. Its timeout went from 5 s
+  to 3 s; GRUB's own 5 s menu follows.
+- `grub.cfg` is now one menu for both firmwares. On BIOS it also turns
+  on GRUB's serial console (115200, ttyS0, the kernel's console too), so
+  a headless box's menu can be used over serial; on UEFI it doesn't, as
+  the firmware already copies its console there and a second copy would
+  double every character. Every kernel line ends in
+  `fr_os.loader=grub-${grub_platform}` (`grub-pc`/`grub-efi`): the
+  kernel ignores it; the boot test reads it back from the kernel's
+  command line, so a BIOS boot that skipped GRUB would fail it.
+
+Tested for real: `tests/test_boot_chain.py` runs the very script on a
+small tree with the repository's isolinux and GRUB menus and boots the
+result in QEMU -- SeaBIOS and OVMF, each from a stick with an appended
+persistence partition (made the way frfw.persistence makes it) and from
+a CD. There is no kernel in that tree, so GRUB's `linux` and `initrd`
+are replaced by GRUB functions that print their arguments (after
+`rmmod linux`: GRUB runs a command before a function of the same name);
+the test compares the kernel command line each firmware would boot,
+argument by argument, with the one the BIOS menu had before. The CI's
+boot test runs its four boots twice, BIOS and UEFI (OVMF), from a fresh
+stick each, and checks `fr_os.loader=` in the first one.
+
+Found on the way: when GRUB can't load the default entry's kernel it
+says "Failed to boot both default and fallback entries" and waits for a
+key -- a headless router would sit there. The trial boot of a staged
+kernel (next) must therefore never let GRUB fail on a missing file: it
+checks the file exists before it picks the entry.
+
 ### Open issues
 
-- Real UEFI boot (physical or virtual) not yet exercised, as above.
+- A UEFI boot is tested in QEMU (OVMF), not yet on physical UEFI
+  hardware.
 - Secure Boot unsupported (unsigned GRUB EFI binary), as above.
 - `config/includes.binary/boot/grub/grub.cfg` is a static file, not
   templated from `LB_BOOTAPPEND_LIVE`/`LB_BOOTAPPEND_FAILSAFE` the way
