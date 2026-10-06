@@ -64,7 +64,7 @@ import yaml
 
 from frfw import __version__, codename_for, netdetect, paths, schedule_refresh, skeleton, xdp as xdp_mod
 from frfw import accounts as accounts_mod
-from frfw import initial_password, passwords, rule_hits, rule_lint
+from frfw import initial_password, passwords, rule_hits, rule_lint, validate
 from frfw import persistence as persistence_mod
 from frfw import update as update_mod
 from frfw.adblock import AdblockError
@@ -236,7 +236,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_wan_lan = sub.add_parser(
         "detect-wan-lan",
-        help="pick the WAN and LAN ports by asking each whether a DHCP server answers (first boot; needs root)",
+        help="pick the WAN and LAN ports by asking each whether a DHCP server answers, and a LAN address "
+        "outside the WAN's network (first boot; needs root)",
     )
     p_wan_lan.set_defaults(handler=_cmd_detect_wan_lan)
 
@@ -254,6 +255,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="additional zone, e.g. dmz:eth2 (repeatable)",
     )
     p_assign.add_argument("--hostname", default="fr-router")
+    p_assign.add_argument(
+        "--lan-address",
+        default=skeleton.DEFAULT_LAN_ADDRESS,
+        metavar="ADDRESS/PREFIX",
+        help=f"the LAN's address (default: {skeleton.DEFAULT_LAN_ADDRESS}); a /24 also gets a DHCP pool",
+    )
     p_assign.add_argument(
         "--out",
         default=str(paths.CONFIG_PATH),
@@ -726,12 +733,25 @@ def _cmd_detect_interfaces(args: argparse.Namespace) -> int:
 
 
 def _cmd_detect_wan_lan(args: argparse.Namespace) -> int:
-    """For fr-first-boot.sh: line 1 is "WAN LAN" (nothing when there is no
-    safe choice), line 2 says why (ROADMAP SEC-8). Exit 1 without a choice."""
-    choice = netdetect.choose_wan_lan(netdetect.list_interfaces(), netdetect.dhcp_server_answers)
-    print(f"{choice.wan} {choice.lan}" if choice.wan and choice.lan else "")
-    print(choice.basis)
-    return 0 if choice.wan and choice.lan else 1
+    """For fr-first-boot.sh: line 1 is "WAN LAN LAN-ADDRESS" (nothing when
+    there is no safe choice), line 2 says why (ROADMAP SEC-8). The LAN's
+    address is outside the network the WAN's DHCP server offered (ROADMAP
+    NET-12). Exit 1 without a choice."""
+    choice = netdetect.choose_wan_lan(netdetect.list_interfaces(), netdetect.dhcp_offer)
+    if not (choice.wan and choice.lan):
+        print("")
+        print(choice.basis)
+        return 1
+    upstream = [choice.wan_network] if choice.wan_network else []
+    lan_address = skeleton.lan_address_avoiding(upstream)
+    basis = choice.basis
+    if choice.wan_network:
+        basis += f" (offering {choice.wan_network})"
+        if lan_address != skeleton.DEFAULT_LAN_ADDRESS:
+            basis += f"; the LAN moved to {lan_address}, out of its way"
+    print(f"{choice.wan} {choice.lan} {lan_address}")
+    print(basis)
+    return 0
 
 
 def _cmd_assign_interfaces(args: argparse.Namespace) -> int:
@@ -748,11 +768,17 @@ def _cmd_assign_interfaces(args: argparse.Namespace) -> int:
         print(f"error: {out_path} already exists (use --force to overwrite)", file=sys.stderr)
         return 1
 
+    try:
+        lan_address = validate.ipv4_interface(args.lan_address)
+    except validate.ArgumentError as exc:
+        print(f"error: --lan-address: {exc}", file=sys.stderr)
+        return 1
     config_text = skeleton.build_skeleton_config(
         wan_device=args.wan,
         lan_device=args.lan,
         opt_devices=opt_devices,
         hostname=args.hostname,
+        lan_address=lan_address,
     )
 
     out_path.parent.mkdir(parents=True, exist_ok=True)

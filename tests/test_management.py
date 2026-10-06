@@ -41,7 +41,7 @@ def test_defaults_to_every_zone_that_is_not_the_internet():
     # ROADMAP SEC-27: but the webUI and SSH listen where the admin put them
     # (the skeleton: the LAN's address) -- a new zone's interface doesn't
     # add itself.
-    assert management.listen_addresses(config) == ["127.0.0.1", "192.168.1.1"]
+    assert management.listen_addresses(config) == ["127.0.0.1", "10.73.1.1"]
 
 
 def test_a_config_from_before_sec_27_listens_on_every_management_interface():
@@ -49,13 +49,13 @@ def test_a_config_from_before_sec_27_listens_on_every_management_interface():
     del raw["management"]
     raw["zones"]["guest"] = {}
     raw["interfaces"]["guest"] = {"device": "eth2", "zone": "guest", "address": "10.9.0.1/24"}
-    assert management.listen_addresses(parse_config(raw)) == ["127.0.0.1", "10.9.0.1", "192.168.1.1"]
+    assert management.listen_addresses(parse_config(raw)) == ["127.0.0.1", "10.9.0.1", "10.73.1.1"]
 
 
 def test_management_zones_can_be_narrowed():
     config = _config(zones=["lan"])
     assert management.blocked_zones(config) == ["guest", "wan"]
-    assert management.listen_addresses(config) == ["127.0.0.1", "192.168.1.1"]
+    assert management.listen_addresses(config) == ["127.0.0.1", "10.73.1.1"]
 
 
 def test_the_internet_needs_the_explicit_opt_in():
@@ -117,7 +117,7 @@ def test_sshd_listens_on_the_management_addresses_only(tmp_path, fake_sshd, monk
     dropin = tmp_path / "40-fr_os-management.conf"
     management.sync_sshd(_config(zones=["lan"]), dropin_path=dropin, sshd_binary=str(sshd))
     listen = [line for line in dropin.read_text().splitlines() if line.startswith("ListenAddress")]
-    assert listen == ["ListenAddress 127.0.0.1", "ListenAddress 192.168.1.1"]
+    assert listen == ["ListenAddress 127.0.0.1", "ListenAddress 10.73.1.1"]
     assert reloads == [("enable", "ssh.service"), ("reload-or-restart", "ssh.service")]
 
 

@@ -62,7 +62,7 @@ def test_real_sshd_accepts_the_dropin_and_applies_it(tmp_path):
     assert settings["allowgroups"] == [paths.SSH_GROUP]
     assert settings["maxauthtries"] == ["3"]
     assert settings["logingracetime"] == ["30"]
-    assert sorted(settings["listenaddress"]) == ["127.0.0.1:22", "192.168.1.1:22"]
+    assert sorted(settings["listenaddress"]) == ["10.73.1.1:22", "127.0.0.1:22"]
 
 
 @needs_sshd

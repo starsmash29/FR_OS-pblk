@@ -8,7 +8,7 @@ CISA's first recommendation was phishing-resistant MFA. FR_OS offers:
   gets nothing usable. Verified with `py_webauthn`; browsers only allow
   it on a *name* (https://fr-router.lan/), never on an IP address.
 - **Authenticator app codes (TOTP, RFC 6238)** via `pyotp` -- works
-  everywhere, also on https://192.168.1.1/. Each 30 s step is accepted
+  everywhere, also on the router's bare IP address. Each 30 s step is accepted
   once (replayed codes are refused).
 
 No protocol or crypto of our own (security-lessons F4): both come from

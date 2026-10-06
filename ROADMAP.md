@@ -307,8 +307,8 @@ spec works), on the other hand, has been proven in this phase.
       first boot (Debian live-boot persistence, whole root), or on an
       internal disk with `firewall-cli persistence create`; status on the
       System screen and dashboard.
-- [x] **Out-of-the-box network**: WAN by DHCP, LAN 192.168.1.1/24 with a
-      DHCP pool, webUI reachable from the LAN; password and URL on the
+- [x] **Out-of-the-box network**: WAN by DHCP, LAN 10.73.1.1/24 (out of
+      the upstream's network, NET-12) with a DHCP pool, webUI reachable from the LAN; password and URL on the
       console (screen and serial).
 - [x] `installer/qemu-boot-test.py`: boots the ISO three times and checks
       persistence, first boot, the webUI, the power button, that the
@@ -1389,6 +1389,7 @@ issues #17 and #18). The R-numbers are that record's.
 | NET-9 | mDNS repeater and IGMP proxy | AirPlay/printers/Chromecast across VLANs; IPTV multicast | -- | mDNS Repeater & Multicast Router; Add Repeating Rule |
 | NET-10 | Dynamic DNS client | Reach a site on a changing public IP by name | -- | Dynamic DNS Client & Multi-Provider Sync; Create DDNS Profile |
 | NET-11 | WAN addressing in the config (DHCP client, static, PPPoE) instead of ifupdown | One place for every port's addressing; reassigning the WAN in the webUI moves its DHCP client too | First boot writes the WAN's DHCP client for ifupdown (`/etc/network/interfaces.d/fr_os-wan`) | -- |
+| NET-12 | The LAN out of the upstream network's way | A router that works behind any home router or ISP box out of the box | **Done:** the LAN used to be 192.168.1.1/24 -- the network of most home routers and ISP boxes, where FR_OS's WAN then sits (found on a Telekom line): overlapping networks, unreachable webUI. The default is 10.73.1.1/24; first boot reads the network the WAN's DHCP server offers (`frfw.netdetect.dhcp_offer`) and, when it overlaps, takes 172.29.73.1/24 or 192.168.173.1/24 (`skeleton.lan_address_avoiding`); `firewall-cli assign-interfaces --lan-address`; the console says where the LAN went. Only first boot looks. Modules: `frfw.netdetect`, `frfw.skeleton`, `frfw.cli`, `scripts/fr-first-boot.sh`; tests: `tests/test_wan_lan_choice.py` (NET-12, against a real dnsmasq), `tests/test_skeleton.py`; boot test upstream 192.168.1.0/24 | -- |
 
 ### DNS
 

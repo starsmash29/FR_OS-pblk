@@ -32,13 +32,13 @@ def test_skeleton_default_rules_do_not_expose_anything_from_wan():
 
 
 def test_skeleton_lan_is_usable_out_of_the_box():
-    # A fresh router: LAN at 192.168.1.1 with DHCP, and the webUI reachable
+    # A fresh router: LAN at 10.73.1.1 with DHCP, and the webUI reachable
     # from the LAN (the input chain's policy is drop).
     config = parse_config(yaml.safe_load(build_skeleton_config("eth0", "eth1")))
-    assert config.interfaces["lan"].address == "192.168.1.1/24"
+    assert config.interfaces["lan"].address == "10.73.1.1/24"
     assert config.interfaces["wan"].address is None  # DHCP from upstream
     pool = config.dhcp.zones["lan"]
-    assert (pool.range_start, pool.range_end) == ("192.168.1.100", "192.168.1.199")
+    assert (pool.range_start, pool.range_end) == ("10.73.1.100", "10.73.1.199")
     webui = next(r for r in config.rules if r.name == "webui-from-lan")
     assert (webui.from_zone, webui.to_zone, str(webui.dst_port)) == ("lan", "self", "443")
     assert "tcp" in str(webui.proto).lower()

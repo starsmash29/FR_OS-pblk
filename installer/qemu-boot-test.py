@@ -7,9 +7,11 @@ that it actually works and remembers what it was told.
 The ISO is written to a 2 GiB disk image (standing in for a USB stick)
 attached to a VM with two NICs -- WAN on QEMU's user network, which has a
 DHCP server like an upstream modem, and LAN on a tap device on the host
-(192.168.1.2/24), which has none, like a laptop. First boot has to tell
+(10.73.1.2/24), which has none, like a laptop. First boot has to tell
 them apart by that (ROADMAP SEC-8); the host reaches the webUI at
-https://192.168.1.1/ over the tap, as a LAN client does.
+https://10.73.1.1/ over the tap, as a LAN client does. The upstream is
+192.168.1.0/24 with its router at .1, like most home routers and ISP
+boxes: the LAN must stay out of its way (ROADMAP NET-12).
 
 1. First boot: fr-persistence-setup finds the free space after the image,
    creates the persistence partition and reboots.
@@ -91,14 +93,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from frfw import kernel_boot  # noqa: E402
 
 #: The router's LAN address, reached over the host's tap device.
-WEBUI_HOST = "192.168.1.1"
+WEBUI_HOST = "10.73.1.1"
 WEBUI_PORT = 443
 #: A LAN port nothing allows: the default policy drops it, and the drop
 #: must be logged (security-lessons K6).
 CLOSED_PORT = 4444
 #: The host's side of the VM's LAN port: a "laptop" with no DHCP server.
 LAN_TAP = "frtap0"
-LAN_TAP_ADDRESS = "192.168.1.2/24"
+LAN_TAP_ADDRESS = "10.73.1.2/24"
+#: QEMU's user network, the WAN's upstream: a home router's (ROADMAP
+#: NET-12) -- the LAN used to be in this very network.
+UPSTREAM_NET = "192.168.1.0/24"
 #: An address beyond the router (TEST-NET-2, RFC 5737), routed from the
 #: host through the VM, so what the host sends it is forwarded traffic.
 #: The router's address in the VPN tunnel (security-lessons G8/K5), set
@@ -117,7 +122,7 @@ ZTNA_PASSWORD = "otter-harbor-lamp-71"
 #: apply is refused, and boot 4 can't apply config.yaml (ROADMAP SEC-5).
 #: ROADMAP SEC-27: a LAN address the webUI's address can't be taken away
 #: by -- in the same subnet, so it is only the webUI address that refuses it.
-MOVED_LAN_ADDRESS = "192.168.1.3"
+MOVED_LAN_ADDRESS = "10.73.1.3"
 SPARE_DEVICE = "ens9"
 SPARE_ADDRESS = "10.250.0.1/24"
 DISK_SIZE = 2 * 2**30
@@ -144,7 +149,7 @@ class Vm:
         self.monitor = workdir / f"mon{n}.sock"
         cmd = [
             "qemu-system-x86_64", "-m", "2048", "-smp", "2", "-no-reboot",
-            "-nic", "user,model=virtio-net-pci,mac=52:54:00:00:00:01",
+            "-nic", f"user,model=virtio-net-pci,mac=52:54:00:00:00:01,net={UPSTREAM_NET},host=192.168.1.1",
             # The LAN port: the host's tap, no DHCP server on it -- QEMU's
             # user network always runs one, which would make both ports
             # look like an upstream (ROADMAP SEC-8).
@@ -744,7 +749,7 @@ def run_kernel_trials(check, workdir: Path, disk: Path, iso: Path, kvm: bool, ue
         confirm = journal(upper, "-b", "-u", "fr-kernel-confirm.service")
         check("failed its trial boot" in confirm and "the webUI does not answer" in confirm,
               "...because the webUI did not answer")
-        check("ens4 is not up with its address 192.168.1.1/24" in confirm,
+        check(f"ens4 is not up with its address {WEBUI_HOST}/24" in confirm,
               "...and because the LAN port is down, which the applied config needs up (ROADMAP SEC-23)")
         if "failed its trial" not in confirm or "ens4 is not up" not in confirm:
             print_journal(upper, "fr-kernel-confirm.service", "-b")
@@ -905,7 +910,7 @@ def run_kernel_update_from_the_webui(check, workdir: Path, disk: Path, iso_path:
         confirm = journal(upper, "-b", "-u", "fr-kernel-confirm.service")
         recorded = re.search(r"what worked before it works: (.*)", confirm)
         check(recorded is not None and all(item in recorded.group(1) for item in (
-                  "links ens3, ens4", "ens4 192.168.1.1/24", "XDP on ens4", "wg0", "kea-dhcp4-server.service")),
+                  "links ens3, ens4", f"ens4 {WEBUI_HOST}/24", "XDP on ens4", "wg0", "kea-dhcp4-server.service")),
               "the trial was checked against what worked when it was started: links, addresses, XDP, the VPN, "
               "the services (ROADMAP SEC-23)" + (f": {recorded.group(1)[:300]}" if recorded else ""))
         if page is None or not confirmed:
@@ -976,7 +981,7 @@ def run(args: argparse.Namespace) -> int:
     page = wait_for_webui(opener, boot_timeout)
     log = vm.log()
     check("fr-persistence: active" in log, "persistence active")
-    check(page is not None and "Sign in" in page, "webUI answers on https://192.168.1.1/ from the LAN")
+    check(page is not None and "Sign in" in page, f"webUI answers on https://{WEBUI_HOST}/ from the LAN")
     check(vm.power_off(), "the power button shuts it down cleanly")
     vm.kill()
     with persistence_partition(disk) as upper:
@@ -986,10 +991,16 @@ def run(args: argparse.Namespace) -> int:
         # ROADMAP SEC-8: the WAN is the port where a DHCP server answered
         # (QEMU's user network), not the first one by chance.
         chosen = re.search(r"fr-first-boot: WAN/LAN: (.*)", first_boot)
-        check(chosen is not None and chosen.group(1) == "a DHCP server answered on ens3 only"
+        check(chosen is not None and chosen.group(1).startswith("a DHCP server answered on ens3 only")
               and "assigned WAN=ens3 LAN=ens4" in first_boot,
               "first boot chose the WAN by where a DHCP server answered (ROADMAP SEC-8)"
               + (f": {chosen.group(1)}" if chosen else ""))
+        # ROADMAP NET-12: the upstream is a home router's 192.168.1.0/24;
+        # the LAN is outside it.
+        check(chosen is not None and f"(offering {UPSTREAM_NET})" in chosen.group(1)
+              and f"LAN {WEBUI_HOST}/24 with DHCP" in first_boot,
+              f"first boot saw the upstream's {UPSTREAM_NET} and put the LAN at {WEBUI_HOST}, out of its way "
+              "(ROADMAP NET-12)")
         failed = sorted(set(re.findall(r"Failed to start (\S+)", journal(upper))))
         check(not failed, f"no unit failed to start{': ' + ', '.join(failed) if failed else ''}")
         for unit in failed:  # say why, right here in the CI log
@@ -1304,7 +1315,7 @@ def run(args: argparse.Namespace) -> int:
         check("runs the last config that was applied in full" in audit_log.read_text(),
               "...and that is a security alert in the audit log")
         listening = re.findall(r"fr-webui: listening on (.*) port", journal(upper, "-b", "-u", "fr-webui.service"))
-        check(bool(listening) and "192.168.1.1" in listening[-1] and SPARE_ADDRESS.split("/")[0] not in listening[-1],
+        check(bool(listening) and WEBUI_HOST in listening[-1] and SPARE_ADDRESS.split("/")[0] not in listening[-1],
               "the webUI listens on the applied config's addresses, not config.yaml's (ROADMAP SEC-5)"
               + (f": {listening[-1]}" if listening else ""))
         failed = sorted(set(re.findall(r"Failed to start (\S+)", journal(upper, "-b"))))

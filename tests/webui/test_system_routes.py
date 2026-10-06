@@ -81,7 +81,7 @@ def test_management_is_lan_only_until_the_admin_opts_in(logged_in_client, webui_
     webui_env["config_path"].write_text(build_skeleton_config("eth0", "eth1"))
     page = logged_in_client.get("/system").text
     assert "Management access" in page
-    assert "127.0.0.1, 192.168.1.1" in page
+    assert "127.0.0.1, 10.73.1.1" in page
     assert "drops them from <strong>wan</strong>" in page
 
     response = logged_in_client.post("/system/management", data={"allow_wan": "true"})
