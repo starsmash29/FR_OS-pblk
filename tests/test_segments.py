@@ -89,6 +89,7 @@ def test_a_clash_is_refused():
     raw = _raw()
     raw["interfaces"]["lan"]["address"] = "192.168.30.1/24"
     raw["dhcp"]["lan"].update(range_start="192.168.30.100", range_end="192.168.30.199")
+    raw["management"]["addresses"] = ["192.168.30.1"]  # the webUI moved with it (ROADMAP SEC-27)
     with pytest.raises(segments.SegmentError, match="already used"):
         segments.add_segments(raw, parse_config(raw), ["iot"])
 

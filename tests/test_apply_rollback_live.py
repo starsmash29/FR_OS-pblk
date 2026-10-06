@@ -113,6 +113,9 @@ def _config(lan_address: str, *, rule: str, dhcp: bool = False) -> dict:
                        "wan": {"device": "wan0", "zone": "wan", "address": "192.0.2.2/24"}},
         "rules": [{"name": rule, "action": "accept", "from_zone": "lan", "to_zone": "wan"}],
         "nat": {"masquerade": [{"out_zone": "wan"}]},
+        # ROADMAP SEC-27: each config puts the webUI on its own LAN
+        # address -- the admin moving it, so applying another is allowed.
+        "management": {"addresses": [lan_address.split("/")[0]]},
     }
     if dhcp:
         raw["dhcp"] = {"lan": {"range_start": "10.88.2.100", "range_end": "10.88.2.200", "dns_servers": ["10.88.2.1"]}}

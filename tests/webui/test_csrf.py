@@ -407,8 +407,9 @@ def test_destructive_forms_still_ask_for_confirmation():
     templates = Path(TEMPLATES_DIR)
     text = "".join(t.read_text() for t in templates.glob("*.html"))
     # 14: ROADMAP SEC-14 added two -- trying a kernel reboots the router,
-    # and going back to the image's kernel.
-    assert text.count("data-confirm=") == 14
+    # and going back to the image's kernel. 15: ROADMAP SEC-27, moving the
+    # webUI.
+    assert text.count("data-confirm=") == 15
     assert 'data-confirm-when-checked="allow_wan"' in text
 
 
