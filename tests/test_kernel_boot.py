@@ -339,3 +339,161 @@ def _cmdline(boot_dir: Path, mode: str) -> Path:
     path = boot_dir.parent.parent / "cmdline"
     path.write_text(f"boot=live persistence fr_os.loader=grub-pc fr_os.kernel={mode}\n")
     return path
+
+
+# -- what worked before the trial must work again (ROADMAP SEC-23) ------------------------
+
+import json  # noqa: E402
+import os  # noqa: E402
+import sys  # noqa: E402
+import uuid  # noqa: E402
+
+from frfw.config import parse_config  # noqa: E402
+
+ALL_RUNNING = set(kernel_boot.EXPECTED_SERVICES)
+
+
+def _router(**extra) -> object:
+    raw = {
+        "version": 1, "hostname": "r",
+        "zones": {"wan": {}, "lan": {}, "iot": {}, "opt": {}, "vpn": {}},
+        "interfaces": {
+            "wan": {"device": "ens3", "zone": "wan"},
+            "lan": {"device": "ens4", "zone": "lan", "address": "192.168.1.1/24"},
+            "iot": {"device": "ens4.30", "zone": "iot", "address": "192.168.30.1/24",
+                    "vlan": {"parent": "ens4", "id": 30}},
+            "opt": {"device": "ens5", "zone": "opt", "address": "10.5.0.1/24"},  # no cable
+        },
+        "rules": [], "nat": {"masquerade": [{"out_zone": "wan"}]},
+        "xdp_sni_filter": {"enabled": True, "interfaces": ["lan"], "blocklist": ["blocked.example"]},
+        "wireguard": {"enabled": True, "address": "10.99.0.1/24"},
+        **extra,
+    }
+    return parse_config(raw)
+
+
+def _now(**changes) -> dict:
+    """What `ip -j` shows on a healthy router; `changes` overrides devices."""
+    now = {
+        "lo": {"up": True, "carrier": True, "xdp": False, "addresses": ["127.0.0.1/8"]},
+        "ens3": {"up": True, "carrier": True, "xdp": False, "addresses": ["203.0.113.5/24"]},
+        "ens4": {"up": True, "carrier": True, "xdp": True, "addresses": ["192.168.1.1/24"]},
+        "ens4.30": {"up": True, "carrier": True, "xdp": False, "addresses": ["192.168.30.1/24"]},
+        "ens5": {"up": True, "carrier": False, "xdp": False, "addresses": ["10.5.0.1/24"]},
+        "wg0": {"up": True, "carrier": True, "xdp": False, "addresses": ["10.99.0.1/24"]},
+    }
+    for device, fields in changes.items():
+        now[device] = {**now.get(device, {}), **fields}
+    return now
+
+
+def test_what_works_before_the_trial_is_recorded_and_nothing_else():
+    running = {"fr-webui.service", "kea-dhcp4-server.service"}
+    expect = kernel_boot.expectations(_router(), now=_now(), active=running.__contains__)
+    assert expect == {
+        "carrier": ["ens3", "ens4"],  # ens5 has no cable: not a reason to fail a kernel
+        "addresses": {"ens4": "192.168.1.1/24", "ens4.30": "192.168.30.1/24", "ens5": "10.5.0.1/24"},
+        "xdp": ["ens4"],
+        "wireguard": True,
+        "services": ["fr-webui.service", "kea-dhcp4-server.service"],
+    }
+
+
+def test_a_router_like_before_passes():
+    expect = kernel_boot.expectations(_router(), now=_now(), active=ALL_RUNNING.__contains__)
+    assert kernel_boot.expectation_problems(expect, now=_now(), active=ALL_RUNNING.__contains__) == []
+
+
+@pytest.mark.parametrize("now, running, problem", [
+    (_now(ens4={"carrier": False}), ALL_RUNNING, "ens4 had a link before the trial and has none now"),
+    (_now(ens3={"carrier": False}), ALL_RUNNING, "ens3 had a link before the trial and has none now"),
+    (_now(**{"ens4.30": {"addresses": []}}), ALL_RUNNING, "ens4.30 is not up with its address 192.168.30.1/24"),
+    (_now(ens4={"up": False}), ALL_RUNNING, "ens4 is not up with its address 192.168.1.1/24"),
+    (_now(ens4={"xdp": False}), ALL_RUNNING, "the XDP SNI filter is not attached to ens4"),
+    (_now(wg0={"up": False}), ALL_RUNNING, "the WireGuard tunnel wg0 is not up"),
+    (_now(), ALL_RUNNING - {"kea-dhcp4-server.service"},
+     "kea-dhcp4-server.service ran before the trial and is not running"),
+])
+def test_a_kernel_that_breaks_what_worked_fails(now, running, problem):
+    expect = kernel_boot.expectations(_router(), now=_now(), active=ALL_RUNNING.__contains__)
+    assert problem in kernel_boot.expectation_problems(expect, now=now, active=running.__contains__)
+
+
+def test_without_a_record_the_applied_config_is_what_must_work():
+    expect = kernel_boot.config_expectations(_router())
+    assert expect["carrier"] == [] and expect["services"] == []
+    assert expect["xdp"] == ["ens4"] and expect["wireguard"] is True
+    problems = kernel_boot.expectation_problems(expect, now=_now(ens5={"addresses": []}),
+                                                active=lambda unit: False)
+    assert problems == ["ens5 is not up with its address 10.5.0.1/24"]
+
+
+def test_staging_keeps_the_record_next_to_the_kernel(files):
+    kernel, initrd, boot_dir = files
+    expect = kernel_boot.expectations(_router(), now=_now(), active=ALL_RUNNING.__contains__)
+    kernel_boot.stage(kernel, initrd, VERSION, boot_dir=boot_dir, expect=expect)
+    assert kernel_boot.read_expect(boot_dir) == expect
+    assert kernel_boot.files_intact(boot_dir), "GRUB's sums cover the kernel and initrd only"
+    kernel_boot.stage(kernel, initrd, VERSION, boot_dir=boot_dir)
+    assert kernel_boot.read_expect(boot_dir) is None, "a record from another staging never applies"
+
+
+def test_a_confirmed_trial_says_what_it_was_checked_for(files):
+    kernel, initrd, boot_dir = files
+    expect = kernel_boot.expectations(_router(), now=_now(), active={"fr-webui.service"}.__contains__)
+    kernel_boot.stage(kernel, initrd, VERSION, boot_dir=boot_dir, expect=expect)
+    _set_state(boot_dir, TRYING)
+    outcome = kernel_boot.confirm_boot(boot_dir_path=boot_dir, cmdline="fr_os.kernel=trial", wait=lambda: [])
+    assert outcome.message.endswith("what worked before it works: links ens3, ens4; addresses ens4 192.168.1.1/24, "
+                                    "ens4.30 192.168.30.1/24, ens5 10.5.0.1/24; XDP on ens4; wg0; "
+                                    "services fr-webui.service")
+
+
+def test_the_device_table_is_read_from_ip():
+    def ip(args, **kwargs):
+        out = {
+            ("link", "show"): [
+                {"ifname": "ens4", "flags": ["BROADCAST", "UP", "LOWER_UP"], "xdp": {"mode": 2}},
+                {"ifname": "ens5", "flags": ["BROADCAST", "UP"]},
+            ],
+            ("addr", "show"): [
+                {"ifname": "ens4", "addr_info": [{"family": "inet", "local": "192.168.1.1", "prefixlen": 24},
+                                                 {"family": "inet6", "local": "fe80::1", "prefixlen": 64}]},
+            ],
+        }[tuple(args[2:])]
+        return subprocess.CompletedProcess(args, 0, stdout=json.dumps(out), stderr="")
+
+    assert kernel_boot.network_now(run=ip) == {
+        "ens4": {"up": True, "carrier": True, "xdp": True, "addresses": ["192.168.1.1/24"]},
+        "ens5": {"up": True, "carrier": False, "xdp": False, "addresses": []},
+    }
+
+
+@pytest.mark.skipif(os.geteuid() != 0 or shutil.which("ip") is None, reason="needs root and iproute2")
+def test_live_a_link_that_goes_down_fails_the_check():
+    """On a real kernel's devices, in a network namespace of its own."""
+    ns = f"frk{uuid.uuid4().hex[:6]}"
+    sh = lambda *a: subprocess.run(["ip", "netns", "exec", ns, *a], check=True, capture_output=True, text=True)
+    subprocess.run(["ip", "netns", "add", ns], check=True)
+    try:
+        sh("ip", "link", "add", "lan0", "type", "veth", "peer", "name", "lan0p")
+        sh("ip", "addr", "add", "10.77.0.1/24", "dev", "lan0")
+        sh("ip", "link", "set", "lan0", "up")
+        sh("ip", "link", "set", "lan0p", "up")
+        script = (
+            "import json, sys\n"
+            "from frfw import kernel_boot\n"
+            "now = kernel_boot.network_now()\n"
+            "expect = json.loads(sys.argv[1])\n"
+            "print(json.dumps(kernel_boot.expectation_problems(expect, now=now, active=lambda u: True)))\n"
+        )
+        expect = json.dumps({"carrier": ["lan0"], "addresses": {"lan0": "10.77.0.1/24"}, "xdp": [],
+                             "wireguard": False, "services": []})
+        run = lambda: json.loads(sh(sys.executable, "-c", script, expect).stdout)
+        assert run() == []
+        sh("ip", "link", "set", "lan0p", "down")  # the other end gone: no carrier
+        assert run() == ["lan0 had a link before the trial and has none now"]
+        sh("ip", "addr", "del", "10.77.0.1/24", "dev", "lan0")
+        assert "lan0 is not up with its address 10.77.0.1/24" in run()
+    finally:
+        subprocess.run(["ip", "netns", "del", ns], check=False)

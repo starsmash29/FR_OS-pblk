@@ -31,7 +31,13 @@ Late in every boot GRUB marked (`fr_os.kernel=` on the kernel command
 line) `confirm_boot` runs (fr-kernel-confirm.service): on the staged
 kernel it checks the router is up -- the firewall's ruleset loaded, the
 applied config's network devices there, the webUI answering, persistence
-active -- and writes "good". A *trial* that fails the check reboots once
+active -- and that what worked before the trial works again (ROADMAP
+SEC-23, review v0.2.1 FR-NEW-003): `stage` records it in the slot
+(`expect.json`) -- the ports that had a link, the interfaces' addresses,
+the XDP filter's attachments, the WireGuard tunnel, the FR_OS services
+that ran -- so a kernel that breaks a NIC's link, XDP, WireGuard or Kea
+fails its trial, while a port without a cable or a service already
+stopped doesn't fail a good one. Then it writes "good". A *trial* that fails the check reboots once
 into the image's kernel (the admin rebooted into the trial; a router left
 unreachable is worse); a confirmed kernel that fails it later stays up,
 says so, and the next boot falls back. A fallback boot raises a security
@@ -47,6 +53,8 @@ computer, is for (it lists the staged kernel too).
 from __future__ import annotations
 
 import hashlib
+import ipaddress
+import json
 import os
 import re
 import shutil
@@ -65,6 +73,9 @@ SLOT = "staged"
 KERNEL = "vmlinuz"
 INITRD = "initrd.img"
 SUMS = "SHA256SUMS"
+#: What worked when the kernel was staged, to work again on its boot
+#: (ROADMAP SEC-23).
+EXPECT = "expect.json"
 
 STATE = "fr_os_state"
 STAGED = "fr_os_staged"
@@ -231,10 +242,12 @@ def _is_linux_kernel(path: Path) -> bool:
         return False
 
 
-def stage(kernel: Path, initrd: Path, version: str, *, boot_dir: Path) -> None:
+def stage(kernel: Path, initrd: Path, version: str, *, boot_dir: Path, expect: dict | None = None) -> None:
     """Make `kernel` + `initrd` the staged kernel, to be tried at the next
     boot. A crash at any point leaves either the previous state or
-    nothing staged -- never a half-copied kernel marked for a trial."""
+    nothing staged -- never a half-copied kernel marked for a trial.
+    `expect`: what works now (`expectations`), checked again on its boot;
+    without it, what the applied config turns on is."""
     check_version(version)
     if not _is_linux_kernel(kernel):
         raise KernelBootError(f"{kernel} is not a Linux kernel image")
@@ -260,6 +273,8 @@ def stage(kernel: Path, initrd: Path, version: str, *, boot_dir: Path) -> None:
         _copy_synced(source, new / name)
         sums.append(f"{_sha256(new / name)}  {name}\n")
     _write_synced(new / SUMS, "".join(sums).encode())
+    if expect is not None:
+        _write_synced(new / EXPECT, json.dumps(expect, sort_keys=True).encode())
     _fsync_dir(new)
     shutil.rmtree(slot, ignore_errors=True)
     new.replace(slot)
@@ -358,10 +373,16 @@ def _webui_answers(port: int = WEBUI_PORT) -> bool:
         return False
 
 
-def health_problems() -> list[str]:
-    """What is wrong with this boot, now; [] when the router is up."""
+def health_problems(expect: dict | None = None) -> list[str]:
+    """What is wrong with this boot, now; [] when the router is up.
+    `expect`: what worked before the trial (ROADMAP SEC-23) -- by default
+    the staged kernel's record; without one, what the applied config
+    turns on."""
     from frfw import provision
 
+    if expect is None:
+        where = boot_dir()
+        expect = read_expect(where) if where is not None else None
     problems = []
     if not _firewall_loaded():
         problems.append("the firewall's ruleset is not loaded")
@@ -370,11 +391,156 @@ def health_problems() -> list[str]:
         missing = provision.missing_devices(applied)
         if missing:
             problems.append(f"network devices of the applied config are missing: {', '.join(missing)}")
+        if expect is None:
+            expect = config_expectations(applied)
+    if expect is not None:
+        problems.extend(expectation_problems(expect))
     if not _webui_answers():
         problems.append("the webUI does not answer")
     if not persistence.status().active:
         problems.append("persistence is not active")
     return problems
+
+
+# -- what worked before the trial (ROADMAP SEC-23) ---------------------------------------
+
+#: The services a trial must find running again if they ran before it:
+#: what FR_OS starts, and the servers it configures.
+EXPECTED_SERVICES = (
+    "fr-webui.service", "fr-apply-helper.socket", "kea-dhcp4-server.service", "fr-adblock-dns.service",
+    "fr-xdp-sni-logger.service", "fr-ai-ids.service", "fr-appid.service", "fr-tls-fp.service", "ssh.service",
+)
+
+
+def network_now(run: Callable[..., subprocess.CompletedProcess] = subprocess.run) -> dict[str, dict]:
+    """Every network device: whether it is up, has a link (carrier), has
+    an XDP program, and its IPv4 addresses -- from `ip -j`, netlink only."""
+    def ip_json(*args: str) -> list:
+        proc = run(["ip", "-j", *args], capture_output=True, text=True)
+        try:
+            return json.loads(proc.stdout) if proc.returncode == 0 else []
+        except ValueError:
+            return []
+
+    devices: dict[str, dict] = {}
+    for link in ip_json("link", "show"):
+        flags = link.get("flags") or []
+        devices[link["ifname"]] = {"up": "UP" in flags, "carrier": "LOWER_UP" in flags, "xdp": "xdp" in link,
+                                   "addresses": []}
+    for link in ip_json("addr", "show"):
+        entry = devices.setdefault(link["ifname"], {"up": False, "carrier": False, "xdp": False, "addresses": []})
+        entry["addresses"] = sorted(f"{a['local']}/{a['prefixlen']}" for a in link.get("addr_info") or []
+                                    if a.get("family") == "inet")
+    return devices
+
+
+def service_active(unit: str) -> bool:
+    try:
+        return subprocess.run(["systemctl", "is-active", "--quiet", "--", unit], timeout=30).returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
+def _config_devices(config) -> tuple[set[str], dict[str, str], list[str]]:
+    """The devices the config uses, its addresses (device -> address), and
+    the devices the XDP filter attaches to (a VLAN's parent carries it)."""
+    devices, addresses = set(), {}
+    vlans = {i.device for i in config.interfaces.values() if i.vlan_id is not None}
+    for iface in config.interfaces.values():
+        devices.add(iface.vlan_parent if iface.vlan_id is not None else iface.device)
+        if iface.address:
+            addresses[iface.device] = str(ipaddress.IPv4Interface(iface.address))
+    xdp = []
+    if config.xdp_sni_filter.enabled:
+        xdp = sorted({config.interfaces[n].device for n in config.xdp_sni_filter.interfaces} - vlans)
+    return devices, addresses, xdp
+
+
+def config_expectations(config) -> dict:
+    """Without a record of the moment it was staged: what the applied
+    config turns on -- no links (a port may have no cable) and no services."""
+    _, addresses, xdp = _config_devices(config)
+    return {"carrier": [], "addresses": addresses, "xdp": xdp, "wireguard": bool(config.wireguard.enabled),
+            "services": []}
+
+
+def expectations(config, *, now: dict | None = None,
+                 active: Callable[[str], bool] = service_active) -> dict:
+    """What works now and must work again on a staged kernel's boot: the
+    config's ports that have a link, its addresses that are there, the
+    XDP filter's attachments, the WireGuard tunnel if up, the services
+    that run (ROADMAP SEC-23)."""
+    now = network_now() if now is None else now
+    devices, addresses, xdp = _config_devices(config)
+    return {
+        "carrier": sorted(d for d in devices if now.get(d, {}).get("carrier")),
+        "addresses": {d: a for d, a in addresses.items() if a in now.get(d, {}).get("addresses", [])},
+        "xdp": [d for d in xdp if now.get(d, {}).get("xdp")],
+        "wireguard": bool(config.wireguard.enabled and now.get(wireguard_iface(), {}).get("up")),
+        "services": [u for u in EXPECTED_SERVICES if active(u)],
+    }
+
+
+def current_expectations() -> dict | None:
+    """What works on this router now, for `stage` -- None without a
+    config applied in full to read it against."""
+    from frfw import provision
+
+    applied = provision.load_applied_config()
+    return None if applied is None else expectations(applied)
+
+
+def expectation_problems(expect: dict, *, now: dict | None = None,
+                         active: Callable[[str], bool] = service_active) -> list[str]:
+    """What of `expect` doesn't work now."""
+    now = network_now() if now is None else now
+    problems = []
+    for device in expect.get("carrier", []):
+        if not now.get(device, {}).get("carrier"):
+            problems.append(f"{device} had a link before the trial and has none now")
+    for device, address in sorted((expect.get("addresses") or {}).items()):
+        state = now.get(device, {})
+        if address not in state.get("addresses", []) or not state.get("up"):
+            problems.append(f"{device} is not up with its address {address}")
+    for device in expect.get("xdp", []):
+        if not now.get(device, {}).get("xdp"):
+            problems.append(f"the XDP SNI filter is not attached to {device}")
+    if expect.get("wireguard") and not now.get(wireguard_iface(), {}).get("up"):
+        problems.append(f"the WireGuard tunnel {wireguard_iface()} is not up")
+    for unit in expect.get("services", []):
+        if not active(unit):
+            problems.append(f"{unit} ran before the trial and is not running")
+    return problems
+
+
+def expectation_summary(expect: dict) -> str:
+    """What a confirmed boot was checked for, for the journal."""
+    parts = []
+    if expect.get("carrier"):
+        parts.append("links " + ", ".join(expect["carrier"]))
+    if expect.get("addresses"):
+        parts.append("addresses " + ", ".join(f"{d} {a}" for d, a in sorted(expect["addresses"].items())))
+    if expect.get("xdp"):
+        parts.append("XDP on " + ", ".join(expect["xdp"]))
+    if expect.get("wireguard"):
+        parts.append(wireguard_iface())
+    if expect.get("services"):
+        parts.append("services " + ", ".join(expect["services"]))
+    return "; ".join(parts) or "nothing recorded"
+
+
+def read_expect(boot_dir_path: Path) -> dict | None:
+    try:
+        data = json.loads((boot_dir_path / SLOT / EXPECT).read_text())
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def wireguard_iface() -> str:
+    from frfw import wireguard
+
+    return wireguard.IFACE
 
 
 def wait_healthy(check: Callable[[], list[str]] = health_problems, *, timeout: float = HEALTH_TIMEOUT,
@@ -401,6 +567,7 @@ def confirm_boot(*, boot_dir_path: Path, cmdline: str | None = None,
     """The step at the end of every boot GRUB started. Never raises for a
     state it doesn't expect: it says so and changes nothing. `wait`:
     wait_healthy."""
+    expect = read_expect(boot_dir_path)
     wait = wait or wait_healthy
     mode = boot_mode(cmdline)
     env_path = boot_dir_path / ENV_NAME
@@ -415,8 +582,10 @@ def confirm_boot(*, boot_dir_path: Path, cmdline: str | None = None,
         problems = wait()
         if not problems:
             write_env(env_path, {**env, STATE: GOOD})
+            checked = (f"; what worked before it works: {expectation_summary(expect)}" if expect is not None
+                       else "; checked against the applied config (no record of the moment it was staged)")
             return Outcome(f"kernel {version} confirmed: the router came up on it"
-                           + (" (its trial boot)" if mode == BOOT_TRIAL else ""))
+                           + (" (its trial boot)" if mode == BOOT_TRIAL else "") + checked)
         why = "; ".join(problems)
         if mode == BOOT_TRIAL:
             return Outcome(f"kernel {version} failed its trial boot ({why}): rebooting into the image's own kernel",

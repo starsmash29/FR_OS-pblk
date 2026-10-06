@@ -37,8 +37,9 @@ https://192.168.1.1/ over the tap, as a LAN client does.
    frfw.kernel_boot.stage() from the host, as the router would. Boot 5
    tries it and keeps it (the router came up on it); the hardware
    watchdog (QEMU's i6300esb) is in use. Boot 6 tries it again with the
-   webUI masked: the check at the end of the boot fails, and the router
-   reboots by itself into ... boot 7, the image's own kernel, which
+   webUI masked and the LAN port taken down: the check at the end of the
+   boot fails for both, and the router reboots by itself into ... boot
+   7, the image's own kernel, which
    raises a security alert. Boot 8 tries one whose initrd is broken: the
    kernel panics and reboots (panic=10), and GRUB has recorded the try.
 6. Ninth and tenth boot: the Update screen's kernel card (ROADMAP SEC-14,
@@ -46,7 +47,8 @@ https://192.168.1.1/ over the tap, as a LAN client does.
    at the running kernel by a drop-in, so no Debian download is needed:
    the router makes the initrd from the image's own -- and the
    kernel is "ready to try"; "Try it" reboots the router into its trial,
-   and boot 10 comes up on the router-built initrd and confirms it.
+   and boot 10 comes up on the router-built initrd and confirms it,
+   checked against what worked when "Try it" was pressed (ROADMAP SEC-23).
 
 With --uefi the VM boots with UEFI firmware (OVMF, the `ovmf` package)
 instead of BIOS; the CI runs the test both ways. Either way the kernel has
@@ -280,6 +282,24 @@ def command_line(log: str) -> list[str]:
 
 #: Masks the webUI for boot 6: a staged kernel's boot then fails its check.
 WEBUI_UNIT = Path("etc") / "systemd" / "system" / "fr-webui.service"
+
+#: Takes the LAN port down on boot 6's trial, as a kernel that broke the
+#: NIC would (ROADMAP SEC-23): the trial fails for that too.
+LINK_DOWN_UNIT = Path("etc") / "systemd" / "system" / "fr-boot-test-link-down.service"
+LINK_DOWN_WANTS = Path("etc") / "systemd" / "system" / "multi-user.target.wants" / "fr-boot-test-link-down.service"
+LINK_DOWN_UNIT_TEXT = """[Unit]
+Description=Boot test: the LAN port down on a kernel trial (ROADMAP SEC-23)
+ConditionKernelCommandLine=fr_os.kernel=trial
+After=fr-firewall.service
+Before=fr-kernel-confirm.service
+
+[Service]
+Type=oneshot
+ExecStart=ip link set dev ens4 down
+
+[Install]
+WantedBy=multi-user.target
+"""
 
 
 def verify_medium(disk: Path) -> dict:
@@ -701,7 +721,7 @@ def run_kernel_trials(check, workdir: Path, disk: Path, iso: Path, kvm: bool, ue
         check(watchdog is not None and "i6300ESB" in watchdog.group(0),
               "systemd keeps the hardware watchdog fed" + (f": {watchdog.group(0).strip()}" if watchdog else ""))
 
-    print("boot 6: a new trial, with the webUI masked -- the router doesn't come up")
+    print("boot 6: a new trial, with the webUI masked and the LAN port down -- the router doesn't come up")
     stage_kernel(disk, iso, version)
     with persistence_partition(disk, writable=True) as upper:
         unit = upper / WEBUI_UNIT
@@ -709,6 +729,11 @@ def run_kernel_trials(check, workdir: Path, disk: Path, iso: Path, kvm: bool, ue
         saved = unit.read_bytes() if unit.exists() and not unit.is_symlink() else None
         unit.unlink(missing_ok=True)
         unit.symlink_to("/dev/null")
+        # ROADMAP SEC-23: as if the kernel broke the LAN NIC -- on the
+        # trial boot only.
+        (upper / LINK_DOWN_UNIT).write_text(LINK_DOWN_UNIT_TEXT)
+        (upper / LINK_DOWN_WANTS).parent.mkdir(parents=True, exist_ok=True)
+        (upper / LINK_DOWN_WANTS).symlink_to(f"/{LINK_DOWN_UNIT}")
     vm = Vm(workdir, disk, 6, kvm, uefi)
     rebooted = vm.wait_exit(boot_timeout + kernel_boot.HEALTH_TIMEOUT + 60)
     vm.kill()
@@ -717,14 +742,19 @@ def run_kernel_trials(check, workdir: Path, disk: Path, iso: Path, kvm: bool, ue
     check(rebooted, "the router rebooted by itself when its check failed")
     with persistence_partition(disk, writable=True) as upper:
         confirm = journal(upper, "-b", "-u", "fr-kernel-confirm.service")
-        check("failed its trial boot (the webUI does not answer)" in confirm, "...because the webUI did not answer")
-        if "failed its trial" not in confirm:
+        check("failed its trial boot" in confirm and "the webUI does not answer" in confirm,
+              "...because the webUI did not answer")
+        check("ens4 is not up with its address 192.168.1.1/24" in confirm,
+              "...and because the LAN port is down, which the applied config needs up (ROADMAP SEC-23)")
+        if "failed its trial" not in confirm or "ens4 is not up" not in confirm:
             print_journal(upper, "fr-kernel-confirm.service", "-b")
         check(kernel_env(upper).get("fr_os_state") == "trying", "...leaving the trial unconfirmed ('trying')")
         unit = upper / WEBUI_UNIT
         unit.unlink()
         if saved is not None:
             unit.write_bytes(saved)
+        (upper / LINK_DOWN_WANTS).unlink()
+        (upper / LINK_DOWN_UNIT).unlink()
 
     print("boot 7: after the failed trial")
     vm = Vm(workdir, disk, 7, kvm, uefi)
@@ -870,6 +900,14 @@ def run_kernel_update_from_the_webui(check, workdir: Path, disk: Path, iso_path:
     with persistence_partition(disk) as upper:
         check(kernel_env(upper).get("fr_os_state") == "good", "the boot environment agrees ('good')"
               + f": {kernel_env(upper).get('fr_os_state')!r}")
+        # ROADMAP SEC-23: "Try it" recorded what worked, and the trial was
+        # checked against it -- the links, the XDP filter, the VPN, Kea.
+        confirm = journal(upper, "-b", "-u", "fr-kernel-confirm.service")
+        recorded = re.search(r"what worked before it works: (.*)", confirm)
+        check(recorded is not None and all(item in recorded.group(1) for item in (
+                  "links ens3, ens4", "ens4 192.168.1.1/24", "XDP on ens4", "wg0", "kea-dhcp4-server.service")),
+              "the trial was checked against what worked when it was started: links, addresses, XDP, the VPN, "
+              "the services (ROADMAP SEC-23)" + (f": {recorded.group(1)[:300]}" if recorded else ""))
         if page is None or not confirmed:
             print(journal(upper, "-b", "-p", "warning")[-4000:])
             print_journal(upper, "fr-kernel-confirm.service", "-b")
