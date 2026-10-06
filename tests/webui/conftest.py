@@ -223,6 +223,18 @@ class FakeUpdateHelper:
         self.rolled_back += 1
         return self.rollback_result
 
+    #: ROADMAP SEC-14: what `kernel_status` reports, and every kernel
+    #: command the routes sent.
+    kernel_status = {"available": True, "running": "6.1.0-53-amd64", "boot": "image", "state": None,
+                     "staged": None, "intact": None, "ready": None, "last_check": None,
+                     "summary": "running kernel 6.1.0-53-amd64; nothing staged"}
+
+    def kernel(self, cmd: str) -> dict:
+        self.kernel_commands = [*getattr(self, "kernel_commands", []), cmd]
+        if cmd == "kernel_status":
+            return {"ok": True, "kernel": self.kernel_status}
+        return {"ok": True, "message": f"{cmd} done"}
+
 
 @pytest.fixture
 def webui_env(tmp_path):

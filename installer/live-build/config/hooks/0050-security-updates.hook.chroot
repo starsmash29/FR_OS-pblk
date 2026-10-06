@@ -11,9 +11,11 @@
 #
 # Router: unattended-upgrades installs security updates from that suite
 # only, daily, into the persistent root. The kernel is excluded: a live
-# system boots the kernel on its boot medium, so a kernel package upgrade
-# on the router would only fill the persistence partition without ever
-# running -- kernel fixes arrive with a new FR_OS image (SECURITY.md).
+# system boots the kernel on its boot medium, so an unattended kernel
+# upgrade would only fill the persistence partition without ever running.
+# Kernel fixes come through fr-kernel-prepare instead (ROADMAP SEC-14,
+# frfw.kernel_update): installed, its initrd built, and tried once at a
+# reboot the admin starts.
 set -e
 
 if ! grep -qs "bookworm-security" /etc/apt/sources.list /etc/apt/sources.list.d/*.list; then

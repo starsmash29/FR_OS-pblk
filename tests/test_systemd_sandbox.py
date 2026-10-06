@@ -73,6 +73,8 @@ STRICT = {
 BROAD = {
     "fr-first-boot.service": "one-time machine setup: writes /etc, takes a NIC down, starts every unit",
     "fr-persistence-setup.service": "partitions and formats the boot medium: raw block devices and mount",
+    "fr-kernel-prepare.service": "dpkg installs a kernel package: /boot, /usr/lib/modules, /etc, its maintainer "
+                                 "scripts (ROADMAP SEC-14)",
 }
 
 #: ProtectSystem=strict (the whole file system read-only but the listed
@@ -83,6 +85,7 @@ PROTECT_SYSTEM = {
     "fr-update-check.service": "full",  # installs a security release with auto_install_security (J3)
     "fr-first-boot.service": None,
     "fr-persistence-setup.service": None,
+    "fr-kernel-prepare.service": None,
 }
 
 #: The services that run as root, and why. Everything else runs as its
@@ -104,6 +107,7 @@ ROOT = {
     "fr-dns-log-trim.service": "empties dnsmasq's (nobody's) query log; CAP_DAC_OVERRIDE only, no network",
     "fr-kernel-confirm.service": "writes the boot environment on the persistence partition, reads the ruleset "
                                  "(ROADMAP SEC-14)",
+    "fr-kernel-prepare.service": "installs Debian's kernel package with apt/dpkg (ROADMAP SEC-14)",
 }
 
 UNPRIVILEGED = {
@@ -128,6 +132,7 @@ EXPOSURE_BUDGET.update({
     "fr-update-check.service": 3.5,
     "fr-first-boot.service": 7.5,
     "fr-persistence-setup.service": 8.0,
+    "fr-kernel-prepare.service": 7.0,
 })
 
 

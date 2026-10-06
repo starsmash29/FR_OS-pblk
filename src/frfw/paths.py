@@ -102,6 +102,11 @@ UPDATE_STATE_PATH = Path("/etc/fr_os/update_state.json")
 #: G10/J3), read by the webUI for the "update available" banner.
 UPDATE_CHECK_PATH = Path("/etc/fr_os/update_check.json")
 
+#: The kernel fr-kernel-prepare.timer last prepared from Debian's archive
+#: and the kernel packages it installed (ROADMAP SEC-14, frfw.kernel_update).
+#: Root-only: the webUI reads it through the update-helper.
+KERNEL_UPDATE_STATE_PATH = Path("/etc/fr_os/kernel_update.json")
+
 #: The WireGuard VPN's private key (security-lessons G8): root only,
 #: never in config.yaml. frfw.wireguard generates it on first use.
 WIREGUARD_DIR = Path("/etc/fr_os/wireguard")

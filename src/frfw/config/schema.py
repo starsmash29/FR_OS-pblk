@@ -284,10 +284,16 @@ class UpdateConfig:
 
     `auto_install_security` (security-lessons J3, off by default): let
     fr-update-check.timer install a *security* release by itself, after
-    verifying its signature like any update (A4)."""
+    verifying its signature like any update (A4).
+
+    `kernel_updates` (ROADMAP SEC-14, on by default, like Debian's
+    userspace security updates): fr-kernel-prepare.timer installs
+    Debian's newer kernel and gets it ready to try; trying it is the
+    admin's (frfw.kernel_update)."""
 
     repo: str = ""
     auto_install_security: bool = False
+    kernel_updates: bool = True
 
 
 @dataclass(frozen=True)

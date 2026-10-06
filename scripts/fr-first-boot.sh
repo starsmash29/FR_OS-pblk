@@ -112,6 +112,7 @@ for unit in \
     fr-appid \
     fr-schedule-check.timer \
     fr-update-check.timer \
+    fr-kernel-prepare.timer \
     fr-dns-log-trim.timer \
     fr-adblock-refresh.timer \
     fr-tls-fp \

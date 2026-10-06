@@ -377,7 +377,7 @@ def health_problems() -> list[str]:
 
 
 def wait_healthy(check: Callable[[], list[str]] = health_problems, *, timeout: float = HEALTH_TIMEOUT,
-                 interval: float = 5.0, clock: Callable[[], float] = time.monotonic,
+                 interval: float = 2.0, clock: Callable[[], float] = time.monotonic,
                  sleep: Callable[[float], None] = time.sleep) -> list[str]:
     """[] as soon as the check passes, else its problems at the deadline."""
     deadline = clock() + timeout

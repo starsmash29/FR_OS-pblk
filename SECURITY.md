@@ -56,18 +56,19 @@ router in two ways:
   reboots), into its persistent root. That covers OpenSSL, OpenSSH,
   dnsmasq, Kea, nftables and the rest of userspace.
 
-**The kernel is the exception.** A live-booted FR_OS runs the kernel from
-its boot medium, so a kernel package upgrade on the router would never
-be used. Kernel fixes arrive with a new FR_OS image: we publish one when
-a Debian kernel security update matters for a router (remote reachable,
-netfilter, network drivers), and the release notes say so. Writing the
-new image to the boot medium is one way to install it. The other keeps
-the router's medium: a kernel (and an initrd built for it) staged on the
-persistence partition with `firewall-cli kernel stage` is tried once at
-the next reboot -- the admin's, the router never reboots by itself for
-it -- and kept only if the router comes up on it; otherwise the image's
-own kernel boots again, with a security alert (ROADMAP SEC-14). Fetching
-Debian's kernel package for that is still to come.
+**The kernel** is handled apart. A live-booted FR_OS boots the kernel on
+its boot medium, so the router fetches Debian's kernel fixes itself
+(ROADMAP SEC-14): once a day it installs Debian's newer kernel from the
+archive (signatures checked by apt) and builds its initrd, and the
+dashboard says a kernel is ready to try. Trying it is the admin's:
+"Try" on the Update screen reboots the router into it once, and the
+router keeps it only if it comes up on it -- otherwise the image's own
+kernel boots again by itself, with a security alert. The router never
+reboots on its own for it. `update.kernel_updates: false` (or the switch
+on the Update screen) turns the daily fetch off. A new FR_OS image still
+carries the newest kernel too, and we publish one when a Debian kernel
+security update matters for a router (remote reachable, netfilter,
+network drivers).
 
 ## Scope
 

@@ -1,0 +1,40 @@
+[Unit]
+Description=FR_OS kernel updates: get Debian's newer kernel ready to try (ROADMAP SEC-14)
+Documentation=https://github.com/starsmash29/FR_OS-pblk
+# Asks apt which kernel Debian's linux-image-amd64 points at and, when it
+# is newer than every kernel here and update.kernel_updates is on (the
+# default), installs it into the persistent root and builds its live-boot
+# initrd (frfw.kernel_update). It never stages or reboots: the Update
+# screen's "Try" does, an admin's decision. Only on a live router with
+# persistence -- an installed system updates its kernel in place.
+ConditionKernelCommandLine=boot=live
+ConditionKernelCommandLine=persistence
+After=network-online.target apt-daily.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=firewall-cli kernel prepare
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=45min
+# Sandbox (security-lessons I1; checked by tests/test_systemd_sandbox.py).
+# dpkg installs a kernel package: it writes /boot, /usr/lib/modules,
+# /var/lib/dpkg, /etc (the kernel's hooks) and runs the package's
+# maintainer scripts (update-initramfs) -- the file system stays
+# writable, as for fr-first-boot. What it never needs is shut: no new
+# privileges, no home directories, no kernel logs or clock, no
+# namespaces; it talks to the Debian archive only through apt.
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6

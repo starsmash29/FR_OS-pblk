@@ -486,13 +486,15 @@ management:
 
 ## `update`
 
-Where FR_OS looks for new releases, and whether it may install security
-releases by itself (security-lessons G10/J3).
+Where FR_OS looks for new releases, whether it may install security
+releases by itself (security-lessons G10/J3), and whether it fetches
+Debian's kernel fixes (ROADMAP SEC-14).
 
 ```yaml
 update:
   repo: ""                       # optional; default: the upstream FR_OS repo
   auto_install_security: false   # opt-in: install signed security releases automatically
+  kernel_updates: true           # fetch Debian's newer kernel, ready to try (default on)
 ```
 
 - `repo`: `owner/name` of a GitHub repository publishing FR_OS releases
@@ -503,6 +505,16 @@ update:
   the dashboard shows an alert saying what was installed, or why the
   install failed. Ordinary releases are never installed by themselves.
   Off by default; the Update screen has a switch for it.
+- `kernel_updates`: `fr-kernel-prepare.timer` (daily) asks apt which
+  kernel Debian's `linux-image-amd64` points at and, when it is newer than
+  every kernel on the router, installs it from the Debian archive (apt
+  checks Debian's signatures) into the persistent root and builds its
+  live-boot initrd. It is then *ready to try*: nothing is booted until an
+  admin presses "Try it" on the Update screen, which reboots the router
+  into a trial of it (frfw.kernel_boot: kept only if the router comes up
+  on it). On by default, like Debian's userspace security updates, which
+  use the same archive; the Update screen has a switch for it. A kernel
+  that failed its trial is not prepared again.
 
 ## Known limitations
 

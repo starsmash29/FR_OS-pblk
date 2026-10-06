@@ -689,7 +689,11 @@ def _parse_update(raw: Any) -> UpdateConfig:
     if not isinstance(auto_install_security, bool):
         raise ConfigError("update.auto_install_security must be true or false")
 
-    return UpdateConfig(repo=repo, auto_install_security=auto_install_security)
+    kernel_updates = raw.get("kernel_updates", True)
+    if not isinstance(kernel_updates, bool):
+        raise ConfigError("update.kernel_updates must be true or false")
+
+    return UpdateConfig(repo=repo, auto_install_security=auto_install_security, kernel_updates=kernel_updates)
 
 
 def internet_facing_zones(zones: dict[str, Zone], nat: NatConfig) -> set[str]:

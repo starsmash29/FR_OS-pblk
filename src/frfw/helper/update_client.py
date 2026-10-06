@@ -13,7 +13,7 @@ from pathlib import Path
 from frfw import paths
 from frfw.helper.client import HelperError, send_command
 
-__all__ = ["HelperError", "ping", "apply", "rollback"]
+__all__ = ["HelperError", "ping", "apply", "rollback", "kernel"]
 
 #: A real update (download + pip install + service restarts) can easily
 #: take much longer than the apply-helper's fast nft operations, hence a
@@ -37,3 +37,8 @@ def rollback(
     socket_path: Path = paths.UPDATE_SOCKET_PATH, timeout: float = DEFAULT_TIMEOUT
 ) -> dict:
     return send_command({"cmd": "rollback"}, socket_path, timeout=timeout)
+
+
+def kernel(cmd: str, socket_path: Path = paths.UPDATE_SOCKET_PATH) -> dict:
+    """kernel_status / kernel_check / kernel_try / kernel_cancel (ROADMAP SEC-14)."""
+    return send_command({"cmd": cmd}, socket_path, timeout=60)

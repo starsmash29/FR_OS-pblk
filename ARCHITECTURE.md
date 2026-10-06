@@ -2992,12 +2992,83 @@ router confirms (and the watchdog in use), a trial with the webUI masked
 that reboots itself into the fallback (two security alerts), and one
 with a broken initrd that panics.
 
-Still open (step 3): the webUI's "kernel ready, reboot to try it" and
-the alert there, and fetching Debian's kernel security package (the
-update helper) -- until then a kernel is staged with
-`firewall-cli kernel stage`. Only one kernel is staged at a time: a
-failed trial of the next one falls back to the image's kernel, not to
-the previous staged one.
+Only one kernel is staged at a time: a failed trial of the next one
+falls back to the image's kernel, not to the previous staged one.
+
+### Debian's kernel fixes, ready to try (ROADMAP SEC-14, step 3)
+
+`frfw.kernel_update`, run daily by `fr-kernel-prepare.timer` while
+`update.kernel_updates` is on (the default -- the same Debian archive the
+daily userspace security updates already use), asks apt which kernel
+Debian's `linux-image-amd64` points at (`apt-cache show
+--no-all-versions`, the candidate's `Depends: linux-image-<abi>`). When
+that ABI is newer than every kernel the router has -- running, prepared,
+staged -- and isn't one that failed its trial here, it installs it with
+`apt-get install` into the persistent root: Debian's signatures checked
+by apt against debian-archive-keyring, `/boot/vmlinuz-<v>` and the
+modules on the persistence partition, where they are when that kernel
+boots. Its initrd is not built on the router: the first version ran
+`mkinitramfs` in the live system, and the boot test showed that initrd
+without `libmount` (copy_exec resolved libraries through live-boot's own
+mounts) -- `mount` failed in the initrd and the trial kernel panicked,
+then fell back as designed. Instead `build_initrd` takes the image's own
+initrd (the medium's `live/initrd.img`, the one every boot so far came
+up with), exchanges its kernel modules for the same ones from the new
+kernel -- plus what they depend on, from its `modules.dep`, whatever
+their compression -- with `depmod -b` run for the new kernel in a tree
+of its own. Nothing else in an initrd depends on the kernel version.
+The archive is edited, never unpacked (a newc cpio reader and writer in
+Python): every other entry is copied byte for byte, the early microcode
+archive stays in front uncompressed, and the main archive is written
+gzip-compressed (gzip, xz or zstd are read). Unpacking it was the second
+attempt, and the boot test refused it too: `unmkinitramfs` had to
+recreate the initrd's setuid `mount`, which fr-kernel-prepare's sandbox
+forbids (`RestrictSUIDSGID`), rightly. It refuses to call the kernel
+ready unless the result has live-boot and the new kernel's
+`modules.dep`.
+
+It never stages and never reboots: the kernel is *ready to try*, an
+alert says so, and a power cut still boots the known kernel. The Update
+screen's Kernel card shows the running kernel, the staged one's state
+and the last check, and offers "Try kernel X (reboots the router)",
+behind a confirmation. That button -- an admin's only: every POST is
+refused to viewers (`require_login`) -- sends `kernel_try` to the
+update-helper (root, full role only, frfw.helper.peer), which stages the
+prepared kernel (`kernel_boot.stage`), raises a security alert and
+reboots three seconds later, after the answer reached the browser: the
+one reboot FR_OS asks for. "Check now" (`kernel_check`) starts the
+prepare unit; "Back to the image's kernel" (`kernel_cancel`) unstages.
+The card's status comes from the helper (`kernel_status`): the
+persistence partition's `fr_os-boot` is root's.
+
+It removes what it installed once nothing needs it -- a package it
+didn't install (the image's own kernel, whose modules the fallback boots
+with) is never touched, and neither is the running, prepared or staged
+kernel. `unattended-upgrades` keeps excluding the kernel: only this
+path installs one. `fr-kernel-prepare.service` is root with the file
+system writable (dpkg writes `/boot`, `/usr/lib/modules`, `/etc` and
+runs the package's scripts), like fr-first-boot: listed in the sandbox
+test's BROAD set with that reason, exposure 6.5.
+
+Tested: `tests/test_kernel_update.py` (the candidate, the ABI compared as
+numbers, an install, nothing when up to date or switched off, a failed
+kernel not prepared again, the initrd really rebuilt from a small one
+made with cpio and read back with lsinitramfs/unmkinitramfs -- the same
+modules from the new kernel and their dependencies, nothing else, the
+setuid bit kept, an early archive kept in front, gzip and zstd read, one
+without live-boot refused --, the
+image's kernel prepared without the network, the clean-up never
+touching what it didn't install, the helper's commands over its socket
+-- a failed try never reboots, a sensor account is refused);
+`tests/webui/test_update_routes.py` (the card, its buttons and
+confirmation, the switch, a page that renders without the helper). The
+boot test's boots 9-10 press the buttons: "Check now" with the prepare
+unit pointed at the running kernel by a drop-in (no download needed;
+the router makes the initrd from the image's own), "Try it" reboots
+into the trial, and boot 10 comes up on that initrd and the Update
+screen says it is confirmed. The boot test now also waits for the
+confirmation before it powers a trial off: a trial cut short before the
+check finished is, by design, one that didn't come up.
 
 ### Open issues
 
