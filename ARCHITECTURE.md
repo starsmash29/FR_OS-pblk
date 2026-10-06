@@ -1114,6 +1114,17 @@ they are counted and the result says so. The boot test runs it on the
 VM's disk image, plants a module on the persistence partition, and
 requires both this check and the router's own (next boot) to find it.
 
+**What both checks don't cover** (review v0.2.1 #3): they are about
+FR_OS's own files. A root attacker who persists anywhere else in the
+persistence layer -- another systemd unit, another program, an SSH key
+-- is not reported, and the System screen, `firewall-cli integrity` and
+verify-medium's output say so. ROADMAP SEC-22 is the follow-up: the
+persistence layer is the only place a live router's changes can be, so
+it can be listed in full. The offline check treats the medium as
+untrusted (review v0.2.1 #2): it mounts it `nodev,nosuid,noexec` and
+`nosymfollow` where the kernel has it, and never reads through a
+directory that is a symlink.
+
 ### The security score (security-lessons K8)
 
 `frfw.security_score` pulls the lessons together into a checklist. Each
@@ -3026,6 +3037,11 @@ recreate the initrd's setuid `mount`, which fr-kernel-prepare's sandbox
 forbids (`RestrictSUIDSGID`), rightly. It refuses to call the kernel
 ready unless the result has live-boot and the new kernel's
 `modules.dep`.
+
+Before installing, it checks the room on the persistence partition: the
+package's `Installed-Size`, its initrd and staged copy, and a 256 MiB
+reserve must fit (review v0.2.1 #1) -- a full partition would stop config
+saves and logging, and persistence partitions start at 256 MiB.
 
 It never stages and never reboots: the kernel is *ready to try*, an
 alert says so, and a power cut still boots the known kernel. The Update

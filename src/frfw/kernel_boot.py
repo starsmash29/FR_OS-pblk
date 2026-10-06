@@ -328,14 +328,15 @@ class KernelStatus:
         return f"{running}; kernel {self.staged or '?'} {what}{broken}"
 
 
-def status(*, boot_dir_path: Path | None = None, cmdline: str | None = None) -> KernelStatus:
+def status(*, boot_dir_path: Path | None = None, cmdline: str | None = None,
+           check_files: bool = True) -> KernelStatus:
     path = boot_dir() if boot_dir_path is None else boot_dir_path
     if path is None:
         return KernelStatus(available=False, boot=boot_mode(cmdline))
     env = read_env(path / ENV_NAME)
     state = env.get(STATE) or None
     return KernelStatus(available=True, state=state, staged=env.get(STAGED) or None, boot=boot_mode(cmdline),
-                        intact=files_intact(path) if state else None)
+                        intact=files_intact(path) if state and check_files else None)
 
 
 # -- the boot-time check ----------------------------------------------------------------

@@ -32,6 +32,10 @@ with its version, its state and the SHA256 of its files. It is not part
 of the signed release, so it is shown, not judged: compare the hashes
 with the Debian package it came from.
 
+It checks FR_OS's own files, not the rest of the system: a change an
+attacker made elsewhere in the persistence layer (a systemd unit, another
+program, an SSH key) is not reported (review v0.2.1 #3).
+
 Exit status: 0 = every file matches the signed release, 1 = files were
 changed, added or are missing, 2 = it could not be verified.
 """
@@ -96,8 +100,16 @@ def mounted_medium(target: Path):
                 return device
 
             def mount(source: str, where: Path, *options: str) -> Path:
+                """Read-only, and nothing on the untrusted medium is a
+                device, setuid, runnable or a link out of it (review v0.2.1
+                #2); `nosymfollow` needs Linux 5.10, so without it the
+                lstat checks of frfw.integrity.OverlayView carry it."""
                 where.mkdir()
-                _run("mount", "-o", ",".join(("ro",) + options), source, str(where))
+                safe = ("ro", "nodev", "nosuid", "noexec") + options
+                try:
+                    _run("mount", "-o", ",".join(safe + ("nosymfollow",)), source, str(where))
+                except VerifyError:
+                    _run("mount", "-o", ",".join(safe), source, str(where))
                 mounts.append(where)
                 return where
 
@@ -231,7 +243,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {result['unchecked_pyc']} compiled files are for {result['pyc_tag']}, not this Python: "
                   "not checked (run this with the router's Python, 3.11, to check them too)")
         print("CHANGED: files of FR_OS don't match the signed release" if changed
-              else "OK: every file matches the signed release")
+              else "OK: every file of FR_OS matches the signed release")
+        print("(FR_OS's own files only: the rest of the system -- units, other programs, keys -- is not checked)")
     return 1 if changed else 0
 
 

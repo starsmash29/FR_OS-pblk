@@ -44,12 +44,15 @@ class Apt:
 
     def __init__(self, boot: Path, *, installed=(RUNNING,), show: str = SHOW, live_boot: bool = True) -> None:
         self.boot, self.installed, self.show, self.live_boot = boot, set(installed), show, live_boot
+        self.installed_kib = 400 * 1024  # Debian's 6.1 kernel: about 400 MB of modules
         self.calls: list[list[str]] = []
 
     def __call__(self, argv: list[str]) -> str:
         self.calls.append(argv)
         tool = argv[0]
         if tool == "apt-cache":
+            if argv[-1].startswith("linux-image-6"):  # a kernel package's own record
+                return f"Package: {argv[-1]}\nInstalled-Size: {self.installed_kib}\n"
             return self.show
         if tool == "dpkg-query":
             version = argv[-1][len("linux-image-"):]
@@ -81,6 +84,8 @@ def router(tmp_path, monkeypatch):
         out.write_bytes(b"initrd for " + version.encode())
 
     monkeypatch.setattr(kernel_update, "build_initrd", fake_build)
+    # A persistence partition with room (review v0.2.1 #1 has its own test).
+    monkeypatch.setattr(kernel_update.shutil, "disk_usage", lambda path: shutil._ntuple_diskusage(8 << 30, 0, 8 << 30))
     boot = tmp_path / "boot"
     boot.mkdir()
     (boot / f"vmlinuz-{RUNNING}").write_bytes(KERNEL)
@@ -134,6 +139,16 @@ def test_a_newer_debian_kernel_is_installed_and_made_ready(router):
     assert state["prepared"]["kernel"] == str(router["boot"] / f"vmlinuz-{NEWER}")
     # Nothing staged, nothing booted: that is the admin's "Try".
     assert not router["boot_dir"].exists()
+
+
+def test_a_kernel_that_would_fill_the_persistence_partition_is_not_installed(router, monkeypatch):
+    """Review v0.2.1 #1: a full partition stops config saves and logging."""
+    free = 600 << 20  # 600 MiB: not enough for 400 MB + initrd + staged copy + the reserve
+    monkeypatch.setattr(kernel_update.shutil, "disk_usage", lambda path: shutil._ntuple_diskusage(1 << 30, 0, free))
+    apt = Apt(router["boot"])
+    with pytest.raises(KernelUpdateError, match="not enough room for linux-image-6.1.0-54-amd64: 600 MiB free"):
+        _prepare(router, apt)
+    assert not apt.asked("apt-get", "install")
 
 
 def test_nothing_is_done_when_the_router_has_that_kernel_already(router):
@@ -363,6 +378,18 @@ def test_no_modules_for_the_kernel_no_initrd(tmp_path):
 
 
 # -- the Update screen's view and its "Try" ---------------------------------------------------
+
+
+def test_the_update_screen_does_not_hash_the_staged_files(router, monkeypatch):
+    """Review v0.2.1 #4: GRUB checks them at every boot; the page doesn't."""
+    _prepare(router, Apt(router["boot"]))
+    kernel_update.try_prepared(boot_dir=router["boot_dir"], state_path=router["state"])
+
+    def no(*args, **kwargs):
+        raise AssertionError("hashed the staged kernel")
+
+    monkeypatch.setattr(kernel_boot, "files_intact", no)
+    assert kernel_update.overview(state_path=router["state"], boot_dir=router["boot_dir"])["state"] == "trial"
 
 
 def test_try_stages_the_prepared_kernel_for_its_trial(router):

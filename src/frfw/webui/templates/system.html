@@ -106,9 +106,10 @@
   <h3>Software integrity</h3>
   <p class="muted">FR_OS's files -- the program, its compiled files, its systemd units and scripts, the XDP
     program -- are compared with the signed release they came from (security-lessons G9, ROADMAP SEC-15),
-    so rewriting pip's install record doesn't hide a change. Someone with root can still change this check
-    itself: the check that doesn't trust the router reads its boot medium from another computer
-    (scripts/verify-medium.py).</p>
+    so rewriting pip's install record doesn't hide a change. It covers FR_OS's own files only: a change
+    elsewhere -- another systemd unit, another program, an SSH key -- is not reported. Someone with root can
+    still change this check itself: the check that doesn't trust the router reads its boot medium from
+    another computer (scripts/verify-medium.py).</p>
   {% if not integrity.verifiable %}<p><span class="badge">not verifiable</span> {{ integrity.note }}</p>
   {% elif integrity.ok %}<p id="integrity-summary"><span class="badge badge-green">ok</span> {{ integrity.summary }}</p>
   {% if integrity.note %}<p class="muted">{{ integrity.note }}</p>{% endif %}
