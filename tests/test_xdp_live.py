@@ -894,6 +894,77 @@ def test_a_split_client_hello_naming_an_allowed_host_arrives_whole(lab, lan_rout
     assert after["drop_match"] == before["drop_match"]
 
 
+# --- SEC-24: a followed hello's segments out of order -----------------------
+#
+# Review v0.2.1 FR-NEW-004. A split hello's segments used to be followed
+# in order only: one that came early passed unread, so a client that sent
+# the name's segment first, then the bytes before it, got the name past
+# the walk. Now such a segment is dropped -- TCP sends it again, in order,
+# and the walk reads it then. Each test is a flow of its own (sport).
+
+
+def _three_parts(name: str) -> tuple[bytes, int, int]:
+    """A hello whose name is its last bytes, and two cuts: the first
+    segment holds no name, the last one ends it."""
+    record, name_end = _hello_with_sni_last(name)
+    return record, name_end - 30, name_end - 3
+
+
+def _part(record: bytes, start: int, end: int, lan, sport: int, *, base: int = 1000) -> bytes:
+    return _tcp_frame(record[start:end], [], lan["dst"], lan["src"], sport=sport, seq=(base + start) % 2**32)
+
+
+@pytest.mark.parametrize("name, verdict", [("www.blocked.example", "drop_match"),
+                                           ("www.allowed.example", "pass_no_match")])
+def test_a_segment_ahead_of_the_walk_waits_until_it_comes_in_order(lab, lan_attached, name, verdict):
+    record, cut1, cut2 = _three_parts(name)
+    first = _tcp_frame(record, [], lan_attached["dst"], lan_attached["src"], sport=41001 + len(verdict),
+                       datagram_payload=cut1)
+    sport = 41001 + len(verdict)
+    assert _counted(lab, first)["pass_truncated"] == 1
+    early = _counted(lab, _part(record, cut2, len(record), lan_attached, sport))
+    assert early["drop_reordered"] == 1 and early[verdict] == 0, "the name's segment came first and passed"
+    assert _counted(lab, _part(record, cut1, cut2, lan_attached, sport))["drop_reordered"] == 0
+    # TCP sends the dropped one again, now in order: read, and decided.
+    assert _counted(lab, _part(record, cut2, len(record), lan_attached, sport))[verdict] == 1
+
+
+def test_a_segment_overlapping_the_walk_with_new_bytes_is_dropped(lab, lan_attached):
+    record, cut1, cut2 = _three_parts("www.blocked.example")
+    sport = 41101
+    _counted(lab, _tcp_frame(record, [], lan_attached["dst"], lan_attached["src"], sport=sport,
+                             datagram_payload=cut1))
+    # From ten bytes the walk has read to past the name: new bytes ride on
+    # old ones.
+    moved = _counted(lab, _part(record, cut1 - 10, len(record), lan_attached, sport))
+    assert moved["drop_reordered"] == 1 and moved["drop_match"] == 0
+
+
+def test_a_retransmission_of_read_bytes_passes_and_the_first_segment_is_parsed_again(lab, lan_attached):
+    record, cut1, cut2 = _three_parts("www.blocked.example")
+    sport = 41201
+    first = _tcp_frame(record, [], lan_attached["dst"], lan_attached["src"], sport=sport, datagram_payload=cut1)
+    _counted(lab, first)
+    # Bytes the walk has read, again: nothing new in them.
+    assert _counted(lab, _part(record, 5, cut1, lan_attached, sport))["drop_reordered"] == 0
+    # The first segment again, now carrying the whole hello: parsed from
+    # the start, and the name is found.
+    whole = _tcp_frame(record, [], lan_attached["dst"], lan_attached["src"], sport=sport)
+    moved = _counted(lab, whole)
+    assert moved["drop_match"] == 1 and moved["drop_reordered"] == 0
+
+
+def test_sequence_numbers_that_wrap_are_compared_modulo_2_32(lab, lan_attached):
+    record, cut1, cut2 = _three_parts("www.blocked.example")
+    sport, base = 41301, 2**32 - 100  # the walk's next byte lies past the wrap
+    first = _tcp_frame(record, [], lan_attached["dst"], lan_attached["src"], sport=sport, seq=base,
+                       datagram_payload=cut1)
+    assert _counted(lab, first)["pass_truncated"] == 1
+    assert _counted(lab, _part(record, cut2, len(record), lan_attached, sport, base=base))["drop_reordered"] == 1
+    assert _counted(lab, _part(record, cut1, cut2, lan_attached, sport, base=base))["drop_reordered"] == 0
+    assert _counted(lab, _part(record, cut2, len(record), lan_attached, sport, base=base))["drop_match"] == 1
+
+
 TCP_RST = 0x04
 
 

@@ -35,10 +35,11 @@
 //    server_name extension does, the flow is followed in its next in-order
 //    segments by a second program, xdp_sni_split (ROADMAP SEC-17, see
 //    sni_flow below): only the extension walk's position is kept per
-//    flow, never the stream itself. What stays out of reach, and fails
-//    open: segments out of order, a hello spread over several TLS records,
-//    one longer than SPLIT_MAX_SEGMENTS segments, and a jumbo segment
-//    (over SPLIT_SEG_MAX bytes) past the first.
+//    flow, never the stream itself. A segment out of order is dropped
+//    until it comes in order (ROADMAP SEC-24): TCP sends it again. What
+//    stays out of reach, and fails open: a hello spread over several TLS
+//    records, one longer than SPLIT_MAX_SEGMENTS segments, and a jumbo
+//    segment (over SPLIT_SEG_MAX bytes) past the first.
 //
 // 2. No Encrypted Client Hello (ECH) support. When the client and
 //    server negotiate ECH, the *real* SNI is inside an encrypted
@@ -153,6 +154,8 @@ enum {
 	STAT_PASS_NO_SNI,        // complete ClientHello, no server_name extension
 	STAT_PASS_NO_MATCH,      // SNI extracted, not in the blocklist
 	STAT_DROP_MATCH,         // SNI extracted, matched the blocklist
+	STAT_DROP_REORDERED,     // a followed hello's segment out of order: dropped until it comes
+	                         // in order (ROADMAP SEC-24)
 	STAT_MAX,
 };
 
@@ -299,9 +302,16 @@ struct {
 // retransmitting for minutes, and a server may still be waiting for the
 // rest of the hello. Only a flow still being followed is forgotten after
 // SPLIT_TTL_NS. (The map is LRU: under pressure the oldest flows go.)
-// Out-of-order segments are not reassembled: the walk waits for the next
-// in-order one, and gives up (passes) after SPLIT_MAX_SEGMENTS. A hello
-// spread over several TLS records is not followed (fail open, as before).
+// Out-of-order segments are not reassembled, and since ROADMAP SEC-24
+// (review v0.2.1 FR-NEW-004) not passed either: one that starts past the
+// next in-order byte, or overlaps it with bytes the walk hasn't seen, is
+// dropped -- before, a client sent the name's segment first, it passed
+// unread, and the walk never saw the name. TCP sends it again, in order
+// once the bytes before it got through, and the walk reads it then. Only
+// bytes the walk has already read pass (a retransmission), and the
+// hello's first segment again, which is parsed from the start. The walk
+// gives up (passes) after SPLIT_MAX_SEGMENTS. A hello spread over several
+// TLS records is not followed (fail open, as before).
 #define SPLIT_CARRY 48
 #define SPLIT_WINDOW 64
 #define SPLIT_SEG_MAX 2048 // a segment's bytes looked at (1460 on a 1500-byte MTU)
@@ -311,6 +321,7 @@ struct {
 struct sni_flow {
 	__u64 born;      // bpf_ktime_get_ns() when the first segment was seen
 	__u32 next_seq;  // the next in-order segment's sequence number
+	__u32 first_seq; // the hello's first segment's: parsed from the start if it comes again
 	__u32 skip;      // bytes of an extension body still to skip at its start
 	__u32 ext_left;  // extension-block bytes from the pending extension on
 	__u32 carry_len; // bytes of a straddling extension's start, in carry[]
@@ -1244,9 +1255,21 @@ static __noinline int follow_flow(struct hello_flow_key *key, struct tcphdr *tcp
 		return FOLLOW_NOT;
 	}
 	__u32 seq = bpf_ntohl(tcp->seq);
-	if (seq != split->next_seq)
-		// The first segment again, or one out of order: the ordinary path.
+	if (seq != split->next_seq) {
+		// The first segment again -- even one that now carries more --
+		// is parsed from the start by the ordinary path.
+		if (seq == split->first_seq)
+			return FOLLOW_NOT;
+		// ROADMAP SEC-24: anything carrying a byte past the ones the walk
+		// has read waits until it comes in order; only a retransmission
+		// of read bytes passes. Compared modulo 2^32 (sequence numbers
+		// wrap).
+		if ((__s32)(seq + payload_len - split->next_seq) > 0) {
+			bump(STAT_DROP_REORDERED);
+			return XDP_DROP;
+		}
 		return FOLLOW_NOT;
+	}
 	if (!prepare_job(SPLIT_NEXT, key, payload_off, payload_len, seq, 0, 0, 0))
 		return XDP_PASS; // as without following
 	return FOLLOW_HAND_OVER;
@@ -1291,6 +1314,7 @@ int xdp_sni_split(struct xdp_md *ctx)
 		__builtin_memset(&job->st, 0, sizeof(job->st));
 		job->st.born = bpf_ktime_get_ns();
 		job->st.ext_left = job->ext_total;
+		job->st.first_seq = job->seq;
 	} else {
 		stored = bpf_map_lookup_elem(&sni_flows, &key);
 		if (!stored)
