@@ -64,6 +64,7 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.util
+import fcntl
 import hashlib
 import json
 import os
@@ -133,8 +134,12 @@ _HELLO_HEADER = struct.Struct("<4s4sHHIHBB")
 
 #: Index order must match bpf/xdp_sni_filter.c's `enum { STAT_... }`.
 #: drop_reordered: a followed split hello's segment that came out of order,
-#: dropped until TCP sends it in order (ROADMAP SEC-24).
-STAT_NAMES = ["pass_not_tls", "pass_truncated", "pass_no_sni", "pass_no_match", "drop_match", "drop_reordered"]
+#: dropped until TCP sends it in order (ROADMAP SEC-24). drop_bad_checksum:
+#: one with a bad TCP checksum, dropped before the walk reads it;
+#: drop_unfollowed: the rest of a hello the walk can't follow to its end
+#: (ROADMAP SEC-28).
+STAT_NAMES = ["pass_not_tls", "pass_truncated", "pass_no_sni", "pass_no_match", "drop_match", "drop_reordered",
+              "drop_bad_checksum", "drop_unfollowed"]
 
 
 class XdpError(Exception):
@@ -477,6 +482,65 @@ def attach(device: str) -> AttachMode:
     )
 
 
+# ROADMAP SEC-28: the program checks the TCP checksum of each segment of a
+# split ClientHello it follows, and drops one that is wrong, as the
+# server would. Generic mode runs after the kernel's GRO, which merges a
+# flow's segments into one and leaves its checksum for a NIC to finish:
+# the program would drop the merged segment (and, longer than the walk
+# reads, the whole hello). So while the filter runs on a device in
+# generic mode, its GRO is off and the program sees each segment as it
+# was on the wire; where FR_OS turned it off (XdpState.gro_off), it goes
+# back on once the filter leaves the device or runs there natively.
+# Native mode runs before GRO, and the kernel itself turns LRO and
+# hardware GRO off for generic mode. No ethtool on the router: the same
+# ioctl, SIOCETHTOOL.
+_SIOCETHTOOL = 0x8946
+_ETHTOOL_GGRO = 0x2B
+_ETHTOOL_SGRO = 0x2C
+
+
+def _ethtool_value(device: str, cmd: int, data: int = 0) -> int:
+    value = ctypes.create_string_buffer(struct.pack("II", cmd, data))
+    request = struct.pack("16sP", _device(device).encode(), ctypes.addressof(value))
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        fcntl.ioctl(sock, _SIOCETHTOOL, request)
+    return struct.unpack("II", value.raw[:8])[1]
+
+
+def gro(device: str) -> bool:
+    """Whether GRO is on for `device`."""
+    try:
+        return bool(_ethtool_value(device, _ETHTOOL_GGRO))
+    except OSError as exc:
+        raise XdpError(f"Could not read GRO of {device}: {exc}") from exc
+
+
+def set_gro(device: str, on: bool) -> None:
+    """Turn GRO on or off for `device` (`ethtool -K DEVICE gro on|off`)."""
+    try:
+        _ethtool_value(device, _ETHTOOL_SGRO, int(on))
+    except OSError as exc:
+        raise XdpError(f"Could not turn GRO {'on' if on else 'off'} for {device}: {exc}") from exc
+
+
+def _match_gro(device: str, mode: AttachMode | None, gro_off: list[str]) -> None:
+    """GRO off while the filter runs on `device` in generic mode; back on
+    where FR_OS turned it off, once it doesn't (`mode` None: detached)."""
+    if mode is AttachMode.GENERIC:
+        if gro(device):
+            set_gro(device, False)
+            if device not in gro_off:
+                gro_off.append(device)
+    elif device in gro_off:
+        try:
+            set_gro(device, True)
+        except XdpError:
+            if mode is not None:
+                raise
+            # Detached from a device that is gone: nothing to turn back on.
+        gro_off.remove(device)
+
+
 #: `ip -j link` reports XDP attach modes as the kernel's XDP_ATTACHED_* values.
 _KERNEL_MODES = {1: AttachMode.NATIVE, 2: AttachMode.GENERIC}
 PROG_NAME = "xdp_sni_filter"
@@ -703,6 +767,9 @@ class XdpState:
     # (ROADMAP SEC-19). None when nothing is pinned, or when the state
     # predates this field -- then the pinned program's origin is unknown.
     program: str | None = None
+    # Devices whose GRO FR_OS turned off for generic mode (ROADMAP SEC-28,
+    # see _match_gro), to turn back on when the filter leaves them.
+    gro_off: list[str] = field(default_factory=list)
 
 
 def get_attached(state_path: Path = paths.XDP_STATE_PATH) -> dict[str, str]:
@@ -726,16 +793,18 @@ def _load_state(state_path: Path) -> XdpState:
     except (json.JSONDecodeError, OSError):
         return XdpState()
     program = data.get("program")
+    gro_off = data.get("gro_off")
     return XdpState(
         attached=dict(data.get("attached", {})),
         program=program if isinstance(program, str) else None,
+        gro_off=[d for d in gro_off if isinstance(d, str)] if isinstance(gro_off, list) else [],
     )
 
 
 def _save_state(state: XdpState, state_path: Path) -> None:
     state_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = state_path.with_name(state_path.name + ".tmp")
-    tmp.write_text(json.dumps({"attached": state.attached, "program": state.program}))
+    tmp.write_text(json.dumps({"attached": state.attached, "program": state.program, "gro_off": state.gro_off}))
     tmp.replace(state_path)
 
 
@@ -776,6 +845,8 @@ def sync_sni_filter(
             live = live_attachment(device)
             if live is not None:
                 detach(device, live[0])
+        for device in list(state.gro_off):
+            _match_gro(device, None, state.gro_off)
         unload()
         _save_state(XdpState(), state_path)
         return SyncResult(applied=True, message=f"Detached XDP SNI filter from: {', '.join(devices)}")
@@ -822,7 +893,8 @@ def sync_sni_filter(
     # end (ROADMAP SEC-19): an attach that fails part-way used to leave
     # the earlier interfaces attached but unrecorded, so disabling the
     # filter later found "nothing to do" and left them filtering.
-    recorded = XdpState(attached=dict(state.attached), program=digest or state.program)
+    recorded = XdpState(attached=dict(state.attached), program=digest or state.program,
+                        gro_off=list(state.gro_off))
     _save_state(recorded, state_path)
 
     # Ask the kernel, not the state file, what is attached: after a reboot
@@ -836,6 +908,10 @@ def sync_sni_filter(
     for device in devices:
         live = live_attachment(device)
         if live is not None and (pinned_id is None or live[1] == pinned_id):
+            # Kept -- its GRO matched too: an attachment from before
+            # ROADMAP SEC-28, or GRO back on since.
+            _match_gro(device, live[0], recorded.gro_off)
+            _save_state(recorded, state_path)
             new_attached[device] = live[0].value
             continue
         if live is not None:
@@ -843,6 +919,8 @@ def sync_sni_filter(
         mode = attach(device)
         new_attached[device] = mode.value
         recorded.attached[device] = mode.value
+        _save_state(recorded, state_path)
+        _match_gro(device, mode, recorded.gro_off)
         _save_state(recorded, state_path)
         modes_used.append(f"{device}={mode.value}")
 
@@ -852,9 +930,10 @@ def sync_sni_filter(
             if live is not None:
                 detach(device, live[0])
             del recorded.attached[device]
+            _match_gro(device, None, recorded.gro_off)
             _save_state(recorded, state_path)
 
-    _save_state(XdpState(attached=new_attached, program=recorded.program), state_path)
+    _save_state(XdpState(attached=new_attached, program=recorded.program, gro_off=recorded.gro_off), state_path)
 
     flags = (SETTING_REPORT_PASS if report_pass else 0) | (SETTING_REPORT_HELLO if report_hello else 0)
     if PIN_SETTINGS_PATH.exists() and (not report_hello or PIN_HELLO_PKTS_PATH.exists()):

@@ -256,11 +256,32 @@ they're documented design decisions:
    sends it again, in order once the bytes before it got through, and
    the walk reads it then. Only bytes already read pass (a
    retransmission), and the hello's first segment again, parsed from the
-   start. Sequence numbers are compared modulo 2^32. Still out of reach,
-   and failing open: a hello spread over several TLS records, one longer
-   than 8 segments or not finished within 30 seconds, a jumbo segment
-   past the first, and a segment the walk read that the server then
-   dropped for a bad checksum (ROADMAP SEC-28).
+   start. Sequence numbers are compared modulo 2^32.
+   What the walk reads is what the server gets (ROADMAP SEC-28): a
+   segment the server would throw away for a bad TCP checksum used to be
+   read like any other, and the client then sent other bytes at the same
+   sequence numbers, which passed as a retransmission of read bytes (an
+   insertion). Each followed segment's checksum -- pseudo-header, TCP
+   header, payload, summed with `bpf_csum_diff()` -- is now checked
+   before the walk reads it, and a bad one is dropped with the flow's
+   state left as it was (`drop_bad_checksum`). And where the walk gives
+   up -- more than 16 segments after the first, a hello not finished
+   within 30 seconds, more of a segment than the 2,048 bytes it reads
+   (jumbo frames) -- the rest of the hello is dropped, retransmissions
+   included, instead of passed (`drop_unfollowed`): the client controls
+   all three, and a real one never comes near them on a 1500-byte MTU.
+   The checksum is the one on the wire only if the program sees each
+   segment as it was sent. Native mode runs in the driver, before GRO;
+   generic mode runs after it, and GRO merges a flow's segments into one
+   whose checksum a NIC was to finish -- the program would drop it. So
+   where the filter runs in generic mode `frfw.xdp` turns the device's
+   GRO off (the kernel already turns LRO and hardware GRO off there),
+   and turns it back on, where it did that, once the filter leaves the
+   device (`XdpState.gro_off`). A sender that leaves its checksum to
+   offload on a virtual link -- a veth from a local namespace, as in the
+   live tests -- hands over segments the program drops; a physical LAN
+   never does. Still out of reach, and failing open: a hello spread over
+   several TLS records.
 2. **No Encrypted Client Hello (ECH) support.** With ECH the real SNI is
    encrypted; this is an unavoidable limit of any cleartext-SNI filter,
    not something specific to this implementation.

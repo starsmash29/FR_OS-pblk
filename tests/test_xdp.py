@@ -689,6 +689,89 @@ def test_sync_leaves_already_attached_interface_alone(monkeypatch, tmp_path):
     assert not [c for c in calls if c[0] == "detach"]
 
 
+# --- ROADMAP SEC-28: GRO off under generic mode ------------------------------
+
+
+class _Gro:
+    """The kernel's GRO switches, as `gro`/`set_gro` see them."""
+
+    def __init__(self, monkeypatch, **on):
+        self.on = dict(on)
+        self.calls = []
+        monkeypatch.setattr(xdp_mod, "gro", lambda device: self.on[device])
+        monkeypatch.setattr(xdp_mod, "set_gro", self.set)
+
+    def set(self, device, on):
+        if device not in self.on:
+            raise xdp_mod.XdpError(f"Could not turn GRO on for {device}: No such device")
+        self.calls.append((device, on))
+        self.on[device] = on
+
+
+def _sync_gro(monkeypatch, tmp_path, *, enabled=True, state=None, live=None, modes=None):
+    state_path = tmp_path / "xdp_state.json"
+    if state is not None:
+        state_path.write_text(json.dumps(state))
+    live = dict(live or {})
+    monkeypatch.setattr(xdp_mod, "ensure_compiled", lambda: tmp_path / "xdp_sni_filter.o")
+    monkeypatch.setattr(xdp_mod, "load_and_pin", lambda obj_path: None)
+    monkeypatch.setattr(xdp_mod, "unload", lambda: None)
+    monkeypatch.setattr(xdp_mod, "sync_blocklist", lambda hosts: None)
+    monkeypatch.setattr(xdp_mod, "pinned_prog_id", lambda: 7)
+    monkeypatch.setattr(xdp_mod, "live_attachment", lambda device: live.get(device))
+    monkeypatch.setattr(xdp_mod, "detach", lambda device, mode: live.pop(device))
+
+    def attach(device):
+        live[device] = (modes[device], 7)
+        return modes[device]
+
+    monkeypatch.setattr(xdp_mod, "attach", attach)
+    xdp_mod.sync_sni_filter(_config(enabled=enabled, interfaces=["wan"], blocklist=[]), state_path=state_path)
+    return json.loads(state_path.read_text())
+
+
+def test_generic_mode_turns_the_device_s_gro_off_and_remembers_it(monkeypatch, tmp_path):
+    """Generic mode runs after GRO, which hands the program merged
+    segments whose checksum a NIC was to finish: it would drop them."""
+    gro = _Gro(monkeypatch, eth0=True)
+    state = _sync_gro(monkeypatch, tmp_path, modes={"eth0": xdp_mod.AttachMode.GENERIC})
+    assert gro.calls == [("eth0", False)] and state["gro_off"] == ["eth0"]
+
+
+def test_native_mode_and_a_device_with_gro_off_already_are_left_alone(monkeypatch, tmp_path):
+    gro = _Gro(monkeypatch, eth0=True)
+    state = _sync_gro(monkeypatch, tmp_path, modes={"eth0": xdp_mod.AttachMode.NATIVE})
+    assert gro.calls == [] and state["gro_off"] == []
+
+    gro = _Gro(monkeypatch, eth0=False)  # veth's default, or the admin's choice
+    state = _sync_gro(monkeypatch, tmp_path, state={}, modes={"eth0": xdp_mod.AttachMode.GENERIC})
+    assert gro.calls == [] and state["gro_off"] == []
+
+
+def test_a_kept_generic_attachment_gets_its_gro_turned_off(monkeypatch, tmp_path):
+    """One from before SEC-28, or a device whose GRO came back on since."""
+    gro = _Gro(monkeypatch, eth0=True)
+    state = _sync_gro(monkeypatch, tmp_path, state={"attached": {"eth0": "xdpgeneric"}},
+                      live={"eth0": (xdp_mod.AttachMode.GENERIC, 7)})
+    assert gro.calls == [("eth0", False)] and state["gro_off"] == ["eth0"]
+
+
+def test_gro_comes_back_on_only_where_fr_os_turned_it_off(monkeypatch, tmp_path):
+    gro = _Gro(monkeypatch, eth0=False, eth1=False)
+    state = _sync_gro(monkeypatch, tmp_path, enabled=False,
+                      state={"attached": {"eth0": "xdpgeneric", "eth1": "xdpgeneric"}, "gro_off": ["eth0"]},
+                      live={"eth0": (xdp_mod.AttachMode.GENERIC, 7), "eth1": (xdp_mod.AttachMode.GENERIC, 7)})
+    assert gro.calls == [("eth0", True)] and state == {"attached": {}, "program": None, "gro_off": []}
+
+
+def test_a_device_the_filter_leaves_gets_its_gro_back_even_when_it_is_gone(monkeypatch, tmp_path):
+    # eth9 was filtered once and is no longer configured -- nor there.
+    gro = _Gro(monkeypatch, eth0=True)
+    state = _sync_gro(monkeypatch, tmp_path, state={"attached": {"eth9": "xdpgeneric"}, "gro_off": ["eth9"]},
+                      modes={"eth0": xdp_mod.AttachMode.GENERIC})
+    assert gro.calls == [("eth0", False)] and state["gro_off"] == ["eth0"]
+
+
 def _sync_after_reboot(monkeypatch, tmp_path, live):
     state_path = tmp_path / "xdp_state.json"
     state_path.write_text(json.dumps({"attached": {"eth0": "xdpdrv"}}))  # survived the reboot
@@ -777,6 +860,28 @@ def test_live_attachment_and_status_against_a_real_kernel(tmp_path):
         assert xdp_mod.get_attached(state_path=state_path) == {dev: "xdpgeneric"}
     finally:
         sp.run(["ip", "link", "del", dev], check=False)
+
+
+@pytest.mark.skipif(os.geteuid() != 0 or not shutil.which("ip"), reason="needs root and iproute2")
+def test_gro_is_switched_on_a_real_device():
+    """ROADMAP SEC-28: the ioctl `set_gro` makes (no ethtool on the
+    router) does what `ethtool -K DEV gro off|on` does."""
+    import subprocess as sp
+
+    dev = "frgro0"
+    sp.run(["ip", "link", "add", dev, "type", "veth", "peer", "name", "frgro1"], check=True)
+    try:
+        xdp_mod.set_gro(dev, True)  # a veth's is off to begin with
+        assert xdp_mod.gro(dev)
+        xdp_mod.set_gro(dev, False)
+        assert not xdp_mod.gro(dev)
+        if shutil.which("ethtool"):  # read back independently where it is installed
+            assert "generic-receive-offload: off" in sp.run(["ethtool", "-k", dev], capture_output=True,
+                                                             text=True).stdout
+    finally:
+        sp.run(["ip", "link", "del", dev], check=False)
+    with pytest.raises(xdp_mod.XdpError, match="GRO"):
+        xdp_mod.set_gro(dev, False)
 
 
 # --- SEC-19: lifecycle -------------------------------------------------------
