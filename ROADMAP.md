@@ -14,7 +14,7 @@ FR_OS releases follow a thematic "I"-codename convention:
 
 | Versions | Codename | Status |
 |---|---|---|
-| v0.1.0 – v1.0.0 | **Ice Breaker** 🧊 | **Current.** v0.1.0 was the first release (phases 1–20 below); v0.2.0 is the first signed one. |
+| v0.1.0 – v1.0.0 | **Ice Breaker** 🧊 | **Current.** v0.1.0 was the first release (phases 1–20 below); v0.2.0 is the first signed one; v0.2.1 is a security release (review v0.2.1, SEC-14, SEC-25). |
 | v1.x.x | **Idun** 🍏 | Planned |
 | v2.x.x | **Ivar** ⚡ | Planned |
 | v3.x.x | **Inari** 🌌 | Planned |
