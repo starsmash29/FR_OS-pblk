@@ -57,9 +57,11 @@
     <li><strong>Encrypted Client Hello (ECH).</strong> The real name is encrypted; the filter
       sees only the outer, public one.</li>
     <li><strong>TLS on ports other than 443.</strong></li>
-    <li><strong>Some split ClientHellos.</strong> One split across segments is followed, and
-      a segment that comes out of order is dropped until TCP sends it in order. A hello over
-      several TLS records or longer than 8 segments passes, counted as truncated.</li>
+    <li><strong>ClientHellos over several TLS records.</strong> They pass, counted as
+      truncated. One split across TCP segments is followed: a segment out of order is
+      dropped until TCP sends it in order, one with a bad checksum is dropped unread, and a
+      hello longer than 16 segments, unfinished after 30 seconds or in a segment over
+      2,048 bytes is dropped.</li>
     <li><strong>Names of 32 bytes or more.</strong> Refused when you add them, so none is
       silently ineffective.</li>
     <li><strong>IPv6.</strong> The filter reads IPv4 only, and FR_OS routes IPv4 only, so

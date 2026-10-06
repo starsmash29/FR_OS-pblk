@@ -36,10 +36,12 @@
 //    segments by a second program, xdp_sni_split (ROADMAP SEC-17, see
 //    sni_flow below): only the extension walk's position is kept per
 //    flow, never the stream itself. A segment out of order is dropped
-//    until it comes in order (ROADMAP SEC-24): TCP sends it again. What
-//    stays out of reach, and fails open: a hello spread over several TLS
-//    records, one longer than SPLIT_MAX_SEGMENTS segments, and a jumbo
-//    segment (over SPLIT_SEG_MAX bytes) past the first.
+//    until it comes in order (ROADMAP SEC-24): TCP sends it again; one
+//    with a bad TCP checksum is dropped before the walk reads it, and a
+//    hello the walk can't follow to its end -- longer than
+//    SPLIT_MAX_SEGMENTS segments, unfinished after SPLIT_TTL_NS, a jumbo
+//    segment -- is dropped from there on (ROADMAP SEC-28). What stays out
+//    of reach, and fails open: a hello spread over several TLS records.
 //
 // 2. No Encrypted Client Hello (ECH) support. When the client and
 //    server negotiate ECH, the *real* SNI is inside an encrypted
@@ -156,6 +158,8 @@ enum {
 	STAT_DROP_MATCH,         // SNI extracted, matched the blocklist
 	STAT_DROP_REORDERED,     // a followed hello's segment out of order: dropped until it comes
 	                         // in order (ROADMAP SEC-24)
+	STAT_DROP_BAD_CHECKSUM,  // a followed hello's segment with a bad TCP checksum (ROADMAP SEC-28)
+	STAT_DROP_UNFOLLOWED,    // the rest of a hello the walk can't follow to its end (SEC-28)
 	STAT_MAX,
 };
 
@@ -309,13 +313,26 @@ struct {
 // unread, and the walk never saw the name. TCP sends it again, in order
 // once the bytes before it got through, and the walk reads it then. Only
 // bytes the walk has already read pass (a retransmission), and the
-// hello's first segment again, which is parsed from the start. The walk
-// gives up (passes) after SPLIT_MAX_SEGMENTS. A hello spread over several
-// TLS records is not followed (fail open, as before).
+// hello's first segment again, which is parsed from the start.
+//
+// ROADMAP SEC-28: what the walk reads must be what the server gets. A
+// segment with a bad TCP checksum -- one the server throws away -- used
+// to be read like any other: the walk moved past it, and the client then
+// sent other bytes at the same sequence numbers, which passed as a
+// retransmission of read bytes (an insertion). Each followed segment's
+// checksum is now verified before the walk reads it, and a bad one is
+// dropped, as the server would. And where the walk can't go on -- more
+// than SPLIT_MAX_SEGMENTS segments, a hello not finished in SPLIT_TTL_NS,
+// more than SPLIT_SEG_MAX bytes of a segment to read (jumbo frames) --
+// the rest of the hello is dropped, not passed: a client controls all
+// three. A hello spread over several TLS records is not followed (fail
+// open, as before). The checksum is the segment's as it was on the wire:
+// frfw.xdp turns GRO off where the program runs in generic mode, after
+// GRO, which would merge segments and leave their checksum unfinished.
 #define SPLIT_CARRY 48
 #define SPLIT_WINDOW 64
 #define SPLIT_SEG_MAX 2048 // a segment's bytes looked at (1460 on a 1500-byte MTU)
-#define SPLIT_MAX_SEGMENTS 8
+#define SPLIT_MAX_SEGMENTS 16 // past it the rest is dropped (SEC-28): room for a small MSS
 #define SPLIT_TTL_NS (30ULL * 1000000000ULL)
 
 struct sni_flow {
@@ -352,7 +369,7 @@ struct split_job {
 	__u32 ext_total;   // SPLIT_FIRST: the extensions block's declared length
 	__u32 seq;         // the segment's sequence number
 	__s32 found;       // SPLIT_FIRST: extract_sni()'s result, for the stats
-	__u32 pad;
+	__u32 tcp_hlen;    // the TCP header's length, for SPLIT_NEXT's checksum (SEC-28)
 	struct hello_flow_key key;
 	struct sni_flow st;
 	// The name and its LPM key: here, not on the stack, which
@@ -361,6 +378,7 @@ struct split_job {
 	struct lpm_sni_key lpm;
 	unsigned char buf[128];
 	unsigned char seg[SPLIT_SEG_MAX + SPLIT_WINDOW]; // + room for a window read at its end
+	unsigned char tcph[60]; // SPLIT_NEXT: the TCP header, for the checksum (SEC-28)
 };
 
 struct {
@@ -1188,11 +1206,51 @@ static __always_inline void emit_event(struct iphdr *ip, struct tcphdr *tcp,
 	bpf_ringbuf_submit(ev, 0);
 }
 
+// ROADMAP SEC-28: whether the TCP checksum of the segment in job->seg
+// (its whole payload, seg_len bytes, already copied out) is right -- the
+// pseudo-header, the TCP header read from the packet, the payload padded
+// with zeros to a multiple of 4. bpf_csum_diff() sums at most 512 bytes a
+// call, a multiple of 4; the payload goes in such chunks.
+static __always_inline int tcp_checksum_ok(struct xdp_md *ctx, struct split_job *job, __u32 seg_len)
+{
+	__u32 hlen = job->tcp_hlen;
+	if (hlen < 20 || hlen > 60 || (hlen & 3) || seg_len > SPLIT_SEG_MAX || job->payload_off < hlen)
+		return 0;
+	if (bpf_xdp_load_bytes(ctx, job->payload_off - hlen, job->tcph, hlen) < 0)
+		return 0;
+	__be32 pseudo[3] = { job->key.saddr, job->key.daddr, bpf_htonl((IPPROTO_TCP << 16) | (hlen + seg_len)) };
+	__s64 sum = bpf_csum_diff(0, 0, pseudo, sizeof(pseudo), 0);
+	if (sum < 0)
+		return 0;
+	sum = bpf_csum_diff(0, 0, (__be32 *)job->tcph, hlen, (__wsum)sum);
+	if (sum < 0)
+		return 0;
+	// The bytes past the payload, up to the next multiple of 4: zeros.
+	job->seg[seg_len] = 0;
+	job->seg[seg_len + 1] = 0;
+	job->seg[seg_len + 2] = 0;
+	__u32 total = (seg_len + 3) & ~3U;
+	for (__u32 off = 0; off < SPLIT_SEG_MAX; off += 512) {
+		if (off >= total)
+			break;
+		__u32 n = total - off;
+		if (n > 512)
+			n = 512;
+		sum = bpf_csum_diff(0, 0, (__be32 *)(job->seg + off), n, (__wsum)sum);
+		if (sum < 0)
+			return 0;
+	}
+	__u32 c = (__u32)sum;
+	c = (c & 0xffff) + (c >> 16);
+	c = (c & 0xffff) + (c >> 16);
+	return c == 0xffff;
+}
+
 // ROADMAP SEC-17: write this segment's job for xdp_sni_split. Returns
 // whether there is one to hand over (see hand_over()).
 static __always_inline int prepare_job(__u32 mode, struct hello_flow_key *key,
 				       __u32 payload_off, __u32 payload_len, __u32 seq,
-				       __u32 pos, __u32 ext_total, int found)
+				       __u32 pos, __u32 ext_total, int found, __u32 tcp_hlen)
 {
 	__u32 zero = 0;
 	struct split_job *job = bpf_map_lookup_elem(&split_job, &zero);
@@ -1205,6 +1263,7 @@ static __always_inline int prepare_job(__u32 mode, struct hello_flow_key *key,
 	job->ext_total = ext_total;
 	job->seq = seq;
 	job->found = found;
+	job->tcp_hlen = tcp_hlen;
 	job->key = *key;
 	return 1;
 }
@@ -1215,7 +1274,7 @@ static __always_inline void hand_over(struct xdp_md *ctx, __u32 mode, struct hel
 				      __u32 payload_off, __u32 payload_len, __u32 seq,
 				      __u32 pos, __u32 ext_total, int found)
 {
-	if (prepare_job(mode, key, payload_off, payload_len, seq, pos, ext_total, found))
+	if (prepare_job(mode, key, payload_off, payload_len, seq, pos, ext_total, found, 0))
 		bpf_tail_call(ctx, &split_prog, 0);
 }
 
@@ -1251,8 +1310,11 @@ static __noinline int follow_flow(struct hello_flow_key *key, struct tcphdr *tcp
 	if (split->blocked)
 		return XDP_DROP; // the rest of a blocked hello, retransmissions included
 	if (bpf_ktime_get_ns() - split->born > SPLIT_TTL_NS) {
-		bpf_map_delete_elem(&sni_flows, key);
-		return FOLLOW_NOT;
+		// ROADMAP SEC-28: a hello not finished in time is a client
+		// waiting the walk out -- its rest is dropped, not passed.
+		split->blocked = 1;
+		bump(STAT_DROP_UNFOLLOWED);
+		return XDP_DROP;
 	}
 	__u32 seq = bpf_ntohl(tcp->seq);
 	if (seq != split->next_seq) {
@@ -1270,7 +1332,7 @@ static __noinline int follow_flow(struct hello_flow_key *key, struct tcphdr *tcp
 		}
 		return FOLLOW_NOT;
 	}
-	if (!prepare_job(SPLIT_NEXT, key, payload_off, payload_len, seq, 0, 0, 0))
+	if (!prepare_job(SPLIT_NEXT, key, payload_off, payload_len, seq, 0, 0, 0, (__u32)tcp->doff * 4))
 		return XDP_PASS; // as without following
 	return FOLLOW_HAND_OVER;
 }
@@ -1327,33 +1389,50 @@ int xdp_sni_split(struct xdp_md *ctx)
 	struct walk_loop wl = { .result = WALK_NONE };
 	__u32 seg_len = job->payload_len;
 	__u32 pos = first ? job->pos : 0;
-	if (!first && job->st.segments > SPLIT_MAX_SEGMENTS)
-		goto done;
-
-	// The rest of an extension body the previous segment didn't hold.
-	if (job->st.skip) {
-		__u32 avail = seg_len > pos ? seg_len - pos : 0;
-		if (job->st.skip >= avail) {
-			job->st.skip -= avail;
-			walk = WALK_CONTINUE;
-			goto done;
+	if (!first) {
+		// ROADMAP SEC-28: a hello longer than the walk follows, or a
+		// segment larger than it reads, is dropped from here on.
+		if (job->st.segments > SPLIT_MAX_SEGMENTS || seg_len > SPLIT_SEG_MAX)
+			goto give_up;
+		// The whole segment: its checksum covers all of it, and the walk
+		// reads it from wherever the skip below leaves it.
+		if (seg_len > 0 &&
+		    bpf_xdp_load_bytes(ctx, job->payload_off, job->seg, ((seg_len - 1) & (SPLIT_SEG_MAX - 1)) + 1) < 0)
+			goto give_up;
+		if (!tcp_checksum_ok(ctx, job, seg_len)) {
+			// What the server throws away the walk doesn't read: the
+			// flow's state is left as it was.
+			bump(STAT_DROP_BAD_CHECKSUM);
+			return XDP_DROP;
 		}
-		pos += job->st.skip;
-		job->st.skip = 0;
+		if (job->st.skip) {
+			if (job->st.skip >= seg_len) {
+				job->st.skip -= seg_len;
+				walk = WALK_CONTINUE;
+				goto done;
+			}
+			pos = job->st.skip;
+			job->st.skip = 0;
+		}
+		wl.pos = pos;
+		wl.seg_len = seg_len;
+		goto walk;
 	}
 
-	// Copy the segment from `pos` out of the packet once; walk_one()
-	// reads only that copy. A longer segment (jumbo frames) isn't
-	// followed.
+	// The first segment, from where xdp_sni_filter()'s walk stopped:
+	// copied out of the packet once; walk_one() reads only that copy. A
+	// longer one (jumbo frames) can't be followed: ROADMAP SEC-28 drops
+	// it rather than pass a hello unread.
 	__u32 rest = seg_len > pos ? seg_len - pos : 0;
 	if (rest > SPLIT_SEG_MAX)
-		goto done;
+		goto give_up;
 	if (rest > 0) {
 		rest = ((rest - 1) & (SPLIT_SEG_MAX - 1)) + 1;
 		if (bpf_xdp_load_bytes(ctx, job->payload_off + pos, job->seg, rest) < 0)
-			goto done;
+			goto give_up;
 	}
 	wl.seg_len = rest;
+walk:
 	bpf_loop(MAX_TLS_EXTENSIONS, walk_one, &wl, 0);
 	walk = wl.result;
 
@@ -1404,6 +1483,17 @@ done:
 	emit_flow_event(&key, sni, name_len, 1);
 	if (stored)
 		stored->blocked = 1; // and drop the rest of this hello
+	return XDP_DROP;
+
+give_up:
+	// ROADMAP SEC-28: the walk can't follow this hello further, and a
+	// client chooses all of what makes it so -- its rest is dropped, its
+	// retransmissions included, as for a blocked name. (A first segment
+	// leaves no state: each retransmission of it is parsed, and dropped,
+	// again.)
+	if (stored)
+		stored->blocked = 1;
+	bump(STAT_DROP_UNFOLLOWED);
 	return XDP_DROP;
 }
 

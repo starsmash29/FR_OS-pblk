@@ -123,6 +123,15 @@ def _sh(*cmd: str, ns: str | None = None) -> None:
     subprocess.run(full, check=True, capture_output=True)
 
 
+# ethtool -K DEV tx off, without ethtool: SIOCETHTOOL with
+# ETHTOOL_STXCSUM and a value of 0.
+_TX_CHECKSUM_OFF = """
+import ctypes, fcntl, socket, struct, sys
+value = ctypes.create_string_buffer(struct.pack("II", 0x17, 0))
+fcntl.ioctl(socket.socket(), 0x8946, struct.pack("16sP", sys.argv[1].encode(), ctypes.addressof(value)))
+"""
+
+
 def _cleanup_namespaces() -> None:
     for ns in (CLIENT_NS, ROUTER_NS, SERVER_NS):
         subprocess.run(["ip", "netns", "del", ns], capture_output=True)
@@ -148,6 +157,11 @@ def lab(tmp_path_factory):
             "peer", "name", "frx-s", "netns", SERVER_NS)
         _sh("ip", "addr", "add", f"{CLIENT_IP}/24", "dev", "frx-c", ns=CLIENT_NS)
         _sh("ip", "link", "set", "frx-c", "up", ns=CLIENT_NS)
+        # A veth leaves a TCP checksum for "hardware" to fill in and passes
+        # it on unfilled; a NIC on the wire never does. The filter checks
+        # a followed segment's checksum (ROADMAP SEC-28), so the client's
+        # stack writes it in full.
+        _sh(sys.executable, "-c", _TX_CHECKSUM_OFF, "frx-c", ns=CLIENT_NS)
         _sh("ip", "route", "add", "default", "via", "10.81.1.1", ns=CLIENT_NS)
         _sh("ip", "addr", "add", f"{SERVER_IP}/24", "dev", "frx-s", ns=SERVER_NS)
         _sh("ip", "link", "set", "frx-s", "up", ns=SERVER_NS)
@@ -386,6 +400,9 @@ def _mac(dev: str, ns: str) -> bytes:
 
 
 def _ipv4_checksum(header: bytes) -> int:
+    """The Internet checksum (RFC 1071): an odd byte count is padded with a zero."""
+    if len(header) % 2:
+        header += b"\0"
     total = sum(int.from_bytes(header[i:i + 2], "big") for i in range(0, len(header), 2))
     while total >> 16:
         total = (total & 0xFFFF) + (total >> 16)
@@ -394,7 +411,7 @@ def _ipv4_checksum(header: bytes) -> int:
 
 def _tcp_frame(payload: bytes, tags: list[tuple[int, int]], dst_mac: bytes, src_mac: bytes,
                *, datagram_payload: int | None = None, sport: int = 40443, seq: int = 1000,
-               flags: int = 0x18) -> bytes:
+               flags: int = 0x18, bad_checksum: bool = False) -> bytes:
     """An Ethernet frame carrying one TCP segment to SERVER_IP:443, behind
     `tags` ((TPID, VLAN id) pairs, outermost first).
 
@@ -405,6 +422,11 @@ def _tcp_frame(payload: bytes, tags: list[tuple[int, int]], dst_mac: bytes, src_
     if datagram_payload is None:
         datagram_payload = len(payload)
     tcp = struct.pack("!HHIIBBHHH", sport, 443, seq, 0, 5 << 4, flags, 64240, 0, 0)
+    # A right TCP checksum over the datagram's payload (the router checks a
+    # followed hello's, ROADMAP SEC-28); `bad_checksum` breaks it.
+    pseudo = socket.inet_aton(CLIENT_IP) + socket.inet_aton(SERVER_IP) + struct.pack("!BBH", 0, 6, 20 + datagram_payload)
+    checksum = _ipv4_checksum(pseudo + tcp + payload[:datagram_payload])
+    tcp = tcp[:16] + struct.pack("!H", checksum ^ (0xFFFF if bad_checksum else 0)) + tcp[18:]
     ip = bytearray(struct.pack("!BBHHHBBH4s4s", 0x45, 0, 20 + len(tcp) + datagram_payload, 1, 0x4000, 64, 6, 0,
                                socket.inet_aton(CLIENT_IP), socket.inet_aton(SERVER_IP)))
     ip[10:12] = _ipv4_checksum(bytes(ip)).to_bytes(2, "big")
@@ -985,3 +1007,120 @@ def test_a_blocked_flow_drops_its_retransmissions_until_the_connection_ends(lab,
     # The flow is over: the same bytes are just a segment that doesn't
     # start a TLS record.
     assert _counted(lab, rest)["pass_not_tls"] == 1
+
+
+# --- SEC-28: what the walk reads is what the server gets --------------------
+#
+# A followed segment with a bad TCP checksum used to be read like any
+# other -- the server throws it away, and the client then sent other
+# bytes at the same sequence numbers, which passed as a retransmission of
+# read bytes. And where the walk gave up -- too many segments, too long a
+# wait, a segment longer than it reads -- the rest of the hello passed.
+# Both now drop.
+
+
+def test_a_segment_with_a_bad_checksum_is_dropped_unread(lab, lan_attached):
+    """The insertion: a segment the server discards, naming an allowed
+    host, then the real one at the same sequence numbers."""
+    record, name_end = _hello_with_sni_last("www.blocked.example")
+    decoy, _ = _hello_with_sni_last("www.allowed.example")
+    cut, sport = name_end - 30, 42001
+    assert _counted(lab, _part(record, 0, cut, lan_attached, sport))["pass_truncated"] == 1
+    bad = _tcp_frame(decoy[cut:], [], lan_attached["dst"], lan_attached["src"], sport=sport, seq=1000 + cut,
+                     bad_checksum=True)
+    moved = _counted(lab, bad)
+    assert moved["drop_bad_checksum"] == 1 and moved["pass_no_match"] == 0, "the walk read what the server drops"
+    # The flow's state is as it was: the real bytes are read, and decided.
+    assert _counted(lab, _part(record, cut, len(record), lan_attached, sport))["drop_match"] == 1
+
+
+def test_a_checksum_over_an_odd_length_and_a_padded_frame_is_right(lab, lan_attached):
+    """The payload's last odd byte is summed padded with a zero, and bytes
+    past the datagram (Ethernet padding) are not summed: an allowed name
+    in such a segment is still read and passed."""
+    record, name_end = _hello_with_sni_last("www.allowed.example")
+    cut, sport = name_end - 31, 42101
+    assert (len(record) - cut) % 2 == 1
+    _counted(lab, _part(record, 0, cut, lan_attached, sport))
+    rest = _tcp_frame(record[cut:] + bytes(7), [], lan_attached["dst"], lan_attached["src"], sport=sport,
+                      seq=1000 + cut, datagram_payload=len(record) - cut)
+    moved = _counted(lab, rest)
+    assert moved["pass_no_match"] == 1 and moved["drop_bad_checksum"] == 0
+
+
+@pytest.mark.parametrize("pieces, verdict", [(16, "drop_match"), (17, "drop_unfollowed")])
+def test_a_hello_in_more_segments_than_the_walk_follows_is_dropped(lab, lan_attached, pieces, verdict):
+    """SPLIT_MAX_SEGMENTS (16) segments after the first are followed; a
+    client that cuts the hello finer has the rest of it dropped, its
+    retransmissions included."""
+    record, name_end = _hello_with_sni_last("www.blocked.example")
+    cut, sport = name_end - 30, 42200 + pieces
+    assert _counted(lab, _part(record, 0, cut, lan_attached, sport))["pass_truncated"] == 1
+    for at in range(cut, cut + pieces - 1):  # one-byte segments: nothing decided yet
+        assert not any(v for k, v in _counted(lab, _part(record, at, at + 1, lan_attached, sport)).items()
+                       if k.startswith("drop"))
+    last = _part(record, cut + pieces - 1, len(record), lan_attached, sport)
+    assert _counted(lab, last)[verdict] == 1
+    if verdict == "drop_unfollowed":
+        assert not any(_counted(lab, last).values()), "its retransmission: dropped as part of the flow"
+
+
+@pytest.fixture()
+def jumbo_lan(lab, lan_attached):
+    """A LAN with jumbo frames: the client and the router's LAN side."""
+    devices = (("frx-c", CLIENT_NS), (ROUTER_LAN_DEV, ROUTER_NS))
+    for dev, ns in devices:
+        _sh("ip", "link", "set", dev, "mtu", "4000", ns=ns)
+    try:
+        yield lan_attached
+    finally:
+        for dev, ns in devices:
+            _sh("ip", "link", "set", dev, "mtu", "1500", ns=ns)
+
+
+def _hello_with_padding(sni: str, padding: int) -> tuple[bytes, int]:
+    """A hello with a `padding`-byte padding extension right before its
+    server_name, which is its last; and where the padding's body starts."""
+    import tlsfp_samples as samples
+
+    sni_ext = samples.default_extensions(sni=sni, pq=False)[0]
+    exts = samples.default_extensions(sni=None, pq=False) + [samples.extension(0x0015, bytes(padding)), sni_ext]
+    record = samples.tls_records(samples.client_hello(exts))
+    return record, len(record) - len(sni_ext) - padding
+
+
+@pytest.mark.parametrize("which", ["first", "next"])
+def test_a_segment_longer_than_the_walk_reads_is_dropped(lab, jumbo_lan, which):
+    """SPLIT_SEG_MAX (2048) bytes of a segment are read. On a jumbo-frame
+    LAN a client can send more -- before, such a segment passed unread
+    and the flow wasn't followed; now it is dropped, and the flow's rest
+    with it. In segments the walk reads, the same hello is decided."""
+    record, padding_at = _hello_with_padding("www.blocked.example", 2600)
+    sport = 42301 if which == "first" else 42302
+    if which == "first":
+        # The whole padding in the first segment, the name not yet.
+        moved = _counted(lab, _part(record, 0, len(record) - 3, jumbo_lan, sport))
+        assert moved["drop_unfollowed"] == 1 and moved["pass_truncated"] == 0
+        assert _counted(lab, _part(record, 0, len(record) - 3, jumbo_lan, sport))["drop_unfollowed"] == 1
+        return
+    cut = padding_at + 10
+    assert _counted(lab, _part(record, 0, cut, jumbo_lan, sport))["pass_truncated"] == 1
+    assert _counted(lab, _part(record, cut, len(record), jumbo_lan, sport))["drop_unfollowed"] == 1
+    # Sent again in segments of a 1500-byte MTU: dropped with the flow.
+    assert not any(_counted(lab, _part(record, cut, cut + 1400, jumbo_lan, sport)).values())
+
+    other = sport + 100
+    assert _counted(lab, _part(record, 0, cut, jumbo_lan, other))["pass_truncated"] == 1
+    assert not any(_counted(lab, _part(record, cut, cut + 1400, jumbo_lan, other)).values())
+    assert _counted(lab, _part(record, cut + 1400, len(record), jumbo_lan, other))["drop_match"] == 1
+
+
+def test_a_hello_not_finished_in_time_is_dropped(lab, lan_attached):
+    """SPLIT_TTL_NS (30 s): a client that waits the walk out used to have
+    its hello's rest passed."""
+    record, name_end = _hello_with_sni_last("www.blocked.example")
+    cut, sport = name_end - 30, 42401
+    assert _counted(lab, _part(record, 0, cut, lan_attached, sport))["pass_truncated"] == 1
+    time.sleep(31)
+    assert _counted(lab, _part(record, cut, len(record), lan_attached, sport))["drop_unfollowed"] == 1
+    assert not any(_counted(lab, _part(record, cut, len(record), lan_attached, sport)).values())
