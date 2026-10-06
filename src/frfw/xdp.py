@@ -132,7 +132,9 @@ HELLO_SNAP = 2048
 _HELLO_HEADER = struct.Struct("<4s4sHHIHBB")
 
 #: Index order must match bpf/xdp_sni_filter.c's `enum { STAT_... }`.
-STAT_NAMES = ["pass_not_tls", "pass_truncated", "pass_no_sni", "pass_no_match", "drop_match"]
+#: drop_reordered: a followed split hello's segment that came out of order,
+#: dropped until TCP sends it in order (ROADMAP SEC-24).
+STAT_NAMES = ["pass_not_tls", "pass_truncated", "pass_no_sni", "pass_no_match", "drop_match", "drop_reordered"]
 
 
 class XdpError(Exception):

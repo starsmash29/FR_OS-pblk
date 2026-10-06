@@ -248,9 +248,19 @@ they're documented design decisions:
    6.1 itself: main about 756,000, split about 64,000. Only the boot
    test loads them on the image's kernel; a newer kernel accepting them
    says nothing about 6.1.
-   Still out of reach, and failing open: segments out of order, a hello
-   spread over several TLS records, one longer than 8 segments, and a
-   jumbo segment past the first.
+   A segment out of order is dropped, not passed (ROADMAP SEC-24, review
+   v0.2.1 FR-NEW-004): before, a client sent the name's segment ahead of
+   the bytes before it, it passed unread, and the walk never saw the
+   name. Now one that starts past the walk's next byte, or overlaps it
+   with bytes the walk hasn't read, is dropped (`drop_reordered`); TCP
+   sends it again, in order once the bytes before it got through, and
+   the walk reads it then. Only bytes already read pass (a
+   retransmission), and the hello's first segment again, parsed from the
+   start. Sequence numbers are compared modulo 2^32. Still out of reach,
+   and failing open: a hello spread over several TLS records, one longer
+   than 8 segments or not finished within 30 seconds, a jumbo segment
+   past the first, and a segment the walk read that the server then
+   dropped for a bad checksum (ROADMAP SEC-28).
 2. **No Encrypted Client Hello (ECH) support.** With ECH the real SNI is
    encrypted; this is an unavoidable limit of any cleartext-SNI filter,
    not something specific to this implementation.
