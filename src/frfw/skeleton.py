@@ -44,18 +44,42 @@ _BASE_RULES = [
     },
 ]
 
-#: Out-of-the-box LAN: the router at .1, DHCP for .100-.199 (the common
-#: home-router layout, so a laptop plugged in gets an address and can
-#: open https://192.168.1.1/ without any manual step).
-DEFAULT_LAN_ADDRESS = "192.168.1.1/24"
-DEFAULT_LAN_DHCP = {
-    "range_start": "192.168.1.100",
-    "range_end": "192.168.1.199",
-    # The router runs no resolver until DNS filtering is turned on, so
-    # hand out public resolvers; the Ad-Block screen switches clients to
-    # the router's own when enabled.
-    "dns_servers": ["1.1.1.1", "9.9.9.9"],
-}
+#: Out-of-the-box LAN: the router at .1, DHCP for .100-.199, so a laptop
+#: plugged in gets an address and can open the webUI without any manual
+#: step. Not 192.168.0.x/1.x or the other ranges home routers and ISP
+#: boxes hand out (ROADMAP NET-12): FR_OS's WAN is usually such a box's
+#: LAN, and a LAN in the same range as the WAN leaves the router unable to
+#: tell the two apart -- found on a real Telekom line, whose router is
+#: 192.168.1.1.
+DEFAULT_LAN_ADDRESS = "10.73.1.1/24"
+#: Where the LAN goes when the upstream network overlaps the default, in
+#: order: three different private blocks, so a WAN in any one of them (a
+#: whole 10.0.0.0/8 included) leaves another (`lan_address_avoiding`).
+LAN_ADDRESS_CHOICES = ("10.73.1.1/24", "172.29.73.1/24", "192.168.173.1/24")
+#: The router runs no resolver until DNS filtering is turned on, so hand
+#: out public resolvers; the Ad-Block screen switches clients to the
+#: router's own when enabled.
+DEFAULT_LAN_DNS = ["1.1.1.1", "9.9.9.9"]
+
+
+def lan_address_avoiding(networks) -> str:
+    """The first of LAN_ADDRESS_CHOICES whose network overlaps none of
+    `networks` (the upstream networks first boot saw offered)."""
+    for choice in LAN_ADDRESS_CHOICES:
+        lan = ipaddress.IPv4Interface(choice).network
+        if not any(lan.overlaps(net) for net in networks):
+            return choice
+    raise ValueError("every LAN address choice overlaps the upstream network")
+
+
+def _dhcp_pool(lan_address: str) -> dict | None:
+    """.100-.199 of a /24 LAN, for the LAN's DHCP server; None for any
+    other prefix, which gets the address alone."""
+    lan = ipaddress.IPv4Interface(lan_address)
+    if lan.network.prefixlen != 24:
+        return None
+    base = lan.network.network_address
+    return {"range_start": str(base + 100), "range_end": str(base + 199), "dns_servers": list(DEFAULT_LAN_DNS)}
 
 
 def build_skeleton_config(
@@ -71,9 +95,9 @@ def build_skeleton_config(
     same-named zone. LAN<->OPT traffic is not pre-authorized; add rules
     for it explicitly once the OPT zone's purpose is decided.
 
-    With `lan_address` (default 192.168.1.1/24) the LAN also gets that
-    static address and a DHCP pool in its .100-.199 range (only for a /24
-    as it is, the common case; any other prefix gets the address alone).
+    With `lan_address` (default DEFAULT_LAN_ADDRESS) the LAN also gets
+    that static address and a DHCP pool in its .100-.199 range (only for a
+    /24, the common case; any other prefix gets the address alone).
     The WAN is left to DHCP from the upstream network.
     """
     opt_devices = opt_devices or {}
@@ -85,8 +109,9 @@ def build_skeleton_config(
     dhcp = {}
     if lan_address:
         interfaces["lan"]["address"] = lan_address
-        if lan_address == DEFAULT_LAN_ADDRESS:
-            dhcp["lan"] = dict(DEFAULT_LAN_DHCP)
+        pool = _dhcp_pool(lan_address)
+        if pool:
+            dhcp["lan"] = pool
     zones = {"wan": {}, "lan": {}}
     rules = list(_BASE_RULES)
 

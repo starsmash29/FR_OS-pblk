@@ -54,24 +54,26 @@ write_dhcp_clients() {
 # take 'firewall-cli assign-interfaces' or the webUI's Interfaces screen.
 mapfile -t DEVICES < <(firewall-cli detect-interfaces | awk 'NR>1 {print $1}')
 mapfile -t CHOICE < <(firewall-cli detect-wan-lan || true)
-read -r WAN LAN <<< "${CHOICE[0]:-}" || true
+# The LAN's address comes with them: outside the network the WAN's DHCP
+# server offers (ROADMAP NET-12).
+read -r WAN LAN LAN_ADDRESS <<< "${CHOICE[0]:-}" || true
 BASIS="${CHOICE[1]:-no answer from detect-wan-lan}"
 echo "fr-first-boot: WAN/LAN: $BASIS"
 
 WEBUI_HINT=""
-if [[ -n "${WAN:-}" && -n "${LAN:-}" ]]; then
-    firewall-cli assign-interfaces --wan "$WAN" --lan "$LAN" --force
+if [[ -n "${WAN:-}" && -n "${LAN:-}" && -n "${LAN_ADDRESS:-}" ]]; then
+    firewall-cli assign-interfaces --wan "$WAN" --lan "$LAN" --lan-address "$LAN_ADDRESS" --force
     # The webUI reads the config as the unprivileged fr_os-webui user.
     chgrp fr_os-webui "$CONFIG_DIR/config.yaml"
     chmod 0640 "$CONFIG_DIR/config.yaml"
-    echo "fr-first-boot: assigned WAN=$WAN LAN=$LAN (LAN 192.168.1.1/24 with DHCP)"
+    echo "fr-first-boot: assigned WAN=$WAN LAN=$LAN (LAN $LAN_ADDRESS with DHCP)"
     # The WAN port gets its address from the upstream network: a DHCP
     # client on it, and on it alone. On the LAN the router *is* the DHCP
     # server, and a client there would flush frfw's static address
     # (the image boots with ip=frommedia so live-boot doesn't put one
     # back on every boot; see installer/live-build/auto/config).
     write_dhcp_clients "$WAN"
-    WEBUI_HINT="webUI: https://192.168.1.1/ from a computer on the LAN port ($LAN); WAN is $WAN ($BASIS)"
+    WEBUI_HINT="webUI: https://${LAN_ADDRESS%/*}/ from a computer on the LAN port ($LAN); WAN is $WAN ($BASIS)"
 else
     echo "fr-first-boot: no WAN/LAN assignment ($BASIS);" >&2
     echo "  run 'firewall-cli assign-interfaces' or use the webUI's Interfaces screen" >&2

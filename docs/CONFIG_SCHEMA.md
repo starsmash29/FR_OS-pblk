@@ -476,7 +476,7 @@ management:
   zones: [lan]        # optional; default: every zone that isn't internet-facing
   allow_wan: false    # explicit opt-in to manage from the internet (not recommended)
   confirm_apply_seconds: 300   # optional; 0 = off, else 60-3600
-  addresses: [192.168.1.1]     # where the webUI and SSH listen; set by System -> webUI address
+  addresses: [10.73.1.1]       # where the webUI and SSH listen; set by System -> webUI address
 ```
 
 - `addresses` (ROADMAP SEC-27): where the webUI and SSH listen, besides

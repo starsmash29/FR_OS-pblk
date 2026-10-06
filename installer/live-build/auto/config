@@ -32,7 +32,7 @@
 # - `ip=frommedia` on the kernel command line: without it live-boot
 #   rewrites /etc/network/interfaces on *every* boot with a DHCP client
 #   on every NIC, the LAN port included -- and dhclient's first step
-#   flushes the port's IPv4 addresses, the router's own 192.168.1.1
+#   flushes the port's IPv4 addresses, the router's own LAN address
 #   among them, racing FR_OS's boot-time apply (the router then drops
 #   off its own LAN). With it, live-boot keeps the image's file (only
 #   loopback, written by the 0100 hook) and fr-first-boot puts a DHCP

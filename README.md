@@ -87,13 +87,17 @@ dd if=fr_os_hybrid.iso of=/dev/sdX bs=4M status=progress oflag=sync
    is fine.
 2. **The second boot sets the router up**, with no wizard to click
    through: the port where your modem's DHCP server answers becomes the
-   **WAN**, the other the **LAN** at **192.168.1.1/24** with a DHCP
-   server for .100-.199, and a random admin password is generated. If no
+   **WAN**, the other the **LAN** at **10.73.1.1/24** with a DHCP
+   server for .100-.199, and a random admin password is generated. (Not
+   192.168.1.x or 192.168.0.x: most home routers and ISP boxes use
+   those, and FR_OS's WAN is often behind one. If the upstream network
+   overlaps 10.73.1.0/24 anyway, the LAN goes to 172.29.73.1/24 or
+   192.168.173.1/24 and the console says so.) If no
    DHCP server answers anywhere it goes by port order (first WAN), and if
    one answers on more than one port it assigns nothing and serves DHCP
    nowhere -- the console says which happened.
 3. **The console shows the login**: `admin` / the generated password, and
-   `https://192.168.1.1/` -- open it from a computer on the LAN port
+   `https://10.73.1.1/` -- open it from a computer on the LAN port
    (the browser warns about the self-signed certificate once). The first
    sign-in asks for your own username (not `admin`) and password; the
    console stops showing the generated one then.

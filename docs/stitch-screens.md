@@ -467,7 +467,7 @@ design placeholders, not features of the existing product.
 - **Sections:** *Physical Port Map*, *Primary WAN Uplink Configuration*.
 - **Fields:** Interface Reassignment, WAN Protocol (DHCP / PPPoE / Static), Gateway Hostname, MAC Override, ISP VLAN tagging (VLAN ID, PCP), MTU, Upstream DNS Policy.
 - **Buttons:** *Blink LED*, *Probe ISP Gateway Again*, *Save Draft & Exit to Rescue Shell*, *Validate & Continue*.
-- **In FR_OS:** without a first-boot wizard, the router configures itself automatically (WAN = the port where a DHCP server answers, the other = LAN 192.168.1.1/24, random admin password; ROADMAP SEC-8). The wizard and PPPoE are new.
+- **In FR_OS:** without a first-boot wizard, the router configures itself automatically (WAN = the port where a DHCP server answers, the other = LAN 10.73.1.1/24, out of the upstream's network; random admin password; ROADMAP SEC-8, NET-12). The wizard and PPPoE are new.
 
 ### First-Run Setup Wizard – Step 4: Root Security & FIDO2
 `07646580372a46d5948db2fb86d8dcdb` · 🆕 **New**

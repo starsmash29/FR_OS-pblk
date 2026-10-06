@@ -4272,6 +4272,21 @@ command line, a filesystem labelled `persistence` holding a
   QEMU boot test runs the LAN port on a host tap with no DHCP server --
   QEMU's user network always runs one -- so the choice is tested, not
   given by NIC order.
+- The LAN stays out of the upstream network's way (ROADMAP NET-12). It
+  used to be 192.168.1.1/24, the address of most home routers and ISP
+  boxes -- the network FR_OS's WAN then sits in, found on a real Telekom
+  line: two directly connected networks overlapping, the router can't
+  tell which side an address is on. The default is 10.73.1.1/24 now, a
+  range no home router hands out, and the DHCPOFFER the WAN/LAN probe
+  already hears says which network the upstream offers (the address and
+  its mask): when that overlaps the default, first boot takes the next
+  of `skeleton.LAN_ADDRESS_CHOICES` -- 172.29.73.1/24, then
+  192.168.173.1/24, three private blocks, so even a whole 10.0.0.0/8
+  upstream leaves one. The console and the first-boot log say where the
+  LAN went. Only first boot looks: an upstream that later moves into the
+  LAN's range (a new ISP box) is the admin's to fix on the Interfaces
+  screen. The QEMU boot test's upstream is 192.168.1.0/24 with its
+  router at .1, as on that Telekom line.
 
 ## Open decisions
 
