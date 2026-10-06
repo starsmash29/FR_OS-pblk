@@ -775,9 +775,23 @@ can't be fed a swapped cache either. With no trusted key in the build,
 every update is refused. Key setup and the release procedure:
 [docs/RELEASING.md](docs/RELEASING.md).
 
-Still not verified: the Python dependencies `pip` resolves from PyPI for
-the release (`>=` floors), and releases older than this mechanism
-(v0.1.0 is unsigned, so a router won't update or roll back to it).
+Who can sign (review v0.2.1 FR-NEW-001, FR-NEW-002, ROADMAP SEC-25).
+The key is a secret of the GitHub `release` environment, not of the
+repository: a repository secret reaches every job of every workflow, so
+a compromised action or build tool in the half-hour image build could
+have read it. Only two short jobs of the release workflow use the
+environment -- `sign-source`, which signs the source before the image is
+built (the image carries its signed release, SEC-15), and `publish`,
+which signs the published `SHA256SUMS` and attaches the assets -- and
+GitHub gives them the key only for a `v*` tag and only after the owner
+approves each one. The jobs that compile the XDP program, build and boot
+the image hold neither the key nor write access, and every action is
+pinned to a commit. A release run must start from its tag, and checks
+that the tag names the commit it checked out, so what is signed is what
+was tagged and reviewed.
+
+Still not verified: releases older than this mechanism (v0.1.0 is
+unsigned, so a router won't update or roll back to it).
 
 ### Verification
 
@@ -904,7 +918,8 @@ and `nft -f` is atomic. Now an apply is one transaction
      `/etc/fr_os/applied-config.yaml`, root-only.
    - *Put back what was there.* For the steps that only ever add, or
      whose state is a file and a service: addresses an apply added are
-     removed and a device it created is deleted (`LinkState`); Kea's and
+     removed, those it removed come back, and a device it created is
+     deleted (`LinkState`); Kea's and
      the resolver's config files come back byte for byte with their
      mode and owner, and the service is restarted or stopped as it was
      (`FileState`, `ServiceState`); the sshd drop-ins, their reload and
@@ -917,6 +932,13 @@ and `nft -f` is atomic. Now an apply is one transaction
    "Apply failed at DHCP (Kea): ... Rolled back to the previous state:
    DHCP (Kea), the ad-block DNS resolver, interface addresses, WireGuard,
    IPv4 forwarding, the firewall."
+
+The address step removes what the last applied config set and the new
+one dropped (review v0.2.1 FR-NEW-005): before, a changed or removed
+`address:` left the old one on the device, and the router kept answering
+on a subnet the admin had taken away. It removes only those --
+`frfw.ifaddr.stale_addresses` compares the two configs -- never an
+address FR_OS didn't set, such as a DHCP lease on the WAN.
 
 Without a recorded config (the first apply after an update to this
 version, or after a failed first boot), the ruleset that was loaded is

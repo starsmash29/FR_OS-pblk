@@ -70,7 +70,7 @@
     {{ csrf_input(request) }}
     <label>Username</label>
     <input type="text" name="new_username" pattern="[a-z_][a-z0-9_.\-]{0,31}" required>
-    <label>Password (at least 8 characters)</label>
+    <label>Password (at least {{ MIN_PASSWORD_LENGTH }} characters)</label>
     <input type="password" name="new_password" minlength="8" required>
     <label>Role</label>
     <select name="role">

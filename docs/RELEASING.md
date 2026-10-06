@@ -29,10 +29,18 @@ openssl pkey -in fros-release.key -pubout -out src/frfw/release_keys/fros-releas
 ```
 
 1. Commit `src/frfw/release_keys/fros-release-1.pem` (the **public** key).
-2. In GitHub: *Settings → Secrets and variables → Actions → New repository
-   secret*, name `FROS_RELEASE_SIGNING_KEY`, value: the whole content of
-   `fros-release.key` (the **private** key, including the BEGIN/END lines).
-3. Store `fros-release.key` somewhere safe (password manager, offline
+2. In GitHub: *Settings → Environments → New environment*, name
+   `release`. Under *Deployment protection rules* tick *Required
+   reviewers* and add yourself; under *Deployment branches and tags*
+   choose *Selected branches and tags* and add the tag rule `v*`.
+3. In that environment: *Environment secrets → Add environment secret*,
+   name `FROS_RELEASE_SIGNING_KEY`, value: the whole content of
+   `fros-release.key` (the **private** key, including the BEGIN/END
+   lines). Not a repository secret: every job of every workflow can read
+   those (review v0.2.1 FR-NEW-002). Only the two signing jobs of the
+   release workflow use the `release` environment, and GitHub hands them
+   its secret only for a `v*` tag and only after you approve the job.
+4. Store `fros-release.key` somewhere safe (password manager, offline
    backup). Anyone who has it can publish updates that every router
    installs as root.
 
@@ -95,18 +103,30 @@ Review the diff of `requirements.lock` like code: it is what runs as root.
    `pyproject.toml`, and merge it to `main` together with the review
    record (above).
 2. Create the GitHub release with its tag (`vX.Y.Z`) on that commit.
-3. Run the *Build installer ISO* workflow on `main` with `release_tag` =
-   `vX.Y.Z`. It checks the review record, packages the source (with the
-   XDP program it compiles) and signs a `SHA256SUMS` of it, builds the
-   ISO -- which installs exactly that tarball and carries it with its
-   signature, so a router checks its files against a signed release from
-   the first boot (ROADMAP SEC-15) -- writes the published `SHA256SUMS`
-   of the ISO and the source, signs it, boot-tests the ISO and uploads
-   all four assets. Both signatures go through `scripts/sign-sums.sh`,
-   which checks that the signing key's public half is one this commit
-   ships. Without the `FROS_RELEASE_SIGNING_KEY` secret it refuses to
-   publish; a test build without it is unsigned throughout, and its
-   routers say they check against pip's record only.
+3. Run the *Build installer ISO* workflow **from the tag** ("Use workflow
+   from" → *Tags* → `vX.Y.Z`) with `release_tag` = `vX.Y.Z`. A release
+   is built from exactly the commit its tag names: the first job refuses
+   a run from a branch, or one whose checkout isn't the tag's commit
+   (review v0.2.1 FR-NEW-001), then checks the review record.
+4. Approve the two jobs that wait for the `release` environment, after
+   checking that the run is the one you started, from the tag:
+   - `sign-source` signs a `SHA256SUMS` of the packaged source (with the
+     XDP program the first job compiled). The ISO is then built -- with
+     no access to the key -- and installs exactly that tarball and
+     carries it with its signature, so a router checks its files against
+     a signed release from the first boot (ROADMAP SEC-15), and is
+     boot-tested.
+   - `publish` signs the published `SHA256SUMS` of the ISO and the
+     source and uploads all four assets to the release; it is the only
+     job that may write to the repository.
+
+   Both signatures go through `scripts/sign-sums.sh`, which checks that
+   the signing key's public half is one this commit ships.
+
+A run without `release_tag` -- from a branch, for testing -- never
+touches the `release` environment: its image is unsigned throughout, and
+its routers say they check against pip's record only. Every action the
+workflow uses is pinned to a commit (`tests/test_release_workflow.py`).
 
 A router's USB stick can be checked against its signed release from
 another computer, with the keys of a checkout of this repository:
@@ -144,5 +164,6 @@ release signed with the other key and publish it immediately.
 
 - Releases published before signing existed (v0.1.0) aren't signed, so
   a router refuses to update or roll back *to* them.
-- The Python dependencies `pip` pulls for a release still come from PyPI
-  unpinned (`>=` floors in `pyproject.toml`).
+- The `release` environment's protection rules are GitHub settings, not
+  code: no test can check them. Re-check them when the repository's
+  admins change.

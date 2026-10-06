@@ -104,6 +104,6 @@ def test_the_template_is_the_documented_format():
 
 def test_the_release_workflow_runs_it_first():
     workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "build-installer.yml").read_text())
-    steps = workflow["jobs"]["build"]["steps"]
+    steps = workflow["jobs"]["source"]["steps"]  # the first job; everything else needs it
     assert steps[0]["with"]["fetch-depth"] == 0
     assert "check_release_review.py" in steps[1]["run"] and steps[1]["if"] == "${{ inputs.release_tag != '' }}"

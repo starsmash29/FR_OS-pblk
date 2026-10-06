@@ -849,6 +849,8 @@ def main() -> int:
     parser.add_argument("--workdir", type=Path, help="keep the disk image and serial logs here")
     parser.add_argument("--kvm", action="store_true", help="use KVM (much faster) if /dev/kvm exists")
     parser.add_argument("--uefi", action="store_true", help="boot with UEFI firmware (OVMF) instead of BIOS")
+    parser.add_argument("--signed-build", action="store_true",
+                        help="the image carries a signed release (a release run): check it (ROADMAP SEC-15)")
     args = parser.parse_args()
     if not shutil.which("qemu-system-x86_64"):
         print("qemu-system-x86_64 not found", file=sys.stderr)
@@ -863,9 +865,10 @@ def main() -> int:
 def run(args: argparse.Namespace) -> int:
     workdir = args.workdir or Path(tempfile.mkdtemp(prefix="fros-qemu-"))
     workdir.mkdir(parents=True, exist_ok=True)
-    # ROADMAP SEC-15: the CI signs the source the image carries when it
-    # has the key; then SHA256SUMS.sig sits next to the ISO.
-    signed_build = (Path(args.iso).resolve().parent / "SHA256SUMS.sig").is_file()
+    # ROADMAP SEC-15: a release run signs the source the image carries
+    # (--signed-build; the CI's test builds are unsigned since review
+    # v0.2.1 FR-NEW-002) -- or a SHA256SUMS.sig sits next to the ISO.
+    signed_build = args.signed_build or (Path(args.iso).resolve().parent / "SHA256SUMS.sig").is_file()
     print(f"signed build: {signed_build}")
     disk = workdir / "stick.img"
     shutil.copyfile(args.iso, disk)

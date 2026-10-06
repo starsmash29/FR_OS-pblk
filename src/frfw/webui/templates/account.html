@@ -10,7 +10,7 @@
     {{ csrf_input(request) }}
     <label>Current password</label>
     <input type="password" name="current_password" required>
-    <label>New password (at least 8 characters)</label>
+    <label>New password (at least {{ MIN_PASSWORD_LENGTH }} characters)</label>
     <input type="password" name="new_password" minlength="8" required>
     <label>Confirm new password</label>
     <input type="password" name="new_password_confirm" minlength="8" required>

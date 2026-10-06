@@ -190,7 +190,7 @@ def test_set_admin_password_too_short_fails(tmp_path, monkeypatch, capsys):
     exit_code = main(["set-admin-password"])
     err = capsys.readouterr().err
     assert exit_code == 1
-    assert "at least 8 characters" in err
+    assert "at least 12 characters" in err  # review v0.2.1 FR-NEW-007
 
 
 def test_set_admin_password_generate_is_noninteractive(tmp_path, monkeypatch, capsys):
@@ -355,10 +355,10 @@ def test_set_admin_password_promotes_and_users_lists_roles(monkeypatch, capsys, 
     from frfw.admin_account import AdminStore
 
     store = AdminStore(tmp_path / "auth.json")
-    store.set_password("boss", "adminpass1", "admin")
-    store.add_user("guest", "viewerpass1", "viewer")
+    store.set_password("boss", "admin-pass-001", "admin")
+    store.add_user("guest", "viewer-pass-01", "viewer")
     monkeypatch.setattr("frfw.cli.AdminStore", lambda: store)
-    monkeypatch.setattr("getpass.getpass", lambda prompt="": "recovered99")
+    monkeypatch.setattr("getpass.getpass", lambda prompt="": "recovered-pass99")
 
     # Root's recovery path always yields an admin, even for a viewer account.
     assert main(["set-admin-password", "--username", "guest"]) == 0
