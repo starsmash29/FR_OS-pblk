@@ -51,7 +51,8 @@ interfaces:
 ```
 
 `address` is the router's own static IPv4 address on that interface --
-applied via `ip addr replace` (`frfw.ifaddr`). Only required if the
+applied via `ip addr replace` (`frfw.ifaddr`). Changed or removed, the
+address the last apply set is removed from the device. Only required if the
 zone should get a DHCP pool (see `dhcp` below); leave it unset on an
 interface managed by a DHCP client (e.g. a typical WAN interface).
 

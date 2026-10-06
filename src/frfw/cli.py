@@ -715,6 +715,7 @@ def _cmd_integrity(args: argparse.Namespace) -> int:
         print(f"  added:    {name}")
     if report.ok and not report.basis:
         print("  (against pip's install record only -- see `firewall-cli integrity --help`)")
+    print("  (FR_OS's own files only: the rest of the system -- other units, programs, keys -- is not checked)")
     if not report.verifiable:
         return 2
     return 0 if report.ok else 1

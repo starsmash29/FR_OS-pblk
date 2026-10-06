@@ -39,8 +39,8 @@ _CONFIG = {
 def env(webui_env):
     webui_env["config_path"].write_text(yaml.safe_dump(_CONFIG))
     store = webui_env["admin_store"]
-    store.set_password("boss", "adminpass1", "admin")
-    store.add_user("guest", "viewerpass1", "viewer")
+    store.set_password("boss", "adminpass-001", "admin")
+    store.add_user("guest", "viewerpass-01", "viewer")
     return webui_env
 
 
@@ -79,7 +79,7 @@ def _unsafe_routes(app) -> list[tuple[str, str]]:
 
 
 def test_every_change_route_refuses_a_viewer(env):
-    viewer = _client(env, "guest", "viewerpass1")
+    viewer = _client(env, "guest", "viewerpass-01")
     config_before = env["config_path"].read_text()
     auth_before = env["admin_store"].path.read_text()
     checked = 0
@@ -110,7 +110,7 @@ def test_the_public_change_routes_are_exactly_the_expected_ones(env):
 
 
 def test_viewer_sees_pages_but_not_account_management(env):
-    viewer = _client(env, "guest", "viewerpass1")
+    viewer = _client(env, "guest", "viewerpass-01")
     for page in ("/", "/rules", "/interfaces", "/nat", "/dhcp", "/iot", "/apps", "/adblock", "/account"):
         response = viewer.get(page)
         assert response.status_code == 200, page
@@ -121,7 +121,7 @@ def test_viewer_sees_pages_but_not_account_management(env):
 
 
 def test_admin_manages_accounts_and_the_audit_log_records_it(env):
-    admin = _client(env, "boss", "adminpass1")
+    admin = _client(env, "boss", "adminpass-001")
     assert admin.post("/users/add", data={"new_username": "tech", "new_password": "violet-anchor-9", "role": "viewer"}).status_code == 303
     assert env["admin_store"].get("tech").role == "viewer"
     admin.post("/users/tech/role", data={"role": "admin"})
@@ -143,7 +143,7 @@ def test_admin_manages_accounts_and_the_audit_log_records_it(env):
 
 
 def test_viewer_attempts_are_audited_as_denied(env):
-    viewer = _client(env, "guest", "viewerpass1")
+    viewer = _client(env, "guest", "viewerpass-01")
     viewer.post("/rules/add", data={"name": "evil", "action": "accept"})
     last = json.loads(env["audit_log_path"].read_text().splitlines()[-1])
     assert (last["user"], last["path"], last["status"]) == ("guest", "/rules/add", 403)
@@ -157,39 +157,50 @@ def test_failed_logins_are_audited(env):
 
 
 def test_last_admin_cannot_be_removed_or_demoted_from_the_ui(env):
-    admin = _client(env, "boss", "adminpass1")
+    admin = _client(env, "boss", "adminpass-001")
     assert "error=" in admin.post("/users/boss/role", data={"role": "viewer"}).headers["location"]
     assert "error=" in admin.post("/users/boss/delete").headers["location"]
     assert env["admin_store"].get("boss").is_admin
 
 
 def test_role_and_password_changes_apply_to_open_sessions(env):
-    viewer = _client(env, "guest", "viewerpass1")
-    other_viewer_session = _client(env, "guest", "viewerpass1")
-    admin = _client(env, "boss", "adminpass1")
+    viewer = _client(env, "guest", "viewerpass-01")
+    other_viewer_session = _client(env, "guest", "viewerpass-01")
+    admin = _client(env, "boss", "adminpass-001")
 
     admin.post("/users/guest/role", data={"role": "admin"})
     # Same cookie, new role: the change is picked up on the next request.
     assert viewer.get("/users").status_code == 200
 
     response = viewer.post("/account/password", data={
-        "current_password": "viewerpass1", "new_password": "newsecret99", "new_password_confirm": "newsecret99",
+        "current_password": "viewerpass-01", "new_password": "newsecret-099", "new_password_confirm": "newsecret-099",
     })
     assert response.status_code == 303 and "success" in response.headers["location"]
     assert viewer.get("/account").status_code == 200           # this session got a fresh cookie
     assert other_viewer_session.get("/account").status_code == 303  # the other one ended
 
-    admin.post("/users/guest/password", data={"new_password": "resetpass77"})
+    admin.post("/users/guest/password", data={"new_password": "resetpass-077"})
     assert viewer.get("/account").status_code == 303
 
 
 def test_own_password_change_needs_the_current_password(env):
-    viewer = _client(env, "guest", "viewerpass1")
+    viewer = _client(env, "guest", "viewerpass-01")
     response = viewer.post("/account/password", data={
-        "current_password": "wrong", "new_password": "newsecret99", "new_password_confirm": "newsecret99",
+        "current_password": "wrong", "new_password": "newsecret-099", "new_password_confirm": "newsecret-099",
     })
     assert "error=" in response.headers["location"]
-    assert env["admin_store"].verify("guest", "viewerpass1")
+    assert env["admin_store"].verify("guest", "viewerpass-01")
+
+
+def test_the_password_forms_ask_for_the_same_minimum_the_server_checks(env):
+    """Review v0.2.1 FR-NEW-007: 12 characters, from one constant."""
+    from frfw import passwords
+
+    viewer = _client(env, "guest", "viewerpass-01")
+    page = viewer.get("/account").text
+    assert passwords.MIN_LENGTH == 12
+    assert f'minlength="{passwords.MIN_LENGTH}"' in page and 'minlength="8"' not in page
+    assert f"at least {passwords.MIN_LENGTH} characters" in page
 
 
 # --- the store itself --------------------------------------------------------------------------
@@ -203,7 +214,7 @@ def test_legacy_single_account_file_is_read_as_one_admin(tmp_path):
     store = AdminStore(path)
     account = store.verify("admin", "oldpass123")
     assert account is not None and account.is_admin
-    store.add_user("guest", "viewerpass1", "viewer")
+    store.add_user("guest", "viewerpass-01", "viewer")
     data = json.loads(path.read_text())
     assert data["version"] == 2 and set(data["users"]) == {"admin", "guest"}
     assert store.verify("admin", "oldpass123")
@@ -212,17 +223,17 @@ def test_legacy_single_account_file_is_read_as_one_admin(tmp_path):
 @pytest.mark.parametrize(
     "action, error",
     [
-        (lambda s: s.add_user("Bad Name", "longenough1", "viewer"), "Username must"),
-        (lambda s: s.add_user("ok", "short", "viewer"), "at least 8"),
-        (lambda s: s.add_user("ok", "longenough1", "root"), "Unknown role"),
-        (lambda s: s.add_user("boss", "longenough1", "viewer"), "already exists"),
+        (lambda s: s.add_user("Bad Name", "long-enough-01", "viewer"), "Username must"),
+        (lambda s: s.add_user("ok", "short", "viewer"), "at least 12"),
+        (lambda s: s.add_user("ok", "long-enough-01", "root"), "Unknown role"),
+        (lambda s: s.add_user("boss", "long-enough-01", "viewer"), "already exists"),
         (lambda s: s.set_role("nobody", "admin"), "No such user"),
         (lambda s: s.delete_user("boss"), "At least one admin"),
     ],
 )
 def test_store_refusals(tmp_path, action, error):
     store = AdminStore(tmp_path / "auth.json")
-    store.set_password("boss", "adminpass1", "admin")
+    store.set_password("boss", "adminpass-001", "admin")
     with pytest.raises(AccountError, match=error):
         action(store)
 
@@ -230,4 +241,4 @@ def test_store_refusals(tmp_path, action, error):
 def test_first_account_must_be_an_admin(tmp_path):
     store = AdminStore(tmp_path / "auth.json")
     with pytest.raises(AccountError, match="At least one admin"):
-        store.set_password("guest", "viewerpass1", "viewer")
+        store.set_password("guest", "viewerpass-01", "viewer")

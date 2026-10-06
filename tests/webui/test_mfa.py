@@ -84,8 +84,8 @@ class SoftKey:
 @pytest.fixture
 def store(webui_env):
     store = webui_env["admin_store"]
-    store.set_password("boss", "adminpass1", ROLE_ADMIN)
-    store.set_password("guest", "viewerpass1", ROLE_VIEWER)
+    store.set_password("boss", "adminpass-001", ROLE_ADMIN)
+    store.set_password("guest", "viewerpass-01", ROLE_VIEWER)
     return store
 
 
@@ -93,13 +93,13 @@ def _client(app, base_url: str = ORIGIN) -> TestClient:
     return TestClient(app, base_url=base_url, follow_redirects=False)
 
 
-def _signed_in(app, username="boss", password="adminpass1", base_url: str = ORIGIN) -> TestClient:
+def _signed_in(app, username="boss", password="adminpass-001", base_url: str = ORIGIN) -> TestClient:
     client = _client(app, base_url)
     assert client.post("/login", data={"username": username, "password": password}).headers["location"] == "/"
     return client
 
 
-def _add_totp(app, username="boss", password="adminpass1", base_url: str = ORIGIN) -> str:
+def _add_totp(app, username="boss", password="adminpass-001", base_url: str = ORIGIN) -> str:
     """Enrol an authenticator app the way a user does; returns its secret."""
     client = _signed_in(app, username, password, base_url)
     page = client.get("/account/mfa/totp").text
@@ -111,7 +111,7 @@ def _add_totp(app, username="boss", password="adminpass1", base_url: str = ORIGI
     return secret
 
 
-def _add_key(app, key: SoftKey, username="boss", password="adminpass1") -> None:
+def _add_key(app, key: SoftKey, username="boss", password="adminpass-001") -> None:
     client = _signed_in(app, username, password)
     start = client.post("/account/mfa/webauthn/options", json={"password": password, "name": "yubi"}).json()
     response = client.post("/account/mfa/webauthn/register",
@@ -119,7 +119,7 @@ def _add_key(app, key: SoftKey, username="boss", password="adminpass1") -> None:
     assert response.status_code == 200, response.text
 
 
-def _password_step(app, username="boss", password="adminpass1", base_url: str = ORIGIN) -> TestClient:
+def _password_step(app, username="boss", password="adminpass-001", base_url: str = ORIGIN) -> TestClient:
     client = _client(app, base_url)
     response = client.post("/login", data={"username": username, "password": password})
     assert response.status_code == 303 and response.headers["location"] == "/login/mfa"
@@ -204,7 +204,7 @@ def test_an_expired_ticket_is_refused(app, store, monkeypatch):
 def test_a_ticket_dies_with_a_password_change(app, store):
     secret = _add_totp(app)
     client = _password_step(app)
-    store.set_password("boss", "otherpass1", ROLE_ADMIN)
+    store.set_password("boss", "otherpass-001", ROLE_ADMIN)
     assert client.post("/login/mfa/totp", data={"code": _next_code(secret)}).headers["location"].startswith("/login?")
 
 
@@ -224,13 +224,13 @@ def test_enrolment_needs_the_password_and_a_working_code(app, store):
     wrong_password = client.post("/account/mfa/totp", data={"tid": tid, "code": pyotp.TOTP(secret).now(),
                                                             "password": "not-it"})
     assert "error" in wrong_password.headers["location"]
-    wrong_code = client.post("/account/mfa/totp", data={"tid": tid, "code": "000000", "password": "adminpass1"})
+    wrong_code = client.post("/account/mfa/totp", data={"tid": tid, "code": "000000", "password": "adminpass-001"})
     assert "error" in wrong_code.headers["location"]
     assert not store.get("boss").has_mfa
     # Another account can't finish someone else's enrolment.
-    other = _signed_in(app, "guest", "viewerpass1")
+    other = _signed_in(app, "guest", "viewerpass-01")
     stolen = other.post("/account/mfa/totp", data={"tid": tid, "code": pyotp.TOTP(secret).now(),
-                                                   "password": "viewerpass1"})
+                                                   "password": "viewerpass-01"})
     assert "error" in stolen.headers["location"] and not store.get("guest").has_mfa
 
 
@@ -239,7 +239,7 @@ def test_removing_a_factor_needs_the_password(app, store):
     client = _signed_in_with_totp(app)
     assert "error" in client.post("/account/mfa/remove", data={"kind": "totp", "password": "x"}).headers["location"]
     assert store.get("boss").has_mfa
-    client.post("/account/mfa/remove", data={"kind": "totp", "password": "adminpass1"})
+    client.post("/account/mfa/remove", data={"kind": "totp", "password": "adminpass-001"})
     assert not store.get("boss").has_mfa
 
 
@@ -258,7 +258,7 @@ def _signed_in_with_totp(app) -> TestClient:
 
 
 def test_a_viewer_can_add_a_second_factor_too(app, store):
-    _add_totp(app, "guest", "viewerpass1")
+    _add_totp(app, "guest", "viewerpass-01")
     assert store.get("guest").has_mfa
 
 
@@ -282,27 +282,27 @@ def test_required_mfa_confines_an_admin_without_one_to_enrolment(app, store):
     _add_totp_on(admin)
     assert admin.get("/").status_code == 200
     # Viewers aren't forced (they can't change anything anyway).
-    assert _signed_in(app, "guest", "viewerpass1").get("/").status_code == 200
+    assert _signed_in(app, "guest", "viewerpass-01").get("/").status_code == 200
 
 
 def _add_totp_on(client: TestClient) -> None:
     page = client.get("/account/mfa/totp").text
     tid = page.split('name="tid" value="')[1].split('"')[0]
     secret = page.split("Key: <code>")[1].split("<")[0]
-    client.post("/account/mfa/totp", data={"tid": tid, "code": pyotp.TOTP(secret).now(), "password": "adminpass1"})
+    client.post("/account/mfa/totp", data={"tid": tid, "code": pyotp.TOTP(secret).now(), "password": "adminpass-001"})
 
 
 def test_an_admin_reset_removes_the_factors_and_ends_the_sessions(app, store):
-    store.add_user("boss2", "adminpass2", ROLE_ADMIN)
-    _add_totp(app, "boss2", "adminpass2")
+    store.add_user("boss2", "adminpass-002", ROLE_ADMIN)
+    _add_totp(app, "boss2", "adminpass-002")
     assert store.get("boss2").has_mfa
-    victim_session = _password_step(app, "boss2", "adminpass2")  # mid-login
+    victim_session = _password_step(app, "boss2", "adminpass-002")  # mid-login
     admin = _signed_in(app)
     admin.post("/users/boss2/mfa-reset")
     assert not store.get("boss2").has_mfa
     # A sign-in half-way through gets no session from it either.
     assert victim_session.post("/login/mfa/totp", data={"code": "123456"}).headers["location"] != "/"
-    assert _signed_in(app, "boss2", "adminpass2").get("/").status_code == 200
+    assert _signed_in(app, "boss2", "adminpass-002").get("/").status_code == 200
 
 
 def test_the_cli_reset(app, store, webui_env, monkeypatch, capsys):
@@ -320,7 +320,7 @@ def test_the_cli_reset(app, store, webui_env, monkeypatch, capsys):
 
 
 def test_mfa_routes_need_the_right_role(app, store):
-    viewer = _signed_in(app, "guest", "viewerpass1")
+    viewer = _signed_in(app, "guest", "viewerpass-01")
     assert viewer.post("/users/mfa-policy", data={"require": "true"}).status_code == 403
     assert viewer.post("/users/boss/mfa-reset").status_code == 403
     assert not store.policy().get("require_mfa_for_admins")
@@ -394,7 +394,7 @@ def test_verify_without_options_is_refused(app, store):
 def test_registration_checks_origin_and_password(app, store):
     client = _signed_in(app)
     assert client.post("/account/mfa/webauthn/options", json={"password": "wrong"}).status_code == 403
-    start = client.post("/account/mfa/webauthn/options", json={"password": "adminpass1"}).json()
+    start = client.post("/account/mfa/webauthn/options", json={"password": "adminpass-001"}).json()
     bad = client.post("/account/mfa/webauthn/register",
                       json={"tid": start["tid"], "credential": SoftKey().create(start["options"],
                                                                                 origin="https://evil.test")})
@@ -410,7 +410,7 @@ def test_no_security_keys_on_an_ip_address(app, store):
     assert mfa.rp_id_for("fr-router.lan") == "fr-router.lan"
     assert mfa.rp_id_for(None) is None
     client = _signed_in(app, base_url="https://192.168.1.1")
-    assert client.post("/account/mfa/webauthn/options", json={"password": "adminpass1"}).status_code == 400
+    assert client.post("/account/mfa/webauthn/options", json={"password": "adminpass-001"}).status_code == 400
     assert "not an IP address" in client.get("/account/mfa").text
 
 
@@ -425,7 +425,7 @@ def test_keys_added_by_name_offer_the_app_code_on_an_ip(app, store):
 def test_the_stored_factors_never_leave_in_a_page(app, store):
     secret = _add_totp(app)
     client = _signed_in_with_totp(app)
-    start = client.post("/account/mfa/webauthn/options", json={"password": "adminpass1"}).json()
+    start = client.post("/account/mfa/webauthn/options", json={"password": "adminpass-001"}).json()
     assert client.post("/account/mfa/webauthn/register",
                        json={"tid": start["tid"], "credential": SoftKey().create(start["options"])}).status_code == 200
     stored = store.get("boss").mfa
@@ -448,7 +448,7 @@ def test_wrong_codes_across_many_tickets_lock_the_account(app, store, webui_env)
             client.post("/login/mfa/totp", data={"code": "000000"})
             wrong += 1
         guard.record_success("testclient")  # as if each came from a fresh address
-    locked = _client(app).post("/login", data={"username": "boss", "password": "adminpass1"})
+    locked = _client(app).post("/login", data={"username": "boss", "password": "adminpass-001"})
     assert locked.headers["location"].startswith("/login?error=Too+many+wrong+second-factor")
     assert mfa.TICKET_COOKIE not in locked.cookies
     # The right code doesn't get through a ticket taken just before either.

@@ -3,7 +3,7 @@ from pathlib import Path
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup
 
-from frfw import __codename__, __version__, codename_for
+from frfw import __codename__, __version__, codename_for, passwords
 from frfw.webui.config_store import load_raw
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
@@ -115,4 +115,5 @@ templates.env.globals.update(
     csrf_input=csrf_input,
     FROS_VERSION=__version__,
     FROS_CODENAME=__codename__,
+    MIN_PASSWORD_LENGTH=passwords.MIN_LENGTH,
 )

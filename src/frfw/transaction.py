@@ -258,7 +258,9 @@ class LinkState:
         return cls(device, True, "UP" in link.get("flags", []), addresses)
 
     def restore(self) -> None:
-        """Remove what an apply added; a device it created goes away."""
+        """Remove what an apply added and put back what it removed
+        (frfw.ifaddr removes the last applied config's stale addresses,
+        review v0.2.1 FR-NEW-005); a device it created goes away."""
         now = LinkState.capture(self.device)
         if not now.exists:
             return
@@ -267,6 +269,8 @@ class LinkState:
             return
         for address in sorted(now.addresses - self.addresses):
             _ip(["addr", "del", address, "dev", self.device])
+        for address in sorted(self.addresses - now.addresses):
+            _ip(["addr", "add", validate.ipv4_interface(address), "dev", self.device])
         if now.up and not self.up:
             _ip(["link", "set", "dev", self.device, "down"])
 

@@ -41,8 +41,8 @@ def secrets_everywhere(webui_env, tmp_path):
         "metrics": {"token_sha256": digest},
     }))
     store = webui_env["admin_store"]
-    store.set_password("boss", "adminpass1", "admin")
-    store.add_user("guest", "viewerpass1", "viewer")
+    store.set_password("boss", "adminpass-001", "admin")
+    store.add_user("guest", "viewerpass-01", "viewer")
     # An account with second factors (security-lessons G5): its TOTP secret
     # and security-key public key are secrets too.
     store.add_user("carol", "mint-ribbon-5", "admin")
@@ -84,7 +84,7 @@ def _signed_in(app, username, password) -> TestClient:
     return client
 
 
-@pytest.mark.parametrize("who", [("boss", "adminpass1"), ("guest", "viewerpass1"), None])
+@pytest.mark.parametrize("who", [("boss", "adminpass-001"), ("guest", "viewerpass-01"), None])
 def test_no_page_or_api_response_contains_a_secret(webui_env, secrets_everywhere, who):
     forbidden, token = secrets_everywhere
     app = create_app(**webui_env)
@@ -101,7 +101,7 @@ def test_no_page_or_api_response_contains_a_secret(webui_env, secrets_everywhere
 
 def test_the_certificate_download_is_only_the_certificate(webui_env, secrets_everywhere):
     app = create_app(**webui_env)
-    body = _signed_in(app, "boss", "adminpass1").get("/system/cert.pem").text
+    body = _signed_in(app, "boss", "adminpass-001").get("/system/cert.pem").text
     assert "BEGIN CERTIFICATE" in body and "PRIVATE KEY" not in body
 
 
@@ -113,7 +113,7 @@ def test_the_csrf_token_stays_in_the_form_and_the_meta_tag(webui_env, secrets_ev
     from frfw.webui.auth import COOKIE_NAME
 
     app = create_app(**webui_env)
-    client = _signed_in(app, "boss", "adminpass1")
+    client = _signed_in(app, "boss", "adminpass-001")
     token = app.state.session_manager.csrf_token_for(client.cookies.get(COOKIE_NAME))
     assert token
 
@@ -143,7 +143,7 @@ def test_the_account_file_is_owner_only(tmp_path):
     from frfw.admin_account import AdminStore
 
     store = AdminStore(tmp_path / "auth.json")
-    store.set_password("boss", "adminpass1", "admin")
+    store.set_password("boss", "adminpass-001", "admin")
     assert stat.S_IMODE((tmp_path / "auth.json").stat().st_mode) == 0o600
 
 

@@ -64,6 +64,11 @@ MEDIUM_INITRD = Path("/run/live/medium/live/initrd.img")
 MODULES_ROOT = Path("/usr/lib/modules")
 #: Where the initrds it makes go (root's, on the persistence partition).
 INITRD_DIR = Path("/var/lib/fr_os/kernels")
+#: What must stay free on the persistence partition after a kernel is
+#: installed, and what its initrd and staged copy take besides (review
+#: v0.2.1 #1): a full partition would stop config saves and logging.
+RESERVE_BYTES = 256 * 2**20
+EXTRA_BYTES = 160 * 2**20
 #: What depmod needs next to the modules.
 _MODULE_INDEX = ("modules.order", "modules.builtin", "modules.builtin.modinfo")
 _MODULE_SUFFIX = re.compile(r"\.ko(\.(xz|zst|gz))?\Z")
@@ -154,6 +159,25 @@ def _installed(package: str, run: Runner) -> bool:
         return False
 
 
+def installed_size(package: str, run: Runner = _run) -> int:
+    """Bytes the package takes once installed (apt's Installed-Size, KiB)."""
+    for line in run(["apt-cache", "show", "--no-all-versions", "--", package]).splitlines():
+        if line.startswith("Installed-Size:"):
+            return int(line.split(":", 1)[1].strip()) * 1024
+    raise KernelUpdateError(f"apt gives no installed size for {package}")
+
+
+def _check_room(package: str, where: Path, run: Runner) -> None:
+    """Refuse an install that would leave the persistence partition with
+    less than RESERVE_BYTES (review v0.2.1 #1)."""
+    needed = installed_size(package, run) + EXTRA_BYTES + RESERVE_BYTES
+    free = shutil.disk_usage(where).free
+    if free < needed:
+        raise KernelUpdateError(f"not enough room for {package}: {free // 2**20} MiB free on the persistence "
+                                f"partition, {needed // 2**20} MiB needed (the kernel, its initrd and a reserve) "
+                                "-- use a bigger stick, or turn kernel updates off")
+
+
 class Outcome:
     def __init__(self, message: str, *, alert: str | None = None, ready: str | None = None) -> None:
         self.message, self.alert, self.ready = message, alert, ready
@@ -193,6 +217,7 @@ def prepare(*, version: str | None = None, enabled: bool = True, run: Runner = _
 
     package = PACKAGE_PREFIX + version
     if not _installed(package, run):
+        _check_room(package, (boot_dir.parent if boot_dir is not None else Path("/")), run)
         run(["apt-get", "install", "-y", "-q", "--no-install-recommends",
              "-o", "Dpkg::Options::=--force-confold", "--", package])
         if package not in state["installed"]:
@@ -391,7 +416,10 @@ def record_check(message: str, *, error: bool = False, state_path: Path = paths.
 
 def overview(*, state_path: Path = paths.KERNEL_UPDATE_STATE_PATH, boot_dir: Path | None = None) -> dict:
     """For the webUI (through the update-helper): plain values only."""
-    status = kernel_boot.status(boot_dir_path=boot_dir) if boot_dir is not None else kernel_boot.status()
+    # No hashing of the staged files here (review v0.2.1 #4): GRUB checks
+    # them at every boot, `firewall-cli kernel status` on request.
+    status = kernel_boot.status(boot_dir_path=boot_dir, check_files=False) if boot_dir is not None \
+        else kernel_boot.status(check_files=False)
     state = load_state(state_path)
     prepared = (state.get("prepared") or {}).get("version")
     busy = status.staged == prepared and status.state in (

@@ -76,4 +76,8 @@ In scope: everything in this repository -- the webUI, the privileged
 helpers, the daemons, the generated ruleset and configs, the installer
 image and the update mechanism. Out of scope: vulnerabilities in Debian
 packages FR_OS uses (report those to Debian), and attacks that need
-physical access or root on the router already.
+physical access or root on the router already. Physical access to the
+boot medium is full control: the stick isn't encrypted, so it can be
+rewritten, and a second medium plugged in at boot can supply the
+persistence layer or a staged kernel (review v0.2.1 #5). Check a stick
+you suspect with `scripts/verify-medium.py` from another computer.

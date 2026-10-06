@@ -362,9 +362,9 @@ class _Run:
         # Addresses only after the ruleset is in: it also means no address
         # is brought up before the rules that filter it.
         if not dry_run:
-            links = [LinkState.capture(d) for d in _address_devices(config)]
+            links = [LinkState.capture(d) for d in _address_devices(config, self.previous)]
             self.begin("interface addresses", lambda: [link.restore() for link in reversed(links)])
-        messages.append(ifaddr.sync_addresses(config, dry_run=dry_run).message)
+        messages.append(ifaddr.sync_addresses(config, previous=self.previous, dry_run=dry_run).message)
 
         if not dry_run and config.dhcp.zones:
             kea_file = FileState.capture(where.kea_config_path)
@@ -565,10 +565,15 @@ def xdp_config_for(config: Config, adblock_hosts_path: Path) -> tuple[Config, li
         config, xdp_sni_filter=dataclasses.replace(config.xdp_sni_filter, blocklist=merged)), too_long
 
 
-def _address_devices(config: Config) -> list[str]:
+def _address_devices(config: Config, previous: Config | None = None) -> list[str]:
     """What frfw.ifaddr may change: the devices it addresses or creates
-    (VLANs), and the VLANs' parents, which it brings up."""
+    (VLANs), the VLANs' parents, which it brings up, and the devices the
+    last applied config addressed, whose stale addresses it removes."""
     devices: list[str] = []
+    if previous is not None:
+        for iface in previous.interfaces.values():
+            if iface.address and iface.device not in devices:
+                devices.append(iface.device)
     for iface in config.interfaces.values():
         if iface.vlan_id is not None and iface.vlan_parent not in devices:
             devices.append(iface.vlan_parent)

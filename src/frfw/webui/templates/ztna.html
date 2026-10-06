@@ -80,7 +80,7 @@
     <label>Username</label>
     <input type="text" name="new_username" required>
     <label>Password</label>
-    <input type="password" name="new_password" minlength="8" required>
+    <input type="password" name="new_password" minlength="{{ MIN_PASSWORD_LENGTH }}" required>
     <button type="submit">Add account</button>
   </form>
 </div>

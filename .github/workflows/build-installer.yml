@@ -6,34 +6,48 @@ name: Build installer ISO
 # the Actions tab when the installer/ tree changes and you want a fresh
 # ISO to test -- or with a release tag, to attach the tested ISO to that
 # GitHub release.
+#
+# Releases (docs/RELEASING.md): run it *from the release's tag* ("Use
+# workflow from" -> Tags -> vX.Y.Z) with release_tag = vX.Y.Z. The release
+# signing key is a secret of the `release` environment (review v0.2.1
+# FR-NEW-002): only the two signing jobs get it, only when the run is for a
+# v* tag, and only once the owner approves each of them; the jobs that
+# build and boot the image never see it. A run on a branch is a test
+# build, unsigned throughout. And a release is built from exactly the
+# commit its tag names (FR-NEW-001).
+
 on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Attach the ISO to this existing release (e.g. v0.1.0); empty = artifact only"
+        description: "Publish to this existing release (e.g. v0.2.1) -- run the workflow from that tag; empty = test build, unsigned"
         required: false
         default: ""
       boot_test:
-        description: "Boot the ISO in QEMU eight times with BIOS and eight times with UEFI before publishing it (installer/qemu-boot-test.py)"
+        description: "Boot the ISO in QEMU ten times with BIOS and ten times with UEFI before publishing it (installer/qemu-boot-test.py)"
         type: boolean
         default: true
 
+# Nothing may write unless its job says so (only `publish` does).
 permissions:
-  contents: write  # only used by the release upload step
+  contents: read
 
 jobs:
-  build:
+  # The source the image installs and a router's updater takes (ROADMAP
+  # SEC-15, P4-1) -- packaged without the signing key.
+  source:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         with:
           fetch-depth: 0  # the review check compares commits and tags
 
-      - name: Adversarial review on record (security-lessons J2)
-        # A release is published only after at least two different AI
-        # models reviewed it and every critical/high finding is closed
-        # (docs/RELEASING.md, "Before tagging"). Checked first, before
-        # half an hour of building.
+      - name: Release gate -- the tag, the commit, the adversarial review (security-lessons J2)
+        # Checked first, before half an hour of building: a release is
+        # built from its tag (FR-NEW-001: the commit the tag names is the
+        # commit checked out here), its version is the tag's, and at least
+        # two different AI models reviewed it with every critical/high
+        # finding closed (docs/RELEASING.md, "Before tagging").
         if: ${{ inputs.release_tag != '' }}
         env:
           RELEASE_TAG: ${{ inputs.release_tag }}
@@ -43,7 +57,78 @@ jobs:
             echo "::error::release_tag $RELEASE_TAG doesn't match the version in the source (v$version)"
             exit 1
           fi
+          if [ "$GITHUB_REF" != "refs/tags/$RELEASE_TAG" ]; then
+            echo "::error::a release is built from its tag: run this workflow from $RELEASE_TAG, not $GITHUB_REF"
+            exit 1
+          fi
+          tag_sha=$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")
+          if [ "$tag_sha" != "$GITHUB_SHA" ] || [ "$(git rev-parse HEAD)" != "$tag_sha" ]; then
+            echo "::error::$RELEASE_TAG names $tag_sha, but this run checked out $GITHUB_SHA"
+            exit 1
+          fi
           python3 scripts/check_release_review.py "$version"
+
+      - name: Install the XDP toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libbpf-dev  # the XDP SNI filter's program (ROADMAP P4-1)
+
+      - name: Package the source the image installs (ROADMAP SEC-15)
+        # What the router's updater installs too (frfw.release_signing):
+        # the tagged tree, plus the XDP SNI filter's program compiled here
+        # -- a router has no compiler (ROADMAP P4-1,
+        # frfw.update._install_xdp_object). Signed next, in its own job.
+        run: |
+          version=$(python3 -c "import re;print(re.search(r'__version__ = \"([^\"]+)\"', open('src/frfw/__init__.py').read()).group(1))")
+          ./scripts/build-xdp-object.sh bpf/xdp_sni_filter.c bpf/xdp_sni_filter.o
+          mkdir -p signed-source
+          source="frfw-${version}.tar.gz"
+          git archive --format=tar.gz -o "signed-source/$source" \
+            --prefix="frfw-${version}/bpf/" --add-file=bpf/xdp_sni_filter.o \
+            --prefix="frfw-${version}/" HEAD
+          (cd signed-source && sha256sum "$source" > SHA256SUMS)
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: source
+          path: signed-source/
+          if-no-files-found: error
+
+  # The one job besides `publish` that holds the signing key: it signs the
+  # source's SHA256SUMS *before* the ISO is built, because the image
+  # carries its own signed release (frfw.integrity checks against it from
+  # the first boot) and the published SHA256SUMS can't be inside the ISO
+  # it covers. It runs the tag's own scripts/sign-sums.sh, which refuses a
+  # key whose public half this commit doesn't ship.
+  sign-source:
+    if: ${{ inputs.release_tag != '' }}
+    needs: source
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        with:
+          name: source
+          path: signed-source
+      - name: Sign the source's SHA256SUMS
+        env:
+          SIGNING_KEY: ${{ secrets.FROS_RELEASE_SIGNING_KEY }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: ./scripts/sign-sums.sh signed-source/SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: signed-source
+          path: signed-source/
+          if-no-files-found: error
+
+  # Builds and boot-tests the image -- with no access to the signing key.
+  build:
+    needs: [source, sign-source]
+    if: ${{ !cancelled() && needs.source.result == 'success' && (needs.sign-source.result == 'success' || needs.sign-source.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
 
       - name: Install live-build tooling
         run: |
@@ -55,40 +140,18 @@ jobs:
             live-build debootstrap xorriso squashfs-tools isolinux \
             syslinux-common syslinux-efi syslinux-utils librsvg2-bin \
             grub-pc-bin grub-efi-amd64-bin grub-common mtools dosfstools \
-            debian-archive-keyring rsync \
-            clang libbpf-dev  # the XDP SNI filter's program (ROADMAP P4-1)
+            debian-archive-keyring rsync
 
-      - name: Package and sign the source the image installs (ROADMAP SEC-15)
-        # The image installs exactly this signed tarball and keeps it, so
-        # a router checks its files against a signed release from its
-        # first boot (frfw.integrity) -- signed here, before the ISO is
-        # built, because the published SHA256SUMS can't be inside the
-        # ISO it covers.
-        id: source
-        env:
-          SIGNING_KEY: ${{ secrets.FROS_RELEASE_SIGNING_KEY }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-        run: |
-          version=$(python3 -c "import re;print(re.search(r'__version__ = \"([^\"]+)\"', open('src/frfw/__init__.py').read()).group(1))")
-          # What the router's updater installs too (frfw.release_signing):
-          # the tagged tree, plus the XDP SNI filter's program compiled
-          # here -- a router has no compiler (ROADMAP P4-1,
-          # frfw.update._install_xdp_object).
-          ./scripts/build-xdp-object.sh bpf/xdp_sni_filter.c bpf/xdp_sni_filter.o
-          mkdir -p signed-source
-          source="frfw-${version}.tar.gz"
-          git archive --format=tar.gz -o "signed-source/$source" \
-            --prefix="frfw-${version}/bpf/" --add-file=bpf/xdp_sni_filter.o \
-            --prefix="frfw-${version}/" HEAD
-          (cd signed-source && sha256sum "$source" > SHA256SUMS)
-          ./scripts/sign-sums.sh signed-source/SHA256SUMS
-          echo "dir=$PWD/signed-source" >> "$GITHUB_OUTPUT"
-          echo "source=$source" >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        with:
+          # A release's signed source; a test build's unsigned one.
+          name: ${{ inputs.release_tag != '' && 'signed-source' || 'source' }}
+          path: signed-source
 
       - name: Build hybrid live/installer ISO
-        run: sudo ./installer/build-live-image.sh --signed-source "${{ steps.source.outputs.dir }}"
+        run: sudo ./installer/build-live-image.sh --signed-source "$PWD/signed-source"
 
-      - name: Name the ISO, package the source
+      - name: Name the ISO, list the files to publish
         id: iso
         run: |
           version=$(python3 -c "import re;print(re.search(r'__version__ = \"([^\"]+)\"', open('src/frfw/__init__.py').read()).group(1))")
@@ -96,7 +159,7 @@ jobs:
           sudo mv installer/live-build/binary.hybrid.iso "$name"
           sudo chown "$(id -u):$(id -g)" "$name"
           # The very tarball the image installed and carries.
-          source="${{ steps.source.outputs.source }}"
+          source="frfw-${version}.tar.gz"
           cp "signed-source/$source" "$source"
           sha256sum "$name" "$source" > SHA256SUMS
           {
@@ -109,31 +172,24 @@ jobs:
           echo "source=$source" >> "$GITHUB_OUTPUT"
           cat SHA256SUMS
 
-      - name: Sign SHA256SUMS
-        # A release must be signed: routers refuse an update whose
-        # SHA256SUMS.sig doesn't verify (see docs/RELEASING.md).
-        env:
-          SIGNING_KEY: ${{ secrets.FROS_RELEASE_SIGNING_KEY }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-        # Only what a router will accept is published: the key must be one
-        # this very commit ships (scripts/sign-sums.sh checks).
-        run: ./scripts/sign-sums.sh SHA256SUMS
-
-      - name: Boot test in QEMU with BIOS (eight boots, persistence, first boot, webUI, kernel trial)
+      - name: Boot test in QEMU with BIOS (ten boots, persistence, first boot, webUI, kernel trial)
         if: ${{ inputs.boot_test }}
         run: |
           sudo apt-get install -y qemu-system-x86 ovmf
-          sudo python3 installer/qemu-boot-test.py "${{ steps.iso.outputs.name }}" --kvm --workdir qemu-test
+          sudo python3 installer/qemu-boot-test.py "${{ steps.iso.outputs.name }}" --kvm --workdir qemu-test \
+            ${{ inputs.release_tag != '' && '--signed-build' || '' }}
 
-      # The same eight boots from a fresh stick with UEFI firmware (OVMF):
-      # both firmwares boot from the same GRUB menu (ROADMAP SEC-14).
+      # The same boots from a fresh stick with UEFI firmware (OVMF): both
+      # firmwares boot from the same GRUB menu (ROADMAP SEC-14).
       - name: Boot test in QEMU with UEFI
         if: ${{ inputs.boot_test }}
-        run: sudo python3 installer/qemu-boot-test.py "${{ steps.iso.outputs.name }}" --kvm --uefi --workdir qemu-test-uefi
+        run: >-
+          sudo python3 installer/qemu-boot-test.py "${{ steps.iso.outputs.name }}" --kvm --uefi --workdir qemu-test-uefi
+          ${{ inputs.release_tag != '' && '--signed-build' || '' }}
 
       - name: Upload QEMU logs
         if: ${{ always() && inputs.boot_test }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: qemu-boot-test-logs
           path: |
@@ -142,20 +198,47 @@ jobs:
           if-no-files-found: ignore
 
       - name: Upload ISO artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: fr-os-installer
           path: |
             ${{ steps.iso.outputs.name }}
             ${{ steps.iso.outputs.source }}
             SHA256SUMS
-            SHA256SUMS.sig
-          if-no-files-found: warn
+          if-no-files-found: error
 
+  # Signs the published SHA256SUMS (the ISO and the source) and attaches
+  # all four files to the release -- the second job with the key, and the
+  # only one that may write to the repository.
+  publish:
+    if: ${{ inputs.release_tag != '' }}
+    needs: build
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        with:
+          name: fr-os-installer
+          path: dist
+      - name: Sign SHA256SUMS
+        # A release must be signed: routers refuse an update whose
+        # SHA256SUMS.sig doesn't verify (see docs/RELEASING.md). Only what
+        # a router will accept is published: the key must be one this
+        # very commit ships (scripts/sign-sums.sh checks).
+        env:
+          SIGNING_KEY: ${{ secrets.FROS_RELEASE_SIGNING_KEY }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: ./scripts/sign-sums.sh dist/SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: fr-os-release
+          path: dist/
+          if-no-files-found: error
       - name: Attach to the release
-        if: ${{ inputs.release_tag != '' }}
         env:
           GH_TOKEN: ${{ github.token }}
-        run: >-
-          gh release upload "${{ inputs.release_tag }}" "${{ steps.iso.outputs.name }}"
-          "${{ steps.iso.outputs.source }}" SHA256SUMS SHA256SUMS.sig --clobber
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: gh release upload "$RELEASE_TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"

@@ -295,6 +295,22 @@ def test_the_offline_check_finds_what_the_persistence_layer_changed(medium):
     assert result["modified"] == [f"{PACKAGE}/cli.py"]
 
 
+def test_the_medium_cant_send_the_check_out_of_itself_through_a_link(medium, tmp_path):
+    """Review v0.2.1 #2: the stick is untrusted. A directory on it that
+    is a link to the checking computer's own files is not followed: the
+    file is missing, not read from that computer."""
+    outside = tmp_path / "the-checking-computers-files"
+    (outside / PACKAGE.lstrip("/")).mkdir(parents=True)
+    (outside / PACKAGE.lstrip("/") / "cli.py").write_text("outside the medium\n")
+    shutil.rmtree(medium["lower"] / "usr")
+    (medium["upper"] / "usr").symlink_to(outside / "usr")  # rw/usr -> elsewhere
+    view = integrity.OverlayView(medium["lower"], medium["upper"])
+    assert view.read(f"{PACKAGE}/cli.py") is None
+    (medium["lower"] / "usr").symlink_to(outside / "usr")  # the image's side too
+    (medium["upper"] / "usr").unlink()
+    assert integrity.OverlayView(medium["lower"], medium["upper"]).read(f"{PACKAGE}/cli.py") is None
+
+
 def test_the_offline_check_lists_a_staged_kernel(medium, tmp_path):
     """ROADMAP SEC-14: a kernel staged next to the persistence layer is
     shown with its hashes -- not judged, it isn't in the signed release."""

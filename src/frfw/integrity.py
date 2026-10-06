@@ -208,14 +208,31 @@ class OverlayView(FileView):
                 return False
         return True
 
+    @staticmethod
+    def _through_link(layer: Path, rel: PurePosixPath) -> bool:
+        """Whether a directory on the way to `rel` is a symlink. The
+        medium is untrusted (scripts/verify-medium.py runs as root on
+        another computer): a link like rw/usr -> / would make it read that
+        computer's files (review v0.2.1 #2). Checked with lstat, so it
+        holds where the mount can't refuse symlinks (nosymfollow)."""
+        for i in range(1, len(rel.parts)):
+            try:
+                if stat.S_ISLNK(layer.joinpath(*rel.parts[:i]).lstat().st_mode):
+                    return True
+            except FileNotFoundError:
+                return False
+        return False
+
     def read(self, path: str) -> bytes | None:
         rel = PurePosixPath(path.lstrip("/"))
         up = self.upper / rel
+        if self._through_link(self.upper, rel):
+            return None
         if self._whiteout(up):
             return None
         if up.exists() or up.is_symlink():
             return up.read_bytes() if up.is_file() and not up.is_symlink() else None
-        if not self._lower_visible(rel):
+        if not self._lower_visible(rel) or self._through_link(self.lower, rel):
             return None
         low = self.lower / rel
         if not low.is_file() or low.is_symlink():

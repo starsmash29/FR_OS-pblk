@@ -312,7 +312,7 @@ def test_a_missing_interface_still_loads_the_ruleset_in_the_boots_last_resort(mi
     loaded = []
     monkeypatch.setattr(apply_mod, "_run_nft", lambda args, stdin: loaded.append(args))
 
-    def missing_device(config, dry_run=False):
+    def missing_device(config, previous=None, dry_run=False):
         raise ifaddr_mod.IfaddrError("Cannot find device \"eth9\"")
 
     monkeypatch.setattr(ifaddr_mod, "sync_addresses", missing_device)

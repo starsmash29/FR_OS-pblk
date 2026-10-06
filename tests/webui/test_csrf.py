@@ -33,7 +33,7 @@ _CONFIG = {
     "nat": {"masquerade": [{"out_zone": "wan"}]},
 }
 
-_ADMIN_PASSWORD = "adminpass1"
+_ADMIN_PASSWORD = "adminpass-001"
 
 #: <form ...> ... </form>, non-greedy and across lines.
 _POST_FORM = re.compile(r"<form\b[^>]*\bmethod\s*=\s*[\"']post[\"'][^>]*>(.*?)</form>", re.DOTALL | re.IGNORECASE)
@@ -264,8 +264,8 @@ def test_a_token_in_the_query_string_is_not_accepted(env):
 def test_the_role_check_still_answers_before_anything_is_written(env):
     """R15 must not have displaced phase 18: a viewer's own allowed paths
     still work, and a viewer still cannot reach an admin route."""
-    env["admin_store"].add_user("guest", "viewerpass1", "viewer")
-    viewer = _signed_in(env, "viewerpass1", username="guest")
+    env["admin_store"].add_user("guest", "viewerpass-01", "viewer")
+    viewer = _signed_in(env, "viewerpass-01", username="guest")
     token = _token(viewer)
 
     refused = viewer.request("POST", "/users/add",
@@ -277,9 +277,9 @@ def test_the_role_check_still_answers_before_anything_is_written(env):
 
     # VIEWER_ALLOWED_PATHS stays reachable for the viewer's own account.
     allowed = viewer.request("POST", "/account/password",
-                             data={"current_password": "viewerpass1",
-                                   "new_password": "viewerpass2",
-                                   "new_password_confirm": "viewerpass2"},
+                             data={"current_password": "viewerpass-01",
+                                   "new_password": "viewerpass-02",
+                                   "new_password_confirm": "viewerpass-02"},
                              headers={"X-CSRF-Token": token})
     assert allowed.status_code == 303, allowed.text
     assert "/account/password" in VIEWER_ALLOWED_PATHS
