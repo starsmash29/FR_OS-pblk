@@ -47,8 +47,8 @@ from frfw.ids_quarantine import IdsQuarantineError
 from frfw.ifaddr import IfaddrError
 from frfw.kea import KeaError
 from frfw.pqc import PqcError
-from frfw.management import LOOPBACK, listen_addresses
-from frfw.provision import apply_all, applied_config_text
+from frfw.management import LOOPBACK, listen_addresses, moves_management
+from frfw.provision import apply_all, applied_config_text, load_applied_config
 from frfw.transaction import ApplyError, write_keeping_owner
 from frfw.surface import SurfaceError
 from frfw.webui import audit as webui_audit
@@ -81,6 +81,9 @@ def _handle_request(request: dict, server: "ApplyHelperServer") -> dict:
 
         if cmd == "apply":
             return _handle_apply(request, server)
+
+        if cmd == "set_management_addresses":
+            return _handle_set_management_addresses(request, server)
 
         if cmd == "apply_status":
             return _handle_apply_status()
@@ -193,33 +196,48 @@ def _handle_apply(request: dict, server: "ApplyHelperServer") -> dict:
     goes back by itself otherwise (ROADMAP SEC-26, frfw.apply_confirm)."""
     config, text = read_config(server.config_path)
     if request.get("dry_run", False):
+        _refuse_moving_management(config)
         result = apply_all(config, dry_run=True, backup_dir=server.backup_dir,
                            kea_config_path=server.kea_config_path, source_text=text)
         return {"ok": True, "message": "; ".join(result.messages)}
     with apply_confirm.locked():
-        waiting = apply_confirm.read()
-        if waiting is not None:
-            return {"ok": False, "message": (
-                f"The last apply is waiting for confirmation ({waiting.remaining()} s left): "
-                "confirm it or go back before applying again")}
-        previous = applied_config_text()
-        result = apply_all(config, backup_dir=server.backup_dir, kea_config_path=server.kea_config_path,
-                           source_text=text)
-        messages = list(result.messages)
-        held = None
-        if request.get("confirm") and apply_confirm.needs_confirmation(config, text, previous):
-            seconds = config.management.confirm_apply_seconds
-            try:
-                # Where the admin can reach the webUI now -- loopback is no
-                # one's way in.
-                reachable = [a for a in listen_addresses(config) if a != LOOPBACK]
-                held = apply_confirm.begin(previous, seconds, by=str(request.get("user") or "")[:64],
-                                           addresses=reachable)
-            except apply_confirm.PendingError as exc:
-                messages.insert(0, f"Applied, but not held for confirmation: {exc}")
-            else:
-                messages.insert(0, f"Applied -- confirm it within {seconds} s, or the router goes back to "
-                                   "the config applied before it")
+        return _apply_locked(server, config, text, confirm=bool(request.get("confirm")),
+                             user=str(request.get("user") or "")[:64])
+
+
+def _refuse_moving_management(config) -> None:
+    """ROADMAP SEC-27: only the webUI address setting moves the webUI and
+    SSH -- never the side effect of another change."""
+    moved = moves_management(config, load_applied_config())
+    if moved:
+        raise ApplyError("the webUI address", ValueError(moved), changed=False)
+
+
+def _apply_locked(server: "ApplyHelperServer", config, text: str, *, confirm: bool, user: str) -> dict:
+    """An apply, with `apply_confirm.locked()` held."""
+    waiting = apply_confirm.read()
+    if waiting is not None:
+        return {"ok": False, "message": (
+            f"The last apply is waiting for confirmation ({waiting.remaining()} s left): "
+            "confirm it or go back before applying again")}
+    _refuse_moving_management(config)
+    previous = applied_config_text()
+    result = apply_all(config, backup_dir=server.backup_dir, kea_config_path=server.kea_config_path,
+                       source_text=text)
+    messages = list(result.messages)
+    held = None
+    if confirm and apply_confirm.needs_confirmation(config, text, previous):
+        seconds = config.management.confirm_apply_seconds
+        try:
+            # Where the admin can reach the webUI now -- loopback is no
+            # one's way in.
+            reachable = [a for a in listen_addresses(config) if a != LOOPBACK]
+            held = apply_confirm.begin(previous, seconds, by=user, addresses=reachable)
+        except apply_confirm.PendingError as exc:
+            messages.insert(0, f"Applied, but not held for confirmation: {exc}")
+        else:
+            messages.insert(0, f"Applied -- confirm it within {seconds} s, or the router goes back to "
+                               "the config applied before it")
     problem = refresh_sensor_copy(server.config_path, server.sensor_config_path)
     if problem:
         messages.append(problem)
@@ -227,6 +245,38 @@ def _handle_apply(request: dict, server: "ApplyHelperServer") -> dict:
     if held is not None:
         reply["pending"] = held.public()
     return reply
+
+
+def _handle_set_management_addresses(request: dict, server: "ApplyHelperServer") -> dict:
+    """ROADMAP SEC-27: the one way to move the webUI and SSH -- the admin's
+    own action. Only that changes: config.yaml must hold nothing else
+    unapplied. Applied at once and held until it is confirmed from the
+    new address (SEC-26); config.yaml is left as it was if it fails."""
+    addresses = request.get("addresses")
+    if not isinstance(addresses, list) or not addresses or not all(isinstance(a, str) for a in addresses):
+        return {"ok": False, "message": "'addresses' must be a non-empty list of IPv4 addresses"}
+    with apply_confirm.locked():
+        text = server.config_path.read_text()
+        if apply_confirm.read() is not None:
+            return {"ok": False, "message": "The last apply is waiting for confirmation: confirm it or go back first"}
+        recorded = applied_config_text()
+        if recorded is not None and recorded != text:
+            return {"ok": False, "message": (
+                "The config has changes that aren't applied yet: apply them (or undo them) first, so that "
+                "moving the webUI changes nothing else")}
+        raw = yaml.safe_load(text) or {}
+        raw["management"] = {**(raw.get("management") or {}), "addresses": list(addresses)}
+        new_text = yaml.safe_dump(raw, sort_keys=False)
+        config = parse_config(yaml.safe_load(new_text))  # every address must be on the router
+        _write_atomic(server.config_path, new_text)
+        try:
+            reply = _apply_locked(server, config, new_text, confirm=True, user=str(request.get("user") or "")[:64])
+        except BaseException:
+            _write_atomic(server.config_path, text)
+            raise
+        if not reply.get("ok"):
+            _write_atomic(server.config_path, text)
+        return reply
 
 
 def _handle_apply_status() -> dict:

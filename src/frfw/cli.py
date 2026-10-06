@@ -7,6 +7,7 @@
     firewall-cli apply-status
     firewall-cli apply-confirm
     firewall-cli apply-revert [--wait] [config.yaml]
+    firewall-cli management-addresses ADDRESS... [--config config.yaml] [--confirm-within SECONDS]
     firewall-cli rollback [--list]
     firewall-cli detect-interfaces [--include-virtual]
     firewall-cli detect-wan-lan
@@ -85,6 +86,7 @@ from frfw.ifaddr import IfaddrError
 from frfw.kea import KeaError
 from frfw.nft import build_ruleset
 from frfw import apply_confirm, provision
+from frfw import management as management_mod
 from frfw.config import loader as loader_mod
 from frfw.provision import apply_all
 from frfw.transaction import ApplyError
@@ -186,6 +188,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "before it after SECONDS otherwise (ROADMAP SEC-26) -- for an apply over SSH",
     )
     p_apply.set_defaults(handler=_cmd_apply)
+
+    p_mgmt = sub.add_parser(
+        "management-addresses",
+        help="move the webUI and SSH to these addresses, and apply only that (ROADMAP SEC-27)",
+    )
+    p_mgmt.add_argument("addresses", nargs="+", metavar="ADDRESS")
+    p_mgmt.add_argument("--config", default=str(paths.CONFIG_PATH))
+    p_mgmt.add_argument("--confirm-within", type=int, metavar="SECONDS",
+                        help="hold it until `firewall-cli apply-confirm`, as for `apply` (ROADMAP SEC-26)")
+    p_mgmt.set_defaults(handler=_cmd_management_addresses)
 
     p_apply_status = sub.add_parser("apply-status", help="say whether an apply is waiting for confirmation")
     p_apply_status.set_defaults(handler=_cmd_apply_status)
@@ -530,15 +542,21 @@ def _cmd_apply(args: argparse.Namespace) -> int:
             print(f"error: the last apply is waiting for confirmation ({waiting.remaining()} s left): "
                   "firewall-cli apply-confirm or apply-revert first", file=sys.stderr)
             return 1
+        # ROADMAP SEC-27: only `firewall-cli management-addresses` (or the
+        # webUI's) moves the webUI and SSH.
+        moved = management_mod.moves_management(read_config(args.config)[0], provision.load_applied_config())
+        if moved:
+            print(f"error: nothing was applied -- {moved}, or here: firewall-cli management-addresses",
+                  file=sys.stderr)
+            return 1
         previous = provision.applied_config_text()
         status = _apply_now(args, fail_closed)
         if status == 0 and args.confirm_within is not None:
             config, text = read_config(args.config)
             if previous is not None and previous != text:
-                from frfw.management import LOOPBACK, listen_addresses
-
-                pending = apply_confirm.begin(previous, args.confirm_within, by="console",
-                                              addresses=[a for a in listen_addresses(config) if a != LOOPBACK])
+                pending = apply_confirm.begin(
+                    previous, args.confirm_within, by="console",
+                    addresses=[a for a in management_mod.listen_addresses(config) if a != management_mod.LOOPBACK])
                 print(f"Confirm with `firewall-cli apply-confirm` within {pending.seconds} s, or the router "
                       "goes back to the config applied before this one")
             else:
@@ -584,6 +602,35 @@ def _boot_apply(config, **kwargs):
     except ApplyError as exc:
         print(f"the config applied before the unconfirmed one failed at boot: {exc}", file=sys.stderr)
         return apply_all(config, transactional=False)
+
+
+def _cmd_management_addresses(args: argparse.Namespace) -> int:
+    """ROADMAP SEC-27: the console's way to move the webUI and SSH. Only
+    that changes -- config.yaml must hold nothing else unapplied -- and it
+    is applied at once."""
+    path = Path(args.config)
+    text = path.read_text()
+    recorded = provision.applied_config_text()
+    if recorded is not None and recorded != text:
+        print("error: the config has changes that aren't applied yet: apply them (or undo them) first, so that "
+              "moving the webUI changes nothing else", file=sys.stderr)
+        return 1
+    raw = yaml.safe_load(text) or {}
+    raw["management"] = {**(raw.get("management") or {}), "addresses": list(args.addresses)}
+    new_text = yaml.safe_dump(raw, sort_keys=False)
+    parse_config(yaml.safe_load(new_text))  # every address must be on the router
+    from frfw.transaction import write_keeping_owner
+
+    write_keeping_owner(path, new_text)
+    try:
+        status = _cmd_apply(argparse.Namespace(config=str(path), dry_run=False, fail_closed=False,
+                                               confirm_within=args.confirm_within))
+    except BaseException:
+        write_keeping_owner(path, text)
+        raise
+    if status != 0:
+        write_keeping_owner(path, text)
+    return status
 
 
 def _cmd_apply_status(args: argparse.Namespace) -> int:

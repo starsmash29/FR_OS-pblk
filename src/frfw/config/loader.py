@@ -156,6 +156,7 @@ def parse_config(raw: Any) -> Config:
     metrics = _parse_metrics(raw.get("metrics", {}) or {})
     management = _parse_management(raw.get("management", {}) or {}, zones, nat)
     wireguard = _parse_wireguard(raw.get("wireguard", {}) or {}, zones, nat, interfaces)
+    _check_management_addresses(management, zones, nat, interfaces, wireguard)
     logging_config = _parse_logging(raw.get("logging", {}) or {})
 
     return Config(
@@ -729,7 +730,49 @@ def _parse_management(raw: Any, zones: dict[str, Zone], nat: NatConfig) -> Manag
         raise ConfigError(
             f"management.confirm_apply_seconds must be 0 (off) or {CONFIRM_APPLY_MIN}-{CONFIRM_APPLY_MAX} seconds"
         )
-    return ManagementConfig(zones=tuple(chosen), allow_wan=allow_wan, confirm_apply_seconds=confirm)
+    addresses_raw = raw.get("addresses", []) or []
+    if not isinstance(addresses_raw, list):
+        raise ConfigError("management.addresses must be a list of IPv4 addresses")
+    addresses: list[str] = []
+    for address in addresses_raw:
+        try:
+            parsed = str(ipaddress.IPv4Address(address))
+        except (ipaddress.AddressValueError, ValueError, TypeError):
+            raise ConfigError(f"management.addresses: {address!r} is not an IPv4 address") from None
+        if parsed != address:
+            raise ConfigError(f"management.addresses: {address!r} is not an IPv4 address")
+        if address not in addresses:
+            addresses.append(address)
+    return ManagementConfig(zones=tuple(chosen), allow_wan=allow_wan, confirm_apply_seconds=confirm,
+                            addresses=tuple(addresses))
+
+
+def _check_management_addresses(management: ManagementConfig, zones: dict[str, Zone], nat: NatConfig,
+                                 interfaces: dict[str, Interface], wireguard: WireguardConfig) -> None:
+    """ROADMAP SEC-27: every address the webUI and SSH listen on must be on
+    the router -- a management zone's interface, or the VPN's tunnel. So a
+    change that would take one away (an interface's address changed or
+    removed, the VPN turned off) is refused when it is saved: only the
+    admin's "webUI address" action moves them."""
+    if not management.addresses:
+        return
+    # The zones management is reachable from (frfw.management.management_zones).
+    if management.zones:
+        allowed_zones = set(management.zones)
+    elif management.allow_wan:
+        allowed_zones = set(zones)
+    else:
+        allowed_zones = {z for z in zones if z not in internet_facing_zones(zones, nat)}
+    available = {str(ipaddress.IPv4Interface(i.address).ip) for i in interfaces.values()
+                 if i.address and i.zone in allowed_zones}
+    if wireguard.enabled and wireguard.address and wireguard.zone in allowed_zones:
+        available.add(str(ipaddress.IPv4Interface(wireguard.address).ip))
+    for address in management.addresses:
+        if address not in available:
+            raise ConfigError(
+                f"{address} is where the webUI and SSH listen (management.addresses), and this change takes it "
+                "off the router. Move them first: System -> webUI address"
+            )
 
 
 #: ROADMAP SEC-26: long enough to reach the router at a new address and

@@ -80,6 +80,12 @@ def apply_revert(socket_path: Path = paths.APPLY_SOCKET_PATH) -> dict:
     return send_command({"cmd": "apply_revert"}, socket_path, timeout=120.0)
 
 
+def set_management_addresses(addresses: list[str], socket_path: Path = paths.APPLY_SOCKET_PATH, *,
+                             user: str = "") -> dict:
+    return send_command({"cmd": "set_management_addresses", "addresses": addresses, "user": user},
+                        socket_path, timeout=120.0)
+
+
 def restore_rejected(socket_path: Path = paths.APPLY_SOCKET_PATH) -> dict:
     return send_command({"cmd": "restore_rejected"}, socket_path)
 

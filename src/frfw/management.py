@@ -71,24 +71,57 @@ def blocked_zones(config: Config) -> list[str]:
 
 
 def listen_addresses(config: Config) -> list[str]:
-    """Where the webUI and sshd listen: loopback plus the static address
-    of every interface in a management zone -- or everything, with
-    allow_wan. Just loopback if no management interface has a static
-    address (then only the console can reach them, which is the point)."""
+    """Where the webUI and sshd listen: loopback plus
+    `management.addresses`, the addresses the admin chose (ROADMAP
+    SEC-27) -- or everything, with allow_wan. A config from before SEC-27
+    has none: then every management interface's static address, and not
+    the VPN's tunnel, which only the admin adds (security-lessons K5).
+    Just loopback if there is none (then only the console can reach them,
+    which is the point)."""
     if config.management.allow_wan:
         return [ANY]
+    if config.management.addresses:
+        return [LOOPBACK, *config.management.addresses]
+    return [LOOPBACK, *(address for address, _ in interface_addresses(config))]
+
+
+def interface_addresses(config: Config) -> list[tuple[str, str]]:
+    """(address, interface name) of every management zone's interface with
+    a static address."""
     zones = set(management_zones(config))
-    addresses = [LOOPBACK]
+    found: list[tuple[str, str]] = []
     for iface in sorted(config.interfaces.values(), key=lambda i: i.name):
         if iface.zone in zones and iface.address:
             ip = str(ipaddress.IPv4Interface(iface.address).ip)
-            if ip not in addresses:
-                addresses.append(ip)
+            if ip not in (a for a, _ in found):
+                found.append((ip, iface.name))
+    return found
+
+
+def address_choices(config: Config) -> list[tuple[str, str]]:
+    """What the admin can have the webUI and SSH listen on (ROADMAP
+    SEC-27): (address, what it is) -- the management interfaces' static
+    addresses and, while it is on and a management zone, the VPN's tunnel
+    address (security-lessons K5)."""
+    choices = [(address, f"interface {name}") for address, name in interface_addresses(config)]
     wg = config.wireguard
-    if wg.enabled and wg.zone in zones:
-        # Security-lessons K5: manage the router through the VPN.
-        addresses.append(str(ipaddress.IPv4Interface(wg.address).ip))
-    return addresses
+    if wg.enabled and wg.address and wg.zone in set(management_zones(config)):
+        choices.append((str(ipaddress.IPv4Interface(wg.address).ip), "the VPN's tunnel"))
+    return choices
+
+
+def moves_management(config: Config, previous: Config | None) -> str | None:
+    """Why an apply of `config` must not happen: it would move the webUI
+    and SSH -- listen elsewhere than with `previous`, the config applied
+    now -- without the admin having changed the management settings
+    (ROADMAP SEC-27). None when it may."""
+    if previous is None or config.management != previous.management:
+        return None
+    before, after = listen_addresses(previous), listen_addresses(config)
+    if set(before) == set(after):
+        return None
+    return (f"it would move the webUI and SSH from {', '.join(before)} to {', '.join(after)}. Only the webUI "
+            "address setting moves them (System -> webUI address)")
 
 
 # -- sshd ------------------------------------------------------------------------

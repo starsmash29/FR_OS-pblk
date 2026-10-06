@@ -57,6 +57,7 @@ class FakeHelper:
         self.pending: dict | None = None
         self.rejected = False
         self.confirmed: list[str] = []
+        self.management_moves: list[tuple[list[str], str]] = []
 
     def ping(self):
         return {"ok": True, "message": "pong"}
@@ -97,6 +98,12 @@ class FakeHelper:
             return {"ok": False, "message": "No apply is waiting for confirmation"}
         self.pending, self.rejected = None, True
         return {"ok": True, "message": "The apply was not confirmed (the admin went back)"}
+
+    def set_management_addresses(self, addresses: list[str], *, user: str = "") -> dict:
+        """ROADMAP SEC-27: the real helper sets management.addresses and
+        applies only that, held for confirmation."""
+        self.management_moves.append((list(addresses), user))
+        return {"ok": True, "message": "Applied -- confirm it within 300 s"}
 
     def restore_rejected(self) -> dict:
         if not self.rejected:

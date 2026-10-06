@@ -695,3 +695,76 @@ def test_an_apply_without_confirm_is_not_held(helper):
     edit(hostname="changed")
     assert "pending" not in client.apply_config(socket_path=sock)
     assert client.apply_status(sock)["pending"] is None
+
+
+# --- only the admin moves the webUI (ROADMAP SEC-27) -------------------------------------
+
+
+@pytest.fixture
+def addresses_not_on_this_host(monkeypatch):
+    """The example config's devices aren't this host's: the address step
+    says what it would do instead of doing it."""
+    from frfw import ifaddr
+
+    monkeypatch.setattr(ifaddr, "sync_addresses", lambda config, **kw: ifaddr.SyncResult(False, "addresses skipped"))
+
+
+def _addressed(config_path: Path, **management_section) -> str:
+    """The example config with a LAN and a DMZ address, and the given
+    management section; returns its text."""
+    raw = yaml.safe_load(config_path.read_text())
+    raw["interfaces"]["lan"]["address"] = "192.168.1.1/24"
+    raw["interfaces"]["dmz"]["address"] = "10.0.5.1/24"
+    raw["management"] = management_section
+    config_path.write_text(yaml.safe_dump(raw))
+    return config_path.read_text()
+
+
+def test_the_admin_s_action_moves_the_webui_alone_and_holds_it(running_server, tmp_path, addresses_not_on_this_host):
+    config_path = tmp_path / "config.yaml"
+    _addressed(config_path, addresses=["192.168.1.1"])
+    assert client.apply_config(socket_path=running_server)["ok"]
+    reply = client.set_management_addresses(["10.0.5.1"], running_server, user="boss")
+    assert reply["ok"] and reply["pending"]["addresses"] == ["10.0.5.1"] and reply["pending"]["by"] == "boss"
+    assert yaml.safe_load(config_path.read_text())["management"]["addresses"] == ["10.0.5.1"]
+    assert yaml.safe_load(paths.APPLIED_CONFIG_PATH.read_text())["management"]["addresses"] == ["10.0.5.1"]
+
+
+def test_the_admin_s_action_changes_nothing_else(running_server, tmp_path, addresses_not_on_this_host):
+    config_path = tmp_path / "config.yaml"
+    _addressed(config_path, addresses=["192.168.1.1"])
+    client.apply_config(socket_path=running_server)
+    raw = yaml.safe_load(config_path.read_text())
+    raw["hostname"] = "edited-not-applied"
+    config_path.write_text(yaml.safe_dump(raw))
+    before = config_path.read_text()
+    reply = client.set_management_addresses(["10.0.5.1"], running_server)
+    assert not reply["ok"] and "aren't applied yet" in reply["message"]
+    nowhere = client.set_management_addresses(["192.168.77.1"], running_server)
+    assert not nowhere["ok"]
+    assert config_path.read_text() == before
+
+
+def test_an_address_that_isn_t_on_the_router_leaves_config_yaml_alone(running_server, tmp_path, addresses_not_on_this_host):
+    config_path = tmp_path / "config.yaml"
+    _addressed(config_path, addresses=["192.168.1.1"])
+    client.apply_config(socket_path=running_server)
+    before = config_path.read_text()
+    reply = client.set_management_addresses(["192.168.77.1"], running_server)
+    assert not reply["ok"] and "where the webUI and SSH listen" in reply["message"]
+    assert config_path.read_text() == before and apply_confirm.read() is None
+
+
+def test_an_apply_that_would_move_the_webui_is_refused(running_server, tmp_path, addresses_not_on_this_host):
+    """A config from before SEC-27 (no management.addresses): moving the
+    LAN's address would move the webUI with it."""
+    config_path = tmp_path / "config.yaml"
+    _addressed(config_path)
+    assert client.apply_config(socket_path=running_server)["ok"]
+    raw = yaml.safe_load(config_path.read_text())
+    raw["interfaces"]["lan"]["address"] = "192.168.1.3/24"
+    config_path.write_text(yaml.safe_dump(raw))
+    reply = client.apply_config(socket_path=running_server, confirm=True)
+    assert not reply["ok"]
+    assert reply["message"].startswith("Nothing was applied -- the webUI address: it would move the webUI and SSH")
+    assert "192.168.1.3" not in paths.APPLIED_CONFIG_PATH.read_text()

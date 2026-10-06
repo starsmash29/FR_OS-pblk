@@ -495,11 +495,17 @@ class ManagementConfig:
     WireGuard is the better way to manage a router remotely).
     `confirm_apply_seconds`: how long an Apply from the webUI waits to be
     confirmed before the router goes back to the config applied before it
-    (ROADMAP SEC-26, frfw.apply_confirm); 0 turns that off."""
+    (ROADMAP SEC-26, frfw.apply_confirm); 0 turns that off.
+    `addresses`: where the webUI and SSH listen (besides loopback) -- each
+    the static address of a management zone's interface, or the VPN's
+    tunnel address. Set only by the admin's own "webUI address" action
+    (ROADMAP SEC-27): no other change moves them. Empty (a config from
+    before SEC-27) means every management interface's static address."""
 
     zones: tuple[str, ...] = ()
     allow_wan: bool = False
     confirm_apply_seconds: int = 300
+    addresses: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
