@@ -7,7 +7,7 @@ nftables ruleset. Used by the CLI (phase 1), the systemd integration
 
 import re
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 #: Release codenames (see ROADMAP.md, "Release cycle & codenames"). The
 #: v0.1.0 - v1.0.0 range is Ice Breaker, 1.0.0 included; every later 1.x
