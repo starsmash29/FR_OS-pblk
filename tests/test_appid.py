@@ -350,6 +350,7 @@ def test_xdp_sync_turns_pass_reporting_on_and_off(minimal_config_dict, tmp_path,
     monkeypatch.setattr(xdp, "ensure_compiled", lambda: tmp_path / "x.o")
     monkeypatch.setattr(xdp, "load_and_pin", lambda obj: None)
     monkeypatch.setattr(xdp, "attach", lambda dev: xdp.AttachMode.GENERIC)
+    monkeypatch.setattr(xdp, "gro", lambda dev: False)  # no real device's GRO to turn off (ROADMAP SEC-28)
     monkeypatch.setattr(xdp, "sync_blocklist", lambda names: None)
     monkeypatch.setattr(xdp, "_map_update", lambda path, key, value: calls.append(value))
     raw = dict(minimal_config_dict)
@@ -368,6 +369,7 @@ def test_xdp_sync_explains_when_the_loaded_program_predates_pass_reporting(minim
     monkeypatch.setattr(xdp, "ensure_compiled", lambda: tmp_path / "x.o")
     monkeypatch.setattr(xdp, "load_and_pin", lambda obj: None)
     monkeypatch.setattr(xdp, "attach", lambda dev: xdp.AttachMode.GENERIC)
+    monkeypatch.setattr(xdp, "gro", lambda dev: False)  # no real device's GRO to turn off (ROADMAP SEC-28)
     monkeypatch.setattr(xdp, "sync_blocklist", lambda names: None)
     raw = dict(minimal_config_dict)
     raw["xdp_sni_filter"] = {"enabled": True, "interfaces": ["lan"]}

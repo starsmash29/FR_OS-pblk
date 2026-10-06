@@ -1234,6 +1234,15 @@ def run(args: argparse.Namespace) -> int:
         dropped_events = xdp_blocked_events(upper)
         check(any('"action": "drop"' in line for line in dropped_events),
               "the dropped ClientHello is in the XDP SNI event file (ROADMAP P4-1, SEC-4)")
+        # ROADMAP SEC-28: the filter checks a followed segment's TCP
+        # checksum, so it must see segments as sent -- in generic mode,
+        # after GRO, only with the device's GRO off. (The split hello
+        # above got its answer through that check.)
+        xdp_state = json.loads((upper / "etc" / "fr_os" / "xdp_state.json").read_text())
+        xdp_mode = xdp_state.get("attached", {}).get("ens4")
+        check((xdp_mode, xdp_state.get("gro_off")) in (("xdpdrv", []), ("xdpgeneric", ["ens4"])),
+              f"GRO is off where the XDP filter runs after it (ROADMAP SEC-28): {xdp_mode}, "
+              f"GRO turned off on {xdp_state.get('gro_off')}")
         check("Server listening" not in journal(upper, "-b", "-u", "ssh.service"),
               "sshd did not listen at all this boot (off while nobody has a key)")
         # ROADMAP SEC-18: Debian's nftables.service would load
