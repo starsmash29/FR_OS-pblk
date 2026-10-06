@@ -29,9 +29,9 @@
         <input type="text" id="username" name="username" autocomplete="username" autofocus required
                pattern="[a-z_][a-z0-9_.\-]{0,31}" placeholder="not admin or root">
         <label for="password">New password</label>
-        <input type="password" id="password" name="password" autocomplete="new-password" minlength="8" required>
+        <input type="password" id="password" name="password" autocomplete="new-password" minlength="{{ MIN_PASSWORD_LENGTH }}" required>
         <label for="password_confirm">Confirm password</label>
-        <input type="password" id="password_confirm" name="password_confirm" autocomplete="new-password" minlength="8" required>
+        <input type="password" id="password_confirm" name="password_confirm" autocomplete="new-password" minlength="{{ MIN_PASSWORD_LENGTH }}" required>
         <button type="submit"><svg class="icon icon-sm"><use href="/static/icons.svg#lock"/></svg>Save and continue</button>
       </form>
       <form method="post" action="/logout">

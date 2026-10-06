@@ -38,7 +38,7 @@
       <td>
         <form class="inline" method="post" action="/users/{{ u.username }}/password">
           {{ csrf_input(request) }}
-          <input type="password" name="new_password" minlength="8" required aria-label="New password for {{ u.username }}" style="width:10rem;display:inline-block;">
+          <input type="password" name="new_password" minlength="{{ MIN_PASSWORD_LENGTH }}" required aria-label="New password for {{ u.username }}" style="width:10rem;display:inline-block;">
           <button type="submit" class="secondary">Reset</button>
         </form>
       </td>
@@ -71,7 +71,7 @@
     <label>Username</label>
     <input type="text" name="new_username" pattern="[a-z_][a-z0-9_.\-]{0,31}" required>
     <label>Password (at least {{ MIN_PASSWORD_LENGTH }} characters)</label>
-    <input type="password" name="new_password" minlength="8" required>
+    <input type="password" name="new_password" minlength="{{ MIN_PASSWORD_LENGTH }}" required>
     <label>Role</label>
     <select name="role">
       <option value="viewer">viewer (read-only)</option>

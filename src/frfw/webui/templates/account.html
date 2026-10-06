@@ -11,9 +11,9 @@
     <label>Current password</label>
     <input type="password" name="current_password" required>
     <label>New password (at least {{ MIN_PASSWORD_LENGTH }} characters)</label>
-    <input type="password" name="new_password" minlength="8" required>
+    <input type="password" name="new_password" minlength="{{ MIN_PASSWORD_LENGTH }}" required>
     <label>Confirm new password</label>
-    <input type="password" name="new_password_confirm" minlength="8" required>
+    <input type="password" name="new_password_confirm" minlength="{{ MIN_PASSWORD_LENGTH }}" required>
     <button type="submit">Change password</button>
   </form>
 </div>

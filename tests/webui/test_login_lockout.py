@@ -164,10 +164,10 @@ def test_every_way_of_setting_a_password_checks_it(guarded):
     changed = admin.post("/account/password", data={"current_password": GOOD, "new_password": "Password123!",
                                                     "new_password_confirm": "Password123!"})
     assert "most+common" in changed.headers["location"]
-    added = admin.post("/users/add", data={"new_username": "tech", "new_password": "qwerty123", "role": "viewer"})
+    added = admin.post("/users/add", data={"new_username": "tech", "new_password": "qwerty123456", "role": "viewer"})
     assert "most+common" in added.headers["location"] and guarded["admin_store"].get("tech") is None
     guarded["admin_store"].add_user("guest", "violet-anchor-9", "viewer")
-    reset = admin.post("/users/guest/password", data={"new_password": "letmein123"})
+    reset = admin.post("/users/guest/password", data={"new_password": "letmein12345"})
     assert "most+common" in reset.headers["location"]
     assert guarded["admin_store"].verify("guest", "violet-anchor-9") is not None
 
@@ -176,7 +176,7 @@ def test_first_run_setup_refuses_a_common_password(webui_env):
     webui_env["admin_store"].set_password("admin", "generated-x7Kq2", ROLE_ADMIN, must_change=True)
     client = _from(create_app(**webui_env), "192.168.1.10")
     client.post("/login", data={"username": "admin", "password": "generated-x7Kq2"})
-    response = client.post("/setup", data={"username": "owner", "password": "iloveyou1",
-                                           "password_confirm": "iloveyou1"})
+    response = client.post("/setup", data={"username": "owner", "password": "iloveyou1234",
+                                           "password_confirm": "iloveyou1234"})
     assert "most+common" in response.headers["location"]
     assert set(webui_env["admin_store"].users()) == {"admin"}

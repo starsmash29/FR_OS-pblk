@@ -108,7 +108,7 @@ class Model:
 @pytest.fixture
 def mfa_machine(webui_env, monkeypatch):
     store = webui_env["admin_store"]
-    store.set_password("boss", "adminpass1", ROLE_ADMIN)
+    store.set_password("boss", "adminpass-001", ROLE_ADMIN)
     secret = pyotp.random_base32()
     clock = SimpleNamespace(now=time.time())
     monkeypatch.setattr(mfa, "time", SimpleNamespace(time=lambda: clock.now))
@@ -122,7 +122,7 @@ def mfa_machine(webui_env, monkeypatch):
         client, model, used = _client(app), Model(), []
         for action in sequence:
             if action == "password":
-                client.post("/login", data={"username": "boss", "password": "adminpass1"})
+                client.post("/login", data={"username": "boss", "password": "adminpass-001"})
             elif action == "wrong_password":
                 client.post("/login", data={"username": "boss", "password": "wrong-pass1"})
             elif action == "code":
@@ -161,7 +161,7 @@ def test_the_longest_attack_sequences(mfa_machine):
 
 
 def test_the_second_step_without_the_first_gets_nothing(app, webui_env):
-    webui_env["admin_store"].set_password("boss", "adminpass1", ROLE_ADMIN)
+    webui_env["admin_store"].set_password("boss", "adminpass-001", ROLE_ADMIN)
     client = _client(app)
     assert client.get("/login/mfa").headers["location"].startswith("/login")
     assert client.post("/login/mfa/totp", data={"code": "123456"}).headers["location"].startswith("/login")
@@ -174,10 +174,10 @@ def test_a_ticket_is_useless_for_an_account_without_a_factor(app, webui_env):
     """A ticket taken while the account had a factor, which is then
     reset, can't turn into a session with any code."""
     store = webui_env["admin_store"]
-    store.set_password("boss", "adminpass1", ROLE_ADMIN)
+    store.set_password("boss", "adminpass-001", ROLE_ADMIN)
     store.set_mfa("boss", {"totp": {"secret": pyotp.random_base32(), "last_step": -1}})
     client = _client(app)
-    client.post("/login", data={"username": "boss", "password": "adminpass1"})
+    client.post("/login", data={"username": "boss", "password": "adminpass-001"})
     store.reset_mfa("boss")
     assert client.post("/login/mfa/totp", data={"code": "123456"}).headers["location"] != "/"
     assert not _signed_in(client)
@@ -245,11 +245,11 @@ def test_parallel_setup_requests_create_one_account(app, generated):
 
 def test_a_normal_account_cannot_use_setup_to_rename_itself(app, webui_env):
     store = webui_env["admin_store"]
-    store.set_password("boss", "adminpass1", ROLE_ADMIN)
-    store.set_password("guest", "viewerpass1", ROLE_VIEWER)
-    for name, password in (("guest", "viewerpass1"), ("boss", "adminpass1")):
+    store.set_password("boss", "adminpass-001", ROLE_ADMIN)
+    store.set_password("guest", "viewerpass-01", ROLE_VIEWER)
+    for name, password in (("guest", "viewerpass-01"), ("boss", "adminpass-001")):
         client = _sign_in(app, name, password)
-        client.post("/setup", data={"username": "root2", "password": "whatever12", "password_confirm": "whatever12"})
+        client.post("/setup", data={"username": "root2", "password": "whatever-1234", "password_confirm": "whatever-1234"})
     assert set(store.users()) == {"guest", "boss"}
     assert store.get("guest").role == ROLE_VIEWER
 
@@ -259,14 +259,14 @@ def test_a_normal_account_cannot_use_setup_to_rename_itself(app, webui_env):
 
 def test_a_logged_out_session_cannot_change_anything(app, webui_env):
     store = webui_env["admin_store"]
-    store.set_password("boss", "adminpass1", ROLE_ADMIN)
-    client = _sign_in(app, "boss", "adminpass1")
+    store.set_password("boss", "adminpass-001", ROLE_ADMIN)
+    client = _sign_in(app, "boss", "adminpass-001")
     cookie = client.cookies[COOKIE_NAME]
     client.post("/logout")
     thief = _client(app)
     thief.cookies.set(COOKIE_NAME, cookie)
-    for path, data in (("/users/add", {"new_username": "evil", "new_password": "evilpass1", "role": "admin"}),
-                       ("/account/password", {"current_password": "adminpass1", "new_password": "x" * 10,
+    for path, data in (("/users/add", {"new_username": "evil", "new_password": "evilpass-0001", "role": "admin"}),
+                       ("/account/password", {"current_password": "adminpass-001", "new_password": "x" * 10,
                                               "new_password_confirm": "x" * 10}),
                        ("/users/mfa-policy", {"require": "true"})):
         assert thief.post(path, data=data).headers["location"] == "/login", path
@@ -275,13 +275,13 @@ def test_a_logged_out_session_cannot_change_anything(app, webui_env):
 
 def test_parallel_password_changes_leave_one_password(app, webui_env):
     store = webui_env["admin_store"]
-    store.set_password("boss", "adminpass1", ROLE_ADMIN)
-    clients = [_sign_in(app, "boss", "adminpass1") for _ in range(3)]
+    store.set_password("boss", "adminpass-001", ROLE_ADMIN)
+    clients = [_sign_in(app, "boss", "adminpass-001") for _ in range(3)]
     _race(*[(lambda i=i, c=c: c.post("/account/password", data={
-        "current_password": "adminpass1", "new_password": f"newpass-{i}xx", "new_password_confirm": f"newpass-{i}xx"}))
+        "current_password": "adminpass-001", "new_password": f"newpass-{i}xxxxx", "new_password_confirm": f"newpass-{i}xxxxx"}))
         for i, c in enumerate(clients)])
-    working = [i for i in range(3) if store.verify("boss", f"newpass-{i}xx")]
-    assert len(working) == 1 and store.verify("boss", "adminpass1") is None
+    working = [i for i in range(3) if store.verify("boss", f"newpass-{i}xxxxx")]
+    assert len(working) == 1 and store.verify("boss", "adminpass-001") is None
     # Whatever order they landed in, no session outlived the last change but the one that made it.
     assert sum(_signed_in(c) for c in clients) <= 1
 
@@ -290,9 +290,9 @@ def test_concurrent_account_writes_are_not_lost(app, webui_env):
     """Admins adding users at the same moment: every account lands in
     auth.json (read-modify-write under one lock, also across processes)."""
     store = webui_env["admin_store"]
-    store.set_password("boss", "adminpass1", ROLE_ADMIN)
-    admin = _sign_in(app, "boss", "adminpass1")
-    _race(*[(lambda i=i: admin.post("/users/add", data={"new_username": f"user{i}", "new_password": "userpass1",
+    store.set_password("boss", "adminpass-001", ROLE_ADMIN)
+    admin = _sign_in(app, "boss", "adminpass-001")
+    _race(*[(lambda i=i: admin.post("/users/add", data={"new_username": f"user{i}", "new_password": "userpass-0001",
                                                          "role": "viewer"}))
             for i in range(8)])
     assert set(store.users()) == {"boss"} | {f"user{i}" for i in range(8)}
@@ -304,20 +304,20 @@ def test_concurrent_account_writes_are_not_lost(app, webui_env):
 @pytest.fixture
 def two_accounts(webui_env):
     store = webui_env["admin_store"]
-    store.set_password("boss", "adminpass1", ROLE_ADMIN)
-    store.set_password("guest", "viewerpass1", ROLE_VIEWER)
+    store.set_password("boss", "adminpass-001", ROLE_ADMIN)
+    store.set_password("guest", "viewerpass-01", ROLE_VIEWER)
     return store
 
 
 def test_enrolment_steps_out_of_order(two_accounts, webui_env):
     app_ = create_app(**webui_env)
     boss = TestClient(app_, base_url=ORIGIN, follow_redirects=False)
-    boss.post("/login", data={"username": "boss", "password": "adminpass1"})
+    boss.post("/login", data={"username": "boss", "password": "adminpass-001"})
     # Registering a key with no options first.
     assert boss.post("/account/mfa/webauthn/register", json={"tid": "", "credential": {}}).status_code == 400
     # A TOTP confirmation that names a security-key enrolment.
-    start = boss.post("/account/mfa/webauthn/options", json={"password": "adminpass1"}).json()
-    confirm = boss.post("/account/mfa/totp", data={"tid": start["tid"], "code": "123456", "password": "adminpass1"})
+    start = boss.post("/account/mfa/webauthn/options", json={"password": "adminpass-001"}).json()
+    confirm = boss.post("/account/mfa/totp", data={"tid": start["tid"], "code": "123456", "password": "adminpass-001"})
     assert "error" in confirm.headers["location"]
     # The options of the key enrolment answered twice: only the first counts.
     key = SoftKey()
@@ -326,9 +326,9 @@ def test_enrolment_steps_out_of_order(two_accounts, webui_env):
     assert boss.post("/account/mfa/webauthn/register", json={"tid": start["tid"], "credential": answer}).status_code == 400
     assert len(two_accounts.get("boss").mfa["webauthn"]) == 1
     # Another account can't finish boss's enrolment.
-    start = boss.post("/account/mfa/webauthn/options", json={"password": "adminpass1"}).json()
+    start = boss.post("/account/mfa/webauthn/options", json={"password": "adminpass-001"}).json()
     guest = TestClient(app_, base_url=ORIGIN, follow_redirects=False)
-    guest.post("/login", data={"username": "guest", "password": "viewerpass1"})
+    guest.post("/login", data={"username": "guest", "password": "viewerpass-01"})
     stolen = guest.post("/account/mfa/webauthn/register",
                         json={"tid": start["tid"], "credential": SoftKey().create(start["options"])})
     assert stolen.status_code == 400 and not two_accounts.get("guest").has_mfa
@@ -338,12 +338,12 @@ def test_a_second_options_request_invalidates_the_first_challenge(two_accounts, 
     app_ = create_app(**webui_env)
     key = SoftKey()
     boss = TestClient(app_, base_url=ORIGIN, follow_redirects=False)
-    boss.post("/login", data={"username": "boss", "password": "adminpass1"})
-    start = boss.post("/account/mfa/webauthn/options", json={"password": "adminpass1"}).json()
+    boss.post("/login", data={"username": "boss", "password": "adminpass-001"})
+    start = boss.post("/account/mfa/webauthn/options", json={"password": "adminpass-001"}).json()
     boss.post("/account/mfa/webauthn/register", json={"tid": start["tid"], "credential": key.create(start["options"])})
     boss.post("/logout")
     client = TestClient(app_, base_url=ORIGIN, follow_redirects=False)
-    client.post("/login", data={"username": "boss", "password": "adminpass1"})
+    client.post("/login", data={"username": "boss", "password": "adminpass-001"})
     first = client.post("/login/mfa/webauthn/options").json()
     client.post("/login/mfa/webauthn/options")  # a second request replaces the challenge
     assert client.post("/login/mfa/webauthn/verify", json=key.get(first)).status_code == 403
@@ -379,7 +379,7 @@ def test_ztna_wrong_then_right(app, ztna):
 
 
 def test_ztna_and_webui_failures_share_one_counter(app, ztna, webui_env):
-    webui_env["admin_store"].set_password("boss", "adminpass1", ROLE_ADMIN)
+    webui_env["admin_store"].set_password("boss", "adminpass-001", ROLE_ADMIN)
     client = _client(app)
     for i in range(5):
         path = "/ztna/login" if i % 2 else "/login"
@@ -407,23 +407,23 @@ def test_a_disabled_gate_authorizes_nobody(app, ztna, webui_env):
 
 
 def test_a_demoted_admin_loses_admin_rights_on_the_next_request(app, two_accounts):
-    two_accounts.add_user("boss2", "adminpass2", ROLE_ADMIN)
-    session = _sign_in(app, "boss2", "adminpass2")
+    two_accounts.add_user("boss2", "adminpass-002", ROLE_ADMIN)
+    session = _sign_in(app, "boss2", "adminpass-002")
     assert session.get("/users").status_code == 200
-    _sign_in(app, "boss", "adminpass1").post("/users/boss2/role", data={"role": ROLE_VIEWER})
+    _sign_in(app, "boss", "adminpass-001").post("/users/boss2/role", data={"role": ROLE_VIEWER})
     assert session.get("/users").status_code == 403
-    assert session.post("/users/add", data={"new_username": "x", "new_password": "xxxxxxxx1",
+    assert session.post("/users/add", data={"new_username": "x", "new_password": "xxxxxxxxxxx1",
                                             "role": "admin"}).status_code == 403
     assert "x" not in two_accounts.users()
 
 
 def test_a_viewer_cannot_raise_itself(app, two_accounts):
-    guest = _sign_in(app, "guest", "viewerpass1")
+    guest = _sign_in(app, "guest", "viewerpass-01")
     for path, data in (("/users/guest/role", {"role": ROLE_ADMIN}), ("/users/mfa-policy", {"require": "true"}),
-                       ("/users/boss/mfa-reset", {}), ("/users/boss/password", {"new_password": "taken-over1"})):
+                       ("/users/boss/mfa-reset", {}), ("/users/boss/password", {"new_password": "taken-over-01"})):
         assert guest.post(path, data=data).status_code == 403, path
     assert two_accounts.get("guest").role == ROLE_VIEWER
-    assert two_accounts.verify("boss", "adminpass1") is not None
+    assert two_accounts.verify("boss", "adminpass-001") is not None
 
 
 def test_the_account_lock_holds_across_processes(tmp_path):
@@ -441,8 +441,8 @@ def test_the_account_lock_holds_across_processes(tmp_path):
     try:
         assert proc.stdout.readline().strip() == "locked"
         started = time.monotonic()
-        AdminStore(path).set_password("boss", "adminpass1", ROLE_ADMIN)
+        AdminStore(path).set_password("boss", "adminpass-001", ROLE_ADMIN)
         assert time.monotonic() - started >= 1.0
     finally:
         proc.wait(timeout=10)
-    assert AdminStore(path).verify("boss", "adminpass1") is not None
+    assert AdminStore(path).verify("boss", "adminpass-001") is not None
