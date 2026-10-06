@@ -21,7 +21,12 @@ from frfw.helper import update_client
 class HelperClient(Protocol):
     def ping(self) -> dict: ...
     def save_config(self, yaml_text: str) -> dict: ...
-    def apply(self, dry_run: bool = False) -> dict: ...
+    def apply(self, dry_run: bool = False, *, confirm: bool = False, user: str = "") -> dict: ...
+    def apply_status(self) -> dict: ...
+    def apply_confirm(self, pending_id: str) -> dict: ...
+    def apply_revert(self) -> dict: ...
+    def restore_rejected(self) -> dict: ...
+    def set_management_addresses(self, addresses: list[str], *, user: str = "") -> dict: ...
     def rollback(self) -> dict: ...
     def authorize_ztna(self, ip: str, username: str) -> dict: ...
     def ztna_status(self, ip: str) -> dict: ...
@@ -52,8 +57,23 @@ class SocketHelperClient:
     def save_config(self, yaml_text: str) -> dict:
         return helper_client.save_config(yaml_text, self.socket_path)
 
-    def apply(self, dry_run: bool = False) -> dict:
-        return helper_client.apply_config(dry_run=dry_run, socket_path=self.socket_path)
+    def apply(self, dry_run: bool = False, *, confirm: bool = False, user: str = "") -> dict:
+        return helper_client.apply_config(dry_run=dry_run, socket_path=self.socket_path, confirm=confirm, user=user)
+
+    def apply_status(self) -> dict:
+        return helper_client.apply_status(self.socket_path)
+
+    def apply_confirm(self, pending_id: str) -> dict:
+        return helper_client.apply_confirm(pending_id, self.socket_path)
+
+    def apply_revert(self) -> dict:
+        return helper_client.apply_revert(self.socket_path)
+
+    def restore_rejected(self) -> dict:
+        return helper_client.restore_rejected(self.socket_path)
+
+    def set_management_addresses(self, addresses: list[str], *, user: str = "") -> dict:
+        return helper_client.set_management_addresses(addresses, self.socket_path, user=user)
 
     def rollback(self) -> dict:
         return helper_client.rollback(self.socket_path)

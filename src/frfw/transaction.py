@@ -39,13 +39,14 @@ from __future__ import annotations
 import ipaddress
 import json
 import os
+import stat
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from frfw import svc, validate
+from frfw import paths, svc, validate
 
 
 class ApplyError(Exception):
@@ -167,6 +168,40 @@ def write_private(path: Path, text: str) -> None:
         os.replace(tmp, path)
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
+        raise
+
+
+def write_keeping_owner(path: Path, text: str) -> None:
+    """Replace `path` atomically, keeping its owner and mode.
+
+    config.yaml is root:fr_os-webui 0640 (it holds ZTNA password hashes
+    and the metrics token digest). A plain write_text + rename used to
+    leave it root:root 0644 -- world-readable -- after the first save from
+    the webUI. The temp file is created 0600 (never briefly readable),
+    given the old file's owner and mode, then renamed over it; a new file
+    gets root:fr_os-webui 0640.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        old = path.stat()
+        uid, gid, mode = old.st_uid, old.st_gid, stat.S_IMODE(old.st_mode)
+    except FileNotFoundError:
+        from frfw.helper.peer import gid_of
+
+        webui_gid = gid_of(paths.WEBUI_USER)
+        uid, gid, mode = os.geteuid(), (os.getegid() if webui_gid is None else webui_gid), 0o640
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.unlink(missing_ok=True)
+    fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(text)
+        if os.geteuid() == 0:
+            os.chown(tmp_path, uid, gid)
+        os.chmod(tmp_path, mode)
+        tmp_path.replace(path)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
         raise
 
 

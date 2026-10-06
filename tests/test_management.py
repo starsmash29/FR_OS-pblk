@@ -38,7 +38,18 @@ def test_defaults_to_every_zone_that_is_not_the_internet():
     config = _config()
     assert management.management_zones(config) == ["guest", "lan"]
     assert management.blocked_zones(config) == ["wan"]
-    assert management.listen_addresses(config) == ["127.0.0.1", "10.9.0.1", "192.168.1.1"]
+    # ROADMAP SEC-27: but the webUI and SSH listen where the admin put them
+    # (the skeleton: the LAN's address) -- a new zone's interface doesn't
+    # add itself.
+    assert management.listen_addresses(config) == ["127.0.0.1", "192.168.1.1"]
+
+
+def test_a_config_from_before_sec_27_listens_on_every_management_interface():
+    raw = yaml.safe_load(build_skeleton_config("eth0", "eth1"))
+    del raw["management"]
+    raw["zones"]["guest"] = {}
+    raw["interfaces"]["guest"] = {"device": "eth2", "zone": "guest", "address": "10.9.0.1/24"}
+    assert management.listen_addresses(parse_config(raw)) == ["127.0.0.1", "10.9.0.1", "192.168.1.1"]
 
 
 def test_management_zones_can_be_narrowed():

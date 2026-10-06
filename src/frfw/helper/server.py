@@ -24,14 +24,13 @@ import json
 import os
 import socket
 import socketserver
-import stat
 import subprocess
 import sys
 from pathlib import Path
 
 import yaml
 
-from frfw import bruteforce, conntrack, firewall_log, hwinfo, ids_quarantine, iot_isolation, kea, paths, surface, svc, wireguard, xdp, ztna
+from frfw import apply_confirm, bruteforce, conntrack, firewall_log, hwinfo, ids_quarantine, iot_isolation, kea, paths, surface, svc, wireguard, xdp, ztna
 from frfw.adblock import AdblockError
 from frfw.iot import leases as iot_leases
 from frfw.iot_isolation import IotIsolationError
@@ -41,15 +40,16 @@ from frfw.bruteforce import BruteforceError
 from frfw.config import ConfigError, load_config, parse_config, read_config
 from frfw.config.export import refresh_sensor_copy, write_sensor_copy
 from frfw.conntrack import ConntrackError
-from frfw.helper.peer import PeerPolicy, gid_of, peer_credentials
+from frfw.helper.peer import PeerPolicy, peer_credentials
 from frfw.helper.protocol import MAX_LINE_BYTES
 from frfw.hwinfo import HwInfoError
 from frfw.ids_quarantine import IdsQuarantineError
 from frfw.ifaddr import IfaddrError
 from frfw.kea import KeaError
 from frfw.pqc import PqcError
-from frfw.provision import apply_all
-from frfw.transaction import ApplyError
+from frfw.management import LOOPBACK, listen_addresses, moves_management
+from frfw.provision import apply_all, applied_config_text, load_applied_config
+from frfw.transaction import ApplyError, write_keeping_owner
 from frfw.surface import SurfaceError
 from frfw.webui import audit as webui_audit
 from frfw.forwarding import ForwardingError
@@ -80,21 +80,28 @@ def _handle_request(request: dict, server: "ApplyHelperServer") -> dict:
             return {"ok": True, "message": "pong"}
 
         if cmd == "apply":
-            config, text = read_config(server.config_path)
-            dry_run = bool(request.get("dry_run", False))
-            result = apply_all(
-                config,
-                dry_run=dry_run,
-                backup_dir=server.backup_dir,
-                kea_config_path=server.kea_config_path,
-                source_text=text,
-            )
-            messages = list(result.messages)
-            if not dry_run:
-                problem = refresh_sensor_copy(server.config_path, server.sensor_config_path)
-                if problem:
-                    messages.append(problem)
-            return {"ok": True, "message": "; ".join(messages)}
+            return _handle_apply(request, server)
+
+        if cmd == "set_management_addresses":
+            return _handle_set_management_addresses(request, server)
+
+        if cmd == "apply_status":
+            return _handle_apply_status()
+
+        if cmd == "apply_confirm":
+            with apply_confirm.locked():
+                apply_confirm.confirm(str(request.get("id") or ""))
+            return {"ok": True, "message": "Apply confirmed: the router keeps this config"}
+
+        if cmd == "apply_revert":
+            with apply_confirm.locked():
+                messages = apply_confirm.revert("the admin went back", config_path=server.config_path)
+            return {"ok": True, "message": messages[0]}
+
+        if cmd == "restore_rejected":
+            with apply_confirm.locked():
+                message = apply_confirm.restore_rejected(config_path=server.config_path)
+            return {"ok": True, "message": message}
 
         if cmd == "rollback":
             restored = rollback_last(server.backup_dir)
@@ -178,9 +185,106 @@ def _handle_request(request: dict, server: "ApplyHelperServer") -> dict:
         ConfigError, NftError, IfaddrError, KeaError, ZtnaError, PqcError, AdblockError,
         BruteforceError, IdsQuarantineError, ConntrackError, HwInfoError, IotIsolationError,
         SurfaceError, ForwardingError, WireguardError, xdp.XdpError, FileNotFoundError, yaml.YAMLError,
-        ApplyError,
+        ApplyError, apply_confirm.PendingError,
     ) as exc:
         return {"ok": False, "message": str(exc)}
+
+
+def _handle_apply(request: dict, server: "ApplyHelperServer") -> dict:
+    """Apply config.yaml. Asked with `confirm` (the webUI's Apply), a
+    successful apply is held until the admin confirms it, and the router
+    goes back by itself otherwise (ROADMAP SEC-26, frfw.apply_confirm)."""
+    config, text = read_config(server.config_path)
+    if request.get("dry_run", False):
+        _refuse_moving_management(config)
+        result = apply_all(config, dry_run=True, backup_dir=server.backup_dir,
+                           kea_config_path=server.kea_config_path, source_text=text)
+        return {"ok": True, "message": "; ".join(result.messages)}
+    with apply_confirm.locked():
+        return _apply_locked(server, config, text, confirm=bool(request.get("confirm")),
+                             user=str(request.get("user") or "")[:64])
+
+
+def _refuse_moving_management(config) -> None:
+    """ROADMAP SEC-27: only the webUI address setting moves the webUI and
+    SSH -- never the side effect of another change."""
+    moved = moves_management(config, load_applied_config())
+    if moved:
+        raise ApplyError("the webUI address", ValueError(moved), changed=False)
+
+
+def _apply_locked(server: "ApplyHelperServer", config, text: str, *, confirm: bool, user: str) -> dict:
+    """An apply, with `apply_confirm.locked()` held."""
+    waiting = apply_confirm.read()
+    if waiting is not None:
+        return {"ok": False, "message": (
+            f"The last apply is waiting for confirmation ({waiting.remaining()} s left): "
+            "confirm it or go back before applying again")}
+    _refuse_moving_management(config)
+    previous = applied_config_text()
+    result = apply_all(config, backup_dir=server.backup_dir, kea_config_path=server.kea_config_path,
+                       source_text=text)
+    messages = list(result.messages)
+    held = None
+    if confirm and apply_confirm.needs_confirmation(config, text, previous):
+        seconds = config.management.confirm_apply_seconds
+        try:
+            # Where the admin can reach the webUI now -- loopback is no
+            # one's way in.
+            reachable = [a for a in listen_addresses(config) if a != LOOPBACK]
+            held = apply_confirm.begin(previous, seconds, by=user, addresses=reachable)
+        except apply_confirm.PendingError as exc:
+            messages.insert(0, f"Applied, but not held for confirmation: {exc}")
+        else:
+            messages.insert(0, f"Applied -- confirm it within {seconds} s, or the router goes back to "
+                               "the config applied before it")
+    problem = refresh_sensor_copy(server.config_path, server.sensor_config_path)
+    if problem:
+        messages.append(problem)
+    reply = {"ok": True, "message": "; ".join(messages)}
+    if held is not None:
+        reply["pending"] = held.public()
+    return reply
+
+
+def _handle_set_management_addresses(request: dict, server: "ApplyHelperServer") -> dict:
+    """ROADMAP SEC-27: the one way to move the webUI and SSH -- the admin's
+    own action. Only that changes: config.yaml must hold nothing else
+    unapplied. Applied at once and held until it is confirmed from the
+    new address (SEC-26); config.yaml is left as it was if it fails."""
+    addresses = request.get("addresses")
+    if not isinstance(addresses, list) or not addresses or not all(isinstance(a, str) for a in addresses):
+        return {"ok": False, "message": "'addresses' must be a non-empty list of IPv4 addresses"}
+    with apply_confirm.locked():
+        text = server.config_path.read_text()
+        if apply_confirm.read() is not None:
+            return {"ok": False, "message": "The last apply is waiting for confirmation: confirm it or go back first"}
+        recorded = applied_config_text()
+        if recorded is not None and recorded != text:
+            return {"ok": False, "message": (
+                "The config has changes that aren't applied yet: apply them (or undo them) first, so that "
+                "moving the webUI changes nothing else")}
+        raw = yaml.safe_load(text) or {}
+        raw["management"] = {**(raw.get("management") or {}), "addresses": list(addresses)}
+        new_text = yaml.safe_dump(raw, sort_keys=False)
+        config = parse_config(yaml.safe_load(new_text))  # every address must be on the router
+        _write_atomic(server.config_path, new_text)
+        try:
+            reply = _apply_locked(server, config, new_text, confirm=True, user=str(request.get("user") or "")[:64])
+        except BaseException:
+            _write_atomic(server.config_path, text)
+            raise
+        if not reply.get("ok"):
+            _write_atomic(server.config_path, text)
+        return reply
+
+
+def _handle_apply_status() -> dict:
+    """What the webUI shows on every page while an apply waits (ROADMAP
+    SEC-26) -- never the previous config's text, which stays root's."""
+    waiting = apply_confirm.read()
+    return {"ok": True, "pending": None if waiting is None else waiting.public(),
+            "rejected": apply_confirm.has_rejected()}
 
 
 def _ztna_client_mac(ip: str, config) -> str:
@@ -451,36 +555,10 @@ def _handle_iot_scan() -> dict:
     return {"ok": True, "message": f"{IOT_SCAN_SERVICE} finished"}
 
 
-def _write_atomic(path: Path, text: str) -> None:
-    """Replace `path` atomically, keeping its owner and mode.
-
-    config.yaml is root:fr_os-webui 0640 (it holds ZTNA password hashes
-    and the metrics token digest). A plain write_text + rename used to
-    leave it root:root 0644 -- world-readable -- after the first save from
-    the webUI. The temp file is created 0600 (never briefly readable),
-    given the old file's owner and mode, then renamed over it; a new file
-    gets root:fr_os-webui 0640.
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        old = path.stat()
-        uid, gid, mode = old.st_uid, old.st_gid, stat.S_IMODE(old.st_mode)
-    except FileNotFoundError:
-        webui_gid = gid_of(paths.WEBUI_USER)
-        uid, gid, mode = os.geteuid(), (os.getegid() if webui_gid is None else webui_gid), 0o640
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    tmp_path.unlink(missing_ok=True)
-    fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    try:
-        with os.fdopen(fd, "w") as fh:
-            fh.write(text)
-        if os.geteuid() == 0:
-            os.chown(tmp_path, uid, gid)
-        os.chmod(tmp_path, mode)
-        tmp_path.replace(path)
-    except BaseException:
-        tmp_path.unlink(missing_ok=True)
-        raise
+#: config.yaml's writer -- it keeps the file's owner and mode -- lives in
+#: frfw.transaction, which the revert of an unconfirmed apply (ROADMAP
+#: SEC-26) shares.
+_write_atomic = write_keeping_owner
 
 
 class _Handler(socketserver.StreamRequestHandler):

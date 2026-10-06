@@ -7,6 +7,8 @@ interactive wizard / webUI form (phase 3) can build on the same function.
 
 from __future__ import annotations
 
+import ipaddress
+
 import yaml
 
 #: Rules and NAT every skeleton config ships with: SSH access to the
@@ -102,6 +104,10 @@ def build_skeleton_config(
     }
     if dhcp:
         config["dhcp"] = dhcp
+    if lan_address:
+        # ROADMAP SEC-27: where the webUI and SSH listen is the admin's
+        # choice from the start, not a side effect of the LAN's address.
+        config["management"] = {"addresses": [str(ipaddress.IPv4Interface(lan_address).ip)]}
     # Security-lessons K4: IoT isolation on from the start. Devices the
     # scanner classifies as IoT reach the internet but not the rest of
     # the LAN or the router's management; the IoT Devices screen trusts

@@ -60,6 +60,14 @@
 {% set notice = update_notice(request) %}
 {% if notice and notice.security %}<div class="flash-error">Security update available: FR_OS {{ notice.latest_version }}. Install it on the <a href="/update">Update</a> screen.</div>
 {% elif notice %}<div class="notice">FR_OS {{ notice.latest_version }} is available -- see <a href="/update">Update</a>.</div>{% endif %}
+{% set held = apply_notice(request) %}
+{% if held and held.pending %}<div class="flash-error apply-pending" role="alert">
+<strong>This apply is waiting for confirmation.</strong> Unless it is confirmed, the router goes back to the config applied before it in {{ held.pending.remaining }} s{% if held.pending.by %} (applied by {{ held.pending.by }}){% endif %}.
+{% if held.pending.addresses %} The webUI now listens on {{ held.pending.addresses | join(", ") }}.{% endif %}
+{% if not is_viewer %}<form method="post" action="/apply/confirm" style="display:inline">{{ csrf_input(request) }}<input type="hidden" name="id" value="{{ held.pending.id }}"><button type="submit">Confirm</button></form>
+<form method="post" action="/apply/revert" style="display:inline">{{ csrf_input(request) }}<button type="submit" class="danger">Go back now</button></form>{% endif %}
+</div>
+{% elif held and held.rejected %}<div class="notice">An apply was not confirmed, and the router went back to the config applied before it. Its config is kept{% if not is_viewer %}: <form method="post" action="/apply/rejected/restore" style="display:inline">{{ csrf_input(request) }}<button type="submit" class="secondary">Load it to fix it</button></form>{% else %}.{% endif %}</div>{% endif %}
 {% if is_viewer %}<div class="readonly-banner"><svg class="icon"><use href="/static/icons.svg#visibility"/></svg><span>Read-only account: you can look at everything, but changes are disabled. You can change your own password under <a href="/account">Account</a>.</span></div>{% endif %}
 {% if error %}<div class="flash-error">{{ error }}</div>{% endif %}
 {% if success %}<div class="flash-success">{{ success }}</div>{% endif %}

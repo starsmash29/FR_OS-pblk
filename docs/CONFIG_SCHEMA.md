@@ -458,9 +458,11 @@ wireguard:
   outside the tunnel or used twice, the same public key twice, an
   internet-facing `zone`.
 - The tunnel's zone is a management zone unless `management.zones` says
-  otherwise: the webUI and SSH listen on the router's tunnel address, so
-  remote management goes through the VPN instead of `allow_wan`
-  (security-lessons K5).
+  otherwise, so remote management can go through the VPN instead of
+  `allow_wan` (security-lessons K5): put the tunnel address in
+  `management.addresses` (System -> webUI address) and the webUI and SSH
+  listen there too. Turning the VPN on doesn't do that by itself
+  (ROADMAP SEC-27).
 - Needs the `wireguard` kernel module (Debian's kernel has it; the FR_OS
   image loads it at boot) and `wg` from wireguard-tools.
 
@@ -473,17 +475,37 @@ Security-lessons F2/G4 -- never from the internet unless you say so.
 management:
   zones: [lan]        # optional; default: every zone that isn't internet-facing
   allow_wan: false    # explicit opt-in to manage from the internet (not recommended)
+  confirm_apply_seconds: 300   # optional; 0 = off, else 60-3600
+  addresses: [192.168.1.1]     # where the webUI and SSH listen; set by System -> webUI address
 ```
+
+- `addresses` (ROADMAP SEC-27): where the webUI and SSH listen, besides
+  loopback -- each the static address of a management zone's interface,
+  or the VPN's tunnel address. Only you move them: the System screen's
+  "webUI address" (or `firewall-cli management-addresses`) changes this
+  alone and applies it, held for confirmation. A change elsewhere that
+  would take one of them off the router -- the LAN's address changed,
+  the VPN turned off -- is refused when it is saved, and an apply that
+  would move them without a change here is refused. First boot writes the
+  LAN's address. Without the key (a config from before SEC-27) they
+  listen on every management interface's static address.
+
+- `confirm_apply_seconds` (ROADMAP SEC-26): an Apply from the webUI is
+  held until it is confirmed from the webUI within this many seconds;
+  otherwise the router goes back to the config applied before it, puts
+  that config back in config.yaml and keeps the unconfirmed one for you
+  to fix. The confirmation comes through the new rules and addresses, so
+  an apply that cut you off is undone by itself. 0 turns it off.
 
 - Internet-facing zones are the `nat.masquerade` `out_zone`s plus a zone
   called `wan`. Listing one in `zones` is refused unless `allow_wan: true`.
 - The input chain drops :22/:443 from every non-management zone ahead of
   your own rules, so a rule that allows 443 from the WAN doesn't open the
   webUI; `allow_wan` is the only way.
-- The webUI and sshd listen only on loopback and the static addresses of
-  the management zones' interfaces (an sshd `ListenAddress` drop-in,
-  `/etc/ssh/sshd_config.d/40-fr_os-management.conf`). With `allow_wan`
-  they listen on every address; `apply` and the System screen warn.
+- The webUI and sshd listen only on loopback and `addresses` (an sshd
+  `ListenAddress` drop-in, `/etc/ssh/sshd_config.d/40-fr_os-management.conf`).
+  With `allow_wan` they listen on every address; `apply` and the System
+  screen warn.
 
 ## `update`
 

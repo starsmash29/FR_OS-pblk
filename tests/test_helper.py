@@ -9,6 +9,7 @@ kernel nftables state.
 
 from __future__ import annotations
 
+import json
 import subprocess
 import threading
 from pathlib import Path
@@ -17,6 +18,7 @@ import pytest
 import yaml
 
 from frfw import adblock as adblock_mod
+from frfw import apply_confirm, paths
 from frfw import apply as apply_mod
 from frfw import bruteforce as bruteforce_mod
 from frfw import conntrack as conntrack_mod
@@ -624,3 +626,145 @@ def test_refresh_adblock_writes_categories_and_reports_counts(running_server, tm
     assert response["ok"] is True, response
     assert response["category_counts"] == {"ads": 1, "malware": 1}
     assert (tmp_path / "adblock.d" / "malware.hosts").read_text().endswith("0.0.0.0 bad.example\n")
+
+
+# --- an apply held for confirmation (ROADMAP SEC-26, frfw.apply_confirm) -----------------
+
+
+@pytest.fixture
+def helper(running_server, tmp_path):
+    from frfw.helper import client
+
+    config_path = tmp_path / "config.yaml"
+
+    def edit(**changes):
+        raw = yaml.safe_load(config_path.read_text())
+        raw.update(changes)
+        config_path.write_text(yaml.safe_dump(raw))
+
+    return client, running_server, config_path, edit
+
+
+def test_the_helper_holds_an_apply_from_the_webui_and_refuses_another(helper, _never_touch_the_hosts_pending_apply):
+    client, sock, config_path, edit = helper
+    first = client.apply_config(socket_path=sock, confirm=True, user="boss")
+    assert first["ok"] and "pending" not in first, "nothing applied before it to go back to"
+    edit(hostname="changed")
+    held = client.apply_config(socket_path=sock, confirm=True, user="boss")
+    assert held["ok"] and held["message"].startswith("Applied -- confirm it within 300 s")
+    assert held["pending"]["by"] == "boss" and held["pending"]["remaining"] > 290
+    assert _never_touch_the_hosts_pending_apply == [1]
+    again = client.apply_config(socket_path=sock, confirm=True, user="boss")
+    assert not again["ok"] and "waiting for confirmation" in again["message"]
+    status = client.apply_status(sock)
+    assert status["pending"] == {**held["pending"], "remaining": status["pending"]["remaining"]}
+    assert "hostname" not in json.dumps(status), "the previous config stays root's"
+
+
+def test_the_helper_confirms_by_id_only(helper):
+    client, sock, _, edit = helper
+    client.apply_config(socket_path=sock, confirm=True)
+    edit(hostname="changed")
+    held = client.apply_config(socket_path=sock, confirm=True)["pending"]
+    assert not client.apply_confirm("0" * 16, sock)["ok"]
+    assert client.apply_confirm(held["id"], sock)["ok"]
+    assert client.apply_status(sock)["pending"] is None
+    assert client.apply_config(socket_path=sock, confirm=True)["ok"], "a confirmed apply blocks nothing"
+
+
+def test_the_helper_goes_back_on_request(helper, monkeypatch):
+    client, sock, config_path, edit = helper
+    alerts = []
+    monkeypatch.setattr(apply_confirm, "_alert", alerts.append)
+    client.apply_config(socket_path=sock, confirm=True)
+    before = config_path.read_text()
+    edit(hostname="changed")
+    client.apply_config(socket_path=sock, confirm=True)
+    reply = client.apply_revert(sock)
+    assert reply["ok"] and "the admin went back" in reply["message"]
+    assert config_path.read_text() == before and paths.APPLIED_CONFIG_PATH.read_text() == before
+    assert client.apply_status(sock) == {"ok": True, "pending": None, "rejected": True}
+    assert len(alerts) == 1
+    assert client.restore_rejected(sock)["ok"] and "hostname: changed" in config_path.read_text()
+
+
+def test_an_apply_without_confirm_is_not_held(helper):
+    """`firewall-cli` and the boot apply directly; only the webUI asks."""
+    client, sock, _, edit = helper
+    client.apply_config(socket_path=sock)
+    edit(hostname="changed")
+    assert "pending" not in client.apply_config(socket_path=sock)
+    assert client.apply_status(sock)["pending"] is None
+
+
+# --- only the admin moves the webUI (ROADMAP SEC-27) -------------------------------------
+
+
+@pytest.fixture
+def addresses_not_on_this_host(monkeypatch):
+    """The example config's devices aren't this host's: the address step
+    says what it would do instead of doing it."""
+    from frfw import ifaddr
+
+    monkeypatch.setattr(ifaddr, "sync_addresses", lambda config, **kw: ifaddr.SyncResult(False, "addresses skipped"))
+
+
+def _addressed(config_path: Path, **management_section) -> str:
+    """The example config with a LAN and a DMZ address, and the given
+    management section; returns its text."""
+    raw = yaml.safe_load(config_path.read_text())
+    raw["interfaces"]["lan"]["address"] = "192.168.1.1/24"
+    raw["interfaces"]["dmz"]["address"] = "10.0.5.1/24"
+    raw["management"] = management_section
+    config_path.write_text(yaml.safe_dump(raw))
+    return config_path.read_text()
+
+
+def test_the_admin_s_action_moves_the_webui_alone_and_holds_it(running_server, tmp_path, addresses_not_on_this_host):
+    config_path = tmp_path / "config.yaml"
+    _addressed(config_path, addresses=["192.168.1.1"])
+    assert client.apply_config(socket_path=running_server)["ok"]
+    reply = client.set_management_addresses(["10.0.5.1"], running_server, user="boss")
+    assert reply["ok"] and reply["pending"]["addresses"] == ["10.0.5.1"] and reply["pending"]["by"] == "boss"
+    assert yaml.safe_load(config_path.read_text())["management"]["addresses"] == ["10.0.5.1"]
+    assert yaml.safe_load(paths.APPLIED_CONFIG_PATH.read_text())["management"]["addresses"] == ["10.0.5.1"]
+
+
+def test_the_admin_s_action_changes_nothing_else(running_server, tmp_path, addresses_not_on_this_host):
+    config_path = tmp_path / "config.yaml"
+    _addressed(config_path, addresses=["192.168.1.1"])
+    client.apply_config(socket_path=running_server)
+    raw = yaml.safe_load(config_path.read_text())
+    raw["hostname"] = "edited-not-applied"
+    config_path.write_text(yaml.safe_dump(raw))
+    before = config_path.read_text()
+    reply = client.set_management_addresses(["10.0.5.1"], running_server)
+    assert not reply["ok"] and "aren't applied yet" in reply["message"]
+    nowhere = client.set_management_addresses(["192.168.77.1"], running_server)
+    assert not nowhere["ok"]
+    assert config_path.read_text() == before
+
+
+def test_an_address_that_isn_t_on_the_router_leaves_config_yaml_alone(running_server, tmp_path, addresses_not_on_this_host):
+    config_path = tmp_path / "config.yaml"
+    _addressed(config_path, addresses=["192.168.1.1"])
+    client.apply_config(socket_path=running_server)
+    before = config_path.read_text()
+    reply = client.set_management_addresses(["192.168.77.1"], running_server)
+    assert not reply["ok"] and "where the webUI and SSH listen" in reply["message"]
+    assert config_path.read_text() == before and apply_confirm.read() is None
+
+
+def test_an_apply_that_would_move_the_webui_is_refused(running_server, tmp_path, addresses_not_on_this_host):
+    """A config from before SEC-27 (no management.addresses): moving the
+    LAN's address would move the webUI with it."""
+    config_path = tmp_path / "config.yaml"
+    _addressed(config_path)
+    assert client.apply_config(socket_path=running_server)["ok"]
+    raw = yaml.safe_load(config_path.read_text())
+    raw["interfaces"]["lan"]["address"] = "192.168.1.3/24"
+    config_path.write_text(yaml.safe_dump(raw))
+    reply = client.apply_config(socket_path=running_server, confirm=True)
+    assert not reply["ok"]
+    assert reply["message"].startswith("Nothing was applied -- the webUI address: it would move the webUI and SSH")
+    assert "192.168.1.3" not in paths.APPLIED_CONFIG_PATH.read_text()

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import ipaddress
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, Request
@@ -74,8 +75,13 @@ def _render_system(request: Request, username: str, raw: dict, cert_path: Path, 
         "blocked": management.blocked_zones(config),
         "addresses": management.listen_addresses(config),
         "warning": management.WAN_WARNING,
-        # Security-lessons K5: the way to manage from outside.
+        # Security-lessons K5: the way to manage from outside -- once the
+        # admin has the webUI listen there (ROADMAP SEC-27).
         "vpn_on": config.wireguard.enabled,
+        "vpn_listening": bool(config.wireguard.enabled and config.wireguard.address)
+        and str(ipaddress.IPv4Interface(config.wireguard.address).ip) in management.listen_addresses(config),
+        "choices": management.address_choices(config),
+        "confirm_seconds": config.management.confirm_apply_seconds,
     }
     metrics_raw = raw.get("metrics") or {}
     # Unprivileged: no blkid probing, only /proc (which is all the webUI needs).
@@ -156,6 +162,26 @@ def save_management(
                     user=username, client=client_ip(request))
         return redirect_with("/system", error="Saved. " + management.WAN_WARNING + " Click Apply to load it.")
     return redirect_with("/system", success="Management is LAN-only again -- click Apply to load it")
+
+
+@router.post("/system/management-addresses")
+def save_management_addresses(
+    request: Request,
+    addresses: list[str] = Form([]),
+    username: str = Depends(require_login),
+    helper: HelperClient = Depends(get_helper),
+    audit_log_path: Path = Depends(get_audit_log_path),
+):
+    """ROADMAP SEC-27: the one way to move the webUI and SSH. The helper
+    applies only this change, held until it is confirmed (SEC-26)."""
+    if not addresses:
+        return redirect_with("/system", error="Tick at least one address, or only the console could reach the router")
+    result = helper.set_management_addresses(addresses, user=username)
+    if not result.get("ok"):
+        return redirect_with("/system", error=result.get("message") or "Could not move the webUI")
+    audit.append(audit_log_path, {"user": username, "client": client_ip(request),
+                                  "event": f"webUI and SSH moved to {', '.join(addresses)}"})
+    return redirect_with("/", success=result.get("message") or "Moved")
 
 
 # --- phase 20: multi-site monitoring --------------------------------------

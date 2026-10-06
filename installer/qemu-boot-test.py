@@ -20,8 +20,15 @@ https://192.168.1.1/ over the tap, as a LAN client does.
    second boot still works, a setting changed through the webUI is on the
    persistence partition afterwards. The first sign-in goes through
    first-run setup (own username and password), after which the generated
-   password is gone from the console. At its end a config is saved that
-   names a device the VM doesn't have; its apply changes nothing.
+   password is gone from the console. The Apply of the webUI's changes
+   is held until it is confirmed, and is confirmed from the dashboard
+   (ROADMAP SEC-26); it doesn't move the webUI -- turning the VPN on
+   included -- and a LAN address change that would is refused: the
+   admin's webUI address setting puts it on the VPN's address too
+   (SEC-27). A move nobody confirms -- the webUI on the VPN alone -- goes
+   back by itself at the deadline. At its end a config
+   is saved that names a device the VM doesn't have; its apply changes
+   nothing.
 4. Fourth boot: config.yaml can't be applied (that device), so the router
    comes up with the config last applied in full, says so, raises a
    security alert, and the webUI is reachable (ROADMAP SEC-5).
@@ -106,6 +113,9 @@ ZTNA_USERNAME = "fieldworker"
 ZTNA_PASSWORD = "otter-harbor-lamp-71"
 #: An interface on a device the VM doesn't have, saved in boot 3: its
 #: apply is refused, and boot 4 can't apply config.yaml (ROADMAP SEC-5).
+#: ROADMAP SEC-27: a LAN address the webUI's address can't be taken away
+#: by -- in the same subnet, so it is only the webUI address that refuses it.
+MOVED_LAN_ADDRESS = "192.168.1.3"
 SPARE_DEVICE = "ens9"
 SPARE_ADDRESS = "10.250.0.1/24"
 DISK_SIZE = 2 * 2**30
@@ -569,6 +579,29 @@ def wait_for_rebind(timeout: float) -> bool:
             return True
         except OSError:
             time.sleep(1)
+    return False
+
+
+def confirm_pending(opener) -> bool:
+    """Confirm the apply waiting for confirmation from the dashboard, as an
+    admin does (ROADMAP SEC-26): whether it is no longer waiting."""
+    held = re.search(r'action="/apply/confirm".*?name="id" value="([0-9a-f]+)"', get(opener, "/"), re.S)
+    if held is None:
+        return False
+    confirmed = urllib.parse.unquote_plus(post(opener, "/apply/confirm", {"id": held.group(1)}))
+    return "Apply confirmed" in confirmed and "waiting for confirmation" not in get(opener, "/")
+
+
+def wait_until_unreachable(host: str, timeout: float) -> bool:
+    """Whether the webUI stops answering at `host` within `timeout` -- an
+    apply that moved it restarts it a few seconds later (ROADMAP SEC-26)."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            socket.create_connection((host, WEBUI_PORT), timeout=3).close()
+        except OSError:
+            return True
+        time.sleep(1)
     return False
 
 
@@ -1044,20 +1077,33 @@ def run(args: argparse.Namespace) -> int:
               and re.search(r"\.40=192\.168\.40\.1/24", applied) is not None,
               "the IoT and guest segments came up on VLANs of the LAN port (security-lessons K4)"
               + ("" if ".30=" in applied else f": {applied[:300]}"))
-        listen = re.search(r"webUI restarting to listen on ([0-9., ]+)", applied)
-        check(listen is not None and "10.99.0.1" in listen.group(1),
-              "the webUI also listens on the VPN's tunnel address (security-lessons K5)")
+        # ROADMAP SEC-27: turning the VPN on doesn't move the webUI.
+        check("webUI restarting" not in applied,
+              "the Apply left the webUI where it was: only the admin moves it (ROADMAP SEC-27)")
         try:  # dropped by the default policy, so this times out
             socket.create_connection((WEBUI_HOST, CLOSED_PORT), timeout=3).recv(1)
         except OSError:
             pass
         time.sleep(5)  # fr-initial-password.path reacts to the account file
+        wait_for_webui(opener, boot_timeout)
+        # ROADMAP SEC-26: the apply waits for confirmation -- from here,
+        # through the new ruleset.
+        check("confirm it within 300 s" in applied, "the Apply is held until it is confirmed (ROADMAP SEC-26)")
+        check(confirm_pending(opener), "...the dashboard confirms it, and the router keeps it")
+        # Security-lessons K5, ROADMAP SEC-27: the admin puts the webUI on
+        # the VPN's tunnel address too -- its own action, held as well.
+        moved = urllib.parse.unquote_plus(post(opener, "/system/management-addresses",
+                                               {"addresses": [WEBUI_HOST, VPN_ADDRESS]}))
+        check("confirm it within 300 s" in moved,
+              "the webUI address setting applies the move, held until confirmed" + ("" if "confirm" in moved
+                                                                                     else f": {moved[:300]}"))
         # The webUI is back from its rebind -- the restarted process, the
-        # one on the VPN's address too (security-lessons K5); the filter
-        # drops the ClientHello naming the blocked name, and only that one.
+        # one on the VPN's address too; the filter below drops the
+        # ClientHello naming the blocked name, and only that one.
         check(wait_for_rebind(boot_timeout), f"the restarted webUI answers on the VPN's address {VPN_ADDRESS} "
               "(security-lessons K5)")
         wait_for_webui(opener, boot_timeout)
+        check(confirm_pending(opener), "...and is confirmed from the dashboard")
         allowed = any(tls_handshake(XDP_ALLOWED_NAME) for _ in range(3))
         check(allowed, "a TLS handshake naming an allowed host gets through the XDP filter")
         check(allowed and not tls_handshake(XDP_BLOCKED_NAME),
@@ -1090,6 +1136,28 @@ def run(args: argparse.Namespace) -> int:
         check(bound is not None and tap_mac in bound.group(1) and "badge-green" in status_page,
               f"a ZTNA sign-in is bound to the signing-in device's MAC, {tap_mac} (ROADMAP SEC-6)"
               + ("" if bound else ": " + " ".join(status_page.split())[:300]))
+        # ROADMAP SEC-27: a LAN address change that would take the webUI's
+        # address away is refused when it is saved.
+        refused_move = urllib.parse.unquote_plus(post(opener, "/interfaces/save", {
+            "name": "lan", "device": "ens4", "zone": "lan", "address": f"{MOVED_LAN_ADDRESS}/24"}))
+        check("System -> webUI address" in refused_move,
+              "changing the LAN address under the webUI is refused: only the admin moves it (ROADMAP SEC-27)")
+        # ROADMAP SEC-26: a move nobody confirms -- the webUI on the VPN's
+        # address alone, which this host can't reach -- goes back by
+        # itself at its deadline: the webUI answers at the LAN address
+        # again, and says the apply was reverted.
+        try:
+            post(opener, "/system/management-addresses", {"addresses": [VPN_ADDRESS]})
+        except OSError:
+            pass  # the webUI restarts a few seconds after it answers
+        gone = wait_until_unreachable(WEBUI_HOST, 60)
+        check(gone, f"...the webUI left {WEBUI_HOST} for the VPN's address alone")
+        back = gone and wait_for_webui(opener, 300 + boot_timeout) is not None
+        check(back, f"...and, unconfirmed, went back to {WEBUI_HOST} by itself (fr-apply-revert.service)")
+        if back:
+            dashboard = get(opener, "/")
+            check("An apply was not confirmed" in dashboard and "Load it to fix it" in dashboard,
+                  "...and the dashboard says so, with the unconfirmed config kept")
         # ROADMAP SEC-5: a config that can't be applied on this machine (a
         # device it doesn't have) changes nothing -- the ZTNA session in the
         # running ruleset is still there. It stays saved for boot 4.
@@ -1142,6 +1210,16 @@ def run(args: argparse.Namespace) -> int:
         check("Started" in timer, "the periodic update check (fr-update-check.timer) is armed (security-lessons G10)")
         check("IPv4 forwarding" in journal(upper, "-b", "-u", "fr-firewall.service"),
               "the boot-time apply turned IPv4 forwarding on (the router routes)")
+        reverted = journal(upper, "-b", "-u", "fr-apply-revert.service")
+        check("was not confirmed (no confirmation within 300 s)" in reverted,
+              "fr-apply-revert.service reverted the unconfirmed apply in its sandbox (ROADMAP SEC-26)")
+        if "was not confirmed" not in reverted:
+            print_journal(upper, "fr-apply-revert.service", "-b")
+        check("was not confirmed" in audit_log.read_text(), "...and that is a security alert")
+        rejected = upper / "etc" / "fr_os" / "config.rejected.yaml"
+        kept = re.search(r"^  addresses:\n((?:  - .*\n)+)", rejected.read_text(), re.M) if rejected.exists() else None
+        check(kept is not None and kept.group(1).split() == ["-", VPN_ADDRESS],
+              "...which kept the unconfirmed config for the admin")
 
     # ROADMAP SEC-15: the stick, checked from "another computer" -- the
     # host -- with this checkout's keys: clean; then an implant is planted

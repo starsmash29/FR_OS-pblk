@@ -73,6 +73,14 @@ from __future__ import annotations
 #: from its pinned map: bpffs is root's (mode 0700), so the webUI's XDP
 #: screen and /metrics can't read them themselves. Read-only, no
 #: arguments.
+#: "apply_status", "apply_confirm", "apply_revert" and "restore_rejected"
+#: (ROADMAP SEC-26, frfw.apply_confirm): an "apply" asked with `confirm`
+#: is held until it is confirmed by its id, and goes back to the config
+#: applied before it otherwise or on "apply_revert"; "restore_rejected"
+#: loads the config of a reverted apply back into config.yaml. The status
+#: never includes the previous config's text. "set_management_addresses"
+#: (ROADMAP SEC-27) is the one way to move the webUI and SSH: it sets
+#: management.addresses, alone, and applies that, held for confirmation.
 COMMANDS = (
     "ping",
     "apply",
@@ -97,6 +105,11 @@ COMMANDS = (
     "wireguard_status",
     "firewall_drops",
     "xdp_stats",
+    "apply_status",
+    "apply_confirm",
+    "apply_revert",
+    "restore_rejected",
+    "set_management_addresses",
 )
 
 #: Maximum accepted request/response line length, to bound memory use from

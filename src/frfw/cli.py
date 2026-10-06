@@ -3,7 +3,11 @@
     firewall-cli validate [config.yaml]
     firewall-cli render   [config.yaml]
     firewall-cli config-export [config.yaml]
-    firewall-cli apply    [config.yaml] [--dry-run] [--fail-closed]
+    firewall-cli apply    [config.yaml] [--dry-run] [--fail-closed] [--confirm-within SECONDS]
+    firewall-cli apply-status
+    firewall-cli apply-confirm
+    firewall-cli apply-revert [--wait] [config.yaml]
+    firewall-cli management-addresses ADDRESS... [--config config.yaml] [--confirm-within SECONDS]
     firewall-cli rollback [--list]
     firewall-cli detect-interfaces [--include-virtual]
     firewall-cli detect-wan-lan
@@ -81,7 +85,9 @@ from frfw.iot_isolation import IotIsolationError, list_isolated
 from frfw.ifaddr import IfaddrError
 from frfw.kea import KeaError
 from frfw.nft import build_ruleset
-from frfw import provision
+from frfw import apply_confirm, provision
+from frfw import management as management_mod
+from frfw.config import loader as loader_mod
 from frfw.provision import apply_all
 from frfw.transaction import ApplyError
 
@@ -96,6 +102,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     except ConfigError as exc:
         print(f"config error: {exc}", file=sys.stderr)
+        return 1
+    except apply_confirm.PendingError as exc:
+        print(f"error: {exc}", file=sys.stderr)
         return 1
     except NftError as exc:
         print(f"nft error: {exc}", file=sys.stderr)
@@ -171,7 +180,41 @@ def _build_parser() -> argparse.ArgumentParser:
         help="if there is no config, or the apply fails with no FR_OS ruleset loaded, "
         "load the drop-everything baseline (fr-firewall.service uses this)",
     )
+    p_apply.add_argument(
+        "--confirm-within",
+        type=int,
+        metavar="SECONDS",
+        help="hold the apply until `firewall-cli apply-confirm`, and go back to the config applied "
+        "before it after SECONDS otherwise (ROADMAP SEC-26) -- for an apply over SSH",
+    )
     p_apply.set_defaults(handler=_cmd_apply)
+
+    p_mgmt = sub.add_parser(
+        "management-addresses",
+        help="move the webUI and SSH to these addresses, and apply only that (ROADMAP SEC-27)",
+    )
+    p_mgmt.add_argument("addresses", nargs="+", metavar="ADDRESS")
+    p_mgmt.add_argument("--config", default=str(paths.CONFIG_PATH))
+    p_mgmt.add_argument("--confirm-within", type=int, metavar="SECONDS",
+                        help="hold it until `firewall-cli apply-confirm`, as for `apply` (ROADMAP SEC-26)")
+    p_mgmt.set_defaults(handler=_cmd_management_addresses)
+
+    p_apply_status = sub.add_parser("apply-status", help="say whether an apply is waiting for confirmation")
+    p_apply_status.set_defaults(handler=_cmd_apply_status)
+
+    p_apply_confirm = sub.add_parser("apply-confirm", help="keep the apply that is waiting for confirmation")
+    p_apply_confirm.set_defaults(handler=_cmd_apply_confirm)
+
+    p_apply_revert = sub.add_parser(
+        "apply-revert", help="go back to the config applied before the apply waiting for confirmation"
+    )
+    p_apply_revert.add_argument(
+        "--wait",
+        action="store_true",
+        help="wait for its deadline first, and do nothing if it is confirmed (fr-apply-revert.service)",
+    )
+    add_config_arg(p_apply_revert)
+    p_apply_revert.set_defaults(handler=_cmd_apply_revert)
 
     p_rollback = sub.add_parser(
         "rollback", help="reload the most recently backed-up ruleset"
@@ -467,6 +510,62 @@ def _cmd_apply(args: argparse.Namespace) -> int:
         print(f"No config at {args.config}: fail-closed baseline loaded "
               "(only loopback and replies to the router's own connections get in; nothing is forwarded)")
         return 0
+    if fail_closed and apply_confirm.read() is not None:
+        # ROADMAP SEC-26: the router restarted while an apply waited for
+        # confirmation. A reboot is no confirmation -- an admin cut off by
+        # the apply may have power-cycled it to get it back.
+        try:
+            with apply_confirm.locked():
+                if apply_confirm.read() is not None:
+                    messages = apply_confirm.revert("the router restarted before it was confirmed",
+                                                    config_path=Path(args.config), apply=_boot_apply)
+                    for message in messages:
+                        print(message)
+                    return 0
+        except Exception:
+            # As below: never unfiltered, never a working ruleset replaced.
+            if not apply_mod.fr_os_table_loaded():
+                apply_mod.load_baseline()
+                print("apply failed with no FR_OS ruleset loaded: fail-closed baseline loaded", file=sys.stderr)
+            raise
+    if args.confirm_within is not None and not (
+        loader_mod.CONFIRM_APPLY_MIN <= args.confirm_within <= loader_mod.CONFIRM_APPLY_MAX
+    ):
+        print(f"error: --confirm-within takes {loader_mod.CONFIRM_APPLY_MIN}-{loader_mod.CONFIRM_APPLY_MAX} "
+              "seconds", file=sys.stderr)
+        return 1
+    if args.dry_run or fail_closed:
+        return _apply_now(args, fail_closed)
+    with apply_confirm.locked():
+        waiting = apply_confirm.read()
+        if waiting is not None:
+            print(f"error: the last apply is waiting for confirmation ({waiting.remaining()} s left): "
+                  "firewall-cli apply-confirm or apply-revert first", file=sys.stderr)
+            return 1
+        # ROADMAP SEC-27: only `firewall-cli management-addresses` (or the
+        # webUI's) moves the webUI and SSH.
+        moved = management_mod.moves_management(read_config(args.config)[0], provision.load_applied_config())
+        if moved:
+            print(f"error: nothing was applied -- {moved}, or here: firewall-cli management-addresses",
+                  file=sys.stderr)
+            return 1
+        previous = provision.applied_config_text()
+        status = _apply_now(args, fail_closed)
+        if status == 0 and args.confirm_within is not None:
+            config, text = read_config(args.config)
+            if previous is not None and previous != text:
+                pending = apply_confirm.begin(
+                    previous, args.confirm_within, by="console",
+                    addresses=[a for a in management_mod.listen_addresses(config) if a != management_mod.LOOPBACK])
+                print(f"Confirm with `firewall-cli apply-confirm` within {pending.seconds} s, or the router "
+                      "goes back to the config applied before this one")
+            else:
+                print("Nothing to go back to (no earlier config applied, or the same one): not held for "
+                      "confirmation")
+        return status
+
+
+def _apply_now(args: argparse.Namespace, fail_closed: bool) -> int:
     try:
         config, text = read_config(args.config)
         try:
@@ -490,6 +589,82 @@ def _cmd_apply(args: argparse.Namespace) -> int:
             print("apply failed with no FR_OS ruleset loaded: fail-closed baseline loaded", file=sys.stderr)
         raise
     for message in result.messages:
+        print(message)
+    return 0
+
+
+def _boot_apply(config, **kwargs):
+    """The boot's revert of an unconfirmed apply (ROADMAP SEC-26): the
+    config applied before it, as one transaction -- and when that fails,
+    as far as it goes, the ruleset first, like any config at boot."""
+    try:
+        return apply_all(config, **kwargs)
+    except ApplyError as exc:
+        print(f"the config applied before the unconfirmed one failed at boot: {exc}", file=sys.stderr)
+        return apply_all(config, transactional=False)
+
+
+def _cmd_management_addresses(args: argparse.Namespace) -> int:
+    """ROADMAP SEC-27: the console's way to move the webUI and SSH. Only
+    that changes -- config.yaml must hold nothing else unapplied -- and it
+    is applied at once."""
+    path = Path(args.config)
+    text = path.read_text()
+    recorded = provision.applied_config_text()
+    if recorded is not None and recorded != text:
+        print("error: the config has changes that aren't applied yet: apply them (or undo them) first, so that "
+              "moving the webUI changes nothing else", file=sys.stderr)
+        return 1
+    raw = yaml.safe_load(text) or {}
+    raw["management"] = {**(raw.get("management") or {}), "addresses": list(args.addresses)}
+    new_text = yaml.safe_dump(raw, sort_keys=False)
+    parse_config(yaml.safe_load(new_text))  # every address must be on the router
+    from frfw.transaction import write_keeping_owner
+
+    write_keeping_owner(path, new_text)
+    try:
+        status = _cmd_apply(argparse.Namespace(config=str(path), dry_run=False, fail_closed=False,
+                                               confirm_within=args.confirm_within))
+    except BaseException:
+        write_keeping_owner(path, text)
+        raise
+    if status != 0:
+        write_keeping_owner(path, text)
+    return status
+
+
+def _cmd_apply_status(args: argparse.Namespace) -> int:
+    waiting = apply_confirm.read()
+    if waiting is None:
+        print("No apply is waiting for confirmation")
+    else:
+        who = f" (applied by {waiting.by})" if waiting.by else ""
+        print(f"An apply is waiting for confirmation{who}: {waiting.remaining()} s left, then the router goes "
+              "back to the config applied before it")
+    if apply_confirm.has_rejected():
+        print(f"The config of an apply that was not confirmed is kept in {paths.REJECTED_CONFIG_PATH}")
+    return 0
+
+
+def _cmd_apply_confirm(args: argparse.Namespace) -> int:
+    # Root on the console or over SSH: being here is the confirmation, so
+    # no id is asked for (the webUI's is, against a stale page).
+    with apply_confirm.locked():
+        waiting = apply_confirm.read()
+        if waiting is None:
+            raise apply_confirm.PendingError("No apply is waiting for confirmation")
+        apply_confirm.confirm(waiting.id)
+    print("Apply confirmed: the router keeps this config")
+    return 0
+
+
+def _cmd_apply_revert(args: argparse.Namespace) -> int:
+    if args.wait:
+        messages = apply_confirm.wait(config_path=Path(args.config))
+    else:
+        with apply_confirm.locked():
+            messages = apply_confirm.revert("went back from the console", config_path=Path(args.config))
+    for message in messages:
         print(message)
     return 0
 
@@ -981,8 +1156,12 @@ def _cmd_schedule_check(args: argparse.Namespace) -> int:
         return 1
     if result.status != "refresh":
         return 0
-    for message in apply_all(config, source_text=text).messages:
-        print(message)
+    # ROADMAP SEC-26: never in the middle of an apply's revert, and with
+    # config.yaml as it is after one.
+    with apply_confirm.locked():
+        config, text = read_config(args.config)
+        for message in apply_all(config, source_text=text).messages:
+            print(message)
     return 0
 
 

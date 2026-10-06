@@ -18,6 +18,9 @@ server refuses to start.
 - At boot (`apply --fail-closed`), the router comes up with A when B
   fails, says so, and raises a security alert.
 - A config the preflight refuses changes nothing at all.
+- An apply held for confirmation (ROADMAP SEC-26) that is reverted, or
+  still pending at boot, leaves the router on A: A's ruleset and LAN
+  address, config.yaml A again, the unconfirmed config kept.
 """
 
 from __future__ import annotations
@@ -54,8 +57,12 @@ _DRIVER = textwrap.dedent(
                       "SSHD_MANAGEMENT_DROPIN_PATH": "mgmt.conf", "ADBLOCK_HOSTS_PATH": "adblock.hosts",
                       "ADBLOCK_DNSMASQ_CONF_PATH": "dnsmasq.conf", "ADBLOCK_CATEGORY_DIR": "adblock.d",
                       "SENSOR_CONFIG_PATH": "sensor-config.yaml", "AUDIT_LOG_DIR": "log",
-                      "AUDIT_LOG_PATH": "log/audit.log", "WIREGUARD_KEY_PATH": "wg/private.key"}.items():
+                      "AUDIT_LOG_PATH": "log/audit.log", "WIREGUARD_KEY_PATH": "wg/private.key",
+                      "APPLY_PENDING_PATH": "apply-pending.json", "APPLY_LOCK_PATH": ".apply.lock",
+                      "REJECTED_CONFIG_PATH": "config.rejected.yaml"}.items():
         setattr(paths, name, tmp / rel)
+    from frfw import apply_confirm
+    apply_confirm._start_waiting = lambda: None  # the host's systemd is not this router's
     kea.KEA_CONFIG_PATH = tmp / "kea-dhcp4.conf"
     management.SSHD_BINARY = "fr-os-tests-have-no-sshd"
 
@@ -86,6 +93,8 @@ _DRIVER = textwrap.dedent(
         bruteforce.ban_ip(job["ip"], 600)
     elif job["do"] == "boot":
         out["code"] = cli.main(["apply", "--fail-closed", job["config"]])
+    elif job["do"] == "cli":
+        out["code"] = cli.main(job["argv"])
     print(json.dumps(out))
     """
 )
@@ -104,6 +113,9 @@ def _config(lan_address: str, *, rule: str, dhcp: bool = False) -> dict:
                        "wan": {"device": "wan0", "zone": "wan", "address": "192.0.2.2/24"}},
         "rules": [{"name": rule, "action": "accept", "from_zone": "lan", "to_zone": "wan"}],
         "nat": {"masquerade": [{"out_zone": "wan"}]},
+        # ROADMAP SEC-27: each config puts the webUI on its own LAN
+        # address -- the admin moving it, so applying another is allowed.
+        "management": {"addresses": [lan_address.split("/")[0]]},
     }
     if dhcp:
         raw["dhcp"] = {"lan": {"range_start": "10.88.2.100", "range_end": "10.88.2.200", "dns_servers": ["10.88.2.1"]}}
@@ -121,7 +133,8 @@ def router(tmp_path):
             _sh("ip", "link", "add", device, "type", "veth", "peer", "name", f"{device}p", ns=ns)
         (tmp_path / "driver.py").write_text(_DRIVER)
         configs = {"A": _config("10.88.1.1/24", rule="lan-out-a"),
-                   "B": _config("10.88.2.1/24", rule="lan-out-b", dhcp=True)}
+                   "B": _config("10.88.2.1/24", rule="lan-out-b", dhcp=True),
+                   "C": _config("10.88.3.1/24", rule="lan-out-c")}
         for name, raw in configs.items():
             (tmp_path / f"{name}.yaml").write_text(yaml.safe_dump(raw))
 
@@ -225,3 +238,48 @@ def test_a_config_the_preflight_refuses_changes_nothing(router):
     assert "Nothing was applied" in result["error"]
     assert router["ruleset"]() == before
     assert router["addresses"]("lan0") == ["10.88.1.1/24"]
+
+
+# --- an apply held for confirmation (ROADMAP SEC-26) --------------------------------
+
+
+def _held_apply_of_c(router):
+    """A applied in full, then C -- another LAN address and rule -- applied
+    from config.yaml and held for confirmation."""
+    run, tmp = router["run"], router["tmp"]
+    assert run(do="apply", config="A")[0] == {"ok": True}
+    config_yaml = tmp / "config.yaml"
+    config_yaml.write_text((tmp / "C.yaml").read_text())
+    result, _ = run(do="cli", argv=["apply", "--confirm-within", "60", str(config_yaml)])
+    assert result["code"] == 0
+    assert json.loads((tmp / "apply-pending.json").read_text())["previous"] == (tmp / "A.yaml").read_text()
+    assert router["addresses"]("lan0") == ["10.88.3.1/24"], "A's address stayed (FR-NEW-005)"
+    assert "lan-out-c" in router["ruleset"]()
+    return config_yaml
+
+
+def _back_on_a(router, config_yaml):
+    tmp = router["tmp"]
+    ruleset = router["ruleset"]()
+    assert "lan-out-a" in ruleset and "lan-out-c" not in ruleset
+    assert router["addresses"]("lan0") == ["10.88.1.1/24"]
+    assert config_yaml.read_text() == (tmp / "A.yaml").read_text()
+    assert (tmp / "applied-config.yaml").read_text() == (tmp / "A.yaml").read_text()
+    assert (tmp / "config.rejected.yaml").read_text() == (tmp / "C.yaml").read_text()
+    assert not (tmp / "apply-pending.json").exists()
+    alerts = [json.loads(line) for line in (tmp / "log" / "audit.log").read_text().splitlines()]
+    assert any("was not confirmed" in (e.get("alert") or "") for e in alerts)
+
+
+def test_an_unconfirmed_apply_is_reverted_on_a_real_kernel(router):
+    config_yaml = _held_apply_of_c(router)
+    result, _ = router["run"](do="cli", argv=["apply-revert", str(config_yaml)])
+    assert result["code"] == 0
+    _back_on_a(router, config_yaml)
+
+
+def test_a_boot_with_an_apply_pending_comes_up_on_the_config_before_it(router):
+    config_yaml = _held_apply_of_c(router)
+    result, _ = router["run"](do="cli", argv=["apply", "--fail-closed", str(config_yaml)])
+    assert result["code"] == 0
+    _back_on_a(router, config_yaml)

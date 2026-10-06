@@ -88,8 +88,11 @@
     {% if management.zones %}the <strong>{{ management.zones | join(", ") }}</strong> zone(s){% else %}no zone (console only){% endif %}.
     {% if management.blocked %}The firewall drops them from <strong>{{ management.blocked | join(", ") }}</strong>, whatever the rules say.{% endif %}</p>
   <p>
-    {% if management.vpn_on %}Away from home, manage the router through the <a href="/vpn">VPN</a>: it is on, and the
+    {% if management.vpn_on and management.vpn_listening %}Away from home, manage the router through the <a href="/vpn">VPN</a>: it is on, and the
     webUI and SSH listen on its tunnel address too.{% if management.allow_wan %} There is no need to open them to the
+    internet as well -- turn that off below.{% endif %}
+    {% elif management.vpn_on %}Away from home, manage the router through the <a href="/vpn">VPN</a>: it is on -- tick its
+    tunnel address under "webUI address" below to have the webUI and SSH listen there too.{% if management.allow_wan %} There is no need to open them to the
     internet as well -- turn that off below.{% endif %}
     {% else %}To manage the router from outside, turn on the <a href="/vpn">VPN</a> (WireGuard) rather than opening the
     webUI and SSH to the internet.{% endif %}
@@ -101,6 +104,25 @@
     <button type="submit">Save</button>
   </form>
   <p class="muted">Which zones count as management: <code>management.zones</code> in the config (default: every zone that isn't internet-facing).</p>
+</div>
+<div class="card" id="webui-address">
+  <h3>webUI address</h3>
+  <p>Where the webUI and SSH listen (besides the router itself). Only this setting moves them: a change elsewhere that
+    would take one of these addresses away is refused (ROADMAP SEC-27). Saving applies it at once, held until you
+    confirm it from the new address{% if management.confirm_seconds %} within {{ management.confirm_seconds }} s{% endif %};
+    otherwise the router goes back.</p>
+  {% if management.choices %}
+  <form method="post" action="/system/management-addresses"
+        data-confirm="Move the webUI and SSH to the ticked addresses now? Confirm from the new address, or the router goes back.">
+    {{ csrf_input(request) }}
+    {% for address, what in management.choices %}
+    <label class="checkbox-row"><input type="checkbox" name="addresses" value="{{ address }}" {{ "checked" if address in management.addresses }}> <code>{{ address }}</code> -- {{ what }}</label>
+    {% endfor %}
+    <button type="submit">Move the webUI</button>
+  </form>
+  {% else %}
+  <p class="muted">No management interface has a static address: the webUI is reachable from the router itself only.</p>
+  {% endif %}
 </div>
 <div class="card">
   <h3>Software integrity</h3>
