@@ -272,7 +272,7 @@ def test_xdp_sync_sets_the_hello_bit(minimal_config_dict, tmp_path, monkeypatch)
     monkeypatch.setattr(xdp, "ensure_compiled", lambda: tmp_path / "x.o")
     monkeypatch.setattr(xdp, "load_and_pin", lambda obj: None)
     monkeypatch.setattr(xdp, "attach", lambda dev: xdp.AttachMode.GENERIC)
-    monkeypatch.setattr(xdp, "gro", lambda dev: False)  # no real device's GRO to turn off
+    monkeypatch.setattr(xdp, "gro", lambda dev: False)  # no real device's GRO to turn off (ROADMAP SEC-28)
     monkeypatch.setattr(xdp, "sync_blocklist", lambda names: None)
     monkeypatch.setattr(xdp, "set_settings", written.append)
     result = xdp.sync_sni_filter(_config(minimal_config_dict), state_path=tmp_path / "state.json")
