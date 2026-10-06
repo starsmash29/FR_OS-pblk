@@ -186,11 +186,47 @@ def apply_now(
     helper: HelperClient = Depends(get_helper),
 ):
     dry_run = request.query_params.get("dry_run") == "1"
-    result = helper.apply(dry_run=dry_run)
+    # ROADMAP SEC-26: held until confirmed from a request that reaches the
+    # router through the new rules and addresses (see /apply/confirm).
+    result = helper.apply(dry_run=dry_run, confirm=True, user=username)
     message = result.get("message", "")
     if result.get("ok"):
         return redirect_with("/", success=message or "Applied")
     return redirect_with("/", error=message or "Apply failed")
+
+
+@router.post("/apply/confirm")
+def apply_confirm(
+    pending_id: str = Form(..., alias="id"),
+    username: str = Depends(require_login),
+    helper: HelperClient = Depends(get_helper),
+):
+    """ROADMAP SEC-26: keep the applied config. That this request got here
+    at all is the point: it came through the new ruleset."""
+    result = helper.apply_confirm(pending_id)
+    if result.get("ok"):
+        return redirect_with("/", success=result.get("message") or "Apply confirmed")
+    return redirect_with("/", error=result.get("message") or "Could not confirm the apply")
+
+
+@router.post("/apply/revert")
+def apply_revert(username: str = Depends(require_login), helper: HelperClient = Depends(get_helper)):
+    """ROADMAP SEC-26: go back to the config applied before the pending
+    apply now, rather than at its deadline."""
+    result = helper.apply_revert()
+    if result.get("ok"):
+        return redirect_with("/", success=result.get("message") or "Went back to the previous config")
+    return redirect_with("/", error=result.get("message") or "Could not go back")
+
+
+@router.post("/apply/rejected/restore")
+def restore_rejected(username: str = Depends(require_login), helper: HelperClient = Depends(get_helper)):
+    """ROADMAP SEC-26: load a reverted apply's config back into config.yaml,
+    to fix it and apply again."""
+    result = helper.restore_rejected()
+    if result.get("ok"):
+        return redirect_with("/", success=result.get("message") or "Loaded")
+    return redirect_with("/", error=result.get("message") or "Could not load it")
 
 
 @router.post("/rollback")

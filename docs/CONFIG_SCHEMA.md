@@ -473,7 +473,15 @@ Security-lessons F2/G4 -- never from the internet unless you say so.
 management:
   zones: [lan]        # optional; default: every zone that isn't internet-facing
   allow_wan: false    # explicit opt-in to manage from the internet (not recommended)
+  confirm_apply_seconds: 300   # optional; 0 = off, else 60-3600
 ```
+
+- `confirm_apply_seconds` (ROADMAP SEC-26): an Apply from the webUI is
+  held until it is confirmed from the webUI within this many seconds;
+  otherwise the router goes back to the config applied before it, puts
+  that config back in config.yaml and keeps the unconfirmed one for you
+  to fix. The confirmation comes through the new rules and addresses, so
+  an apply that cut you off is undone by itself. 0 turns it off.
 
 - Internet-facing zones are the `nat.masquerade` `out_zone`s plus a zone
   called `wan`. Listing one in `zones` is refused unless `allow_wan: true`.

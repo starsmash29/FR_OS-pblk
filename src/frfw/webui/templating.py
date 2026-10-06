@@ -89,6 +89,23 @@ def update_notice(request) -> dict | None:
     return data
 
 
+def apply_notice(request) -> dict | None:
+    """ROADMAP SEC-26: an apply waiting for confirmation, or a reverted
+    one whose config is kept, for the banner on every page -- on every
+    page, because an apply that moved the webUI lands the admin wherever
+    they sign in again. Nothing when the helper can't say."""
+    helper = getattr(request.app.state, "helper", None)
+    if helper is None:
+        return None
+    try:
+        reply = helper.apply_status()
+    except Exception:  # a helper that can't answer must not break every page
+        return None
+    if not reply.get("ok") or not (reply.get("pending") or reply.get("rejected")):
+        return None
+    return reply
+
+
 def csrf_token(request) -> str:
     """Return the CSRF token for the current session."""
     if not request:
@@ -111,6 +128,7 @@ templates.env.globals.update(
     nav_location=nav_location,
     shell_hostname=shell_hostname,
     update_notice=update_notice,
+    apply_notice=apply_notice,
     csrf_token=csrf_token,
     csrf_input=csrf_input,
     FROS_VERSION=__version__,

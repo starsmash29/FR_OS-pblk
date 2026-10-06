@@ -723,7 +723,21 @@ def _parse_management(raw: Any, zones: dict[str, Zone], nat: NatConfig) -> Manag
             )
         if zone not in chosen:
             chosen.append(zone)
-    return ManagementConfig(zones=tuple(chosen), allow_wan=allow_wan)
+    confirm = raw.get("confirm_apply_seconds", CONFIRM_APPLY_DEFAULT)
+    if (not isinstance(confirm, int) or isinstance(confirm, bool)
+            or not (confirm == 0 or CONFIRM_APPLY_MIN <= confirm <= CONFIRM_APPLY_MAX)):
+        raise ConfigError(
+            f"management.confirm_apply_seconds must be 0 (off) or {CONFIRM_APPLY_MIN}-{CONFIRM_APPLY_MAX} seconds"
+        )
+    return ManagementConfig(zones=tuple(chosen), allow_wan=allow_wan, confirm_apply_seconds=confirm)
+
+
+#: ROADMAP SEC-26: long enough to reach the router at a new address and
+#: sign in there, short enough that a router an Apply cut off from its
+#: admin comes back by itself before anyone drives to it.
+CONFIRM_APPLY_DEFAULT = 300
+CONFIRM_APPLY_MIN = 60
+CONFIRM_APPLY_MAX = 3600
 
 
 #: WireGuard peer names: like ZTNA usernames (a device, not

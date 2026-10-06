@@ -57,6 +57,7 @@ for unit in \
     fr-firewall.service \
     fr-apply-helper.socket \
     fr-apply-helper.service \
+    fr-apply-revert.service \
     fr-webui.service \
     fr-initial-password.path \
     fr-initial-password.service \

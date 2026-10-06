@@ -972,6 +972,45 @@ restart the last step schedules -- it runs only when everything before it
 succeeded. config.yaml is not changed by a failed apply: the webUI still
 shows what was saved, and the error says it wasn't applied.
 
+### Confirm an apply, or go back (ROADMAP SEC-26)
+
+Review v0.2.1 FR-NEW-006. The transaction above rolls an apply back when
+a step fails. An apply whose every step succeeds can still cut its admin
+off -- the LAN address moved, a rule too broad, the webUI's zone
+forgotten -- and then nothing but the console brings the router back. So
+an Apply from the webUI is held until it is confirmed, by a request that
+reaches the router through the new ruleset and addresses: an admin the
+apply cut off can't send one (`frfw.apply_confirm`).
+
+- After an apply that succeeded, when there is a config applied before it
+  and the new one differs, the apply-helper records the pending apply
+  (`/etc/fr_os/apply-pending.json`, root's: an id, the deadline, who, the
+  webUI's new addresses, the text of the config applied before it) and
+  restarts `fr-apply-revert.service`, which waits for the deadline. The
+  countdown is that unit's, not the webUI's or the helper's: an apply that
+  moves the webUI restarts it.
+- Every page shows the pending apply, with the seconds left and the
+  addresses the webUI now listens on; Confirm sends the pending apply's
+  own id, so a stale page can't confirm a later apply. While one is
+  pending, no other apply starts.
+- At the deadline (`management.confirm_apply_seconds`, 5 minutes by
+  default, 0 turns it off), on "Go back now", or when a boot finds one
+  still pending -- a reboot is no confirmation: an admin cut off may have
+  power-cycled the router to get it back -- the config applied before it
+  is applied again, as one transaction; config.yaml goes back to that
+  text, so neither the next Apply nor the next boot brings the
+  unconfirmed config back; the unconfirmed config is kept
+  (`/etc/fr_os/config.rejected.yaml`, config.yaml's owner and mode) for
+  the dashboard's "Load it to fix it"; and it is a security alert.
+- One lock (`/etc/fr_os/.apply.lock`) serializes the helper, the waiting
+  unit, the boot and the hourly schedule check's re-apply, so a
+  confirmation never lands halfway through a revert.
+
+`firewall-cli apply` from the console isn't held -- the console is the way
+back -- unless asked with `--confirm-within SECONDS`, for an apply over
+SSH; `firewall-cli apply-confirm`, `apply-revert` and `apply-status` go
+with it.
+
 ## Security model
 
 The webUI can't run as root — it runs as the `fr_os-webui` system user,

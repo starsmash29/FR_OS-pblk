@@ -79,6 +79,22 @@ def _never_touch_the_hosts_applied_config(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _never_touch_the_hosts_pending_apply(tmp_path_factory, monkeypatch):
+    """An apply waiting for confirmation (ROADMAP SEC-26): its record, its
+    lock and a reverted config are each test's own, and no test starts the
+    host's fr-apply-revert.service -- `revert_waiters` counts the starts."""
+    from frfw import apply_confirm, paths
+
+    where = tmp_path_factory.mktemp("etc_fr_os_pending")
+    monkeypatch.setattr(paths, "APPLY_PENDING_PATH", where / "apply-pending.json")
+    monkeypatch.setattr(paths, "APPLY_LOCK_PATH", where / ".apply.lock")
+    monkeypatch.setattr(paths, "REJECTED_CONFIG_PATH", where / "config.rejected.yaml")
+    starts: list[int] = []
+    monkeypatch.setattr(apply_confirm, "_start_waiting", lambda: starts.append(1))
+    return starts
+
+
+@pytest.fixture(autouse=True)
 def _never_touch_the_hosts_webui_listen_record(tmp_path_factory, monkeypatch):
     """Where an apply records the webUI's listen addresses (ROADMAP SEC-5)."""
     from frfw import paths

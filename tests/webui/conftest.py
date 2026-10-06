@@ -52,6 +52,11 @@ class FakeHelper:
         self.iot_sync_calls: list[list[str]] = []
         self.iot_scan_calls = 0
         self.audit_entries: list[dict] = []
+        self.apply_requests: list[dict] = []
+        self.hold_applies = False  # an Apply answers like a held one (ROADMAP SEC-26)
+        self.pending: dict | None = None
+        self.rejected = False
+        self.confirmed: list[str] = []
 
     def ping(self):
         return {"ok": True, "message": "pong"}
@@ -64,9 +69,40 @@ class FakeHelper:
         self.config_path.write_text(yaml_text)
         return {"ok": True, "message": f"Config saved to {self.config_path}"}
 
-    def apply(self, dry_run: bool = False) -> dict:
+    def apply(self, dry_run: bool = False, *, confirm: bool = False, user: str = "") -> dict:
         self.applied.append(dry_run)
+        self.apply_requests.append({"dry_run": dry_run, "confirm": confirm, "user": user})
+        if self.pending is not None and not dry_run:
+            return {"ok": False, "message": "The last apply is waiting for confirmation"}
+        if confirm and not dry_run and self.hold_applies:
+            self.pending = {"id": "a1b2c3d4e5f60718", "remaining": 300, "seconds": 300, "by": user,
+                            "addresses": ["192.168.1.1"]}
+            return {"ok": True, "message": "Applied -- confirm it within 300 s", "pending": self.pending}
         return {"ok": True, "message": "dry-run ok" if dry_run else "applied"}
+
+    #: ROADMAP SEC-26: the pending apply the real helper would hold, and
+    #: whether a reverted apply's config is kept.
+    def apply_status(self) -> dict:
+        return {"ok": True, "pending": self.pending, "rejected": self.rejected}
+
+    def apply_confirm(self, pending_id: str) -> dict:
+        if self.pending is None or pending_id != self.pending["id"]:
+            return {"ok": False, "message": "That is not the apply waiting for confirmation -- reload the page"}
+        self.pending = None
+        self.confirmed.append(pending_id)
+        return {"ok": True, "message": "Apply confirmed: the router keeps this config"}
+
+    def apply_revert(self) -> dict:
+        if self.pending is None:
+            return {"ok": False, "message": "No apply is waiting for confirmation"}
+        self.pending, self.rejected = None, True
+        return {"ok": True, "message": "The apply was not confirmed (the admin went back)"}
+
+    def restore_rejected(self) -> dict:
+        if not self.rejected:
+            return {"ok": False, "message": "There is no unconfirmed config to load"}
+        self.rejected = False
+        return {"ok": True, "message": "The unconfirmed config is in config.yaml again: fix it, then Apply"}
 
     def rollback(self) -> dict:
         self.rolled_back = True

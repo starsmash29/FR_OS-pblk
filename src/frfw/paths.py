@@ -267,6 +267,21 @@ SCHEDULE_STATE_PATH = Path("/etc/fr_os/schedule_state.json")
 #: boot. Root's alone (0600): it holds what config.yaml holds.
 APPLIED_CONFIG_PATH = Path("/etc/fr_os/applied-config.yaml")
 
+#: An apply waiting to be confirmed (ROADMAP SEC-26, frfw.apply_confirm):
+#: its deadline and the text of the config applied before it, which the
+#: router goes back to unless the apply is confirmed in time. Root's alone
+#: (0600): it holds what config.yaml holds.
+APPLY_PENDING_PATH = Path("/etc/fr_os/apply-pending.json")
+
+#: Serializes an apply, its confirmation and its revert across the
+#: apply-helper, fr-apply-revert.service and the boot (frfw.apply_confirm).
+APPLY_LOCK_PATH = Path("/etc/fr_os/.apply.lock")
+
+#: The config of an apply that wasn't confirmed and was reverted (ROADMAP
+#: SEC-26): kept, with config.yaml's owner and mode, so the admin can load
+#: it back into the editor and fix it.
+REJECTED_CONFIG_PATH = Path("/etc/fr_os/config.rejected.yaml")
+
 #: Where the last applied config has the webUI listen (ROADMAP SEC-5,
 #: frfw.management.sync_webui). fr-webui binds these, not config.yaml's:
 #: after a failed apply was rolled back, or a boot that fell back to the

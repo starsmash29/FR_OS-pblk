@@ -24,14 +24,13 @@ import json
 import os
 import socket
 import socketserver
-import stat
 import subprocess
 import sys
 from pathlib import Path
 
 import yaml
 
-from frfw import bruteforce, conntrack, firewall_log, hwinfo, ids_quarantine, iot_isolation, kea, paths, surface, svc, wireguard, xdp, ztna
+from frfw import apply_confirm, bruteforce, conntrack, firewall_log, hwinfo, ids_quarantine, iot_isolation, kea, paths, surface, svc, wireguard, xdp, ztna
 from frfw.adblock import AdblockError
 from frfw.iot import leases as iot_leases
 from frfw.iot_isolation import IotIsolationError
@@ -41,15 +40,16 @@ from frfw.bruteforce import BruteforceError
 from frfw.config import ConfigError, load_config, parse_config, read_config
 from frfw.config.export import refresh_sensor_copy, write_sensor_copy
 from frfw.conntrack import ConntrackError
-from frfw.helper.peer import PeerPolicy, gid_of, peer_credentials
+from frfw.helper.peer import PeerPolicy, peer_credentials
 from frfw.helper.protocol import MAX_LINE_BYTES
 from frfw.hwinfo import HwInfoError
 from frfw.ids_quarantine import IdsQuarantineError
 from frfw.ifaddr import IfaddrError
 from frfw.kea import KeaError
 from frfw.pqc import PqcError
-from frfw.provision import apply_all
-from frfw.transaction import ApplyError
+from frfw.management import LOOPBACK, listen_addresses
+from frfw.provision import apply_all, applied_config_text
+from frfw.transaction import ApplyError, write_keeping_owner
 from frfw.surface import SurfaceError
 from frfw.webui import audit as webui_audit
 from frfw.forwarding import ForwardingError
@@ -80,21 +80,25 @@ def _handle_request(request: dict, server: "ApplyHelperServer") -> dict:
             return {"ok": True, "message": "pong"}
 
         if cmd == "apply":
-            config, text = read_config(server.config_path)
-            dry_run = bool(request.get("dry_run", False))
-            result = apply_all(
-                config,
-                dry_run=dry_run,
-                backup_dir=server.backup_dir,
-                kea_config_path=server.kea_config_path,
-                source_text=text,
-            )
-            messages = list(result.messages)
-            if not dry_run:
-                problem = refresh_sensor_copy(server.config_path, server.sensor_config_path)
-                if problem:
-                    messages.append(problem)
-            return {"ok": True, "message": "; ".join(messages)}
+            return _handle_apply(request, server)
+
+        if cmd == "apply_status":
+            return _handle_apply_status()
+
+        if cmd == "apply_confirm":
+            with apply_confirm.locked():
+                apply_confirm.confirm(str(request.get("id") or ""))
+            return {"ok": True, "message": "Apply confirmed: the router keeps this config"}
+
+        if cmd == "apply_revert":
+            with apply_confirm.locked():
+                messages = apply_confirm.revert("the admin went back", config_path=server.config_path)
+            return {"ok": True, "message": messages[0]}
+
+        if cmd == "restore_rejected":
+            with apply_confirm.locked():
+                message = apply_confirm.restore_rejected(config_path=server.config_path)
+            return {"ok": True, "message": message}
 
         if cmd == "rollback":
             restored = rollback_last(server.backup_dir)
@@ -178,9 +182,59 @@ def _handle_request(request: dict, server: "ApplyHelperServer") -> dict:
         ConfigError, NftError, IfaddrError, KeaError, ZtnaError, PqcError, AdblockError,
         BruteforceError, IdsQuarantineError, ConntrackError, HwInfoError, IotIsolationError,
         SurfaceError, ForwardingError, WireguardError, xdp.XdpError, FileNotFoundError, yaml.YAMLError,
-        ApplyError,
+        ApplyError, apply_confirm.PendingError,
     ) as exc:
         return {"ok": False, "message": str(exc)}
+
+
+def _handle_apply(request: dict, server: "ApplyHelperServer") -> dict:
+    """Apply config.yaml. Asked with `confirm` (the webUI's Apply), a
+    successful apply is held until the admin confirms it, and the router
+    goes back by itself otherwise (ROADMAP SEC-26, frfw.apply_confirm)."""
+    config, text = read_config(server.config_path)
+    if request.get("dry_run", False):
+        result = apply_all(config, dry_run=True, backup_dir=server.backup_dir,
+                           kea_config_path=server.kea_config_path, source_text=text)
+        return {"ok": True, "message": "; ".join(result.messages)}
+    with apply_confirm.locked():
+        waiting = apply_confirm.read()
+        if waiting is not None:
+            return {"ok": False, "message": (
+                f"The last apply is waiting for confirmation ({waiting.remaining()} s left): "
+                "confirm it or go back before applying again")}
+        previous = applied_config_text()
+        result = apply_all(config, backup_dir=server.backup_dir, kea_config_path=server.kea_config_path,
+                           source_text=text)
+        messages = list(result.messages)
+        held = None
+        if request.get("confirm") and apply_confirm.needs_confirmation(config, text, previous):
+            seconds = config.management.confirm_apply_seconds
+            try:
+                # Where the admin can reach the webUI now -- loopback is no
+                # one's way in.
+                reachable = [a for a in listen_addresses(config) if a != LOOPBACK]
+                held = apply_confirm.begin(previous, seconds, by=str(request.get("user") or "")[:64],
+                                           addresses=reachable)
+            except apply_confirm.PendingError as exc:
+                messages.insert(0, f"Applied, but not held for confirmation: {exc}")
+            else:
+                messages.insert(0, f"Applied -- confirm it within {seconds} s, or the router goes back to "
+                                   "the config applied before it")
+    problem = refresh_sensor_copy(server.config_path, server.sensor_config_path)
+    if problem:
+        messages.append(problem)
+    reply = {"ok": True, "message": "; ".join(messages)}
+    if held is not None:
+        reply["pending"] = held.public()
+    return reply
+
+
+def _handle_apply_status() -> dict:
+    """What the webUI shows on every page while an apply waits (ROADMAP
+    SEC-26) -- never the previous config's text, which stays root's."""
+    waiting = apply_confirm.read()
+    return {"ok": True, "pending": None if waiting is None else waiting.public(),
+            "rejected": apply_confirm.has_rejected()}
 
 
 def _ztna_client_mac(ip: str, config) -> str:
@@ -451,36 +505,10 @@ def _handle_iot_scan() -> dict:
     return {"ok": True, "message": f"{IOT_SCAN_SERVICE} finished"}
 
 
-def _write_atomic(path: Path, text: str) -> None:
-    """Replace `path` atomically, keeping its owner and mode.
-
-    config.yaml is root:fr_os-webui 0640 (it holds ZTNA password hashes
-    and the metrics token digest). A plain write_text + rename used to
-    leave it root:root 0644 -- world-readable -- after the first save from
-    the webUI. The temp file is created 0600 (never briefly readable),
-    given the old file's owner and mode, then renamed over it; a new file
-    gets root:fr_os-webui 0640.
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        old = path.stat()
-        uid, gid, mode = old.st_uid, old.st_gid, stat.S_IMODE(old.st_mode)
-    except FileNotFoundError:
-        webui_gid = gid_of(paths.WEBUI_USER)
-        uid, gid, mode = os.geteuid(), (os.getegid() if webui_gid is None else webui_gid), 0o640
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    tmp_path.unlink(missing_ok=True)
-    fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    try:
-        with os.fdopen(fd, "w") as fh:
-            fh.write(text)
-        if os.geteuid() == 0:
-            os.chown(tmp_path, uid, gid)
-        os.chmod(tmp_path, mode)
-        tmp_path.replace(path)
-    except BaseException:
-        tmp_path.unlink(missing_ok=True)
-        raise
+#: config.yaml's writer -- it keeps the file's owner and mode -- lives in
+#: frfw.transaction, which the revert of an unconfirmed apply (ROADMAP
+#: SEC-26) shares.
+_write_atomic = write_keeping_owner
 
 
 class _Handler(socketserver.StreamRequestHandler):

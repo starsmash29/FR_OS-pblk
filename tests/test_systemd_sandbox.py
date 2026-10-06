@@ -95,6 +95,7 @@ ROOT = {
     "fr-adblock-dns.service": "dnsmasq binds :53, then drops to nobody itself",
     "fr-adblock-refresh.service": "writes root-owned /etc/fr_os files; no capability at all",
     "fr-apply-helper.service": "the privilege boundary: applies the network config",
+    "fr-apply-revert.service": "goes back from an apply not confirmed in time: an apply (ROADMAP SEC-26)",
     "fr-firewall.service": "applies the network config at boot",
     "fr-schedule-check.service": "re-applies the config when a rule schedule changes",
     "fr-first-boot.service": "one-time machine setup",
@@ -126,6 +127,7 @@ NEVER = {"CAP_SYS_MODULE", "CAP_SYS_PTRACE", "CAP_SYS_BOOT", "CAP_SYS_RAWIO", "C
 EXPOSURE_BUDGET = {name: 2.5 for name in SERVICES}
 EXPOSURE_BUDGET.update({
     "fr-apply-helper.service": 4.5,
+    "fr-apply-revert.service": 4.5,
     "fr-firewall.service": 4.5,
     "fr-schedule-check.service": 4.5,
     "fr-update-helper.service": 3.5,

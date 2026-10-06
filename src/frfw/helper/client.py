@@ -60,8 +60,28 @@ def ping(socket_path: Path = paths.APPLY_SOCKET_PATH) -> dict:
     return send_command({"cmd": "ping"}, socket_path)
 
 
-def apply_config(dry_run: bool = False, socket_path: Path = paths.APPLY_SOCKET_PATH) -> dict:
-    return send_command({"cmd": "apply", "dry_run": dry_run}, socket_path)
+def apply_config(dry_run: bool = False, socket_path: Path = paths.APPLY_SOCKET_PATH, *,
+                 confirm: bool = False, user: str = "") -> dict:
+    # An apply restarts services and may wait for Kea or the resolver:
+    # longer than a status query.
+    return send_command({"cmd": "apply", "dry_run": dry_run, "confirm": confirm, "user": user},
+                        socket_path, timeout=120.0)
+
+
+def apply_status(socket_path: Path = paths.APPLY_SOCKET_PATH) -> dict:
+    return send_command({"cmd": "apply_status"}, socket_path, timeout=3.0)
+
+
+def apply_confirm(pending_id: str, socket_path: Path = paths.APPLY_SOCKET_PATH) -> dict:
+    return send_command({"cmd": "apply_confirm", "id": pending_id}, socket_path, timeout=120.0)
+
+
+def apply_revert(socket_path: Path = paths.APPLY_SOCKET_PATH) -> dict:
+    return send_command({"cmd": "apply_revert"}, socket_path, timeout=120.0)
+
+
+def restore_rejected(socket_path: Path = paths.APPLY_SOCKET_PATH) -> dict:
+    return send_command({"cmd": "restore_rejected"}, socket_path)
 
 
 def rollback(socket_path: Path = paths.APPLY_SOCKET_PATH) -> dict:

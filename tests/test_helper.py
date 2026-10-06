@@ -9,6 +9,7 @@ kernel nftables state.
 
 from __future__ import annotations
 
+import json
 import subprocess
 import threading
 from pathlib import Path
@@ -17,6 +18,7 @@ import pytest
 import yaml
 
 from frfw import adblock as adblock_mod
+from frfw import apply_confirm, paths
 from frfw import apply as apply_mod
 from frfw import bruteforce as bruteforce_mod
 from frfw import conntrack as conntrack_mod
@@ -624,3 +626,72 @@ def test_refresh_adblock_writes_categories_and_reports_counts(running_server, tm
     assert response["ok"] is True, response
     assert response["category_counts"] == {"ads": 1, "malware": 1}
     assert (tmp_path / "adblock.d" / "malware.hosts").read_text().endswith("0.0.0.0 bad.example\n")
+
+
+# --- an apply held for confirmation (ROADMAP SEC-26, frfw.apply_confirm) -----------------
+
+
+@pytest.fixture
+def helper(running_server, tmp_path):
+    from frfw.helper import client
+
+    config_path = tmp_path / "config.yaml"
+
+    def edit(**changes):
+        raw = yaml.safe_load(config_path.read_text())
+        raw.update(changes)
+        config_path.write_text(yaml.safe_dump(raw))
+
+    return client, running_server, config_path, edit
+
+
+def test_the_helper_holds_an_apply_from_the_webui_and_refuses_another(helper, _never_touch_the_hosts_pending_apply):
+    client, sock, config_path, edit = helper
+    first = client.apply_config(socket_path=sock, confirm=True, user="boss")
+    assert first["ok"] and "pending" not in first, "nothing applied before it to go back to"
+    edit(hostname="changed")
+    held = client.apply_config(socket_path=sock, confirm=True, user="boss")
+    assert held["ok"] and held["message"].startswith("Applied -- confirm it within 300 s")
+    assert held["pending"]["by"] == "boss" and held["pending"]["remaining"] > 290
+    assert _never_touch_the_hosts_pending_apply == [1]
+    again = client.apply_config(socket_path=sock, confirm=True, user="boss")
+    assert not again["ok"] and "waiting for confirmation" in again["message"]
+    status = client.apply_status(sock)
+    assert status["pending"] == {**held["pending"], "remaining": status["pending"]["remaining"]}
+    assert "hostname" not in json.dumps(status), "the previous config stays root's"
+
+
+def test_the_helper_confirms_by_id_only(helper):
+    client, sock, _, edit = helper
+    client.apply_config(socket_path=sock, confirm=True)
+    edit(hostname="changed")
+    held = client.apply_config(socket_path=sock, confirm=True)["pending"]
+    assert not client.apply_confirm("0" * 16, sock)["ok"]
+    assert client.apply_confirm(held["id"], sock)["ok"]
+    assert client.apply_status(sock)["pending"] is None
+    assert client.apply_config(socket_path=sock, confirm=True)["ok"], "a confirmed apply blocks nothing"
+
+
+def test_the_helper_goes_back_on_request(helper, monkeypatch):
+    client, sock, config_path, edit = helper
+    alerts = []
+    monkeypatch.setattr(apply_confirm, "_alert", alerts.append)
+    client.apply_config(socket_path=sock, confirm=True)
+    before = config_path.read_text()
+    edit(hostname="changed")
+    client.apply_config(socket_path=sock, confirm=True)
+    reply = client.apply_revert(sock)
+    assert reply["ok"] and "the admin went back" in reply["message"]
+    assert config_path.read_text() == before and paths.APPLIED_CONFIG_PATH.read_text() == before
+    assert client.apply_status(sock) == {"ok": True, "pending": None, "rejected": True}
+    assert len(alerts) == 1
+    assert client.restore_rejected(sock)["ok"] and "hostname: changed" in config_path.read_text()
+
+
+def test_an_apply_without_confirm_is_not_held(helper):
+    """`firewall-cli` and the boot apply directly; only the webUI asks."""
+    client, sock, _, edit = helper
+    client.apply_config(socket_path=sock)
+    edit(hostname="changed")
+    assert "pending" not in client.apply_config(socket_path=sock)
+    assert client.apply_status(sock)["pending"] is None

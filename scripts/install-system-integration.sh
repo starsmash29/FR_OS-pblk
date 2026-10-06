@@ -85,6 +85,7 @@ if [[ -d "$REPO_ROOT/systemd" ]]; then
     install -m 0644 "$REPO_ROOT/systemd/fr-firewall.service" "$SYSTEMD_DIR/"
     install -m 0644 "$REPO_ROOT/systemd/fr-apply-helper.socket" "$SYSTEMD_DIR/"
     install -m 0644 "$REPO_ROOT/systemd/fr-apply-helper.service" "$SYSTEMD_DIR/"
+    install -m 0644 "$REPO_ROOT/systemd/fr-apply-revert.service" "$SYSTEMD_DIR/"
     install -m 0644 "$REPO_ROOT/systemd/fr-webui.service" "$SYSTEMD_DIR/"
     install -m 0644 "$REPO_ROOT/systemd/fr-initial-password.path" "$SYSTEMD_DIR/"
     install -m 0644 "$REPO_ROOT/systemd/fr-initial-password.service" "$SYSTEMD_DIR/"

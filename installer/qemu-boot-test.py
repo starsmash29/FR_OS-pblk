@@ -20,8 +20,12 @@ https://192.168.1.1/ over the tap, as a LAN client does.
    second boot still works, a setting changed through the webUI is on the
    persistence partition afterwards. The first sign-in goes through
    first-run setup (own username and password), after which the generated
-   password is gone from the console. At its end a config is saved that
-   names a device the VM doesn't have; its apply changes nothing.
+   password is gone from the console. The Apply of the webUI's changes
+   is held until it is confirmed, and is confirmed from the dashboard;
+   a second one -- the LAN address moved -- is not, and the router goes
+   back by itself at the deadline (ROADMAP SEC-26). At its end a config
+   is saved that names a device the VM doesn't have; its apply changes
+   nothing.
 4. Fourth boot: config.yaml can't be applied (that device), so the router
    comes up with the config last applied in full, says so, raises a
    security alert, and the webUI is reachable (ROADMAP SEC-5).
@@ -106,6 +110,9 @@ ZTNA_USERNAME = "fieldworker"
 ZTNA_PASSWORD = "otter-harbor-lamp-71"
 #: An interface on a device the VM doesn't have, saved in boot 3: its
 #: apply is refused, and boot 4 can't apply config.yaml (ROADMAP SEC-5).
+#: ROADMAP SEC-26: where an apply the boot test doesn't confirm moves the
+#: LAN address -- in the same subnet, so the DHCP pool stays valid.
+MOVED_LAN_ADDRESS = "192.168.1.3"
 SPARE_DEVICE = "ens9"
 SPARE_ADDRESS = "10.250.0.1/24"
 DISK_SIZE = 2 * 2**30
@@ -569,6 +576,19 @@ def wait_for_rebind(timeout: float) -> bool:
             return True
         except OSError:
             time.sleep(1)
+    return False
+
+
+def wait_until_unreachable(host: str, timeout: float) -> bool:
+    """Whether the webUI stops answering at `host` within `timeout` -- an
+    apply that moved it restarts it a few seconds later (ROADMAP SEC-26)."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            socket.create_connection((host, WEBUI_PORT), timeout=3).close()
+        except OSError:
+            return True
+        time.sleep(1)
     return False
 
 
@@ -1058,6 +1078,13 @@ def run(args: argparse.Namespace) -> int:
         check(wait_for_rebind(boot_timeout), f"the restarted webUI answers on the VPN's address {VPN_ADDRESS} "
               "(security-lessons K5)")
         wait_for_webui(opener, boot_timeout)
+        # ROADMAP SEC-26: the apply waits for confirmation -- from here,
+        # through the new ruleset and the restarted webUI.
+        check("confirm it within 300 s" in applied, "the Apply is held until it is confirmed (ROADMAP SEC-26)")
+        held = re.search(r'action="/apply/confirm".*?name="id" value="([0-9a-f]+)"', get(opener, "/"), re.S)
+        confirmed = urllib.parse.unquote_plus(post(opener, "/apply/confirm", {"id": held.group(1)})) if held else ""
+        check("Apply confirmed" in confirmed and "waiting for confirmation" not in get(opener, "/"),
+              "...the dashboard confirms it, and the router keeps it")
         allowed = any(tls_handshake(XDP_ALLOWED_NAME) for _ in range(3))
         check(allowed, "a TLS handshake naming an allowed host gets through the XDP filter")
         check(allowed and not tls_handshake(XDP_BLOCKED_NAME),
@@ -1090,6 +1117,23 @@ def run(args: argparse.Namespace) -> int:
         check(bound is not None and tap_mac in bound.group(1) and "badge-green" in status_page,
               f"a ZTNA sign-in is bound to the signing-in device's MAC, {tap_mac} (ROADMAP SEC-6)"
               + ("" if bound else ": " + " ".join(status_page.split())[:300]))
+        # ROADMAP SEC-26: an apply nobody confirms -- the LAN address
+        # moved -- goes back by itself at its deadline: the webUI answers
+        # at the old address again, and says the apply was reverted.
+        post(opener, "/interfaces/save", {"name": "lan", "device": "ens4", "zone": "lan",
+                                          "address": f"{MOVED_LAN_ADDRESS}/24"})
+        try:
+            post(opener, "/apply", {})
+        except OSError:
+            pass  # the answer may not make it: the address it came in on is gone, as for a real admin
+        gone = wait_until_unreachable(WEBUI_HOST, 60)
+        check(gone, f"...the router left {WEBUI_HOST} for {MOVED_LAN_ADDRESS} (FR-NEW-005)")
+        back = gone and wait_for_webui(opener, 300 + boot_timeout) is not None
+        check(back, f"...and, unconfirmed, went back to {WEBUI_HOST} by itself (fr-apply-revert.service)")
+        if back:
+            dashboard = get(opener, "/")
+            check("An apply was not confirmed" in dashboard and "Load it to fix it" in dashboard,
+                  "...and the dashboard says so, with the unconfirmed config kept")
         # ROADMAP SEC-5: a config that can't be applied on this machine (a
         # device it doesn't have) changes nothing -- the ZTNA session in the
         # running ruleset is still there. It stays saved for boot 4.
@@ -1142,6 +1186,15 @@ def run(args: argparse.Namespace) -> int:
         check("Started" in timer, "the periodic update check (fr-update-check.timer) is armed (security-lessons G10)")
         check("IPv4 forwarding" in journal(upper, "-b", "-u", "fr-firewall.service"),
               "the boot-time apply turned IPv4 forwarding on (the router routes)")
+        reverted = journal(upper, "-b", "-u", "fr-apply-revert.service")
+        check("was not confirmed (no confirmation within 300 s)" in reverted,
+              "fr-apply-revert.service reverted the unconfirmed apply in its sandbox (ROADMAP SEC-26)")
+        if "was not confirmed" not in reverted:
+            print_journal(upper, "fr-apply-revert.service", "-b")
+        check("was not confirmed" in audit_log.read_text(), "...and that is a security alert")
+        check((upper / "etc" / "fr_os" / "config.rejected.yaml").exists()
+              and MOVED_LAN_ADDRESS in (upper / "etc" / "fr_os" / "config.rejected.yaml").read_text(),
+              "...which kept the unconfirmed config for the admin")
 
     # ROADMAP SEC-15: the stick, checked from "another computer" -- the
     # host -- with this checkout's keys: clean; then an implant is planted

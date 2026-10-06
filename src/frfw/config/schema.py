@@ -492,10 +492,14 @@ class ManagementConfig:
     zone that isn't internet-facing (see frfw.management.internet_zones).
     `allow_wan`: the explicit opt-in to also allow the internet-facing
     zones. Off by default; the webUI warns while it is on (a VPN such as
-    WireGuard is the better way to manage a router remotely)."""
+    WireGuard is the better way to manage a router remotely).
+    `confirm_apply_seconds`: how long an Apply from the webUI waits to be
+    confirmed before the router goes back to the config applied before it
+    (ROADMAP SEC-26, frfw.apply_confirm); 0 turns that off."""
 
     zones: tuple[str, ...] = ()
     allow_wan: bool = False
+    confirm_apply_seconds: int = 300
 
 
 @dataclass(frozen=True)
