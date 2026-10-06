@@ -447,5 +447,7 @@ def try_prepared(*, boot_dir: Path, state_path: Path = paths.KERNEL_UPDATE_STATE
     status = kernel_boot.status(boot_dir_path=boot_dir)
     if status.staged == version and status.state == kernel_boot.FAILED:
         raise KernelUpdateError(f"kernel {version} already failed its trial boot here")
-    kernel_boot.stage(Path(prepared["kernel"]), Path(prepared["initrd"]), version, boot_dir=boot_dir)
+    # ROADMAP SEC-23: what works now must work again on its trial boot.
+    kernel_boot.stage(Path(prepared["kernel"]), Path(prepared["initrd"]), version, boot_dir=boot_dir,
+                      expect=kernel_boot.current_expectations())
     return version

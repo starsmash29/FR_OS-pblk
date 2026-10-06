@@ -3071,6 +3071,24 @@ in a strict sandbox: `CAP_NET_ADMIN` only, writes nothing but
 or reboots: the reboot is one explicit `systemctl reboot` for the one
 case, not `FailureAction=`.
 
+**What worked must work again** (ROADMAP SEC-23, review v0.2.1
+FR-NEW-003). Those checks catch a kernel that loses a NIC's driver, not
+one that keeps the driver and breaks the link, the XDP filter, WireGuard
+or Kea. So when a kernel is staged -- "Try it" (the update-helper) or
+`firewall-cli kernel stage` -- the router records what works at that
+moment, next to the kernel (`staged/expect.json`): the applied config's
+ports that have a link, its addresses that are there, the XDP filter's
+attachments, the WireGuard tunnel if up, and which FR_OS services and
+servers run (`kernel_boot.expectations`). The trial must show each of
+them again, read with `ip -j` and `systemctl is-active` inside the same
+sandbox; what fails is named ("ens4 had a link before the trial and has
+none now"). A record, not the config: a port without a cable or a
+service the admin had stopped doesn't fail a good kernel. A kernel
+staged without one (from another computer) is checked against what the
+applied config turns on -- its addresses up, XDP, WireGuard -- without
+links or services. A confirmed trial's journal line says what it was
+checked for.
+
 A kernel that hangs instead of panicking is reset by the hardware
 watchdog, when the machine has one: `systemd/watchdog-fr_os.conf`
 (`RuntimeWatchdogSec=30s`), installed by both installers. Then GRUB sees

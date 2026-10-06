@@ -992,7 +992,9 @@ def _cmd_kernel_stage(args: argparse.Namespace) -> int:
     if path is None:
         return 1
     try:
-        kernel_boot.stage(args.kernel, args.initrd, args.version, boot_dir=path)
+        # ROADMAP SEC-23: what works now must work again on its trial boot.
+        kernel_boot.stage(args.kernel, args.initrd, args.version, boot_dir=path,
+                          expect=kernel_boot.current_expectations())
     except (kernel_boot.KernelBootError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
