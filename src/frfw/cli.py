@@ -737,7 +737,9 @@ def _cmd_detect_wan_lan(args: argparse.Namespace) -> int:
     there is no safe choice), line 2 says why (ROADMAP SEC-8). The LAN's
     address is outside the network the WAN's DHCP server offered (ROADMAP
     NET-12). Exit 1 without a choice."""
-    choice = netdetect.choose_wan_lan(netdetect.list_interfaces(), netdetect.dhcp_offer)
+    # The links are read after the probe, which is what sets the ports up
+    # (ROADMAP NET-13).
+    choice = netdetect.choose_wan_lan(netdetect.list_interfaces(), netdetect.dhcp_offer, netdetect.has_link)
     if not (choice.wan and choice.lan):
         print("")
         print(choice.basis)

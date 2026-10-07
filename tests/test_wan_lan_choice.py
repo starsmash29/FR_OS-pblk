@@ -177,6 +177,45 @@ def test_assign_interfaces_puts_the_lan_and_its_pool_where_it_is_told(tmp_path, 
     assert not (tmp_path / "other.yaml").exists()
 
 
+# --- NET-13: the LAN is the port with a link, read after the probe ----------------
+#
+# On real hardware (an onboard port to the ISP box, a PCIe card to the
+# laptop, a dual-port QSFP card with nothing in it) the LAN came out as
+# the QSFP port: the links were read before the probe set the ports up,
+# none had one yet, and the LAN fell back to the first port by name.
+
+
+def test_the_links_are_read_after_the_probe_and_the_lan_is_the_port_with_one():
+    done = []
+
+    def answers(name):
+        time.sleep(0.05)
+        done.append(name)
+        return ipaddress.IPv4Network("192.168.1.0/24") if name == "enp4s0" else None
+
+    def link(name):
+        assert len(done) == 4, "a link read before the probe set the ports up"
+        return name in ("enp4s0", "enp3s0")
+
+    ports = [_iface(n, link_up=False) for n in ("enp2s0", "enp2s0d1", "enp3s0", "enp4s0")]
+    choice = netdetect.choose_wan_lan(ports, answers, link)
+    assert (choice.wan, choice.lan) == ("enp4s0", "enp3s0")
+    assert "the LAN is enp3s0, the port with a link" in choice.basis
+    assert "ports: enp2s0 no link, enp2s0d1 no link, enp3s0 link, enp4s0 link" in choice.basis
+
+
+def test_with_no_other_port_linked_the_console_says_to_check_the_cabling():
+    choice = netdetect.choose_wan_lan([_iface("enp2s0"), _iface("enp4s0")],
+                                      lambda name: name == "enp4s0", lambda name: name == "enp4s0")
+    assert choice.lan == "enp2s0" and "no other port has a link -- check the cabling" in choice.basis
+
+
+def test_with_no_dhcp_server_anywhere_the_linked_ports_go_first():
+    choice = netdetect.choose_wan_lan([_iface(n) for n in ("eno1", "eno2", "eno3")],
+                                      lambda name: False, lambda name: name != "eno1")
+    assert (choice.wan, choice.lan) == ("eno2", "eno3") and "eno1 no link" in choice.basis
+
+
 # --- the probe against a real DHCP server ---------------------------------------
 
 NS = "frw-upstream"
@@ -201,9 +240,12 @@ def ports(request, tmp_path):
         subprocess.run(cmd, check=True, capture_output=True)
 
     subprocess.run(["ip", "netns", "del", NS], capture_output=True)
-    for dev in ("frw0", "frw2"):
+    for dev in ("frw0", "frw2", "frw-a"):
         subprocess.run(["ip", "link", "del", dev], capture_output=True)
     sh("ip", "netns", "add", NS)
+    # NET-13: a port with nothing at the other end (its peer stays down),
+    # first by name.
+    sh("ip", "link", "add", "frw-a", "type", "veth", "peer", "name", "frw-b", "netns", NS)
     sh("ip", "link", "add", "frw0", "type", "veth", "peer", "name", "frw1", "netns", NS)
     sh("ip", "link", "add", "frw2", "type", "veth", "peer", "name", "frw3", "netns", NS)
     sh("ip", "-n", NS, "addr", "add", f"{net}.1/24", "dev", "frw1")
@@ -221,7 +263,7 @@ def ports(request, tmp_path):
         server.terminate()
         server.wait(timeout=5)
         subprocess.run(["ip", "netns", "del", NS], capture_output=True)
-        for dev in ("frw0", "frw2"):
+        for dev in ("frw0", "frw2", "frw-a"):
             subprocess.run(["ip", "link", "del", dev], capture_output=True)
 
 
@@ -248,3 +290,17 @@ def test_a_real_server_s_offer_moves_the_lan_out_of_its_network(ports, lan):
     offered = netdetect.dhcp_offer("frw0", timeout=2, attempts=2)
     assert offered is not None and offered.prefixlen == 24
     assert skeleton.lan_address_avoiding([offered]) == lan
+
+
+@pytest.mark.skipif(_skip_reason() is not None, reason=str(_skip_reason()))
+def test_real_ports_listed_down_get_their_links_read_after_the_probe(ports):
+    """NET-13 with real ports, listed before anything set them up -- as
+    first boot lists them: the LAN is the one cabled to something, not the
+    first by name."""
+    listed = [iface for iface in netdetect.list_interfaces() if iface.name.startswith("frw")]
+    assert [iface.name for iface in listed] == ["frw-a", "frw0", "frw2"]
+    assert not any(iface.link_up for iface in listed), "the ports were up before the probe"
+    choice = netdetect.choose_wan_lan(
+        listed, lambda name: netdetect.dhcp_offer(name, timeout=1, attempts=2), netdetect.has_link)
+    assert (choice.wan, choice.lan) == ("frw0", "frw2")
+    assert "frw-a no link" in choice.basis and "frw2 link" in choice.basis
