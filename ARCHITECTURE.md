@@ -4287,6 +4287,16 @@ command line, a filesystem labelled `persistence` holding a
   LAN's range (a new ISP box) is the admin's to fix on the Interfaces
   screen. The QEMU boot test's upstream is 192.168.1.0/24 with its
   router at .1, as on that Telekom line.
+- The LAN is the port with a link, read after the probe (ROADMAP NET-13).
+  The links used to be read when the ports were listed -- before the
+  probe sets them up, so none had one yet, and the LAN fell back to the
+  first port by name. On real hardware (an onboard port to the ISP box, a
+  PCIe card to the laptop, a dual-port QSFP card with nothing in it) that
+  was the empty QSFP port, and the laptop sat on an unassigned port whose
+  DHCP requests the firewall dropped. `choose_wan_lan` now asks
+  `netdetect.has_link` after the probe; with no DHCP answer anywhere the
+  ports with a link come first too. The console and the first-boot log
+  list every port and whether it had a link.
 
 ## Open decisions
 

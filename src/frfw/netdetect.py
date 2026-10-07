@@ -272,8 +272,15 @@ class WanLanChoice:
     wan_network: ipaddress.IPv4Network | None = None
 
 
+def has_link(device: str, sysfs_net: Path = DEFAULT_SYSFS_NET) -> bool:
+    """Whether `device` has a link right now (its carrier)."""
+    return _read_carrier(sysfs_net / validate.ifname(device)) is True
+
+
 def choose_wan_lan(
-    interfaces: list[DetectedInterface], answers: Callable[[str], object]
+    interfaces: list[DetectedInterface],
+    answers: Callable[[str], object],
+    link: Callable[[str], bool] | None = None,
 ) -> WanLanChoice:
     """Which port is the WAN and which the LAN, for first boot.
 
@@ -284,26 +291,41 @@ def choose_wan_lan(
       on a network that already has a server is the mistake this exists
       to prevent; the admin assigns the ports.
     - None does (a static or PPPoE upstream, a modem still booting): the
-      old order, first port WAN, second LAN -- said plainly, so the
-      console tells the admin to check the cabling.
+      ports with a link first, then port order: the first WAN, the second
+      LAN -- said plainly, so the console tells the admin to check the
+      cabling.
 
     `answers` says whether a DHCP server answers on a port: anything
     true, ideally the offered network (`dhcp_offer`), which the choice
-    keeps for the WAN."""
+    keeps for the WAN. `link` says whether a port has a link, asked
+    *after* `answers` (ROADMAP NET-13): the probe is what sets a port up,
+    and before it a port that is cabled has no link yet -- the LAN used
+    to be the first port by name, a cardless QSFP port rather than the
+    one the laptop was in. Default: the link `interfaces` was listed with.
+    The basis lists every port and whether it had a link."""
     names = [iface.name for iface in interfaces]
     if len(names) < 2:
         return WanLanChoice(None, None, f"{len(names)} network port(s): nothing to choose")
     with ThreadPoolExecutor(max_workers=len(names)) as pool:
         answered = dict(zip(names, pool.map(answers, names)))
+    listed = {iface.name: bool(iface.link_up) for iface in interfaces}
+    linked = {name: bool(link(name)) if link else listed[name] for name in names}
+    ports = "ports: " + ", ".join(f"{name} {'link' if linked[name] else 'no link'}" for name in names)
     offering = [name for name in names if answered[name]]
     if len(offering) == 1:
         wan = offering[0]
-        others = [iface for iface in interfaces if iface.name != wan]
-        lan = next((iface.name for iface in others if iface.link_up), others[0].name)
+        others = [name for name in names if name != wan]
+        with_link = [name for name in others if linked[name]]
+        lan = with_link[0] if with_link else others[0]
+        why_lan = (f"the LAN is {lan}, " + ("the port with a link" if len(with_link) == 1 else
+                                          f"the first of {len(with_link)} ports with a link" if with_link else
+                                          "by port order: no other port has a link -- check the cabling"))
         offered = answered[wan] if isinstance(answered[wan], ipaddress.IPv4Network) else None
-        return WanLanChoice(wan, lan, f"a DHCP server answered on {wan} only", offered)
+        return WanLanChoice(wan, lan, f"a DHCP server answered on {wan} only; {why_lan} ({ports})", offered)
     if offering:
         return WanLanChoice(None, None, f"DHCP servers answered on {', '.join(offering)}: "
-                                        "not putting the LAN where one already runs")
-    return WanLanChoice(names[0], names[1],
-                        "no DHCP server answered on any port: chosen by port order -- check the cabling")
+                                        f"not putting the LAN where one already runs ({ports})")
+    ordered = [name for name in names if linked[name]] + [name for name in names if not linked[name]]
+    return WanLanChoice(ordered[0], ordered[1],
+                        "no DHCP server answered on any port: chosen by link, then port order -- "
+                        f"check the cabling ({ports})")
