@@ -75,6 +75,7 @@ import re
 import shutil
 import socket
 import ssl
+import stat
 import struct
 import subprocess
 import sys
@@ -305,6 +306,19 @@ ExecStart=ip link set dev ens4 down
 [Install]
 WantedBy=multi-user.target
 """
+
+
+def dump_upper(disk: Path, label: str) -> None:  # SEC-22 survey, temporary
+    with persistence_partition(disk) as upper:
+        print(f"=== upper listing: {label}")
+        for path in sorted(upper.rglob("*")):
+            st = path.lstat()
+            kind = "d" if stat.S_ISDIR(st.st_mode) else "l" if stat.S_ISLNK(st.st_mode) else \
+                "c" if stat.S_ISCHR(st.st_mode) else "f"
+            if kind == "d" and any(True for _ in path.iterdir()):
+                continue
+            target = f" -> {os.readlink(path)}" if kind == "l" else ""
+            print(f"UPPER {kind} /{path.relative_to(upper)}{target}")
 
 
 def verify_medium(disk: Path) -> dict:
@@ -1302,6 +1316,7 @@ def run(args: argparse.Namespace) -> int:
         check(kept is not None and kept.group(1).split() == ["-", VPN_ADDRESS],
               "...which kept the unconfirmed config for the admin")
 
+    dump_upper(disk, "after boot 3")
     # ROADMAP SEC-15: the stick, checked from "another computer" -- the
     # host -- with this checkout's keys: clean; then an implant is planted
     # on the persistence partition, which the check must find, and which
@@ -1355,6 +1370,7 @@ def run(args: argparse.Namespace) -> int:
 
     run_kernel_trials(check, workdir, disk, Path(args.iso), kvm, uefi, boot_timeout)
     run_kernel_update_from_the_webui(check, workdir, disk, Path(args.iso), kvm, uefi, boot_timeout)
+    dump_upper(disk, "at the end")
 
     print()
     if check.failures:
