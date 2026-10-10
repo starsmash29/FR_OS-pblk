@@ -32,12 +32,18 @@ with its version, its state and the SHA256 of its files. It is not part
 of the signed release, so it is shown, not judged: compare the hashes
 with the Debian package it came from.
 
-It checks FR_OS's own files, not the rest of the system: a change an
-attacker made elsewhere in the persistence layer (a systemd unit, another
-program, an SSH key) is not reported (review v0.2.1 #3).
+The rest of the persistence layer is listed too (ROADMAP SEC-22, review
+v0.2.1 #3): every file it adds to, changes in or removes from the image
+outside FR_OS's own files and what a router writes by itself (its config,
+state and logs: frfw.integrity.PERSISTENCE_EXPECTED) -- a systemd unit,
+another program, an SSH key, a patched Debian file. A Debian file copied
+up unchanged (same bytes, mode and owner as the image's) is not a change.
+The image itself is compared with nothing: it is read from the same
+stick.
 
-Exit status: 0 = every file matches the signed release, 1 = files were
-changed, added or are missing, 2 = it could not be verified.
+Exit status: 0 = every file matches the signed release and the
+persistence layer holds nothing unexpected, 1 = files were changed, added
+or are missing, 2 = it could not be verified.
 """
 
 from __future__ import annotations
@@ -169,6 +175,8 @@ def verify(lower: Path, upper: Path, *, keys: list[Path], release_dir: Path | No
 
     result = integrity.compare_with_release(view, source, package_dir=package_dir, xdp_object=XDP_OBJECT,
                                             pyc_tag=pyc_tag)
+    elsewhere = integrity.persistence_changes(
+        lower, upper, own_files=integrity.release_targets(source, xdp_object=XDP_OBJECT), pyc_tag=pyc_tag)
     return {
         "staged_kernel": staged_kernel(upper.parent / kernel_boot.BOOT_DIR_NAME),
         "version": version,
@@ -177,8 +185,9 @@ def verify(lower: Path, upper: Path, *, keys: list[Path], release_dir: Path | No
         "modified": result.modified,
         "missing": result.missing,
         "added": result.added,
-        "unchecked_pyc": result.unchecked_pyc,
+        "unchecked_pyc": result.unchecked_pyc + elsewhere.unchecked_pyc,
         "pyc_tag": pyc_tag,
+        "unexpected": [list(item) for item in elsewhere.changes],
     }
 
 
@@ -224,7 +233,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"could not verify: {exc}", file=sys.stderr)
         return 2
 
-    changed = result["modified"] or result["missing"] or result["added"]
+    changed = result["modified"] or result["missing"] or result["added"] or result["unexpected"]
     if args.json:
         print(json.dumps(result))
     else:
@@ -242,9 +251,14 @@ def main(argv: list[str] | None = None) -> int:
         if result["unchecked_pyc"]:
             print(f"  {result['unchecked_pyc']} compiled files are for {result['pyc_tag']}, not this Python: "
                   "not checked (run this with the router's Python, 3.11, to check them too)")
-        print("CHANGED: files of FR_OS don't match the signed release" if changed
+        for what, path in result["unexpected"]:
+            print(f"  unexpected on the persistence partition, {what}: {path}")
+        own = result["modified"] or result["missing"] or result["added"]
+        print("CHANGED: files of FR_OS don't match the signed release" if own
               else "OK: every file of FR_OS matches the signed release")
-        print("(FR_OS's own files only: the rest of the system -- units, other programs, keys -- is not checked)")
+        print(f"CHANGED: the persistence partition changes {len(result['unexpected'])} other files of the system"
+              if result["unexpected"] else
+              "OK: the persistence partition changes nothing else but the router's config, state and logs")
     return 1 if changed else 0
 
 

@@ -16,7 +16,8 @@ it out, compiled by this Python, the units, the scripts, the XDP program.
   wheel built from the tarball (needs the network for the build backend);
 - the offline check, scripts/verify-medium.py, on an image and a
   persistence layer as overlayfs keeps them: whiteouts, opaque
-  directories, a key that isn't this checkout's.
+  directories, a key that isn't this checkout's, and an attacker's files
+  outside FR_OS's own (SEC-22, tests/test_persistence_changes.py).
 """
 
 from __future__ import annotations
@@ -293,6 +294,23 @@ def test_the_offline_check_finds_what_the_persistence_layer_changed(medium):
     assert code == 1
     assert result["added"] == [f"{PACKAGE}/zz_implant.py"]
     assert result["modified"] == [f"{PACKAGE}/cli.py"]
+
+
+def test_the_offline_check_finds_an_attackers_files_outside_fr_os(medium):
+    """ROADMAP SEC-22 (review v0.2.1 #3): a unit, a program and an SSH key
+    the persistence layer adds outside FR_OS's files are reported, and
+    the medium no longer passes; the router's own config is not."""
+    xdp = medium["lower"] / "usr/local/share/fr_os/bpf/xdp_sni_filter.o"
+    xdp.parent.mkdir(parents=True, exist_ok=True)
+    xdp.write_bytes(b"\x7fELF fake xdp program")
+    for path in ("etc/systemd/system/backdoor.service", "root/.ssh/authorized_keys", "etc/fr_os/config.yaml"):
+        (medium["upper"] / path).parent.mkdir(parents=True, exist_ok=True)
+        (medium["upper"] / path).write_text("x\n")
+    code, result = _verify(medium)
+    assert code == 1
+    assert result["unexpected"] == [["added", "/etc/systemd/system/backdoor.service"],
+                                    ["added", "/root/.ssh/authorized_keys"]]
+    assert not result["modified"] and not result["added"] and not result["missing"]
 
 
 def test_the_medium_cant_send_the_check_out_of_itself_through_a_link(medium, tmp_path):

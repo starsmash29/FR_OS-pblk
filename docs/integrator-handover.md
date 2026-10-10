@@ -51,6 +51,7 @@ State and working agreements for the next session of the integrating agent
 | #81 | NET-13 | First boot reads port links *after* the DHCP probe. The LAN is the port with a link; the console lists every port and its link |
 | #84 | P5-1, FND-2 | `docs/hardware.md`: the owner's box, verified |
 | #85 | FND-4 | `firmware-realtek` in the image |
+| #86 | NET-14 | Console port summary (`fr-console-ports`): every port's link, role and address, live; warns about a misplaced LAN cable, never moves a role |
 
 ## Hardware test (owner's box): passed
 
@@ -66,7 +67,6 @@ State and working agreements for the next session of the integrating agent
 
 ## Open, candidates for next
 
-- **SEC-22:** integrity checks cover FR_OS's own files only.
 - **FND-4:** Realtek firmware (`firmware-realtek`) is in the image (Partly). Other vendors' NIC firmware is still out.
 - **P5-1 / FND-2:** the owner's box is recorded in `docs/hardware.md` (Partly). Add boxes as they are tested.
 - **P4-2:** XDP performance on 10G/40G in native mode. The ConnectX-3 Pro pair is available.
