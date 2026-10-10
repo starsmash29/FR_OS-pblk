@@ -1250,6 +1250,10 @@ def run(args: argparse.Namespace) -> int:
         with image_root(args.iso) as root:
             check(nftables_unit_masked(root, upper),
                   "Debian's nftables.service is masked, and persistence didn't unmask it")
+            # ROADMAP FND-4: Realtek NICs that need rtl_nic firmware
+            # work out of the box.
+            check(any((root / "lib" / "firmware" / "rtl_nic").glob("rtl8168*")),
+                  "the image carries the Realtek NIC firmware (lib/firmware/rtl_nic)")
         check(not journal(upper, "-u", "nftables.service").strip(), "...and it never ran, on any boot")
         audit_log = upper / "var" / "log" / "fr_os" / "audit.log"
         check(audit_log.exists() and audit_log.stat().st_uid == 0 and audit_log.stat().st_mode & 0o777 == 0o640

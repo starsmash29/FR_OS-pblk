@@ -2,7 +2,7 @@
 
 State and working agreements for the next session of the integrating agent
 (Claude Code), so work picks up where it stopped. Last updated 2026-10-10,
-`main` at `e021a80`.
+`main` at `bf85765`.
 
 ## How the owner and the integrator work
 
@@ -66,7 +66,7 @@ State and working agreements for the next session of the integrating agent
 
 - **Console:** show a short port/link summary on the console after first boot too, not only in the first-boot reason line. Small, NET-13 follow-up.
 - **SEC-22:** integrity checks cover FR_OS's own files only.
-- **FND-4:** non-free NIC firmware in the image (some Realtek revisions want `rtl_nic`).
+- **FND-4:** Realtek firmware (`firmware-realtek`) is in the image (Partly). Other vendors' NIC firmware is still out.
 - **P5-1 / FND-2:** the owner's box is recorded in `docs/hardware.md` (Partly). Add boxes as they are tested.
 - **P4-2:** XDP performance on 10G/40G in native mode. The ConnectX-3 Pro pair is available.
 - **Unverified (SEC-28):** GRO merging on a physical NIC in generic mode is reasoned from the kernel source, not reproduced. veth didn't merge in the lab.

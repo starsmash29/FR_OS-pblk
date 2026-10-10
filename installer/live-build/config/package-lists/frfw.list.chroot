@@ -31,3 +31,10 @@ unattended-upgrades
 # not have loaded even with its program compiled.
 bpftool
 libbpf1
+# ROADMAP FND-4: firmware for Realtek NICs (rtl_nic/). Many Realtek
+# revisions (RTL8125, the later RTL8168s) need it to work at all, or to
+# work properly, and they are the commonest NICs in the homelab boxes
+# FR_OS targets. Listed explicitly because live-build's own firmware
+# collection is off (auto/config); it is from non-free-firmware, which the
+# archive areas already include.
+firmware-realtek

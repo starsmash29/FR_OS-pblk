@@ -40,5 +40,5 @@ was SR-IOV); after that Linux saw the card.
 **Not yet verified on this box:**
 - Generic-mode XDP with GRO turned off on `r8169` (SEC-28, `XdpState.gro_off`).
 - The ConnectX-3 Pro under load, and native-mode XDP on it (P4-2).
-- Whether any Realtek revision here needs the non-free `rtl_nic` firmware
-  (FND-4); both ports worked without it.
+- Whether any Realtek revision here needs the non-free `rtl_nic` firmware;
+  both ports worked without it, on an image from before FND-4 put it in.
