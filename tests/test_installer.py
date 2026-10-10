@@ -54,6 +54,16 @@ def test_package_list_has_core_dependencies():
         assert expected in packages
 
 
+def test_the_image_carries_realtek_nic_firmware():
+    """ROADMAP FND-4: live-build's own firmware collection is off, so the
+    Realtek NIC firmware is listed explicitly, from non-free-firmware."""
+    packages = set((LIVE_BUILD_DIR / "config" / "package-lists" / "frfw.list.chroot").read_text().split())
+    assert "firmware-realtek" in packages
+    config = (LIVE_BUILD_DIR / "auto" / "config").read_text()
+    assert '--archive-areas "main contrib non-free non-free-firmware"' in config
+    assert "--firmware-chroot false" in config
+
+
 def test_the_image_is_built_with_debian_security_updates():
     """Review FR-003/C-02: this live-build writes a security suite that
     doesn't exist (hence --security false), so bookworm-security comes

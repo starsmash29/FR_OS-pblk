@@ -1371,7 +1371,7 @@ issues #17 and #18). The R-numbers are that record's.
 | FND-1 | IPv6 (rules, NAT66/NPTv6 where needed, DHCPv6/RA, XDP) | Dual-stack networks; today FR_OS is IPv4-only (the generated ruleset drops IPv6 neighbour discovery) | Planned |
 | FND-2 | Validation on physical hardware (reference boxes) | A tested hardware list to buy from | Partly (= P5-1): one box in `docs/hardware.md` |
 | FND-3 | Signed Secure Boot chain (shim + signed GRUB/kernel) | Boots with Secure Boot on, as corporate policy requires | Planned |
-| FND-4 | Non-free NIC firmware in the image | Realtek and other NICs that need firmware work out of the box | Planned |
+| FND-4 | Non-free NIC firmware in the image | Realtek and other NICs that need firmware work out of the box | Partly: Realtek (`firmware-realtek`, `rtl_nic/`) is in the image, listed in `installer/live-build/config/package-lists/frfw.list.chroot` (live-build's own firmware collection stays off, `auto/config`); `tests/test_installer.py`, and the boot test checks the image carries it. Other vendors' firmware (Intel, Broadcom, …) is not in yet |
 | FND-5 | Install to disk (besides live + persistence) | A conventional installed system on an internal SSD; also lets the kernel update in place (SEC-14) | Planned (persistence on an internal disk exists) |
 
 ### Connectivity and routing
