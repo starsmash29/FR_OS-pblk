@@ -6,9 +6,8 @@ playbooks for the defensive security work the ROADMAP calls for.
 
 Skills live here, in the repository, because a cloud Claude Code session
 loads `.claude/skills/` from the clone but does **not** install plugins that
-`.claude/settings.json` enables. Skills that need their upstream scripts to
-work are therefore not vendored; they are offered as pinned plugins instead
-(see "Plugins" below).
+`.claude/settings.json` enables. Only skills that work as prose alone are
+taken; see "Not taken" below.
 
 ## Rules for everything here
 
@@ -70,27 +69,17 @@ FR_OS's own VLAN segmentation is ever needed, the defensive counterpart lives
 in `implementing-network-segmentation-with-firewall-zones` and the real
 on-the-wire coverage is in `tests/test_xdp_live.py` (SEC-16).
 
-## Plugins (local sessions only)
+## Not taken
 
-`.claude/settings.json` declares an inline marketplace, `fr-os-reviewed`, and
-enables six Trail of Bits plugins from it, each pinned to the reviewed commit
-`442fc9d6c89b1e937e6f7a477e7071ea75fcbea4` by `sha`. These need their
-upstream scripts or subagents, so they are plugins rather than vendored prose:
+Six Trail of Bits plugins were reviewed at the same commit and would be
+useful (`static-analysis`, `insecure-defaults`, `sharp-edges`,
+`differential-review`, `c-review`, `supply-chain-risk-auditor`), but they
+need their upstream scripts or subagents, so they could only be offered as
+plugins, and those would load on a local machine only. The owner chose to
+add only what every session, cloud included, gets (2026-10-10). The repo
+therefore enables no plugins.
 
-| Plugin | Use in FR_OS | Note |
-|---|---|---|
-| `static-analysis` | Semgrep and CodeQL over `src/frfw/`, SARIF output | Needs `semgrep` / `codeql` installed at a pinned version. Its scan script always passes `--metrics=off`. |
-| `insecure-defaults` | Fail-open defaults, fallback secrets, debug features | Runs as a multi-agent workflow, so one run can cost many tokens. |
-| `sharp-edges` | Footgun APIs and dangerous config in Python and C | Uses its `sharp-edges-analyzer` agent. |
-| `differential-review` | Security review of a PR or diff | Uses its `adversarial-modeler` agent. |
-| `c-review` | The XDP programs in `bpf/` | Local Python scripts, no network. |
-| `supply-chain-risk-auditor` | Risk of the dependencies in `requirements.lock` | Sends package names and versions to public APIs (OSV, PyPI, deps.dev, GitHub, OpenSSF Scorecard) and runs `pip-audit`; reads a `gh` token if one exists and sends it only to api.github.com. A developer-machine tool; G11 concerns the router. |
-
-Enabling a plugin in a project file does not install it: each person installs
-it once with `/plugin install <name>@fr-os-reviewed`, after trusting the
-folder. Cloud sessions do not install project plugins at all.
-
-Deliberately **not** offered, though in the same Trail of Bits repository:
+Two others in the same repository must not be added even locally:
 `modern-python` (its SessionStart hook puts shims on `PATH` that refuse
 `pip install` and `python3 script.py`, which breaks the `pip` /
 `requirements.lock` workflow of docs/RELEASING.md) and `gh-cli` (it
@@ -100,5 +89,4 @@ not have).
 ## Updating
 
 Re-copy from a newer upstream commit, read every changed file, and update
-the commit in the table above (and the `sha` in `.claude/settings.json` for
-plugins). Keep leaving out scripts.
+the commit in the table above. Keep leaving out scripts.

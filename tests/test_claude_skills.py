@@ -1,10 +1,10 @@
-"""The agent skills and plugins this repo hands to Claude Code stay reviewed.
+"""The agent skills this repo hands to Claude Code stay reviewed.
 
 `.claude/skills/` holds third-party prose that every contributor's agent
-loads, and `.claude/settings.json` points at third-party plugins. Both are a
-supply-chain surface (security-lessons G11, AGENTS.md "Never install anything
+loads, and a plugin enabled in `.claude/settings.json` would pull in
+third-party code. Both are a supply-chain surface (security-lessons G11, AGENTS.md "Never install anything
 unpinned"), so the rules in `.claude/skills/VENDOR.md` are checked here: prose
-only, every skill accounted for, every plugin pinned to a reviewed commit.
+only, every skill accounted for, install commands pinned, no plugins enabled.
 """
 
 from __future__ import annotations
@@ -22,10 +22,6 @@ VENDOR = SKILLS / "VENDOR.md"
 
 SKILL_DIRS = sorted(p for p in SKILLS.iterdir() if p.is_dir())
 NAME_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
-SHA_RE = re.compile(r"[0-9a-f]{40}\Z")
-
-# Trail of Bits plugins that conflict with this repo (VENDOR.md, "Plugins").
-FORBIDDEN_PLUGINS = {"modern-python", "gh-cli"}
 
 # Vendored before this check existed; VENDOR.md names it as an open exception.
 # Do not add to this list: pin the command in the skill instead.
@@ -93,26 +89,11 @@ def test_skills_never_install_unpinned():
     assert not offenders, offenders
 
 
-def test_settings_only_declare_plugins():
+def test_no_plugins_are_enabled():
+    """Only vendored skills, which every session loads; no plugins (VENDOR.md,
+    "Not taken"). Enabling one is a separate, reviewed decision."""
+    if not SETTINGS.exists():
+        return
     settings = json.loads(SETTINGS.read_text(encoding="utf-8"))
-    # Hooks or permission grants in a shared file run for every contributor;
-    # adding them is a separate, reviewed decision.
-    assert set(settings) <= {"extraKnownMarketplaces", "enabledPlugins"}
-
-
-def test_plugins_are_pinned_to_a_reviewed_commit():
-    settings = json.loads(SETTINGS.read_text(encoding="utf-8"))
-    declared = {}
-    for name, market in settings["extraKnownMarketplaces"].items():
-        source = market["source"]
-        # An inline marketplace: a remote one could change what it lists.
-        assert source["source"] == "settings" and source["name"] == name
-        for plugin in source["plugins"]:
-            src = plugin["source"]
-            assert SHA_RE.match(src.get("sha", "")), plugin["name"]
-            assert src["sha"] in VENDOR.read_text(encoding="utf-8")
-            declared[f"{plugin['name']}@{name}"] = plugin["name"]
-    for key, enabled in settings["enabledPlugins"].items():
-        assert key in declared, f"{key} is not from a pinned marketplace"
-        assert declared[key] not in FORBIDDEN_PLUGINS
-        assert f"`{declared[key]}`" in VENDOR.read_text(encoding="utf-8")
+    for key in ("enabledPlugins", "extraKnownMarketplaces", "additionalMarketplaces"):
+        assert not settings.get(key), key
