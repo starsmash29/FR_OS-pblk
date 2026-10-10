@@ -114,8 +114,8 @@
 # - `--firmware-chroot/--firmware-binary false`: with firmware on, this
 #   snapshot downloads dists/<dist>/Contents-amd64.gz, which Debian no
 #   longer publishes there (now under main/) -- a 404 that fails the
-#   build. NICs that need non-free firmware (some Realtek chips) are a
-#   known gap until firmware packages are listed explicitly.
+#   build. Firmware the router needs is listed explicitly instead, in
+#   config/package-lists/frfw.list.chroot (firmware-realtek, ROADMAP FND-4).
 # - `--initramfs live-boot` rather than "auto"; `--win32-loader false`.
 # - `--iso-preparer` as a plain string: the default is a literal
 #   "live-build $VERSION; ...", which make-hybrid-uefi-iso.sh (sourcing
