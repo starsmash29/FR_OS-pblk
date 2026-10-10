@@ -538,6 +538,14 @@ def nftables_unit_masked(root: Path, upper: Path) -> bool:
     return masked and kept
 
 
+def upper_issue(upper: Path) -> str:
+    """/etc/issue as changed on the persistence partition. Absent when
+    nothing rewrote it since first boot stopped doing so (NET-14): the
+    image's own file, which holds neither a password nor a port line."""
+    path = upper / "etc" / "issue"
+    return path.read_text() if path.exists() else ""
+
+
 def journal(upper: Path, *args: str) -> str:
     return subprocess.run(
         ["journalctl", f"--directory={upper}/var/log/journal", "--no-pager", "-o", "cat", *args],
@@ -556,7 +564,7 @@ def print_journal(upper: Path, unit: str, *boot: str) -> None:
 #: FR_OS services that must be running after a boot, each in its systemd
 #: sandbox (security-lessons I1).
 #: (fr-apply-helper is socket-activated: it starts on first use.)
-LONG_RUNNING = ("fr-webui", "fr-ai-ids", "fr-appid", "fr-tls-fp", "fr-xdp-sni-logger")
+LONG_RUNNING = ("fr-webui", "fr-ai-ids", "fr-appid", "fr-tls-fp", "fr-xdp-sni-logger", "fr-console-ports")
 
 
 def check_sandboxed_services(check, upper: Path, *boot: str) -> None:
@@ -1022,8 +1030,19 @@ def run(args: argparse.Namespace) -> int:
         password = match.group(1) if match else ""
         check(console.exists() and console.stat().st_mode & 0o077 == 0 and console.stat().st_uid == 0,
               "...in a root-only file")
-        check(bool(password) and password not in (upper / "etc" / "issue").read_text(),
+        check(bool(password) and password not in upper_issue(upper),
               "...and not in the world-readable /etc/issue")
+        # NET-13 follow-up: every port, its link and role, and the webUI's
+        # address on the console, from fr-console-ports -- not a line
+        # first boot wrote once into /etc/issue.
+        ports = upper / "etc" / "issue.d" / "fr_os-ports.issue"
+        ports_text = ports.read_text() if ports.exists() else ""
+        port_lines = {line.split()[0]: line for line in ports_text.splitlines()[1:] if line.startswith("  ")}
+        check("WAN" in port_lines.get("ens3", "") and "LAN" in port_lines.get("ens4", "")
+              and "link" in port_lines.get("ens4", "") and "webUI: https://" in ports_text,
+              "the console lists every port with its link and role, and the webUI's address (fr_os-ports.issue)")
+        check("FR_OS webUI:" not in upper_issue(upper),
+              "...and first boot no longer writes a one-off line into /etc/issue")
         check((upper / "etc" / "fr_os" / "config.yaml").exists(), "config.yaml is on the persistence partition")
         # A DHCP client on the LAN port flushed the router's own address on
         # the boots after this one (live-boot used to put one on every port).
@@ -1226,7 +1245,7 @@ def run(args: argparse.Namespace) -> int:
         this_boot = journal(upper, "-b", "-u", "fr-first-boot.service")
         check("running initial setup" not in this_boot, "fr-first-boot did not run again")
         check(not (upper / "etc" / "issue.d" / "fr_os-initial-admin.issue").exists()
-              and password not in (upper / "etc" / "issue").read_text(),
+              and password not in upper_issue(upper),
               "once changed in the webUI, the initial password is gone from the console")
         config = (upper / "etc" / "fr_os" / "config.yaml").read_text()
         check("Europe/Budapest" in config, "a change made in the webUI was saved to the persistence partition")

@@ -101,6 +101,8 @@ ROOT = {
     "fr-first-boot.service": "one-time machine setup",
     "fr-persistence-setup.service": "partitions the boot medium",
     "fr-initial-password.service": "rewrites the root-only console notice",
+    "fr-console-ports.service": "reads the applied config (root's, 0600) and rewrites root's console notice; "
+                                "no capability at all, no IP traffic",
     "fr-update-helper.service": "installs a verified release",
     "fr-update-check.service": "checks for releases; may install a verified security release (opt-in)",
     "fr-tls-fp.service": "opens a pinned BPF map, then drops to fr_os-sensor (frfw.privdrop)",

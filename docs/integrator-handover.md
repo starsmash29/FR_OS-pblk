@@ -49,6 +49,8 @@ State and working agreements for the next session of the integrating agent
 | #79 | SEC-28 | XDP checks a followed segment's TCP checksum. It drops hellos it can't follow (>16 segments, 30 s, >2048 bytes), and turns GRO off where the filter runs in generic mode (`XdpState.gro_off`). Measured on the 6.1 verifier: split ≈64.5k, main ≈756k instructions |
 | #80 | NET-12 | LAN default `10.73.1.1/24`, moved out of the upstream's DHCP-offered network (fallbacks `172.29.73.1/24`, `192.168.173.1/24`). The boot test's upstream is `192.168.1.0/24` |
 | #81 | NET-13 | First boot reads port links *after* the DHCP probe. The LAN is the port with a link; the console lists every port and its link |
+| #84 | P5-1, FND-2 | `docs/hardware.md`: the owner's box, verified |
+| #85 | FND-4 | `firmware-realtek` in the image |
 
 ## Hardware test (owner's box): passed
 
@@ -64,7 +66,6 @@ State and working agreements for the next session of the integrating agent
 
 ## Open, candidates for next
 
-- **Console:** show a short port/link summary on the console after first boot too, not only in the first-boot reason line. Small, NET-13 follow-up.
 - **SEC-22:** integrity checks cover FR_OS's own files only.
 - **FND-4:** Realtek firmware (`firmware-realtek`) is in the image (Partly). Other vendors' NIC firmware is still out.
 - **P5-1 / FND-2:** the owner's box is recorded in `docs/hardware.md` (Partly). Add boxes as they are tested.

@@ -89,6 +89,7 @@ if [[ -d "$REPO_ROOT/systemd" ]]; then
     install -m 0644 "$REPO_ROOT/systemd/fr-webui.service" "$SYSTEMD_DIR/"
     install -m 0644 "$REPO_ROOT/systemd/fr-initial-password.path" "$SYSTEMD_DIR/"
     install -m 0644 "$REPO_ROOT/systemd/fr-initial-password.service" "$SYSTEMD_DIR/"
+    install -m 0644 "$REPO_ROOT/systemd/fr-console-ports.service" "$SYSTEMD_DIR/"
     install -m 0644 "$REPO_ROOT/systemd/fr-ai-ids.service" "$SYSTEMD_DIR/"
     install -m 0644 "$REPO_ROOT/systemd/fr-iot-scan.service" "$SYSTEMD_DIR/"
     install -m 0644 "$REPO_ROOT/systemd/fr-iot-scan.timer" "$SYSTEMD_DIR/"
@@ -109,6 +110,9 @@ if [[ -d "$REPO_ROOT/systemd" ]]; then
 else
     echo "==> No systemd/ directory next to this script (live image): the units were installed when the image was built"
 fi
+
+echo "==> The console's drop-in directory (port summary, first-boot password)"
+install -d -m 0755 /etc/issue.d
 
 echo "==> Reloading systemd"
 systemctl daemon-reload
@@ -137,6 +141,7 @@ Done. Next steps:
   systemctl enable --now fr-update-helper.socket   # webUI's Update screen
   systemctl enable --now fr-adblock-refresh.timer  # daily ad-block list refresh (needs 'dnsmasq' installed)
   systemctl enable --now fr-dns-log-trim.timer     # hourly size cap for the resolver's query log
+  systemctl enable --now fr-console-ports         # ports, links and the webUI's address on the console
 
 The webUI's self-signed TLS cert is generated on its first start
 (stored under $WEBUI_STATE_DIR); your browser will warn about it until

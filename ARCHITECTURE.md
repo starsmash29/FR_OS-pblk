@@ -631,7 +631,12 @@ once, after a real (not live-demo) install/boot:
    (`frfw.initial_password`). It used to be prepended to the
    world-readable `/etc/issue` and stayed there (review triage A5); a box
    updated from v0.1.0 has that line moved out when the webUI starts.
-2. Auto-detect network interfaces
+2. Auto-detect network interfaces. Which port got which role, its link
+   and the webUI's address are not written here: `fr-console-ports.service`
+   (started in step 3) keeps them in `/etc/issue.d/fr_os-ports.issue`,
+   rewritten on every link or address change and config change
+   (`frfw.console_ports`, ROADMAP NET-14). It only shows the roles and
+   warns about a LAN cable in a port with no role; it never moves a role.
 3. Enable and start every `fr-*.service`/`.timer` unit
 4. Create a marker file so it never runs again
 
