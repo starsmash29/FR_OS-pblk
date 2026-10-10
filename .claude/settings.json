@@ -1,0 +1,74 @@
+{
+  "extraKnownMarketplaces": {
+    "fr-os-reviewed": {
+      "source": {
+        "source": "settings",
+        "name": "fr-os-reviewed",
+        "plugins": [
+          {
+            "name": "static-analysis",
+            "source": {
+              "source": "git-subdir",
+              "url": "trailofbits/skills",
+              "path": "plugins/static-analysis",
+              "sha": "442fc9d6c89b1e937e6f7a477e7071ea75fcbea4"
+            }
+          },
+          {
+            "name": "insecure-defaults",
+            "source": {
+              "source": "git-subdir",
+              "url": "trailofbits/skills",
+              "path": "plugins/insecure-defaults",
+              "sha": "442fc9d6c89b1e937e6f7a477e7071ea75fcbea4"
+            }
+          },
+          {
+            "name": "sharp-edges",
+            "source": {
+              "source": "git-subdir",
+              "url": "trailofbits/skills",
+              "path": "plugins/sharp-edges",
+              "sha": "442fc9d6c89b1e937e6f7a477e7071ea75fcbea4"
+            }
+          },
+          {
+            "name": "differential-review",
+            "source": {
+              "source": "git-subdir",
+              "url": "trailofbits/skills",
+              "path": "plugins/differential-review",
+              "sha": "442fc9d6c89b1e937e6f7a477e7071ea75fcbea4"
+            }
+          },
+          {
+            "name": "c-review",
+            "source": {
+              "source": "git-subdir",
+              "url": "trailofbits/skills",
+              "path": "plugins/c-review",
+              "sha": "442fc9d6c89b1e937e6f7a477e7071ea75fcbea4"
+            }
+          },
+          {
+            "name": "supply-chain-risk-auditor",
+            "source": {
+              "source": "git-subdir",
+              "url": "trailofbits/skills",
+              "path": "plugins/supply-chain-risk-auditor",
+              "sha": "442fc9d6c89b1e937e6f7a477e7071ea75fcbea4"
+            }
+          }
+        ]
+      }
+    }
+  },
+  "enabledPlugins": {
+    "static-analysis@fr-os-reviewed": true,
+    "insecure-defaults@fr-os-reviewed": true,
+    "sharp-edges@fr-os-reviewed": true,
+    "differential-review@fr-os-reviewed": true,
+    "c-review@fr-os-reviewed": true,
+    "supply-chain-risk-auditor@fr-os-reviewed": true
+  }
+}
