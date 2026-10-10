@@ -75,6 +75,7 @@ import re
 import shutil
 import socket
 import ssl
+import stat
 import struct
 import subprocess
 import sys
@@ -1327,9 +1328,19 @@ def run(args: argparse.Namespace) -> int:
     # own state; an attacker's unit and SSH key planted on it are found.
     check_persistence_layer(check, disk, Path(args.iso), "after boot 3")
     planted = ("etc/systemd/system/fr-boot-test-implant.service", "root/.ssh/authorized_keys")
-    with persistence_partition(disk, writable=True) as upper:
+    created = []
+    with image_root(Path(args.iso)) as lower, persistence_partition(disk, writable=True) as upper:
         for path in planted:
-            (upper / path).parent.mkdir(parents=True, exist_ok=True)
+            # Its directories as overlayfs copies them up: the image's mode
+            # and owner, so only the planted files differ from the image.
+            for parent in reversed(Path(path).parents[:-1]):
+                if not (upper / parent).exists():
+                    (upper / parent).mkdir(mode=0o700)
+                    created.append(parent)
+                    if (lower / parent).is_dir():
+                        image = (lower / parent).lstat()
+                        os.chown(upper / parent, image.st_uid, image.st_gid)
+                        os.chmod(upper / parent, stat.S_IMODE(image.st_mode))
             (upper / path).write_text("stands in for an attacker's persistence\n")
     found = unexpected_on_persistence(disk, Path(args.iso)).changes
     check(found == [("added", "/" + path) for path in sorted(planted)],
@@ -1337,6 +1348,8 @@ def run(args: argparse.Namespace) -> int:
     with persistence_partition(disk, writable=True) as upper:
         for path in planted:
             (upper / path).unlink()
+        for parent in reversed(created):
+            (upper / parent).rmdir()
     # ROADMAP SEC-15: the stick, checked from "another computer" -- the
     # host -- with this checkout's keys: clean; then an implant is planted
     # on the persistence partition, which the check must find, and which
