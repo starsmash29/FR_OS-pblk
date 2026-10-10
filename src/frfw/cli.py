@@ -64,7 +64,7 @@ import yaml
 
 from frfw import __version__, codename_for, netdetect, paths, schedule_refresh, skeleton, xdp as xdp_mod
 from frfw import accounts as accounts_mod
-from frfw import initial_password, passwords, rule_hits, rule_lint, validate
+from frfw import console_ports, initial_password, passwords, rule_hits, rule_lint, validate
 from frfw import persistence as persistence_mod
 from frfw import update as update_mod
 from frfw.adblock import AdblockError
@@ -303,6 +303,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "fr-initial-password.service runs this)",
     )
     p_initial.set_defaults(handler=_cmd_initial_password)
+
+    p_console = sub.add_parser(
+        "console-ports",
+        help="show every port's link, role and address on the console's login screen (root; "
+        "fr-console-ports.service runs this with --watch)",
+    )
+    p_console.add_argument("--print", action="store_true", help="print the summary only, write nothing")
+    p_console.add_argument("--watch", action="store_true",
+                           help="keep it current: on every link or address change, and when the config changes")
+    p_console.set_defaults(handler=_cmd_console_ports)
 
     p_accounts = sub.add_parser(
         "ensure-accounts",
@@ -860,6 +870,18 @@ def _cmd_initial_password(args: argparse.Namespace) -> int:
         print(f"fr-initial-password: moved the password line out of {initial_password.LEGACY_ISSUE_PATH}")
     if initial_password.clear_if_changed():
         print("fr-initial-password: the initial password was changed; removed it from the console")
+    return 0
+
+
+def _cmd_console_ports(args: argparse.Namespace) -> int:
+    if args.print:
+        print(console_ports.summary(), end="")
+        return 0
+    if args.watch:
+        console_ports.watch()
+        return 0
+    console_ports.refresh()
+    print(f"fr-console-ports: wrote {console_ports.ISSUE_PATH}")
     return 0
 
 

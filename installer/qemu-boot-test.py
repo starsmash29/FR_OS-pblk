@@ -556,7 +556,7 @@ def print_journal(upper: Path, unit: str, *boot: str) -> None:
 #: FR_OS services that must be running after a boot, each in its systemd
 #: sandbox (security-lessons I1).
 #: (fr-apply-helper is socket-activated: it starts on first use.)
-LONG_RUNNING = ("fr-webui", "fr-ai-ids", "fr-appid", "fr-tls-fp", "fr-xdp-sni-logger")
+LONG_RUNNING = ("fr-webui", "fr-ai-ids", "fr-appid", "fr-tls-fp", "fr-xdp-sni-logger", "fr-console-ports")
 
 
 def check_sandboxed_services(check, upper: Path, *boot: str) -> None:
@@ -1024,6 +1024,17 @@ def run(args: argparse.Namespace) -> int:
               "...in a root-only file")
         check(bool(password) and password not in (upper / "etc" / "issue").read_text(),
               "...and not in the world-readable /etc/issue")
+        # NET-13 follow-up: every port, its link and role, and the webUI's
+        # address on the console, from fr-console-ports -- not a line
+        # first boot wrote once into /etc/issue.
+        ports = upper / "etc" / "issue.d" / "fr_os-ports.issue"
+        ports_text = ports.read_text() if ports.exists() else ""
+        port_lines = {line.split()[0]: line for line in ports_text.splitlines()[1:] if line.startswith("  ")}
+        check("WAN" in port_lines.get("ens3", "") and "LAN" in port_lines.get("ens4", "")
+              and "link" in port_lines.get("ens4", "") and "webUI: https://" in ports_text,
+              "the console lists every port with its link and role, and the webUI's address (fr_os-ports.issue)")
+        check("FR_OS webUI:" not in (upper / "etc" / "issue").read_text(),
+              "...and first boot no longer writes a one-off line into /etc/issue")
         check((upper / "etc" / "fr_os" / "config.yaml").exists(), "config.yaml is on the persistence partition")
         # A DHCP client on the LAN port flushed the router's own address on
         # the boots after this one (live-boot used to put one on every port).

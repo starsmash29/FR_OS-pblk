@@ -61,6 +61,7 @@ for unit in \
     fr-webui.service \
     fr-initial-password.path \
     fr-initial-password.service \
+    fr-console-ports.service \
     fr-ai-ids.service \
     fr-iot-scan.service \
     fr-iot-scan.timer \
@@ -83,6 +84,9 @@ do
 done
 
 install -d -m 0755 /opt/fr_os/releases
+# agetty's drop-in directory: the console's port summary and the first
+# boot's password go there (frfw.console_ports, frfw.initial_password).
+install -d -m 0755 /etc/issue.d
 
 systemctl enable fr-first-boot.service
 systemctl enable fr-persistence-setup.service

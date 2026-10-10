@@ -1,0 +1,46 @@
+[Unit]
+Description=FR_OS: every port's link, role and address on the console's login screen (frfw.console_ports)
+Documentation=https://github.com/starsmash29/FR_OS-pblk
+After=fr-firewall.service
+
+[Service]
+Type=simple
+# Rewrites /etc/issue.d/fr_os-ports.issue at start, on every link or
+# address change the kernel reports, and when the applied config or the
+# webUI's addresses change; it never changes a port's role. Root without
+# a single capability: it reads root's applied config (0600) and writes
+# root's own console files, which owning them allows. In the host's
+# network namespace for the rtnetlink events, with netlink and Unix
+# sockets only and no IP traffic at all.
+ExecStart=firewall-cli console-ports --watch
+Restart=on-failure
+RestartSec=10
+CapabilityBoundingSet=
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=-/etc/issue.d -/etc/issue -/run/agetty.reload
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+IPAddressDeny=any
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+SystemCallErrorNumber=EPERM
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+
+[Install]
+WantedBy=multi-user.target

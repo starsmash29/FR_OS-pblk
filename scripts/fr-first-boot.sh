@@ -60,7 +60,6 @@ read -r WAN LAN LAN_ADDRESS <<< "${CHOICE[0]:-}" || true
 BASIS="${CHOICE[1]:-no answer from detect-wan-lan}"
 echo "fr-first-boot: WAN/LAN: $BASIS"
 
-WEBUI_HINT=""
 if [[ -n "${WAN:-}" && -n "${LAN:-}" && -n "${LAN_ADDRESS:-}" ]]; then
     firewall-cli assign-interfaces --wan "$WAN" --lan "$LAN" --lan-address "$LAN_ADDRESS" --force
     # The webUI reads the config as the unprivileged fr_os-webui user.
@@ -73,14 +72,12 @@ if [[ -n "${WAN:-}" && -n "${LAN:-}" && -n "${LAN_ADDRESS:-}" ]]; then
     # (the image boots with ip=frommedia so live-boot doesn't put one
     # back on every boot; see installer/live-build/auto/config).
     write_dhcp_clients "$WAN"
-    WEBUI_HINT="webUI: https://${LAN_ADDRESS%/*}/ from a computer on the LAN port ($LAN); WAN is $WAN ($BASIS)"
 else
     echo "fr-first-boot: no WAN/LAN assignment ($BASIS);" >&2
     echo "  run 'firewall-cli assign-interfaces' or use the webUI's Interfaces screen" >&2
     # No LAN to protect, or no safe one to pick: keep whatever there is
     # reachable over DHCP, and serve DHCP nowhere.
     write_dhcp_clients "${DEVICES[@]}"
-    WEBUI_HINT="no LAN port assigned ($BASIS) -- see 'firewall-cli assign-interfaces'"
 fi
 
 # The password goes on the console's login screen through a root-only
@@ -89,15 +86,9 @@ fi
 # once it has been changed (frfw.initial_password).
 firewall-cli set-admin-password --generate --show-on-console
 
-# Where to find the webUI is not a secret: that stays in /etc/issue.
-if [[ -n "$WEBUI_HINT" ]]; then
-    {
-        echo "FR_OS $WEBUI_HINT"
-        echo
-        cat /etc/issue 2>/dev/null || true
-    } > /etc/issue.new
-    mv /etc/issue.new /etc/issue
-fi
+# Which port is which, its link and the webUI's address go on the
+# console through fr-console-ports (started below), kept current on every
+# link change -- not a line written once here (frfw.console_ports).
 
 # Each unit on its own: one that fails to start is reported and stays
 # enabled (systemd retries it every boot), but doesn't stop the others --
@@ -118,6 +109,7 @@ for unit in \
     fr-dns-log-trim.timer \
     fr-adblock-refresh.timer \
     fr-tls-fp \
+    fr-console-ports \
     fr-update-helper.socket
 do
     systemctl enable "$unit"
