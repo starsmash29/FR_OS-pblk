@@ -1,8 +1,8 @@
 # Integrator handover
 
 State and working agreements for the next session of the integrating agent
-(Claude Code), so work picks up where it stopped. Last updated 2026-10-09,
-`main` at `5df6a97`.
+(Claude Code), so work picks up where it stopped. Last updated 2026-10-10,
+`main` at `e021a80`.
 
 ## How the owner and the integrator work
 
@@ -50,16 +50,14 @@ State and working agreements for the next session of the integrating agent
 | #80 | NET-12 | LAN default `10.73.1.1/24`, moved out of the upstream's DHCP-offered network (fallbacks `172.29.73.1/24`, `192.168.173.1/24`). The boot test's upstream is `192.168.1.0/24` |
 | #81 | NET-13 | First boot reads port links *after* the DHCP probe. The LAN is the port with a link; the console lists every port and its link |
 
-## Hardware test in progress (owner's box)
+## Hardware test (owner's box): passed
 
-- **Box:** ASRock Q1900M (J1900).
+- **Box:** ASRock Q1900M (J1900), recorded in `docs/hardware.md`.
   - Onboard Realtek r8169 `enp4s0` → Telekom router (`192.168.1.0/24`, router at `.1`): WAN.
-  - Axagon PCEE-GRF PCIe card (Realtek) `enp3s0` → laptop: intended LAN.
+  - Axagon PCEE-GRF PCIe card (Realtek) `enp3s0` → laptop: LAN. The link runs at 100 Mbit/s, the card's limit per the owner.
   - Mellanox ConnectX-3 Pro (dual QSFP, `enp2s0`/`enp2s0d1`), cable-less. Its FlexBoot *Virtualization mode* is now None (it was SR-IOV); Linux sees the card.
-- **First run with the NET-12 image:** the LAN came out as `enp2s0`, the empty QSFP port. That is the NET-13 bug, fixed in #81. The laptop's DHCP was dropped on the unassigned `enp3s0`.
-- **Next step:** the owner rewrites the stick with the ISO from run 37578866392 (NET-13; same code as `main` 5df6a97). Expected console line (Alt+F2): `LAN port (enp3s0)`, then the webUI at `https://10.73.1.1/` from the laptop.
+- **Result (2026-10-10, ISO from run 37578866392, NET-13):** the LAN came out as `enp3s0`; the laptop reached `https://10.73.1.1/`, logged in, changed the password, and has internet through the router.
 - **Not yet verified on this hardware:**
-  - the webUI and routing end to end;
   - generic-mode XDP with GRO off on r8169;
   - the ConnectX-3 under load (P4-2).
 - **Console access.** There is no console login user by design; everything goes through the webUI. The first-boot password shows on tty2 (Alt+F2).
@@ -69,6 +67,6 @@ State and working agreements for the next session of the integrating agent
 - **Console:** show a short port/link summary on the console after first boot too, not only in the first-boot reason line. Small, NET-13 follow-up.
 - **SEC-22:** integrity checks cover FR_OS's own files only.
 - **FND-4:** non-free NIC firmware in the image (some Realtek revisions want `rtl_nic`).
-- **P5-1 / FND-2:** reference hardware list. Record the owner's box once the test passes.
+- **P5-1 / FND-2:** the owner's box is recorded in `docs/hardware.md` (Partly). Add boxes as they are tested.
 - **P4-2:** XDP performance on 10G/40G in native mode. The ConnectX-3 Pro pair is available.
 - **Unverified (SEC-28):** GRO merging on a physical NIC in generic mode is reasoned from the kernel source, not reproduced. veth didn't merge in the lab.
