@@ -8,16 +8,18 @@ ConditionPathExists=/etc/fr_os/dnsmasq_ra.conf
 
 [Service]
 Type=simple
-# Never root: a dynamic account of its own, with CAP_NET_RAW alone -- the
-# ICMPv6 socket the advertisements go out on and router solicitations
-# come in on. dnsmasq runs no DNS (port=0), no DHCP (ra-only) and keeps no
-# lease file (frfw.ipv6.render_ra_conf); started as non-root it doesn't
-# try to change user itself.
+# Never root: a dynamic account of its own, with two capabilities --
+# CAP_NET_RAW for the ICMPv6 socket the advertisements go out on and
+# router solicitations come in on, CAP_NET_ADMIN because dnsmasq refuses
+# to start RA without it ("process is missing required capability
+# NET_ADMIN", found in the boot test). dnsmasq runs no DNS (port=0), no
+# DHCP (ra-only) and keeps no lease file (frfw.ipv6.render_ra_conf);
+# started as non-root it doesn't try to change user itself.
 DynamicUser=yes
 User=fr_os-ra
 Group=fr_os-ra
-AmbientCapabilities=CAP_NET_RAW
-CapabilityBoundingSet=CAP_NET_RAW
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
 ExecStart=/usr/sbin/dnsmasq --keep-in-foreground --conf-file=/etc/fr_os/dnsmasq_ra.conf
 Restart=on-failure
 # Sandbox (security-lessons I1; checked by tests/test_systemd_sandbox.py).

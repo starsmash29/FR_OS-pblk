@@ -3735,9 +3735,10 @@ the ad-block resolver's.
 - `port=0` means no DNS. In dnsmasq that also leaves the RA without a
   DNS server option, so clients keep the router's IPv4 resolver, the one
   that filters (DNS over IPv6 is FND-1c). No pid file, no lease file.
-- It runs as a dynamic account (`DynamicUser=`) with CAP_NET_RAW alone,
-  for the ICMPv6 socket. dnsmasq started as non-root doesn't change user
-  itself.
+- It runs as a dynamic account (`DynamicUser=`) with two capabilities:
+  CAP_NET_RAW for the ICMPv6 socket, and CAP_NET_ADMIN, without which
+  dnsmasq refuses to start RA (found in the boot test). dnsmasq started
+  as non-root doesn't change user itself.
 - An apply runs `dnsmasq --test` on the new config before it replaces
   the old one, and restarts the instance only when the config changed.
 - Why not radvd: dnsmasq is already in the image, and its `constructor:`

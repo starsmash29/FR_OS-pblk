@@ -126,8 +126,9 @@ UNPRIVILEGED = {
 #: The unprivileged services that need a capability beyond binding a low
 #: port, and why.
 UNPRIVILEGED_CAPABILITIES = {
-    # The ICMPv6 socket Router Advertisements go out on (ROADMAP FND-1b).
-    "fr-ra.service": {"CAP_NET_RAW"},
+    # The ICMPv6 socket Router Advertisements go out on, and dnsmasq's own
+    # check before it starts RA (ROADMAP FND-1b).
+    "fr-ra.service": {"CAP_NET_RAW", "CAP_NET_ADMIN"},
 }
 
 #: Never in any service's capability bounding set.
@@ -226,13 +227,14 @@ def test_root_services_have_a_reason():
             assert ROOT.get(name), f"{name} runs as root without a reason in ROOT"
 
 
-def test_the_router_advertisements_run_as_a_dynamic_account_with_raw_sockets_alone():
+def test_the_router_advertisements_run_as_a_dynamic_account_with_network_capabilities_alone():
     """ROADMAP FND-1b: fr-ra never runs as root -- dnsmasq started as
-    non-root doesn't change user -- and holds CAP_NET_RAW only."""
+    non-root doesn't change user -- and holds CAP_NET_RAW and the
+    CAP_NET_ADMIN dnsmasq insists on for RA, nothing else."""
     settings = service_section("fr-ra.service")
     assert one(settings, "DynamicUser") == "yes"
-    assert one(settings, "AmbientCapabilities") == "CAP_NET_RAW"
-    assert one(settings, "CapabilityBoundingSet") == "CAP_NET_RAW"
+    assert one(settings, "AmbientCapabilities") == "CAP_NET_RAW CAP_NET_ADMIN"
+    assert one(settings, "CapabilityBoundingSet") == "CAP_NET_RAW CAP_NET_ADMIN"
     from frfw import ipv6
 
     # Writes nothing: no pid file, no lease file.

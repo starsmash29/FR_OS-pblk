@@ -25,7 +25,8 @@ discovery included. With `ipv6.enabled`:
   renumbered prefix is advertised as it changes) and does nothing else --
   no DNS (`port=0`, which also leaves the RA without a DNS server option:
   the LAN keeps the router's IPv4 resolver, FND-1c), no DHCPv4, no DHCPv6
-  (`ra-only`). It runs as a dynamic account with CAP_NET_RAW alone.
+  (`ra-only`). It runs as a dynamic account with CAP_NET_RAW and the
+  CAP_NET_ADMIN dnsmasq insists on for RA, nothing else.
 - **The kernel** takes no Router Advertisement on any interface
   (`accept_ra=0`: dhcpcd reads the WAN's itself), follows no redirect,
   and routes IPv6 (`forwarding=1`) only while a LAN zone gets it.
