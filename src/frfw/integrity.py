@@ -430,6 +430,12 @@ PERSISTENCE_EXPECTED: tuple[str, ...] = (
     "/etc/rc[06S].d/[KS]01hwclock.sh",
     # State, caches, leases and logs.
     "/var/cache/debconf/*",
+    # Debian's daily timers on a router that stays up (logrotate, apt-daily,
+    # dpkg-db-backup, man-db): seen or expected after the first days.
+    "/var/lib/logrotate/status",
+    "/var/backups/**",
+    "/var/cache/apt/**", "/var/lib/apt/lists/**", "/var/lib/apt/periodic/**",
+    "/var/cache/man/**",
     "/var/lib/dbus/machine-id",
     "/var/lib/dhcp/dhclient.*.leases",
     "/var/lib/kea/**",
