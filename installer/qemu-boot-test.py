@@ -1624,7 +1624,10 @@ def run(args: argparse.Namespace, provider: Isp) -> int:
         dhcp6 = journal(upper, "-b", "-u", "fr-dhcp6.service")
         check("Started" in dhcp6, "dhcpcd (fr-dhcp6) ran in its sandbox once IPv6 was turned on (ROADMAP FND-1a)")
         if "Started" not in dhcp6 or "Failed" in dhcp6 or IPV6_FAILED:
-            print_journal(upper, "fr-dhcp6.service", "-b", lines=120)
+            print("    --- journal of fr-dhcp6.service (from its start) ---")
+            text = journal(upper, "-b", "-u", "fr-dhcp6.service", "-o", "short-monotonic")
+            for line in [l for l in text.splitlines() if "No such process" not in l][:80]:
+                print(f"    {line}")
         dropped_events = xdp_blocked_events(upper)
         check(any('"action": "drop"' in line for line in dropped_events),
               "the dropped ClientHello is in the XDP SNI event file (ROADMAP P4-1, SEC-4)")
