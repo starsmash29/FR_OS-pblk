@@ -259,6 +259,11 @@ def medium(tmp_path, tarball, signer):
     lower, upper = tmp_path / "lower", tmp_path / "upper"
     _install(lower, tarball)
     _release(lower / "opt/fr_os/releases" / VERSION, tarball, signer)
+    # The accounts files every image has (frfw.system_files, SEC-29).
+    (lower / "etc").mkdir(exist_ok=True)
+    (lower / "etc/passwd").write_text("root:x:0:0:root:/root:/bin/bash\n")
+    (lower / "etc/shadow").write_text("root:*:19000:0:99999:7:::\n")
+    (lower / "etc/group").write_text("root:x:0:\n")
     upper.mkdir()
     return {"lower": lower, "upper": upper, "keys": release_signing.TRUSTED_KEYS_DIR}
 
@@ -311,6 +316,33 @@ def test_the_offline_check_finds_an_attackers_files_outside_fr_os(medium):
     assert result["unexpected"] == [["added", "/etc/systemd/system/backdoor.service"],
                                     ["added", "/root/.ssh/authorized_keys"]]
     assert not result["modified"] and not result["added"] and not result["missing"]
+
+
+def test_the_offline_check_judges_the_accounts_and_names_who_can_log_in(medium):
+    """ROADMAP SEC-29: a second uid-0 account is a finding; an SSH user the
+    admin added is listed, and accepted once named with --login-ok."""
+    xdp = medium["lower"] / "usr/local/share/fr_os/bpf/xdp_sni_filter.o"
+    xdp.parent.mkdir(parents=True, exist_ok=True)
+    xdp.write_bytes(b"\x7fELF fake xdp program")
+    etc = medium["upper"] / "etc"
+    etc.mkdir()
+    (etc / "passwd").write_text("root:x:0:0:root:/root:/bin/bash\nkolos:x:1000:1000::/home/kolos:/bin/bash\n")
+    (etc / "shadow").write_text("root:*:19000:0:99999:7:::\nkolos:!:20000::::::\n")
+    (etc / "group").write_text("root:x:0:\nfr_os-ssh:x:995:kolos\n")
+    keys = medium["upper"] / "home/kolos/.ssh/authorized_keys"
+    keys.parent.mkdir(parents=True)
+    keys.write_text("ssh-ed25519 AAAA kolos\n")
+    code, result = _verify(medium)
+    assert code == 1 and result["logins"] == ["kolos: SSH key"]
+    assert any(f.startswith("kolos can log in") for f in result["system_files"])
+    assert ["added", "/home/kolos/.ssh/authorized_keys"] in result["unexpected"]
+    code, result = _verify(medium, "--login-ok", "kolos")
+    assert code == 0, result
+    assert result["system_files"] == [] and result["unexpected"] == [] and result["logins"] == ["kolos: SSH key"]
+
+    (etc / "passwd").write_text((etc / "passwd").read_text() + "toor:x:0:0::/root:/bin/sh\n")
+    code, result = _verify(medium, "--login-ok", "kolos")
+    assert code == 1 and "/etc/passwd: toor has uid 0" in result["system_files"]
 
 
 def test_the_medium_cant_send_the_check_out_of_itself_through_a_link(medium, tmp_path):

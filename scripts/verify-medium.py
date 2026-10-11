@@ -41,6 +41,14 @@ up unchanged (same bytes, mode and owner as the image's) is not a change.
 The image itself is compared with nothing: it is read from the same
 stick.
 
+The content of the Debian files the router changes by itself is judged
+too (ROADMAP SEC-29, frfw.system_files): a new or changed account, a
+password on a locked one, a member added to a privileged group, who can
+log in (FR_OS has no login but the webUI: name an SSH user you added
+yourself with `--login-ok NAME`), and any line in sshd_config,
+/etc/pam.d/login or FR_OS's sshd drop-ins that neither live-config nor
+FR_OS writes.
+
 Exit status: 0 = every file matches the signed release and the
 persistence layer holds nothing unexpected, 1 = files were changed, added
 or are missing, 2 = it could not be verified.
@@ -60,7 +68,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "src"))
 
-from frfw import integrity, kernel_boot, release_signing  # noqa: E402
+from frfw import integrity, kernel_boot, release_signing, system_files  # noqa: E402
 
 XDP_OBJECT = "/usr/local/share/fr_os/bpf/xdp_sni_filter.o"
 RELEASES = "/opt/fr_os/releases"
@@ -140,7 +148,8 @@ def mounted_medium(target: Path):
                 subprocess.run(["losetup", "-d", device], capture_output=True)
 
 
-def verify(lower: Path, upper: Path, *, keys: list[Path], release_dir: Path | None = None) -> dict:
+def verify(lower: Path, upper: Path, *, keys: list[Path], release_dir: Path | None = None,
+           login_ok: frozenset[str] = frozenset()) -> dict:
     view = integrity.OverlayView(lower, upper)
     package_dirs = sorted({str(p.relative_to(layer)) for layer in (upper, lower)
                            for p in layer.glob("usr/local/lib/python3*/dist-packages/frfw") if p.is_dir()})
@@ -175,8 +184,12 @@ def verify(lower: Path, upper: Path, *, keys: list[Path], release_dir: Path | No
 
     result = integrity.compare_with_release(view, source, package_dir=package_dir, xdp_object=XDP_OBJECT,
                                             pyc_tag=pyc_tag)
+    # An SSH user the admin named: their home is theirs (SEC-29).
+    expected = integrity.PERSISTENCE_EXPECTED + tuple(f"/home/{name}/**" for name in sorted(login_ok))
     elsewhere = integrity.persistence_changes(
-        lower, upper, own_files=integrity.release_targets(source, xdp_object=XDP_OBJECT), pyc_tag=pyc_tag)
+        lower, upper, own_files=integrity.release_targets(source, xdp_object=XDP_OBJECT), pyc_tag=pyc_tag,
+        expected=expected)
+    accounts = system_files.check(lower, upper, login_ok=login_ok)
     return {
         "staged_kernel": staged_kernel(upper.parent / kernel_boot.BOOT_DIR_NAME),
         "version": version,
@@ -188,6 +201,8 @@ def verify(lower: Path, upper: Path, *, keys: list[Path], release_dir: Path | No
         "unchecked_pyc": result.unchecked_pyc + elsewhere.unchecked_pyc,
         "pyc_tag": pyc_tag,
         "unexpected": [list(item) for item in elsewhere.changes],
+        "system_files": accounts.findings,
+        "logins": accounts.logins,
     }
 
 
@@ -212,6 +227,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--key", type=Path, action="append",
                         help="a trusted release public key (default: this checkout's src/frfw/release_keys/)")
     parser.add_argument("--release", type=Path, help="take the release files from this directory")
+    parser.add_argument("--login-ok", action="append", default=[], metavar="NAME",
+                        help="an account you gave SSH access yourself: its login is not a finding (repeatable)")
     parser.add_argument("--json", action="store_true", help="print the result as JSON")
     args = parser.parse_args(argv)
     if (args.medium is None) == (args.lower is None):
@@ -221,11 +238,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.medium is not None:
             with mounted_medium(args.medium) as (lower, upper):
-                result = verify(lower, upper, keys=keys, release_dir=args.release)
+                result = verify(lower, upper, keys=keys, release_dir=args.release, login_ok=frozenset(args.login_ok))
         else:
             if args.upper is None:
                 parser.error("--lower needs --upper")
-            result = verify(args.lower, args.upper, keys=keys, release_dir=args.release)
+            result = verify(args.lower, args.upper, keys=keys, release_dir=args.release,
+                            login_ok=frozenset(args.login_ok))
     except VerifyError as exc:
         if args.json:
             print(json.dumps({"error": str(exc)}))
@@ -233,7 +251,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"could not verify: {exc}", file=sys.stderr)
         return 2
 
-    changed = result["modified"] or result["missing"] or result["added"] or result["unexpected"]
+    changed = (result["modified"] or result["missing"] or result["added"] or result["unexpected"]
+               or result["system_files"])
     if args.json:
         print(json.dumps(result))
     else:
@@ -253,12 +272,17 @@ def main(argv: list[str] | None = None) -> int:
                   "not checked (run this with the router's Python, 3.11, to check them too)")
         for what, path in result["unexpected"]:
             print(f"  unexpected on the persistence partition, {what}: {path}")
+        for finding in result["system_files"]:
+            print(f"  system file: {finding}")
+        print("  can log in: " + (", ".join(result["logins"]) or "nobody (the webUI is the way in)"))
         own = result["modified"] or result["missing"] or result["added"]
         print("CHANGED: files of FR_OS don't match the signed release" if own
               else "OK: every file of FR_OS matches the signed release")
         print(f"CHANGED: the persistence partition changes {len(result['unexpected'])} other files of the system"
               if result["unexpected"] else
               "OK: the persistence partition changes nothing else but the router's config, state and logs")
+        print(f"CHANGED: {len(result['system_files'])} findings in the accounts, sshd and PAM files"
+              if result["system_files"] else "OK: the accounts, sshd and PAM files hold what FR_OS and live-config put there")
     return 1 if changed else 0
 
 
