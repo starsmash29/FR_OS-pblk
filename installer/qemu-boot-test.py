@@ -91,7 +91,7 @@ from pathlib import Path
 # the router does (ROADMAP SEC-14) -- from this checkout, as
 # scripts/verify-medium.py uses it.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from frfw import integrity, kernel_boot  # noqa: E402
+from frfw import integrity, kernel_boot, system_files  # noqa: E402
 
 #: The router's LAN address, reached over the host's tap device.
 WEBUI_HOST = "10.73.1.1"
@@ -319,6 +319,11 @@ def unexpected_on_persistence(disk: Path, iso: Path) -> integrity.PersistenceRep
         return integrity.persistence_changes(lower, upper, own_files=own, pyc_tag="cpython-311")
 
 
+def system_file_findings(disk: Path, iso: Path) -> system_files.SystemFilesReport:
+    with image_root(iso) as lower, persistence_partition(disk) as upper:
+        return system_files.check(lower, upper)
+
+
 def check_persistence_layer(check, disk: Path, iso: Path, when: str) -> None:
     report = unexpected_on_persistence(disk, iso)
     listed = ", ".join(f"{what} {path}" for what, path in report.changes[:20])
@@ -326,6 +331,11 @@ def check_persistence_layer(check, disk: Path, iso: Path, when: str) -> None:
           f"{when}, the persistence layer changes nothing outside FR_OS's files and the router's own state "
           f"(ROADMAP SEC-22; {report.unchecked_pyc} compiled Debian modules not checked by this Python)"
           + (f": {listed}" if listed else ""))
+    accounts = system_file_findings(disk, iso)
+    problems = accounts.findings[:10] + [f"can log in: {login}" for login in accounts.logins]
+    check(not problems,
+          "...its accounts, sshd and PAM files hold only what FR_OS and live-config put there, and nobody "
+          "can log in but through the webUI (ROADMAP SEC-29)" + (f": {'; '.join(problems)}" if problems else ""))
 
 
 def verify_medium(disk: Path) -> dict:
@@ -1345,7 +1355,19 @@ def run(args: argparse.Namespace) -> int:
     found = unexpected_on_persistence(disk, Path(args.iso)).changes
     check(found == [("added", "/" + path) for path in sorted(planted)],
           f"...and finds a unit and an SSH key planted on it (ROADMAP SEC-22): {found}")
+    # ROADMAP SEC-29: the key lets root log in, and a second uid-0
+    # account added to /etc/passwd is found.
     with persistence_partition(disk, writable=True) as upper:
+        passwd = (upper / "etc/passwd").read_text()
+        (upper / "etc/passwd").write_text(passwd + "toor:x:0:0::/root:/bin/sh\n")
+    accounts = system_file_findings(disk, Path(args.iso))
+    # (toor shares root's home, so the key lets it in too)
+    check("/etc/passwd: toor has uid 0" in accounts.findings
+          and accounts.logins == ["root: SSH key", "toor: SSH key"],
+          f"...and that root can log in with the key, and a second uid-0 account (ROADMAP SEC-29): "
+          f"{accounts.findings} {accounts.logins}")
+    with persistence_partition(disk, writable=True) as upper:
+        (upper / "etc/passwd").write_text(passwd)
         for path in planted:
             (upper / path).unlink()
         for parent in reversed(created):

@@ -1252,11 +1252,18 @@ reported and fails the check. A Debian file copied up unchanged is not a
 change; a compiled Debian module (Python writes `__pycache__` on first
 use) must hold exactly the code of its source in the image. The expected
 set is what the boot test's router writes, and the boot test checks it
-stays complete. What it leaves: the Debian files the router changes
-itself (`/etc/passwd`, `sshd_config`, ...) are expected, so their content
-is not judged; the image is read from the same stick, so a changed
-squashfs is not found; and the router's own check (System screen,
-`firewall-cli integrity`) still covers FR_OS's files only, and says so.
+stays complete. The Debian files the router changes itself are expected
+there, and their content is judged by `frfw.system_files` (ROADMAP
+SEC-29), against the image's copy: no account but the image's and
+FR_OS's, no changed uid, shell or home, no password on a locked account,
+no member added to a privileged group, and in `sshd_config`,
+`/etc/pam.d/login`, `/etc/fstab` and FR_OS's sshd drop-ins no line that
+live-config, live-boot or FR_OS doesn't write. It lists who can log in --
+nobody by default, the webUI is the way in -- and an SSH user the admin
+added is accepted only by name (`--login-ok`). What it leaves: the image
+is read from the same stick, so a changed squashfs is not found; and the
+router's own check (System screen, `firewall-cli integrity`) still covers
+FR_OS's files only, and says so.
 The offline check treats the medium as
 untrusted (review v0.2.1 #2): it mounts it `nodev,nosuid,noexec` and
 `nosymfollow` where the kernel has it, and never reads through a

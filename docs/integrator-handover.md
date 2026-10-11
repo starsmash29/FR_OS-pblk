@@ -54,6 +54,7 @@ State and working agreements for the next session of the integrating agent
 | #85 | FND-4 | `firmware-realtek` in the image |
 | #86 | NET-14 | Console port summary (`fr-console-ports`): every port's link, role and address, live; warns about a misplaced LAN cable, never moves a role |
 | #87 | SEC-22 | verify-medium reports what the persistence layer adds or changes outside FR_OS's files and the router's own state |
+| #88 | SEC-15 | The record check reports a deleted file on any Python (`Distribution.files` hides them since 3.12) |
 
 ## Hardware test (owner's box): passed
 
