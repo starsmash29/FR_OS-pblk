@@ -26,6 +26,7 @@ nat: {...}           # optional, default: empty
 dhcp: {...}          # optional, default: empty
 ai_ids: {...}        # optional, default: empty (disabled)
 adblocker: {...}     # optional, default: empty (disabled)
+local_dns: {...}     # optional, default: empty (no local names)
 iot: {...}           # optional, default: empty (disabled)
 app_control: {...}   # optional, default: empty (disabled)
 tls_fingerprint: {...}  # optional, default: empty (disabled)
@@ -272,6 +273,45 @@ adblocker:
   which name; the file is emptied once it is past 16 MiB (checked hourly
   by `fr-dns-log-trim.timer`). With it, dnsmasq's other messages go to
   that file too instead of the journal.
+
+## `local_dns`
+
+Local names and split-horizon overrides (ROADMAP DNS-1; see
+`frfw.adblock.dns_service.local_dns_lines` and ARCHITECTURE.md's
+"Local names" section), answered by the router's resolver -- the
+ad-block dnsmasq instance. The webUI edits it on the Ad-Block & DNS
+screen ("Local names").
+
+```yaml
+local_dns:
+  domain: lan                              # optional; never asked upstream
+  hosts:                                   # optional; one exact name -> IPv4 (A and PTR)
+    nas.lan: 192.168.10.20
+  overrides:                               # optional; the name and every subdomain -> IPv4
+    intranet.example.com: 10.73.1.5
+```
+
+- Any entry needs `adblocker.enabled` and `adblocker.serve_lan`: the
+  resolver runs, and the clients use it, only then.
+- Names are lower-cased, a trailing dot dropped, and checked as host
+  names (`frfw.validate.hostname`); `hosts` and `overrides` names need at
+  least two labels, so no entry covers a whole top-level domain. A name
+  may not be both a host and an override, nor overlap the name of an app
+  `app_control.blocked_apps` blocks. At most 1024 entries.
+- `domain`: a name under it that isn't in `hosts` is NXDOMAIN, so a
+  single label must be one nobody delegates publicly (`lan`, `home`,
+  `internal`, `intranet`, `corp`, `private`, `localdomain`); otherwise use
+  a domain with two or more labels, such as `home.arpa`.
+- The router alone answers for every entry: a query of another type
+  (AAAA, MX) gets an empty answer, not the upstream's, so an override
+  can't be bypassed over IPv6 and the names never reach the provider. For
+  a host, its subdomains are NXDOMAIN.
+- A local name is never blocked: it is taken off every blocklist like an
+  `adblocker.allowlist` entry (on `apply` and at every refresh). As with
+  the allowlist, a name taken *off* `local_dns` is blocked again only
+  from the next list refresh.
+- Addresses are IPv4 (FR_OS is IPv4-only, ROADMAP FND-1). DHCP clients'
+  own names (`laptop.lan`) are not registered: Kea hands out the leases.
 
 ## `iot`
 

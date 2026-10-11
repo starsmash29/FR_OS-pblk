@@ -76,6 +76,57 @@
 </form>
 
 <div class="card">
+  <h3>Local names</h3>
+  <p class="muted">
+    Names the router's resolver answers itself, for the clients it serves
+    (needs Enabled and "Serve DHCP clients" above). A host is one exact
+    name; an override also covers every subdomain, e.g. an internal server
+    for a public name. They are never sent upstream and never blocked.
+  </p>
+  {% if local_dns %}
+  <table>
+    <thead><tr><th>Name</th><th>Address</th><th>Kind</th><th></th></tr></thead>
+    <tbody>
+    {% for row in local_dns %}
+    <tr>
+      <td><code>{{ row.name }}</code></td><td>{{ row.address }}</td><td>{{ row.label }}</td>
+      <td>
+        <form method="post" action="/adblock/local-dns/remove">
+          {{ csrf_input(request) }}
+          <input type="hidden" name="kind" value="{{ row.kind }}">
+          <input type="hidden" name="name" value="{{ row.name }}">
+          <button type="submit">Remove</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No local names yet.</p>
+  {% endif %}
+  <form method="post" action="/adblock/local-dns/add">
+    {{ csrf_input(request) }}
+    <label for="local_name">Name</label>
+    <input type="text" id="local_name" name="name" placeholder="nas.lan" required>
+    <label for="local_address">IPv4 address</label>
+    <input type="text" id="local_address" name="address" placeholder="192.168.10.20" required>
+    <label for="local_kind">Kind</label>
+    <select id="local_kind" name="kind">
+      <option value="hosts">Host (this name only)</option>
+      <option value="overrides">Override (the name and its subdomains)</option>
+    </select>
+    <button type="submit">Add</button>
+  </form>
+  <form method="post" action="/adblock/local-dns/domain">
+    {{ csrf_input(request) }}
+    <label for="local_domain">Local domain (never asked upstream; a name under it that isn't a host doesn't exist)</label>
+    <input type="text" id="local_domain" name="domain" value="{{ local_domain }}" placeholder="lan">
+    <button type="submit">Save domain</button>
+  </form>
+</div>
+
+<div class="card">
   <h3>Refresh</h3>
   <p class="muted">
     Downloads and dedupes the configured lists right now, instead of

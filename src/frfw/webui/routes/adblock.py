@@ -20,6 +20,11 @@ The live per-category domain counts and resolver-active badge are read
 directly, unprivileged, in this process -- counting lines in
 world-readable hosts files and `systemctl is-active` need no elevated
 access.
+
+Local names (ROADMAP DNS-1, `local_dns`): one entry is added or removed
+per request, each a save through the helper like every setting above;
+the loader validates the name and address and that the resolver serves
+the LAN.
 """
 
 from __future__ import annotations
@@ -103,12 +108,90 @@ def show_adblock(
             "serve_lan": bool(adblock_raw.get("serve_lan", False)),
             "force_dns": bool(adblock_raw.get("force_dns", False)),
             "query_logging": bool(adblock_raw.get("query_logging", False)),
+            "local_dns": _local_dns_rows(raw),
+            "local_domain": (raw.get("local_dns") or {}).get("domain") or "",
             "status_label": status_label,
             "badge_class": badge_class,
             "error": request.query_params.get("error"),
             "success": request.query_params.get("success"),
         },
     )
+
+
+_LOCAL_KINDS = {"hosts": "Host", "overrides": "Override (with subdomains)"}
+
+
+def _local_dns_rows(raw: dict) -> list[dict]:
+    local = raw.get("local_dns") or {}
+    rows = []
+    for kind, label in _LOCAL_KINDS.items():
+        for name, address in sorted((local.get(kind) or {}).items()):
+            rows.append({"kind": kind, "label": label, "name": name, "address": address})
+    return rows
+
+
+def _save_local_dns(raw: dict, local: dict, helper: HelperClient, success: str):
+    raw["local_dns"] = {key: value for key, value in local.items() if value}
+    if not raw["local_dns"]:
+        del raw["local_dns"]
+    ok, message = try_save(raw, helper)
+    if ok:
+        return redirect_with("/adblock", success=success + " -- Apply on the dashboard to use it")
+    return redirect_with("/adblock", error=message)
+
+
+def _local_name(name: str) -> str:
+    return name.strip().lower().rstrip(".")
+
+
+@router.post("/adblock/local-dns/add")
+def add_local_name(
+    kind: str = Form(...),
+    name: str = Form(...),
+    address: str = Form(...),
+    username: str = Depends(require_login),
+    raw: dict = Depends(get_raw_config),
+    helper: HelperClient = Depends(get_helper),
+):
+    if kind not in _LOCAL_KINDS:
+        return redirect_with("/adblock", error=f"unknown kind {kind!r}")
+    name = _local_name(name)
+    local = dict(raw.get("local_dns") or {})
+    table = dict(local.get(kind) or {})
+    if name in table:
+        return redirect_with("/adblock", error=f"{name} is already listed; remove it first")
+    table[name] = address.strip()
+    local[kind] = table
+    return _save_local_dns(raw, local, helper, f"{name} added")
+
+
+@router.post("/adblock/local-dns/remove")
+def remove_local_name(
+    kind: str = Form(...),
+    name: str = Form(...),
+    username: str = Depends(require_login),
+    raw: dict = Depends(get_raw_config),
+    helper: HelperClient = Depends(get_helper),
+):
+    local = dict(raw.get("local_dns") or {})
+    table = dict(local.get(kind) or {}) if kind in _LOCAL_KINDS else {}
+    if name not in table:
+        return redirect_with("/adblock", error=f"{name} is not listed")
+    del table[name]
+    local[kind] = table
+    return _save_local_dns(raw, local, helper, f"{name} removed")
+
+
+@router.post("/adblock/local-dns/domain")
+def save_local_domain(
+    domain: str = Form(""),
+    username: str = Depends(require_login),
+    raw: dict = Depends(get_raw_config),
+    helper: HelperClient = Depends(get_helper),
+):
+    local = dict(raw.get("local_dns") or {})
+    local["domain"] = _local_name(domain)
+    return _save_local_dns(raw, local, helper, "Local domain saved")
 
 
 @router.post("/adblock/settings")

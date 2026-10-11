@@ -18,7 +18,7 @@ from typing import Any
 import yaml
 
 from frfw import validate
-from frfw.appid import known_app_ids
+from frfw.appid import blocking_names, known_app_ids
 from frfw.config.errors import ConfigError
 from frfw.config.schema import (
     SELF_ZONE,
@@ -33,6 +33,7 @@ from frfw.config.schema import (
     Interface,
     IotConfig,
     IotIsolationMode,
+    LocalDnsConfig,
     LoggingConfig,
     ManagementConfig,
     Masquerade,
@@ -152,6 +153,7 @@ def parse_config(raw: Any) -> Config:
     app_control = _parse_app_control(
         raw.get("app_control", {}) or {}, adblocker, xdp_sni_filter
     )
+    local_dns = _parse_local_dns(raw.get("local_dns", {}) or {}, adblocker, app_control)
     tls_fingerprint = _parse_tls_fingerprint(raw.get("tls_fingerprint", {}) or {}, xdp_sni_filter)
     metrics = _parse_metrics(raw.get("metrics", {}) or {})
     management = _parse_management(raw.get("management", {}) or {}, zones, nat)
@@ -173,6 +175,7 @@ def parse_config(raw: Any) -> Config:
         ztna=ztna,
         pqc=pqc,
         adblocker=adblocker,
+        local_dns=local_dns,
         iot=iot,
         app_control=app_control,
         tls_fingerprint=tls_fingerprint,
@@ -1247,6 +1250,86 @@ def _parse_app_control(
         block_via_xdp=flags["block_via_xdp"],
         observe_sni=flags["observe_sni"],
     )
+
+
+#: Single-label local domains nobody delegates publicly: everything under
+#: `local_dns.domain` is NXDOMAIN unless it is a host, so `com` there
+#: would cut the network off. (`local` is mDNS's, not ours.)
+_PRIVATE_TOP_LEVEL = frozenset({"lan", "home", "internal", "intranet", "corp", "private", "localdomain"})
+
+#: Bound on `local_dns` entries: each is a line of the resolver's config.
+_LOCAL_DNS_MAX_ENTRIES = 1024
+
+
+def _local_dns_name(value: Any, what: str, *, dotted: bool = True) -> str:
+    """A name for `local_dns`: lower case, no trailing dot, through
+    frfw.validate (it goes into the resolver's config, security-lessons
+    F1). `dotted`: at least two labels, so no entry covers a whole
+    top-level domain."""
+    if not isinstance(value, str):
+        raise ConfigError(f"{what}: expected a domain name, got {value!r}")
+    name = value.strip().lower().rstrip(".")
+    try:
+        validate.hostname(name)
+    except validate.ArgumentError as exc:
+        raise ConfigError(f"{what}: {exc}") from exc
+    if dotted and "." not in name:
+        raise ConfigError(f"{what}: {name!r} needs at least two labels (e.g. nas.lan)")
+    return name
+
+
+def _parse_local_dns(raw: Any, adblocker: AdblockerConfig, app_control: AppControlConfig) -> LocalDnsConfig:
+    if not isinstance(raw, dict):
+        raise ConfigError("'local_dns' must be a mapping")
+    unknown = set(raw) - {"domain", "hosts", "overrides"}
+    if unknown:
+        raise ConfigError(f"local_dns: unknown key(s) {sorted(unknown)}")
+
+    domain = ""
+    if raw.get("domain"):
+        domain = _local_dns_name(raw["domain"], "local_dns.domain", dotted=False)
+        if "." not in domain and domain not in _PRIVATE_TOP_LEVEL:
+            raise ConfigError(
+                f"local_dns.domain: {domain!r} could be a public top-level domain; use one of "
+                f"{', '.join(sorted(_PRIVATE_TOP_LEVEL))} or a domain of your own (e.g. home.arpa)"
+            )
+
+    tables: dict[str, dict[str, str]] = {}
+    for key in ("hosts", "overrides"):
+        table_raw = raw.get(key) or {}
+        if not isinstance(table_raw, dict):
+            raise ConfigError(f"local_dns.{key} must be a mapping of name -> IPv4 address")
+        table: dict[str, str] = {}
+        for name_raw, address in table_raw.items():
+            name = _local_dns_name(name_raw, f"local_dns.{key}")
+            _validate_address(address, f"local_dns.{key}.{name}")
+            if name in table:
+                raise ConfigError(f"local_dns.{key}: {name!r} is listed twice")
+            table[name] = str(ipaddress.IPv4Address(address))
+        tables[key] = table
+    hosts, overrides = tables["hosts"], tables["overrides"]
+
+    for name in sorted(hosts.keys() & overrides.keys()):
+        raise ConfigError(f"local_dns: {name!r} is both a host and an override")
+    if len(hosts) + len(overrides) > _LOCAL_DNS_MAX_ENTRIES:
+        raise ConfigError(f"local_dns: at most {_LOCAL_DNS_MAX_ENTRIES} hosts and overrides")
+
+    if (hosts or overrides or domain) and not (adblocker.enabled and adblocker.serve_lan):
+        raise ConfigError(
+            "local_dns needs adblocker.enabled and adblocker.serve_lan: local names are "
+            "answered by the router's DNS resolver"
+        )
+
+    # A blocked app's names are answered NXDOMAIN by the same resolver:
+    # one name can't be both, whichever line dnsmasq happened to prefer.
+    if app_control.enabled and app_control.blocked_apps:
+        blocked = blocking_names(app_control.blocked_apps)
+        for name in [*hosts, *overrides, *([domain] if domain else [])]:
+            for b in blocked:
+                if name == b or name.endswith("." + b) or b.endswith("." + name):
+                    raise ConfigError(f"local_dns: {name!r} overlaps the blocked app name {b!r}")
+
+    return LocalDnsConfig(domain=domain, hosts=hosts, overrides=overrides)
 
 
 _HHMM_RE = re.compile(r"^([01][0-9]|2[0-3]):([0-5][0-9])\Z|^24:00\Z")

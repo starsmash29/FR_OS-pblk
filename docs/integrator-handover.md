@@ -1,8 +1,8 @@
 # Integrator handover
 
 State and working agreements for the next session of the integrating agent
-(Claude Code), so work picks up where it stopped. Last updated 2026-10-10,
-`main` at `bf85765`.
+(Claude Code), so work picks up where it stopped. Last updated 2026-10-11,
+`main` at `dce6a8f`.
 
 ## How the owner and the integrator work
 
@@ -55,6 +55,7 @@ State and working agreements for the next session of the integrating agent
 | #86 | NET-14 | Console port summary (`fr-console-ports`): every port's link, role and address, live; warns about a misplaced LAN cable, never moves a role |
 | #87 | SEC-22 | verify-medium reports what the persistence layer adds or changes outside FR_OS's files and the router's own state |
 | #88 | SEC-15 | The record check reports a deleted file on any Python (`Distribution.files` hides them since 3.12) |
+| #89 | SEC-29 | verify-medium judges the accounts, sshd, PAM and fstab files against the image and lists who can log in (`--login-ok NAME` for the admin's own SSH users) |
 
 ## Hardware test (owner's box): passed
 
