@@ -363,18 +363,25 @@ class AdblockerConfig:
 
 @dataclass(frozen=True)
 class Ipv6Config:
-    """IPv6 (ROADMAP FND-1). FND-1a: on the WAN, for the router itself.
+    """IPv6 (ROADMAP FND-1): FND-1a the WAN, FND-1b the LAN.
 
     `enabled` runs dhcpcd on the internet-facing interfaces (frfw.ipv6,
     fr-dhcp6.service): an address from the provider's Router
-    Advertisement (SLAAC) and DHCPv6, and a delegated prefix asked for --
-    recorded, not yet handed to any LAN. The firewall then accepts the
-    ICMPv6 the WAN needs (neighbour discovery, the provider's RA, error
-    messages) and DHCPv6 replies; every other IPv6 packet to the router
-    is dropped, and nothing is routed over IPv6. Off by default.
+    Advertisement (SLAAC) and DHCPv6, and a delegated prefix. dhcpcd hands
+    a /64 of that prefix to each device of the LAN zones, a dedicated
+    RA-only dnsmasq (fr-ra.service) advertises it there (SLAAC), and the
+    router routes IPv6 between them and the WAN: out from the LAN as the
+    rules allow, nothing new in from the internet. The router's own
+    services stay IPv4-only (FND-1c). Off by default.
+
+    `lan_zones`: the zones that get IPv6, in order -- the first zone's
+    devices get the prefix's first /64s. None (the default): every zone
+    with an interface that doesn't face the internet, in config order;
+    an empty tuple: none (the router alone has IPv6, as in FND-1a).
     """
 
     enabled: bool = False
+    lan_zones: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)

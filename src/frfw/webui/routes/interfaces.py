@@ -13,8 +13,9 @@ router = APIRouter()
 
 
 def _ipv6_status(helper: HelperClient) -> dict:
-    """What the provider gives the WAN (ROADMAP FND-1a), through the
-    apply-helper: reading it takes netlink, which this process lacks."""
+    """What the provider gives the WAN and the LAN networks made of it
+    (ROADMAP FND-1a/1b), through the apply-helper: reading it takes
+    netlink, which this process lacks."""
     try:
         result = helper.ipv6_status()
     except OSError as exc:
@@ -113,12 +114,13 @@ def save_ipv6(
     raw: dict = Depends(get_raw_config),
     helper: HelperClient = Depends(get_helper),
 ):
-    """ROADMAP FND-1a: IPv6 on the WAN, for the router itself."""
+    """ROADMAP FND-1: IPv6 from the provider, for the router and the LAN.
+    Only the switch: `lan_zones`, if the config has it, is kept."""
     raw["ipv6"] = {**(raw.get("ipv6") or {}), "enabled": enabled}
     if not enabled and set(raw["ipv6"]) == {"enabled"}:
         del raw["ipv6"]
     ok, message = try_save(raw, helper)
     if ok:
-        return redirect_with("/interfaces", success=f"IPv6 on the WAN {'on' if enabled else 'off'} -- "
+        return redirect_with("/interfaces", success=f"IPv6 {'on' if enabled else 'off'} -- "
                                                     "Apply on the dashboard to use it")
     return redirect_with("/interfaces", error=message)

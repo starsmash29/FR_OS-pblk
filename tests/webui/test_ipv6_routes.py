@@ -1,6 +1,7 @@
-"""ROADMAP FND-1a: IPv6 on the WAN on the Interfaces screen -- the
-switch, saved to config.yaml, and what the provider gave, as the
-apply-helper reports it (the webUI itself has no netlink socket)."""
+"""ROADMAP FND-1a/1b: IPv6 on the Interfaces screen -- the switch, saved
+to config.yaml, and what the provider gave and the LAN networks made of
+it, as the apply-helper reports it (the webUI itself has no netlink
+socket)."""
 
 from __future__ import annotations
 
@@ -63,6 +64,25 @@ def test_the_card_shows_what_the_provider_gave(logged_in_client, webui_env):
     assert '<dd class="ipv6-address">2001:db8:1::5/64 (SLAAC)</dd>' in text
     assert "via fe80::1 on eth0" in text
     assert '<dd class="ipv6-prefix">2001:db8:100::/56</dd>' in text
+
+
+def test_the_card_shows_the_lan_networks(logged_in_client, webui_env):
+    _write(webui_env, ipv6={"enabled": True})
+    webui_env["helper"].ipv6 = {
+        "state": "prefix", "summary": "A prefix was delegated.", "prefixes": ["2001:db8:100::/56"],
+        "lan": [["lan", "eth1", "2001:db8:100::/64"], ["guest", "eth2", ""]],
+    }
+    text = logged_in_client.get("/interfaces").text
+    assert '<dt>lan (eth1)</dt><dd class="ipv6-lan">2001:db8:100::/64</dd>' in text
+    assert '<dt>guest (eth2)</dt><dd class="ipv6-lan">no network yet</dd>' in text
+
+
+def test_the_switch_keeps_the_lan_zones(logged_in_client, webui_env):
+    _write(webui_env, ipv6={"enabled": True, "lan_zones": []})
+    logged_in_client.post("/interfaces/ipv6", data={})
+    assert yaml.safe_load(webui_env["config_path"].read_text())["ipv6"] == {"enabled": False, "lan_zones": []}
+    logged_in_client.post("/interfaces/ipv6", data={"enabled": "true"})
+    assert load_config(webui_env["config_path"]).ipv6.lan_zones == ()
 
 
 def test_a_helper_error_is_shown_not_raised(logged_in_client, webui_env):

@@ -32,6 +32,15 @@ privileged apply-helper's `quarantine_ip` socket command (see
 frfw.helper.server) -- the AI IDS daemon never touches `nft` itself,
 exactly like the webUI never does for `ban_ip`.
 
+IPv6 (ROADMAP FND-1b): a quarantined host's IPv4 address says nothing
+about the IPv6 addresses it picks itself, so `quarantine_ip` also looks
+up the host's MAC in the router's neighbour table -- on a LAN device
+only: an address reached through a gateway has that gateway's MAC, and
+the provider's must never be held -- and puts it in a second set,
+`ids_quarantine_mac` (frfw.nft.builder.IDS_QUARANTINE_MAC_SET_NAME), with
+the same timeout; the forward chain drops IPv6 from it. A host the
+neighbour table doesn't know (yet) is held by its IPv4 address alone.
+
 Once quarantined, the kernel evicts the element itself when its own
 element timeout elapses -- no userspace polling, cron job, or background
 thread involved, the identical mechanism frfw.bruteforce/frfw.ztna
@@ -57,9 +66,10 @@ from __future__ import annotations
 import ipaddress
 import json
 import subprocess
+from typing import Callable, Iterable
 
 from frfw import validate
-from frfw.nft.builder import FILTER_TABLE, IDS_QUARANTINE_SET_NAME
+from frfw.nft.builder import FILTER_TABLE, IDS_QUARANTINE_MAC_SET_NAME, IDS_QUARANTINE_SET_NAME
 
 
 class IdsQuarantineError(Exception):
@@ -85,14 +95,18 @@ def check_target(ip: str, own_addresses: frozenset[str] = frozenset()) -> ipaddr
     return addr
 
 
-def quarantine_ip(ip: str, duration_seconds: int, *, own_addresses: frozenset[str] = frozenset()) -> None:
+def quarantine_ip(ip: str, duration_seconds: int, *, own_addresses: frozenset[str] = frozenset(),
+                  lan_devices: Iterable[str] = (),
+                  neighbour: Callable[[str, Iterable[str]], str | None] | None = None) -> str | None:
     """Adds `ip` to the kernel's IDS quarantine set for
-    `duration_seconds` -- the sole enforcement action. Requires root and
-    the set to already exist (i.e. at least one firewall apply must have
-    run since install, same precondition frfw.bruteforce.ban_ip has for
-    its own set). `own_addresses`: the router's addresses, never
+    `duration_seconds` -- the sole enforcement action -- and its MAC, if
+    the neighbour table has one for it on one of `lan_devices`, to the
+    IPv6 one (see this module's docstring). Returns that MAC. Requires
+    root and the sets to already exist (i.e. at least one firewall apply
+    must have run since install, same precondition frfw.bruteforce.ban_ip
+    has for its own set). `own_addresses`: the router's addresses, never
     quarantined (see this module's docstring)."""
-    check_target(ip, own_addresses)
+    address = check_target(ip, own_addresses)
     if duration_seconds <= 0:
         raise IdsQuarantineError(f"duration_seconds must be positive, got {duration_seconds}")
     if duration_seconds > MAX_DURATION_SECONDS:
@@ -106,6 +120,46 @@ def quarantine_ip(ip: str, duration_seconds: int, *, own_addresses: frozenset[st
             "{", f"{ip} timeout {duration_seconds}s", "}",
         ]
     )
+    mac = (neighbour or lan_neighbour_mac)(str(address), lan_devices)
+    if mac is not None:
+        _nft(
+            [
+                "add", "element", "inet", FILTER_TABLE, IDS_QUARANTINE_MAC_SET_NAME,
+                "{", f"{mac} timeout {duration_seconds}s", "}",
+            ]
+        )
+    return mac
+
+
+#: Neighbour entries whose MAC is the host's (as frfw.ztna.client_link).
+_USABLE_NEIGH_STATES = frozenset({"REACHABLE", "STALE", "DELAY", "PROBE", "PERMANENT"})
+
+
+def lan_neighbour_mac(ip: str, lan_devices: Iterable[str]) -> str | None:
+    """The MAC the router's neighbour table holds for `ip` (an address
+    check_target accepted) on one of `lan_devices`, or None: not on a LAN
+    link, not known, or with no usable entry. The host has just been seen
+    sending, so a neighbour on the LAN has a fresh one."""
+    devices = set(lan_devices)
+    if not devices:
+        return None
+    ip = validate.ipv4(ip)
+    try:
+        proc = subprocess.run(["ip", "-j", "-4", "neigh", "show", "to", ip],
+                              capture_output=True, text=True, timeout=10)
+        entries = json.loads(proc.stdout or "[]") if proc.returncode == 0 else []
+    except (FileNotFoundError, subprocess.TimeoutExpired, json.JSONDecodeError):
+        return None
+    for entry in entries if isinstance(entries, list) else []:
+        if not isinstance(entry, dict) or entry.get("dst") != ip or entry.get("dev") not in devices:
+            continue
+        if not set(entry.get("state") or []) & _USABLE_NEIGH_STATES:
+            continue
+        try:
+            return validate.mac(entry.get("lladdr"))
+        except validate.ArgumentError:
+            continue
+    return None
 
 
 def list_quarantined() -> list[tuple[str, int]]:
@@ -129,11 +183,16 @@ def snapshot_before_reload() -> list[tuple[str, int]]:
     return _list_set_elements()
 
 
+def snapshot_macs_before_reload() -> list[tuple[str, int]]:
+    """The same for the quarantined hosts' MACs (mac, seconds left)."""
+    return _list_set_elements(IDS_QUARANTINE_MAC_SET_NAME)
+
+
 # --- kernel state (nft) -------------------------------------------------
 
 
-def _list_set_elements() -> list[tuple[str, int]]:
-    proc = _run_nft(["-j", "list", "set", "inet", FILTER_TABLE, IDS_QUARANTINE_SET_NAME])
+def _list_set_elements(set_name: str | None = None) -> list[tuple[str, int]]:
+    proc = _run_nft(["-j", "list", "set", "inet", FILTER_TABLE, set_name or IDS_QUARANTINE_SET_NAME])
     if proc.returncode != 0:
         stderr = proc.stderr.strip()
         if "No such file or directory" in stderr or "does not exist" in stderr:

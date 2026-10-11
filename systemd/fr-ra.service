@@ -1,0 +1,51 @@
+[Unit]
+Description=FR_OS Router Advertisements on the LAN (RA-only dnsmasq instance, frfw.ipv6, ROADMAP FND-1b)
+Documentation=https://github.com/starsmash29/FR_OS-pblk
+After=network.target fr-dhcp6.service
+# An apply writes the config while a LAN zone gets IPv6, and removes it
+# otherwise.
+ConditionPathExists=/etc/fr_os/dnsmasq_ra.conf
+
+[Service]
+Type=simple
+# Never root: a dynamic account of its own, with CAP_NET_RAW alone -- the
+# ICMPv6 socket the advertisements go out on and router solicitations
+# come in on. dnsmasq runs no DNS (port=0), no DHCP (ra-only) and keeps no
+# lease file (frfw.ipv6.render_ra_conf); started as non-root it doesn't
+# try to change user itself.
+DynamicUser=yes
+User=fr_os-ra
+Group=fr_os-ra
+AmbientCapabilities=CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_RAW
+ExecStart=/usr/sbin/dnsmasq --keep-in-foreground --conf-file=/etc/fr_os/dnsmasq_ra.conf
+Restart=on-failure
+# Sandbox (security-lessons I1; checked by tests/test_systemd_sandbox.py).
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+MemoryDenyWriteExecute=yes
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+SystemCallErrorNumber=EPERM
+# AF_NETLINK: the LAN devices' addresses (the prefixes it advertises);
+# AF_INET6: the ICMPv6 socket; AF_INET: dnsmasq's interface lookups.
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

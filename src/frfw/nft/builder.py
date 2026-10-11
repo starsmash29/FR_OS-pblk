@@ -82,6 +82,14 @@ BRUTEFORCE_JAIL_SET_NAME = "bruteforce_jail"
 #: frfw.ids_quarantine.snapshot_before_reload).
 IDS_QUARANTINE_SET_NAME = "ids_quarantine"
 
+#: The MACs of the hosts in IDS_QUARANTINE_SET_NAME, on the LAN (ROADMAP
+#: FND-1b): a quarantined host's IPv4 address says nothing about the IPv6
+#: addresses it picks itself (SLAAC, privacy addresses), so its IPv6 is
+#: cut off by its MAC -- looked up in the neighbour table when it is
+#: quarantined (frfw.ids_quarantine), with the same timeout. Same
+#: declaration, timeout and reload handling as the IPv4 set.
+IDS_QUARANTINE_MAC_SET_NAME = "ids_quarantine_mac"
+
 #: The ZTNA gate's kernel-resident set of currently-authorized clients
 #: (see frfw.ztna and Rule.require_ztna) on the router's own networks:
 #: `ipv4_addr . ether_addr` pairs, the client's address *and* its MAC
@@ -150,6 +158,8 @@ class RuntimeSets:
     ids_quarantine: tuple[tuple[str, int], ...] = ()
     ztna: tuple[tuple[str, str, int], ...] = ()
     iot_isolated: tuple[str, ...] = ()
+    #: (mac, seconds left), see IDS_QUARANTINE_MAC_SET_NAME.
+    ids_quarantine_mac: tuple[tuple[str, int], ...] = ()
 
 
 def build_ruleset(config: Config, *, clock: ScheduleClock | None = None, now: float | None = None,
@@ -175,6 +185,7 @@ def build_ruleset(config: Config, *, clock: ScheduleClock | None = None, now: fl
 
     lines.append("")
     lines.extend(_render_ids_quarantine_set(runtime.ids_quarantine))
+    lines.extend(_render_ids_quarantine_mac_set(runtime.ids_quarantine_mac))
 
     # Declared even while ZTNA is off, empty: a rule with require_ztna
     # then matches nothing (fails closed) instead of naming a set that
@@ -212,9 +223,11 @@ def build_ruleset(config: Config, *, clock: ScheduleClock | None = None, now: fl
         # the moment it's isolated, not whenever they happen to close.
         lines.extend(f"\t\t{r}" for r in _render_iot_input_rules(config))
     lines.append('\t\tiifname "lo" accept')
-    # ROADMAP FND-1a: the IPv6 the WAN needs. Ahead of the established
-    # accept: neighbour discovery and RAs are not tracked connections.
+    # ROADMAP FND-1a/1b: the IPv6 the WAN and the LAN need. Ahead of the
+    # established accept: neighbour discovery and RAs are not tracked
+    # connections.
     lines.extend(f"\t\t{r}" for r in _render_ipv6_wan_input(config))
+    lines.extend(f"\t\t{r}" for r in _render_ipv6_lan_input(config))
     # Phase 17: scheduled drop/reject rules with cut_established go ahead
     # of the established accept, so a connection opened before the window
     # started is cut when it starts, not left running.
@@ -259,15 +272,17 @@ def build_ruleset(config: Config, *, clock: ScheduleClock | None = None, now: fl
     lines.append("\tchain forward {")
     lines.append("\t\ttype filter hook forward priority filter; policy drop;")
     lines.append("")
-    # ROADMAP FND-1a: nothing is routed over IPv6 (the kernel's IPv6
-    # forwarding is off too, frfw.ipv6) -- the LAN gets IPv6 with FND-1b.
-    lines.append(f"\t\tmeta nfproto ipv6 drop {_comment('ipv6-no-routing')}")
+    # ROADMAP FND-1b: IPv6 only between the WAN and the LAN zones that
+    # have it, and only from a LAN host's own network -- or, with no LAN
+    # zone getting IPv6, not at all.
+    lines.extend(f"\t\t{r}" for r in _render_ipv6_forward_guard(config))
     # A quarantined host is cut off from everything it would reach
     # *through* the router too (the internet, other zones), not only from
     # the router itself -- and ahead of the established accept, so its
     # open sessions end at once. Its peers' packets to it may still pass,
     # but nothing it sends back does.
     lines.append(f"\t\t{_render_ids_quarantine_forward_rule()}")
+    lines.append(f"\t\t{_render_ids_quarantine_mac_forward_rule()}")
     quic = _render_sni_filter_quic_reject(config)
     if quic:
         lines.append(f"\t\t{quic}")
@@ -280,6 +295,11 @@ def build_ruleset(config: Config, *, clock: ScheduleClock | None = None, now: fl
     lines.extend(f"\t\t{line}" for r in forward_cut for line in _render_rule(r, clock))
     lines.append("\t\tct state established,related accept")
     lines.append("\t\tct state invalid drop")
+    # ROADMAP FND-1b: nothing new from the internet to the LAN over IPv6.
+    # Its addresses are public, and an admin rule written for a port
+    # forward ("allow 443 from wan to dmz", next to a DNAT to one host)
+    # would otherwise open that port on every host of the zone.
+    lines.extend(f"\t\t{r}" for r in _render_ipv6_no_inbound(config))
     if config.adblocker.enabled and config.adblocker.force_dns:
         # DNS-over-TLS (853/tcp) and DNS-over-QUIC (853/udp) would bypass
         # the resolver entirely; `reject` rather than `drop` so clients
@@ -291,6 +311,16 @@ def build_ruleset(config: Config, *, clock: ScheduleClock | None = None, now: fl
                     f"\t\tiifname @{_iface_set_name(zone)} {proto} dport 853 reject "
                     f"{_comment('force-dns-block-dot')}"
                 )
+        # ROADMAP FND-1b: plain DNS over IPv6 can't be redirected to the
+        # resolver (it doesn't serve IPv6 yet, FND-1c), so it is refused:
+        # a client falls back to the resolver it got over IPv4.
+        if _ipv6_lan_devices(config):
+            for zone in dns_zones:
+                for proto in ("udp", "tcp"):
+                    lines.append(
+                        f"\t\tmeta nfproto ipv6 iifname @{_iface_set_name(zone)} {proto} dport 53 reject "
+                        f"{_comment('force-dns-ipv6')}"
+                    )
     if forward_rules:
         lines.append("")
         lines.extend(f"\t\t{line}" for r in forward_rules for line in _render_rule(r, clock))
@@ -379,6 +409,71 @@ def _render_ipv6_input_drop(config: Config) -> list[str]:
     return lines
 
 
+def _ipv6_lan_devices(config: Config) -> list[str]:
+    from frfw.ipv6 import lan_devices
+
+    return [d for _, d in lan_devices(config)]
+
+
+def _devices(devices: list[str]) -> str:
+    return "{ " + ", ".join(f'"{d}"' for d in devices) + " }"
+
+
+def _render_ipv6_lan_input(config: Config) -> list[str]:
+    """What the LAN's IPv6 needs from the router (ROADMAP FND-1b), on the
+    LAN zones' devices only: neighbour discovery and router solicitations,
+    with hop limit 255 (from the link itself, RFC 4861), and a
+    rate-limited ping. The router's services over IPv6 are FND-1c."""
+    devices = _ipv6_lan_devices(config)
+    if not devices:
+        return []
+    lan = f"iifname {_devices(devices)}"
+    return [
+        f"{lan} icmpv6 type {{ nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit }} ip6 hoplimit 255 "
+        f"accept {_comment('ipv6-lan-nd')}",
+        f"{lan} icmpv6 type echo-request limit rate 5/second burst 10 packets accept {_comment('ipv6-lan-ping')}",
+    ]
+
+
+def _render_ipv6_forward_guard(config: Config) -> list[str]:
+    """First in the forward chain. With no LAN zone getting IPv6, nothing
+    is routed over it (the kernel's IPv6 forwarding is off too). Else
+    only between the WAN's and those zones' devices -- a zone left out
+    of ipv6.lan_zones gets none through the router either -- and from a
+    LAN host only from an address the router routes back to that device
+    (BCP 38: no spoofed source leaves the LAN). Not on the WAN: with two
+    providers the reply route may be the other one."""
+    from frfw.ipv6 import wan_devices
+
+    lan = _ipv6_lan_devices(config)
+    if not lan:
+        return [f"meta nfproto ipv6 drop {_comment('ipv6-no-routing')}"]
+    routed = _devices(wan_devices(config) + [d for d in lan if d not in wan_devices(config)])
+    return [
+        f"meta nfproto ipv6 iifname != {routed} drop {_comment('ipv6-not-routed-here')}",
+        f"meta nfproto ipv6 oifname != {routed} drop {_comment('ipv6-not-routed-here')}",
+        f"meta nfproto ipv6 iifname {_devices(lan)} fib saddr . iif oif missing drop {_comment('ipv6-lan-spoofed')}",
+    ]
+
+
+def _render_ipv6_no_inbound(config: Config) -> list[str]:
+    """After the established accept: a new connection from the internet
+    to the LAN over IPv6 is dropped, ahead of every admin rule (pinholes
+    are not configurable yet), and logged like a default-deny drop."""
+    from frfw.ipv6 import wan_devices
+
+    if not _ipv6_lan_devices(config):
+        return []
+    wan = f"meta nfproto ipv6 iifname {_devices(wan_devices(config))}"
+    lines = []
+    if config.logging.drops:
+        rate = config.logging.drops_per_minute
+        lines.append(f'{wan} limit rate {rate}/minute burst {rate} packets log prefix '
+                     f'"{DROP_LOG_PREFIX}forward: " {_comment("log-ipv6-inbound")}')
+    lines.append(f"{wan} drop {_comment('ipv6-no-inbound')}")
+    return lines
+
+
 def active_rules(config: Config, now: float | None = None) -> list[Rule]:
     """The rules a ruleset built at `now` contains: all but expired ones."""
     now = time.time() if now is None else now
@@ -455,6 +550,24 @@ def _render_ids_quarantine_drop_rule() -> str:
 
 def _render_ids_quarantine_forward_rule() -> str:
     return f"ip saddr @{IDS_QUARANTINE_SET_NAME} drop {_comment('ids-quarantine-forward')}"
+
+
+def _render_ids_quarantine_mac_set(members: tuple[tuple[str, int], ...] = ()) -> list[str]:
+    items = [f"{mac} timeout {int(left)}s" for mac, left in members
+             if _MAC_RE.fullmatch(mac) and int(left) > 0]
+    return [
+        f"\tset {IDS_QUARANTINE_MAC_SET_NAME} {{",
+        "\t\ttype ether_addr",
+        "\t\tflags timeout",
+        *([f"\t\telements = {{ {', '.join(items)} }}"] if items else []),
+        "\t}",
+    ]
+
+
+def _render_ids_quarantine_mac_forward_rule() -> str:
+    # IPv6 only: the IPv4 rule above already holds the host by address.
+    return (f"meta nfproto ipv6 ether saddr @{IDS_QUARANTINE_MAC_SET_NAME} drop "
+            f"{_comment('ids-quarantine-ipv6')}")
 
 
 def _render_ztna_sets(config: Config, members: tuple[tuple[str, str, int], ...] = ()) -> list[str]:
@@ -602,8 +715,14 @@ def _render_rule_lines(rule: Rule, clock: ScheduleClock | None, ztna_match: str 
 
     if rule.dst_port is not None:
         exprs.append(f"{rule.proto.value} dport {rule.dst_port}")
+    elif rule.proto == Protocol.ICMP:
+        # ICMP of either family (ROADMAP FND-1b): "icmp from lan" means
+        # ping and its errors over IPv6 too.
+        exprs.append("meta l4proto { icmp, ipv6-icmp }")
     elif rule.proto != Protocol.ANY:
-        exprs.append(f"ip protocol {rule.proto.value}")
+        # Not `ip protocol`: that matches IPv4 only, and a "drop udp from
+        # guest" rule would let IPv6 through (ROADMAP FND-1b).
+        exprs.append(f"meta l4proto {rule.proto.value}")
 
     if rule.src_mac is not None:
         exprs.append(f"ether saddr {rule.src_mac}")
@@ -650,8 +769,10 @@ def _render_nat_chains(config: Config, force_dns_zones: list[str] | None = None)
         lines.append("")
         for zone in force_dns_zones:
             for proto in ("udp", "tcp"):
+                # IPv4 only: the resolver doesn't serve IPv6 yet (FND-1c);
+                # the forward chain refuses plain DNS over IPv6 instead.
                 lines.append(
-                    f"\t\tiifname @{_iface_set_name(zone)} {proto} dport 53 redirect to :53 "
+                    f"\t\tmeta nfproto ipv4 iifname @{_iface_set_name(zone)} {proto} dport 53 redirect to :53 "
                     f"{_comment('force-dns')}"
                 )
     if config.nat.port_forwards:

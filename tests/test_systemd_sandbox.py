@@ -120,6 +120,14 @@ UNPRIVILEGED = {
     "fr-ai-ids.service": paths.SENSOR_USER,
     "fr-appid.service": paths.SENSOR_USER,
     "fr-iot-scan.service": paths.SENSOR_USER,
+    "fr-ra.service": paths.RA_USER,
+}
+
+#: The unprivileged services that need a capability beyond binding a low
+#: port, and why.
+UNPRIVILEGED_CAPABILITIES = {
+    # The ICMPv6 socket Router Advertisements go out on (ROADMAP FND-1b).
+    "fr-ra.service": {"CAP_NET_RAW"},
 }
 
 #: Never in any service's capability bounding set.
@@ -193,7 +201,8 @@ def test_unprivileged_services_run_as_their_own_account(name, user):
     # A syscall filter without the privileged calls, and no capability
     # but binding the webUI's :443.
     assert "~@privileged" in settings["SystemCallFilter"]
-    assert set(one(settings, "CapabilityBoundingSet").split()) <= {"CAP_NET_BIND_SERVICE"}
+    allowed = {"CAP_NET_BIND_SERVICE"} | UNPRIVILEGED_CAPABILITIES.get(name, set())
+    assert set(one(settings, "CapabilityBoundingSet").split()) <= allowed
     assert one(settings, "ProtectKernelTunables") == "yes"
 
 
@@ -215,6 +224,19 @@ def test_root_services_have_a_reason():
     for name in SERVICES:
         if "User" not in service_section(name):
             assert ROOT.get(name), f"{name} runs as root without a reason in ROOT"
+
+
+def test_the_router_advertisements_run_as_a_dynamic_account_with_raw_sockets_alone():
+    """ROADMAP FND-1b: fr-ra never runs as root -- dnsmasq started as
+    non-root doesn't change user -- and holds CAP_NET_RAW only."""
+    settings = service_section("fr-ra.service")
+    assert one(settings, "DynamicUser") == "yes"
+    assert one(settings, "AmbientCapabilities") == "CAP_NET_RAW"
+    assert one(settings, "CapabilityBoundingSet") == "CAP_NET_RAW"
+    from frfw import ipv6
+
+    # Writes nothing: no pid file, no lease file.
+    assert "\npid-file=\n" in ipv6._RA_TEMPLATE and "\nleasefile-ro\n" in ipv6._RA_TEMPLATE
 
 
 def test_the_dns_filter_writes_no_pid_file():
