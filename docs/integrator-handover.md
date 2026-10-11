@@ -73,7 +73,7 @@ State and working agreements for the next session of the integrating agent
 
 ## Open, candidates for next
 
-- **FND-1 (IPv6), four stages agreed with the owner:** 1a the router's own IPv6 on the WAN (done, #91), 1b the LAN (delegated prefix, RA/DHCPv6, forwarding), 1c services over IPv6, 1d XDP and the IPv4-only security features. FR_OS is a community edition: every provider (prefix, address only, nothing) must work and be explained.
+- **FND-1 (IPv6), four stages agreed with the owner:** 1a the router's own IPv6 on the WAN (done, #91), 1b the LAN (delegated prefix, RA, forwarding; in review, branch `claude/project-thread-gq31th`), 1c services over IPv6 (DNS/RDNSS, webUI, SSH, inbound pinholes), 1d XDP and the IPv4-only security features. FR_OS is a community edition: every provider (prefix, address only, nothing) must work and be explained.
 
 - **FND-4:** Realtek firmware (`firmware-realtek`) is in the image (Partly). Other vendors' NIC firmware is still out.
 - **P5-1 / FND-2:** the owner's box is recorded in `docs/hardware.md` (Partly). Add boxes as they are tested.
