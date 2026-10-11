@@ -1361,7 +1361,9 @@ def run(args: argparse.Namespace) -> int:
         passwd = (upper / "etc/passwd").read_text()
         (upper / "etc/passwd").write_text(passwd + "toor:x:0:0::/root:/bin/sh\n")
     accounts = system_file_findings(disk, Path(args.iso))
-    check("/etc/passwd: toor has uid 0" in accounts.findings and accounts.logins == ["root: SSH key"],
+    # (toor shares root's home, so the key lets it in too)
+    check("/etc/passwd: toor has uid 0" in accounts.findings
+          and accounts.logins == ["root: SSH key", "toor: SSH key"],
           f"...and that root can log in with the key, and a second uid-0 account (ROADMAP SEC-29): "
           f"{accounts.findings} {accounts.logins}")
     with persistence_partition(disk, writable=True) as upper:
