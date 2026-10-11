@@ -319,7 +319,28 @@ def unexpected_on_persistence(disk: Path, iso: Path) -> integrity.PersistenceRep
         return integrity.persistence_changes(lower, upper, own_files=own, pyc_tag="cpython-311")
 
 
+def survey_system_files(disk: Path, iso: Path, when: str) -> None:  # SEC-29 survey, temporary
+    import difflib
+    names = ["etc/passwd", "etc/shadow", "etc/group", "etc/gshadow", "etc/ssh/sshd_config", "etc/pam.d/login",
+             "etc/fstab"]
+    with image_root(iso) as lower, persistence_partition(disk) as upper:
+        names += [str(p.relative_to(upper)) for p in sorted((upper / "etc/ssh/sshd_config.d").glob("*"))]
+
+        def text(root, name):
+            path = root / name
+            lines = path.read_text(errors="replace").splitlines() if path.is_file() else []
+            if name.endswith("shadow"):
+                lines = [":".join(f[:1] + ["HASH" if f[1:2] and f[1][:1] not in "!*" and f[1] else f[1] if len(f) > 1 else ""]
+                                  + f[2:]) for f in (line.split(":") for line in lines)]
+            return lines
+        for name in names:
+            print(f"=== SURVEY {when}: /{name}")
+            for line in difflib.unified_diff(text(lower, name), text(upper, name), lineterm="", n=0):
+                print(f"SURVEY {line}")
+
+
 def check_persistence_layer(check, disk: Path, iso: Path, when: str) -> None:
+    survey_system_files(disk, iso, when)
     report = unexpected_on_persistence(disk, iso)
     listed = ", ".join(f"{what} {path}" for what, path in report.changes[:20])
     check(not report.changes,
