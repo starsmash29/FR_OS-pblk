@@ -2,7 +2,7 @@
 
 State and working agreements for the next session of the integrating agent
 (Claude Code), so work picks up where it stopped. Last updated 2026-10-11,
-`main` at `dce6a8f`.
+`main` at `269d8aa`.
 
 ## How the owner and the integrator work
 
@@ -56,6 +56,7 @@ State and working agreements for the next session of the integrating agent
 | #87 | SEC-22 | verify-medium reports what the persistence layer adds or changes outside FR_OS's files and the router's own state |
 | #88 | SEC-15 | The record check reports a deleted file on any Python (`Distribution.files` hides them since 3.12) |
 | #89 | SEC-29 | verify-medium judges the accounts, sshd, PAM and fstab files against the image and lists who can log in (`--login-ok NAME` for the admin's own SSH users) |
+| #90 | DNS-1 | Local names and split-horizon overrides in the router's resolver (`local_dns`), never blocked, never asked upstream |
 
 ## Hardware test (owner's box): passed
 
@@ -70,6 +71,8 @@ State and working agreements for the next session of the integrating agent
 - **Console access.** There is no console login user by design; everything goes through the webUI. The first-boot password shows on tty2 (Alt+F2).
 
 ## Open, candidates for next
+
+- **FND-1 (IPv6), four stages agreed with the owner:** 1a the router's own IPv6 on the WAN (in progress, PR after #90), 1b the LAN (delegated prefix, RA/DHCPv6, forwarding), 1c services over IPv6, 1d XDP and the IPv4-only security features. FR_OS is a community edition: every provider (prefix, address only, nothing) must work and be explained.
 
 - **FND-4:** Realtek firmware (`firmware-realtek`) is in the image (Partly). Other vendors' NIC firmware is still out.
 - **P5-1 / FND-2:** the owner's box is recorded in `docs/hardware.md` (Partly). Add boxes as they are tested.

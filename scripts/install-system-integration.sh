@@ -100,6 +100,7 @@ if [[ -d "$REPO_ROOT/systemd" ]]; then
     install -m 0644 "$REPO_ROOT/systemd/fr-dns-log-trim.service" "$SYSTEMD_DIR/"
     install -m 0644 "$REPO_ROOT/systemd/fr-dns-log-trim.timer" "$SYSTEMD_DIR/"
     install -m 0644 "$REPO_ROOT/systemd/fr-adblock-dns.service" "$SYSTEMD_DIR/"
+    install -m 0644 "$REPO_ROOT/systemd/fr-dhcp6.service" "$SYSTEMD_DIR/"
     install -m 0644 "$REPO_ROOT/systemd/fr-xdp-sni-logger.service" "$SYSTEMD_DIR/"
     install -m 0644 "$REPO_ROOT/systemd/fr-appid.service" "$SYSTEMD_DIR/"
     install -m 0644 "$REPO_ROOT/systemd/fr-schedule-check.service" "$SYSTEMD_DIR/"

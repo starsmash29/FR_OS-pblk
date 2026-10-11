@@ -52,11 +52,12 @@ def test_apply_all_runs_every_step_in_order(minimal_config_dict, tmp_path):
         adblock_dnsmasq_conf_path=tmp_path / "dnsmasq_adblock.conf",
     )
 
-    assert len(result.messages) == 15
+    assert len(result.messages) == 16
     assert "Ruleset applied" in result.messages[0]
     assert result.messages[1] == "IPv4 forwarding turned on"  # only after the ruleset
     assert result.messages.pop(2) == "WireGuard off"  # security-lessons G8, also behind the ruleset
     assert "No interface addresses" in result.messages[2]
+    assert result.messages.pop(3) == "IPv6 off"  # ROADMAP FND-1a, after the addresses
     assert "No DHCP zones" in result.messages[3]
     assert "Ad-block DNS resolver disabled" in result.messages[4]
     assert "XDP SNI filter disabled" in result.messages[5]
@@ -124,6 +125,7 @@ def test_apply_all_dry_run_touches_nothing(dhcp_config_dict, tmp_path, monkeypat
         "sshd not installed",
         "PQC hybrid SSH KEX disabled",  # sshd installed, PQC never enabled
         "Ad-block DNS resolver disabled",
+        "IPv6 off",  # ROADMAP FND-1a, never turned on
     )
     for message in result.messages:
         is_always_off = any(s in message for s in always_off_substrings)
@@ -150,7 +152,8 @@ def test_apply_all_applies_addresses_and_dhcp_together(dhcp_config_dict, tmp_pat
         ["link", "set", "dev", "lo", "up"],
     ]
     assert kea_path.exists()
-    assert "Kea DHCP config applied" in result.messages[4]
+    assert result.messages[4] == "IPv6 off"  # ROADMAP FND-1a
+    assert "Kea DHCP config applied" in result.messages[5]
 
 
 def test_apply_all_merges_adblock_critical_domains_into_xdp_blocklist_without_persisting(

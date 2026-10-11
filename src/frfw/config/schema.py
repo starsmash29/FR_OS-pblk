@@ -362,6 +362,22 @@ class AdblockerConfig:
 
 
 @dataclass(frozen=True)
+class Ipv6Config:
+    """IPv6 (ROADMAP FND-1). FND-1a: on the WAN, for the router itself.
+
+    `enabled` runs dhcpcd on the internet-facing interfaces (frfw.ipv6,
+    fr-dhcp6.service): an address from the provider's Router
+    Advertisement (SLAAC) and DHCPv6, and a delegated prefix asked for --
+    recorded, not yet handed to any LAN. The firewall then accepts the
+    ICMPv6 the WAN needs (neighbour discovery, the provider's RA, error
+    messages) and DHCPv6 replies; every other IPv6 packet to the router
+    is dropped, and nothing is routed over IPv6. Off by default.
+    """
+
+    enabled: bool = False
+
+
+@dataclass(frozen=True)
 class LocalDnsConfig:
     """Local names and split-horizon overrides served by the router's
     resolver (ROADMAP DNS-1, see frfw.adblock.dns_service).
@@ -602,6 +618,7 @@ class Config:
     pqc: PqcConfig = field(default_factory=PqcConfig)
     adblocker: AdblockerConfig = field(default_factory=AdblockerConfig)
     local_dns: LocalDnsConfig = field(default_factory=LocalDnsConfig)
+    ipv6: Ipv6Config = field(default_factory=Ipv6Config)
     iot: IotConfig = field(default_factory=IotConfig)
     app_control: AppControlConfig = field(default_factory=AppControlConfig)
     tls_fingerprint: TlsFingerprintConfig = field(default_factory=TlsFingerprintConfig)

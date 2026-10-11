@@ -20,7 +20,8 @@ def test_build_ruleset_contains_expected_rules(example_config_path):
     assert 'elements = { "eth0" }' in ruleset
     assert "policy drop;" in ruleset  # input/forward default-deny
     assert 'iifname @lan_ifaces tcp dport 22 counter accept comment "rule:allow-ssh-from-lan-to-router"' in ruleset
-    assert "oifname @wan_ifaces masquerade" in ruleset
+    # IPv4 only: IPv6 is never translated (ROADMAP FND-1).
+    assert "meta nfproto ipv4 oifname @wan_ifaces masquerade" in ruleset
     assert "dnat ip to 10.0.2.10:443" in ruleset
 
 
@@ -185,8 +186,10 @@ def test_ids_quarantine_also_cuts_forwarded_traffic(minimal_config_dict):
     forward = ruleset.split("chain forward {")[1].split("chain output {")[0]
     lines = [l.strip() for l in forward.splitlines()
              if l.strip() and not l.strip().startswith(("type", "}"))]
-    assert lines[0] == 'ip saddr @ids_quarantine drop comment "ids-quarantine-forward"'
-    assert lines.index("ct state established,related accept") > 0
+    # Only the IPv6 drop (nothing is routed over IPv6, ROADMAP FND-1a) comes first.
+    assert lines[0] == 'meta nfproto ipv6 drop comment "ipv6-no-routing"'
+    assert lines[1] == 'ip saddr @ids_quarantine drop comment "ids-quarantine-forward"'
+    assert lines.index("ct state established,related accept") > 1
 
 
 def test_ids_quarantine_set_always_rendered(minimal_config_dict):

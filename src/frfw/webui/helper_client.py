@@ -45,6 +45,7 @@ class HelperClient(Protocol):
     def wireguard_status(self) -> dict: ...
     def firewall_drops(self) -> dict: ...
     def xdp_stats(self) -> dict: ...
+    def ipv6_status(self) -> dict: ...
 
 
 class SocketHelperClient:
@@ -128,6 +129,9 @@ class SocketHelperClient:
 
     def xdp_stats(self) -> dict:
         return helper_client.xdp_stats(self.socket_path)
+
+    def ipv6_status(self) -> dict:
+        return helper_client.ipv6_status(self.socket_path)
 
 
 class UpdateHelperClient(Protocol):

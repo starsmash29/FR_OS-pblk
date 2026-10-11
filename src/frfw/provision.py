@@ -37,6 +37,9 @@ before anything else comes up:
    `frfw.wireguard`) -- only behind the loaded ruleset
 3. Interface static addresses (`frfw.ifaddr`) -- after the ruleset, so
    no address is brought up before the rules that filter it
+3a. IPv6 on the WAN: the kernel's IPv6 settings and dhcpcd
+   (`frfw.ipv6`, ROADMAP FND-1a) -- after the addresses, before the
+   services
 4. Kea DHCP config, if any zone has a DHCP pool (`frfw.kea`)
 5. Ad-block DNS resolver: (re)start/stop the dedicated dnsmasq instance
    to match `config.adblocker.enabled`, serving whatever
@@ -78,6 +81,7 @@ from frfw import (
     ids_quarantine,
     ifaddr,
     iot_isolation,
+    ipv6,
     kea,
     management,
     paths,
@@ -209,6 +213,8 @@ def preflight(config: Config, *, adblock_hosts_path: Path = paths.ADBLOCK_HOSTS_
             config, adblock_hosts_path, adblock_category_dir)))
     if config.xdp_sni_filter.enabled:
         checks.append(("the XDP SNI filter", lambda: _check_xdp(config, adblock_hosts_path)))
+    if config.ipv6.enabled:
+        checks.append(("IPv6 on the WAN", ipv6.check_available))
     for step, check in checks:
         try:
             check()
@@ -365,6 +371,22 @@ class _Run:
             links = [LinkState.capture(d) for d in _address_devices(config, self.previous)]
             self.begin("interface addresses", lambda: [link.restore() for link in reversed(links)])
         messages.append(ifaddr.sync_addresses(config, previous=self.previous, dry_run=dry_run).message)
+
+        # ROADMAP FND-1a: IPv6 on the WAN -- after the addresses step, which
+        # creates the VLAN devices whose settings this writes. With IPv6
+        # off now and before, there is nothing to undo.
+        ipv6_touched = (config.ipv6.enabled or paths.IPV6_DHCPCD_CONF_PATH.exists()
+                        or (self.previous is not None and self.previous.ipv6.enabled))
+        if not dry_run and ipv6_touched:
+            keys = set(ipv6.sysctl_settings(config))
+            if self.previous is not None:
+                keys |= set(ipv6.sysctl_settings(self.previous))
+            sysctls = ipv6.read_sysctls(sorted(keys))
+            dhcpcd_file = FileState.capture(paths.IPV6_DHCPCD_CONF_PATH)
+            dhcpcd_unit = ServiceState.capture(paths.IPV6_SERVICE_NAME)
+            self.begin("IPv6 on the WAN", lambda: (ipv6.write_sysctls(sysctls),
+                                                   _restore_service(dhcpcd_file, dhcpcd_unit)))
+        messages.append(ipv6.sync(config, dry_run=dry_run).message)
 
         if not dry_run and config.dhcp.zones:
             kea_file = FileState.capture(where.kea_config_path)

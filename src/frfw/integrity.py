@@ -442,6 +442,9 @@ PERSISTENCE_EXPECTED: tuple[str, ...] = (
     "/var/cache/man/**",
     "/var/lib/dbus/machine-id",
     "/var/lib/dhcp/dhclient.*.leases",
+    # fr-dhcp6's dhcpcd: its DUID, RFC 7217 secret and DHCPv6 leases
+    # (ROADMAP FND-1a).
+    "/var/lib/dhcpcd/**",
     "/var/lib/kea/**",
     "/var/lib/live/config/*",
     "/var/lib/systemd/**",

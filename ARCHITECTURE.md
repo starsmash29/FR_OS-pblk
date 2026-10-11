@@ -3618,6 +3618,80 @@ wins should not depend on dnsmasq either.
 Not done: the names of DHCP clients (Kea's leases) are not registered in
 the resolver, and the records are IPv4 only (FND-1).
 
+## IPv6 on the WAN (ROADMAP FND-1a)
+
+FR_OS was IPv4-only, and the ruleset dropped every IPv6 packet. IPv6
+comes in four stages: the router's own IPv6 on the WAN (1a, this
+section), the LAN's (1b: the delegated prefix on the LAN zones, RA and
+DHCPv6 there, forwarding with the same zone rules), the router's
+services over IPv6 (1c), and the XDP programs and the security features
+that hold IPv4 addresses (1d). `ipv6.enabled` (off by default) turns 1a
+on; `frfw.ipv6` does the work in an apply's step after the interface
+addresses (`frfw.provision`, undone like the others).
+
+**Who talks to the provider.** dhcpcd (Debian's dhcpcd-base,
+`fr-dhcp6.service`), IPv6 only and on the internet-facing interfaces only
+(`allowinterfaces`). It reads the provider's Router Advertisement itself
+-- SLAAC with RFC 7217 stable addresses, not derived from the MAC -- and
+asks DHCPv6 for an address (`ia_na`) and a prefix (`ia_pd ... -`).
+Asking for both explicitly means a provider whose RA sets neither the M
+nor the O flag is still asked. The delegated prefix goes to no interface
+(the `-`; without it dhcpcd would number every other interface from it)
+and dhcpcd installs an `unreachable` route for it, which is also where
+`frfw.ipv6.status` reads it from. dhcpcd runs no hook script (`script
+/bin/true`), sends no host name (`fqdn disable`, no `hostname`), and
+writes none of the router's files: the provider's DNS and NTP servers
+are not used. ifupdown's dhclient keeps the WAN's IPv4, untouched.
+dhcpcd starts as root -- it configures addresses and routes over netlink
+-- and drops to its own account in a chroot for everything that parses
+what the network sends (privilege separation); the unit adds the systemd
+sandbox (`tests/test_systemd_sandbox.py`). An apply restarts it only when
+its config changed: a restart drops the addresses and asks again.
+
+**The kernel takes nothing.** `accept_ra=0` on every interface and the
+defaults new ones get -- dhcpcd handles the WAN's RA; a LAN must never
+configure the router -- no redirects, no source routing, `autoconf=0`
+off the WAN, and `forwarding=0`.
+
+**The firewall.** Ahead of the established accept, on the WAN devices
+only: neighbour solicitations and advertisements and Router
+Advertisements with hop limit 255 -- which no forwarded packet has (RFC
+4861), so they can only come from the WAN's own link -- an RA only from
+a link-local address; the upstream router's MLD queries (link-local,
+hop limit 1: a host that never answers drops out of a snooping switch's
+tables, and its neighbour solicitations stop arriving); ICMPv6 errors
+(path MTU discovery needs packet-too-big); echo requests at 5/s; DHCPv6 replies from a link-local
+address, port 547 to 546. After the established and invalid lines,
+every other IPv6 packet to the router is dropped -- multicast silently,
+unicast logged like any default-deny drop -- before any rule written for
+IPv4: the brute-force jail, the IDS quarantine and ZTNA hold IPv4
+addresses, and an admin's "accept TCP 8080 from wan" must not open it
+over IPv6 too. The forward chain drops all IPv6 first, and masquerade is
+IPv4 only: IPv6 is never translated. Off, a single
+`meta nfproto ipv6 drop` in each, as before. The attack-surface view
+(`frfw.surface.ipv6_verdict`) judges a socket bound to an IPv6 address
+by these rules; DHCPv6's port counts as reachable from the provider's
+link only, not from the internet.
+
+**What it says.** Every provider is a state to explain, not an error
+(FR_OS is used on all kinds of lines): a delegated prefix (and how many
+/64 LAN networks it holds), an address but no prefix (the router has
+IPv6, a LAN can't get it from this upstream: turn on DHCPv6-PD on the
+router in front, or ask the provider), or nothing yet. The webUI reads
+it through the apply-helper (`ipv6_status`): it takes netlink, which the
+webUI's sandbox has no socket family for.
+
+**Checked.** The unit tests write the kernel settings to a fake
+`/proc/sys/net/ipv6`, read every state from `ip -j` output, parse the
+generated config with the real dhcpcd, and check the ruleset with `nft
+-c`. The boot test puts a provider on the WAN -- radvd and kea-dhcp6 with
+prefix delegation in a network namespace, wired to the VM's WAN by `tc`,
+next to QEMU's IPv4 user network on a QEMU hub -- and checks that the
+router stays silent while IPv6 is off, then takes a SLAAC address that
+doesn't carry its MAC, a DHCPv6 address and a /56, answers a ping on its
+WAN address but not TCP 443 or 22, and ignores an RA sent with hop limit
+64.
+
 ## Coarse application identification (phase 16)
 
 Goal: tell a home or small-office admin *which apps* the network uses --

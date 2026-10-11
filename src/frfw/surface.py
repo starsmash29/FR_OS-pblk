@@ -44,6 +44,7 @@ KNOWN_PORTS = {
     ("tcp", 53): "DNS filter (dnsmasq)",
     ("udp", 67): "DHCP server (Kea)",
     ("udp", 68): "DHCP client",
+    ("udp", 546): "DHCPv6 client (dhcpcd)",
     ("udp", 5353): "mDNS",
     ("udp", builder.IOT_MDNS_REPLY_PORT): "IoT scan (mDNS replies)",
 }
@@ -86,6 +87,9 @@ class Listener:
 class Verdict:
     state: str  # OPEN | RESTRICTED | CLOSED
     why: str
+    #: Only from a link-local address: the zone's own link, never from
+    #: beyond it -- not the internet, even on an internet-facing zone.
+    link_local_only: bool = False
 
 
 @dataclass
@@ -119,6 +123,8 @@ def needed_by(config: Config, listener: Listener) -> str | None:
         return "SSH (runs only while someone has a key)"
     if key == ("udp", 68):
         return "the WAN's DHCP client"
+    if key == ("udp", 546) and config.ipv6.enabled:
+        return "IPv6 on the WAN (ipv6)"
     if listener.port == 53 and config.adblocker.enabled:
         return "the DNS filter (adblocker)"
     if key == ("udp", 67) and config.dhcp.zones:
@@ -233,6 +239,22 @@ def input_verdict(config: Config, zone: str, proto: str, port: int, family: int 
     return verdict
 
 
+def ipv6_verdict(config: Config, zone: str, proto: str, port: int) -> Verdict:
+    """What the input chain does for a socket bound to an IPv6 address
+    (not the wildcard, which takes IPv4 too): every IPv6 packet is dropped
+    ahead of the admin's rules, but for what the WAN needs (ROADMAP
+    FND-1a) and, first in the chain, the isolated IoT devices' DNS/DHCP."""
+    isolated_dns_dhcp = (proto == "udp" and port in (53, 67)) or (proto == "tcp" and port == 53)
+    if config.iot.enabled and isolated_dns_dhcp:
+        return Verdict(RESTRICTED, "only isolated IoT devices (DNS/DHCP)")
+    if not config.ipv6.enabled:
+        return Verdict(CLOSED, "IPv6 is off (ipv6.enabled)")
+    if proto == "udp" and port == 546 and zone in management.internet_zones(config):
+        return Verdict(RESTRICTED, "only DHCPv6 replies from the provider's link-local address",
+                       link_local_only=True)
+    return Verdict(CLOSED, "the router takes IPv6 only for what the WAN needs (ROADMAP FND-1a)")
+
+
 def _chain_verdict(config: Config, zone: str, proto: str, port: int, family: int) -> Verdict:
     if config.iot.enabled and zone in config.iot.zones and proto == "udp" and port == builder.IOT_MDNS_REPLY_PORT:
         return Verdict(RESTRICTED, "only mDNS replies from port 5353 (IoT scan)")
@@ -308,9 +330,14 @@ def surface(config: Config, listeners: list[Listener], addresses: dict[str, list
     rows = []
     for listener in listeners:
         row = Row(listener)
+        ipv6_only = listener.family == 6 and not listener.wildcard
         for zone in reachable_zones(listener, config, addresses):
-            row.zones[zone] = input_verdict(config, zone, listener.proto, listener.port, listener.family)
-        row.internet = any(z in internet and v.state != CLOSED for z, v in row.zones.items())
+            if ipv6_only:
+                row.zones[zone] = ipv6_verdict(config, zone, listener.proto, listener.port)
+            else:
+                row.zones[zone] = input_verdict(config, zone, listener.proto, listener.port, listener.family)
+        row.internet = any(z in internet and v.state != CLOSED and not v.link_local_only
+                           for z, v in row.zones.items())
         row.needed = needed_by(config, listener)
         rows.append(row)
     return sorted(rows, key=lambda r: (not r.internet, not r.reachable, r.listener.port, r.listener.proto))

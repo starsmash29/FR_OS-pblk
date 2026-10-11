@@ -27,6 +27,7 @@ dhcp: {...}          # optional, default: empty
 ai_ids: {...}        # optional, default: empty (disabled)
 adblocker: {...}     # optional, default: empty (disabled)
 local_dns: {...}     # optional, default: empty (no local names)
+ipv6: {...}          # optional, default: off (IPv4 only)
 iot: {...}           # optional, default: empty (disabled)
 app_control: {...}   # optional, default: empty (disabled)
 tls_fingerprint: {...}  # optional, default: empty (disabled)
@@ -313,6 +314,35 @@ local_dns:
 - Addresses are IPv4 (FR_OS is IPv4-only, ROADMAP FND-1). DHCP clients'
   own names (`laptop.lan`) are not registered: Kea hands out the leases.
 
+## `ipv6`
+
+IPv6 on the WAN, for the router itself (ROADMAP FND-1a; see `frfw.ipv6`
+and ARCHITECTURE.md's "IPv6 on the WAN" section). The webUI switches it
+on the Interfaces screen ("IPv6 on the WAN"), which also shows what the
+provider gave; `firewall-cli ipv6-status` says the same.
+
+```yaml
+ipv6:
+  enabled: true      # default false
+```
+
+- `enabled` needs an internet-facing interface (a zone `nat.masquerade`
+  points at, or a zone named `wan`): IPv6 is taken from the provider
+  there -- an address by SLAAC (RFC 7217, not derived from the MAC) and
+  DHCPv6, and a delegated prefix (DHCPv6-PD), by dhcpcd
+  (`fr-dhcp6.service`).
+- The delegated prefix is recorded, not used: nothing is routed over
+  IPv6 and the LAN gets no IPv6 yet (FND-1b). The router's own services
+  are not reachable over IPv6 (FND-1c): the firewall drops every IPv6
+  packet to the router but neighbour discovery and the provider's router
+  advertisements (hop limit 255 only), the upstream's MLD queries, DHCPv6
+  replies, ICMPv6 errors and a rate-limited ping, on the internet-facing
+  interfaces only. `nat.masquerade` is IPv4 only.
+- Off (the default), every IPv6 packet to and through the router is
+  dropped, as before; turning it off stops dhcpcd, which takes its
+  addresses and routes with it.
+- No other key is accepted yet.
+
 ## `iot`
 
 Light-weight IoT device discovery and isolation (phase 14, see
@@ -582,8 +612,9 @@ update:
 ## Known limitations
 
 - Only IPv4 addresses/networks are supported in `src_address`/
-  `dst_address`/`to_address`/`address` fields (IPv6 is planned, see
-  [ROADMAP.md](../ROADMAP.md)).
+  `dst_address`/`to_address`/`address` fields, and the rules apply to
+  IPv4 only: IPv6 is the router's own, on the WAN (`ipv6`); the LAN's
+  IPv6 and services over IPv6 are planned (ROADMAP FND-1b, FND-1c).
 - No hairpin/reflection NAT for port forwards (an internal client
   cannot reach its own WAN-side forwarded service via the public IP) --
   this can be added later if needed.

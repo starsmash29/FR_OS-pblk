@@ -33,6 +33,7 @@ from frfw.config.schema import (
     Interface,
     IotConfig,
     IotIsolationMode,
+    Ipv6Config,
     LocalDnsConfig,
     LoggingConfig,
     ManagementConfig,
@@ -160,6 +161,7 @@ def parse_config(raw: Any) -> Config:
     wireguard = _parse_wireguard(raw.get("wireguard", {}) or {}, zones, nat, interfaces)
     _check_management_addresses(management, zones, nat, interfaces, wireguard)
     logging_config = _parse_logging(raw.get("logging", {}) or {})
+    ipv6 = _parse_ipv6(raw.get("ipv6", {}) or {}, interfaces, zones, nat)
 
     return Config(
         version=version,
@@ -183,6 +185,7 @@ def parse_config(raw: Any) -> Config:
         management=management,
         wireguard=wireguard,
         logging=logging_config,
+        ipv6=ipv6,
         timezone=tz_name,
     )
 
@@ -704,6 +707,25 @@ def internet_facing_zones(zones: dict[str, Zone], nat: NatConfig) -> set[str]:
     """Zones that face the internet: every nat.masquerade out_zone, and a
     zone called "wan" even without NAT."""
     return {m.out_zone for m in nat.masquerade} | ({"wan"} & set(zones))
+
+
+def _parse_ipv6(raw: Any, interfaces: dict[str, Interface], zones: dict[str, Zone], nat: NatConfig) -> Ipv6Config:
+    if not isinstance(raw, dict):
+        raise ConfigError("'ipv6' must be a mapping")
+    unknown = set(raw) - {"enabled"}
+    if unknown:
+        raise ConfigError(f"ipv6: unknown key(s) {sorted(unknown)}")
+    enabled = raw.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ConfigError("ipv6.enabled must be true or false")
+    if enabled:
+        facing = internet_facing_zones(zones, nat)
+        if not any(i.zone in facing for i in interfaces.values()):
+            raise ConfigError(
+                "ipv6.enabled needs an internet-facing interface (a zone nat.masquerade points at, "
+                "or a zone named wan): IPv6 is taken from the provider there"
+            )
+    return Ipv6Config(enabled=enabled)
 
 
 def _parse_management(raw: Any, zones: dict[str, Zone], nat: NatConfig) -> ManagementConfig:

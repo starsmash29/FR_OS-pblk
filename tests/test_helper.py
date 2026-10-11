@@ -768,3 +768,30 @@ def test_an_apply_that_would_move_the_webui_is_refused(running_server, tmp_path,
     assert not reply["ok"]
     assert reply["message"].startswith("Nothing was applied -- the webUI address: it would move the webUI and SSH")
     assert "192.168.1.3" not in paths.APPLIED_CONFIG_PATH.read_text()
+
+
+def test_ipv6_status_reports_off_by_default(running_server):
+    """ROADMAP FND-1a: the webUI reads the WAN's IPv6 through the helper
+    (its sandbox has no netlink socket); the example config has it off."""
+    response = client.ipv6_status(running_server)
+    assert response["ok"] is True
+    assert response["state"] == "off"
+    assert response["summary"] == "IPv6 is off."
+    assert response["prefixes"] == []
+
+
+def test_ipv6_status_relays_what_the_kernel_says(running_server, monkeypatch):
+    from frfw import ipv6 as ipv6_mod
+
+    state = ipv6_mod.Ipv6Status(ipv6_mod.PREFIX, ["eth0"], [("eth0", "2001:db8:1::5/64", "SLAAC")],
+                                [("eth0", "fe80::1")], ["2001:db8:100::/56"], True)
+    monkeypatch.setattr(ipv6_mod, "status", lambda config: state)
+    response = client.ipv6_status(running_server)
+    assert response == {"ok": True, **state.as_dict()}
+
+    def broken(config):
+        raise ValueError("bad JSON from ip")
+
+    monkeypatch.setattr(ipv6_mod, "status", broken)
+    response = client.ipv6_status(running_server)
+    assert response == {"ok": False, "message": "could not read the IPv6 state: bad JSON from ip"}

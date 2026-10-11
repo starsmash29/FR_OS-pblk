@@ -217,6 +217,14 @@ ADBLOCK_DNSMASQ_CONF_PATH = Path("/etc/fr_os/dnsmasq_adblock.conf")
 #: systemd unit name for frfw's dedicated dnsmasq instance (see above).
 ADBLOCK_DNS_SERVICE_NAME = "fr-adblock-dns"
 
+#: dhcpcd's config for IPv6 on the WAN (ROADMAP FND-1a, frfw.ipv6):
+#: written by an apply while `ipv6.enabled`, removed otherwise -- the
+#: unit (IPV6_SERVICE_NAME) runs only while it exists.
+IPV6_DHCPCD_CONF_PATH = Path("/etc/fr_os/dhcpcd6.conf")
+
+#: systemd unit of the WAN's dhcpcd (see above).
+IPV6_SERVICE_NAME = "fr-dhcp6"
+
 #: IoT device inventory (phase 14, see frfw.iot.scanner): the last
 #: scan's discovered devices, their classification and the reasons for
 #: it. Display-only state written by the unprivileged scanner (running

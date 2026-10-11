@@ -354,6 +354,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_iot_status.set_defaults(handler=_cmd_iot_status)
 
+    p_ipv6_status = sub.add_parser(
+        "ipv6-status",
+        help="show what IPv6 the provider gives the WAN (ROADMAP FND-1a)",
+    )
+    add_config_arg(p_ipv6_status)
+    p_ipv6_status.set_defaults(handler=_cmd_ipv6_status)
+
     p_persist = sub.add_parser(
         "persistence", help="keep a live-booted router's state across reboots (live-boot persistence)"
     )
@@ -977,6 +984,22 @@ def _cmd_iot_status(args: argparse.Namespace) -> int:
     print("IoT isolation: currently isolated devices:")
     for mac in sorted(isolated):
         print(f"  {mac}")
+    return 0
+
+
+def _cmd_ipv6_status(args: argparse.Namespace) -> int:
+    from frfw import ipv6
+
+    state = ipv6.status(load_config(args.config))
+    print(f"IPv6: {state.summary}")
+    for device, address, source in state.addresses:
+        print(f"  {device}: {address} ({source})")
+    for device, gateway in state.default_routes:
+        print(f"  default route: via {gateway} on {device}")
+    for prefix in state.prefixes:
+        print(f"  delegated prefix: {prefix}")
+    if state.state not in (ipv6.OFF, ipv6.NO_KERNEL):
+        print(f"  dhcpcd ({paths.IPV6_SERVICE_NAME}): {'running' if state.service_active else 'not running'}")
     return 0
 
 
