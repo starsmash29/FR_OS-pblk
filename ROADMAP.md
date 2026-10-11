@@ -1398,7 +1398,7 @@ issues #17 and #18). The R-numbers are that record's.
 
 | ID | Capability | What it gives an organisation | Today in FR_OS | Stitch design |
 |---|---|---|---|---|
-| DNS-1 | Local DNS records and overrides | Internal names (`nas.office.lan`) and split-horizon without a separate DNS server | Filtering resolver (dnsmasq, `frfw.adblock`) | DNS Static Override & Host Record |
+| DNS-1 | Local DNS records and overrides | Internal names (`nas.office.lan`) and split-horizon without a separate DNS server | **Done:** `local_dns` hosts (A and PTR), overrides (a name and its subdomains) and a local domain, answered by the router's resolver alone -- never forwarded, so neither an AAAA nor the name reaches the upstream -- and never blocked (`frfw.adblock.dns_service.local_dns_lines`, `never_blocked`); a Local names table on the Ad-Block & DNS screen. Needs `adblocker.enabled` and `serve_lan`. Open: DHCP clients' names from Kea's leases (`tests/test_local_dns.py`, `tests/webui/test_adblock_routes.py`, boot test) | DNS Static Override & Host Record |
 | DNS-2 | Encrypted upstream DNS (DoH/DoT) | Upstream queries can't be read or altered on the way | Plain upstream; DoT bypass *blocking* exists | Configure Encrypted DoH/DoT Upstream DNS |
 | DNS-3 | DNS leak and hijack test | Proof that clients really use the company resolver | Forced-DNS option | DNS Leak Test & Resolver Telemetry |
 

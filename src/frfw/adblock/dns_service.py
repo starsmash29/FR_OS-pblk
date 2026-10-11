@@ -188,6 +188,7 @@ def render_dnsmasq_config(
     # every subdomain. Deliberately not subject to `allowlist` -- blocking
     # an app is an explicit choice, the allowlist exists to fix list noise.
     extra.extend(f"address=/{name}/" for name in blocked_app_names(config))
+    extra.extend(local_dns_lines(config))
     extra_lines = "".join(f"{line}\n" for line in extra)
     return _DNSMASQ_CONF_TEMPLATE.format(
         hosts_lines=hosts_lines,
@@ -197,13 +198,45 @@ def render_dnsmasq_config(
     )
 
 
+def local_dns_lines(config: Config) -> list[str]:
+    """`local_dns` (ROADMAP DNS-1) as dnsmasq lines.
+
+    `local=/name/` with each entry: the router alone answers for it, so
+    a query for another type (AAAA, MX) is an empty answer, not the
+    upstream's -- an override's public IPv6 address would otherwise take
+    clients past it, and the internal names would reach the provider.
+    For a host, a subdomain is then NXDOMAIN; for an override `address=`
+    already covers the subdomains. Checked against real dnsmasq 2.91.
+    A local name on a blocklist would still be answered from the hosts
+    file (dnsmasq prefers it, checked too): never_blocked() takes it off.
+    """
+    local_dns = config.local_dns
+    lines = []
+    if local_dns.domain:
+        lines.append(f"local=/{local_dns.domain}/")
+    for name, address in sorted(local_dns.hosts.items()):
+        lines += [f"host-record={name},{address}", f"local=/{name}/"]
+    for name, address in sorted(local_dns.overrides.items()):
+        lines += [f"address=/{name}/{address}", f"local=/{name}/"]
+    return lines
+
+
+def never_blocked(config: Config) -> list[str]:
+    """The names no blocklist may hold: `adblocker.allowlist` and every
+    `local_dns` name (each with its subdomains, as the allowlist is)."""
+    names = list(config.adblocker.allowlist)
+    names += [n for n in config.local_dns.names() if n not in names]
+    return names
+
+
 def enforce_allowlist(config: Config, *, hosts_path: Path, category_dir: Path) -> int:
-    """Remove allowlisted names from the already-downloaded lists, so an
-    allowlist edit takes effect on the next `apply` without a refresh.
+    """Remove allowlisted names -- and local names, never_blocked() -- from
+    the already-downloaded lists, so an allowlist edit takes effect on the
+    next `apply` without a refresh.
     Removal only: an entry taken *off* the allowlist comes back at the
     next refresh, since the local files no longer contain it. Returns
     how many entries were removed."""
-    allowlist = config.adblocker.allowlist
+    allowlist = never_blocked(config)
     removed = 0
     files = [hosts_path] + [category_path(n, category_dir) for n in config.adblocker.categories]
     for path in files:

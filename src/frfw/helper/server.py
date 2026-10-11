@@ -35,6 +35,7 @@ from frfw.adblock import AdblockError
 from frfw.iot import leases as iot_leases
 from frfw.iot_isolation import IotIsolationError
 from frfw.adblock import refresh as adblock_refresh
+from frfw.adblock.dns_service import never_blocked
 from frfw.apply import NftError, rollback_last
 from frfw.bruteforce import BruteforceError
 from frfw.config import ConfigError, load_config, parse_config, read_config
@@ -380,7 +381,7 @@ def _handle_refresh_adblock(server: "ApplyHelperServer") -> dict:
         hosts_path=server.adblock_hosts_path,
         categories=config.adblocker.categories,
         category_dir=server.adblock_category_dir,
-        allowlist=config.adblocker.allowlist,
+        allowlist=never_blocked(config),
     )
     return {
         "ok": True,

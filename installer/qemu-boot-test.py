@@ -416,6 +416,8 @@ def check_sensor_isolation(check, upper: Path, *, secret: str | None = None) -> 
 
 #: ROADMAP P4-1: the XDP SNI filter is turned on in boot 3 with this one
 #: name blocked, on the LAN port the boot test reaches the webUI through.
+LOCAL_DNS_NAME = "nas.fr-os.test"
+LOCAL_DNS_ADDRESS = "10.73.1.20"
 XDP_BLOCKED_NAME = "blocked.fr-os.test"
 XDP_ALLOWED_NAME = "allowed.fr-os.test"
 
@@ -497,6 +499,28 @@ def udp_through_router(port: int, timeout: float = 3) -> str:
             return "refused"
         except OSError:
             return "no answer"
+
+
+def dns_answer(server: str, name: str, qtype: int = 1, timeout: float = 3) -> tuple[int, list[bytes]] | None:
+    """(rcode, the answers' RDATA) of one query to `server`, or None
+    without an answer."""
+    packet = struct.pack("!HHHHHH", 0x4652, 0x0100, 1, 0, 0, 0)
+    packet += b"".join(bytes([len(label)]) + label.encode() for label in name.split(".")) + b"\0"
+    packet += struct.pack("!HH", qtype, 1)
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        sock.settimeout(timeout)
+        try:
+            sock.sendto(packet, (server, 53))
+            data = sock.recv(4096)
+        except OSError:
+            return None
+    answers, offset = [], len(packet)  # past the echoed question
+    for _ in range(struct.unpack("!H", data[6:8])[0]):
+        offset += 2 if data[offset] & 0xC0 == 0xC0 else data.index(b"\0", offset) + 1 - offset
+        rdlength = struct.unpack("!H", data[offset + 8:offset + 10])[0]
+        answers.append(data[offset + 10:offset + 10 + rdlength])
+        offset += 10 + rdlength
+    return data[3] & 0x0F, answers
 
 
 def xdp_blocked_events(upper: Path) -> list[str]:
@@ -1160,6 +1184,12 @@ def run(args: argparse.Namespace) -> int:
         # ROADMAP SEC-6: the ZTNA gate, with one user, signed in below.
         post(opener, "/ztna/users/add", {"new_username": ZTNA_USERNAME, "new_password": ZTNA_PASSWORD})
         post(opener, "/ztna/settings", {"enabled": "true", "session_ttl_seconds": "3600"})
+        # ROADMAP DNS-1: a local name, answered by the router's resolver
+        # (which serves the LAN for it). The list URL is never fetched.
+        post(opener, "/adblock/settings", {"enabled": "true", "source_urls": "https://lists.fr-os.test/hosts",
+                                           "serve_lan": "true"})
+        post(opener, "/adblock/local-dns/add", {"kind": "hosts", "name": LOCAL_DNS_NAME,
+                                                "address": LOCAL_DNS_ADDRESS})
         try:
             applied = urllib.parse.unquote_plus(post(opener, "/apply", {}))
         except urllib.error.HTTPError as err:
@@ -1176,6 +1206,15 @@ def run(args: argparse.Namespace) -> int:
               and re.search(r"\.40=192\.168\.40\.1/24", applied) is not None,
               "the IoT and guest segments came up on VLANs of the LAN port (security-lessons K4)"
               + ("" if ".30=" in applied else f": {applied[:300]}"))
+        for _ in range(5):  # the resolver was restarted by the apply
+            local_answer = dns_answer(WEBUI_HOST, LOCAL_DNS_NAME)
+            if local_answer:
+                break
+            time.sleep(2)
+        check(local_answer == (0, [socket.inet_aton(LOCAL_DNS_ADDRESS)])
+              and dns_answer(WEBUI_HOST, LOCAL_DNS_NAME, qtype=28) == (0, []),
+              f"the router's resolver answers the local name {LOCAL_DNS_NAME} itself (ROADMAP DNS-1)"
+              + ("" if local_answer else f": no answer; {applied[:300]}"))
         # ROADMAP SEC-27: turning the VPN on doesn't move the webUI.
         check("webUI restarting" not in applied,
               "the Apply left the webUI where it was: only the admin moves it (ROADMAP SEC-27)")

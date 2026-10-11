@@ -3588,6 +3588,36 @@ message format is the one journald carries).
 - Journald may rate-limit a very chatty resolver's query log (systemd's
   default burst limit); detection then sees a sample, not everything.
 
+## Local names (ROADMAP DNS-1)
+
+`local_dns` gives internal names (`nas.lan`) and split-horizon overrides
+(an internal server for a public name) without a separate DNS server:
+the resolver that already serves the LAN -- the ad-block dnsmasq
+instance, with `serve_lan` -- answers them. `frfw.adblock.dns_service.
+local_dns_lines` writes a `host-record=` (A and PTR) per host and an
+`address=` (the name and its subdomains) per override.
+
+Each entry also gets `local=/name/`, and the local domain one of its own.
+Without it, dnsmasq answers only the A query from its own data and
+forwards the rest: an override's AAAA would come from the public DNS --
+and a dual-stack client would go around the override over IPv6 -- and
+every internal name would reach the provider. With it, the router alone
+answers for the name: other types are an empty answer, unknown names
+under the local domain NXDOMAIN. Checked against real dnsmasq 2.91
+(`tests/test_local_dns.py`, which also counts the queries a fake
+upstream gets: none for a local name).
+
+dnsmasq answers a name from an `addn-hosts=` blocklist before
+`address=` and alongside `host-record=` (checked too), so a local name
+on a blocklist would be answered 0.0.0.0. `never_blocked()` adds every
+local name to the allowlist -- at refresh and at every `apply` -- rather
+than relying on the order of dnsmasq's lookups. A name a blocked app
+uses is refused in `local_dns` instead: which of two explicit choices
+wins should not depend on dnsmasq either.
+
+Not done: the names of DHCP clients (Kea's leases) are not registered in
+the resolver, and the records are IPv4 only (FND-1).
+
 ## Coarse application identification (phase 16)
 
 Goal: tell a home or small-office admin *which apps* the network uses --

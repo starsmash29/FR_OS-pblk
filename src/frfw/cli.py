@@ -69,6 +69,7 @@ from frfw import persistence as persistence_mod
 from frfw import update as update_mod
 from frfw.adblock import AdblockError
 from frfw.adblock import refresh as adblock_refresh
+from frfw.adblock.dns_service import never_blocked
 from frfw.admin_account import ROLE_ADMIN, AccountError, AdminStore
 from frfw.appid import load_catalog
 from frfw.appid.daemon import load_usage
@@ -1380,7 +1381,7 @@ def _cmd_adblock_refresh(args: argparse.Namespace) -> int:
         result = adblock_refresh(
             config.adblocker.source_urls,
             categories=config.adblocker.categories,
-            allowlist=config.adblocker.allowlist,
+            allowlist=never_blocked(config),
         )
     except AdblockError as exc:
         print(f"error: {exc}", file=sys.stderr)

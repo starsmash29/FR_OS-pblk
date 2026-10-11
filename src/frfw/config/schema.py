@@ -361,6 +361,34 @@ class AdblockerConfig:
     query_logging: bool = False
 
 
+@dataclass(frozen=True)
+class LocalDnsConfig:
+    """Local names and split-horizon overrides served by the router's
+    resolver (ROADMAP DNS-1, see frfw.adblock.dns_service).
+
+    `hosts` maps one exact name to an IPv4 address (an A record and its
+    PTR); `overrides` maps a name *and every subdomain* to an IPv4 address
+    -- an internal server for a public name. Both are answered by the
+    router alone: their AAAA and other queries get an empty answer, never
+    the upstream's, so an override can't be bypassed over IPv6 and the
+    names aren't sent to the provider. `domain` (e.g. `lan`) is a local
+    domain the resolver never forwards: a name under it that isn't in
+    `hosts` is NXDOMAIN.
+
+    A local name is never blocked: it is taken off every blocklist, like
+    an `adblocker.allowlist` entry. The resolver runs only with
+    `adblocker.enabled` and `serve_lan`, so entries need both.
+    """
+
+    domain: str = ""
+    hosts: dict[str, str] = field(default_factory=dict)
+    overrides: dict[str, str] = field(default_factory=dict)
+
+    def names(self) -> list[str]:
+        """Every name the router answers for itself, the domain included."""
+        return [*self.hosts, *self.overrides, *([self.domain] if self.domain else [])]
+
+
 class IotIsolationMode(str, Enum):
     #: An isolated device may still reach the internet (every zone a
     #: `nat.masquerade` entry points at), but nothing else routed through
@@ -573,6 +601,7 @@ class Config:
     ztna: ZtnaConfig = field(default_factory=ZtnaConfig)
     pqc: PqcConfig = field(default_factory=PqcConfig)
     adblocker: AdblockerConfig = field(default_factory=AdblockerConfig)
+    local_dns: LocalDnsConfig = field(default_factory=LocalDnsConfig)
     iot: IotConfig = field(default_factory=IotConfig)
     app_control: AppControlConfig = field(default_factory=AppControlConfig)
     tls_fingerprint: TlsFingerprintConfig = field(default_factory=TlsFingerprintConfig)

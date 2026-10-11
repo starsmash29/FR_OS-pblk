@@ -193,3 +193,55 @@ def test_metrics_report_blocked_domains_per_category(client, webui_env, scrape):
     assert "# TYPE fros_dns_blocked_domains gauge" in text
     assert 'fros_dns_blocked_domains{category="malware"} 2' in text
     assert 'fros_dns_blocked_domains{category="ads"} 0' in text
+
+
+# --- local names (ROADMAP DNS-1) ---------------------------------------------
+
+
+def _serving_lan(webui_env, dhcp_config_dict):
+    import yaml
+
+    dhcp_config_dict["adblocker"] = {"enabled": True, "source_urls": ["https://a.example/hosts"], "serve_lan": True}
+    webui_env["config_path"].write_text(yaml.safe_dump(dhcp_config_dict))
+
+
+def test_local_names_are_added_listed_and_removed(logged_in_client, webui_env, dhcp_config_dict):
+    _serving_lan(webui_env, dhcp_config_dict)
+    response = logged_in_client.post("/adblock/local-dns/add",
+                                     data={"kind": "hosts", "name": "NAS.lan.", "address": "10.0.0.20"})
+    assert "success" in response.headers["location"]
+    logged_in_client.post("/adblock/local-dns/add",
+                          data={"kind": "overrides", "name": "intranet.example.com", "address": "10.0.0.30"})
+    logged_in_client.post("/adblock/local-dns/domain", data={"domain": "lan"})
+    config = load_config(webui_env["config_path"])
+    assert config.local_dns.hosts == {"nas.lan": "10.0.0.20"}
+    assert config.local_dns.overrides == {"intranet.example.com": "10.0.0.30"}
+    assert config.local_dns.domain == "lan"
+
+    page = logged_in_client.get("/adblock").text
+    assert "<code>nas.lan</code>" in page and "10.0.0.30" in page and 'value="lan"' in page
+
+    logged_in_client.post("/adblock/local-dns/remove", data={"kind": "hosts", "name": "nas.lan"})
+    logged_in_client.post("/adblock/local-dns/remove", data={"kind": "overrides", "name": "intranet.example.com"})
+    logged_in_client.post("/adblock/local-dns/domain", data={"domain": ""})
+    assert load_config(webui_env["config_path"]).local_dns.names() == []
+    assert "local_dns" not in webui_env["config_path"].read_text()
+
+
+def test_a_bad_local_name_is_refused_and_nothing_saved(logged_in_client, webui_env, dhcp_config_dict):
+    _serving_lan(webui_env, dhcp_config_dict)
+    before = webui_env["config_path"].read_text()
+    for data in ({"kind": "hosts", "name": "nas.lan", "address": "10.0.0.300"},
+                 {"kind": "hosts", "name": "nas.lan\nserver=6.6.6.6", "address": "10.0.0.5"},
+                 {"kind": "zones", "name": "nas.lan", "address": "10.0.0.5"}):
+        response = logged_in_client.post("/adblock/local-dns/add", data=data)
+        assert "error" in response.headers["location"]
+    assert webui_env["config_path"].read_text() == before
+
+
+def test_local_names_need_the_resolver_serving_the_lan(logged_in_client, webui_env):
+    _seed_interface(logged_in_client)
+    response = logged_in_client.post("/adblock/local-dns/add",
+                                     data={"kind": "hosts", "name": "nas.lan", "address": "10.0.0.20"})
+    assert "error" in response.headers["location"]
+    assert "serve_lan" in response.headers["location"]
