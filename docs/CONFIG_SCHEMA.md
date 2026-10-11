@@ -316,32 +316,78 @@ local_dns:
 
 ## `ipv6`
 
-IPv6 on the WAN, for the router itself (ROADMAP FND-1a; see `frfw.ipv6`
-and ARCHITECTURE.md's "IPv6 on the WAN" section). The webUI switches it
-on the Interfaces screen ("IPv6 on the WAN"), which also shows what the
-provider gave; `firewall-cli ipv6-status` says the same.
+IPv6 (ROADMAP FND-1): the router's own on the WAN (FND-1a), and the LAN's
+(FND-1b). See `frfw.ipv6` and ARCHITECTURE.md's "IPv6 on the WAN" and
+"IPv6 on the LAN" sections. The webUI switches it on the Interfaces
+screen ("IPv6"), which also shows what the provider gave and the LAN
+networks made of it; `firewall-cli ipv6-status` says the same.
 
 ```yaml
 ipv6:
   enabled: true      # default false
+  lan_zones: [lan, guest]   # optional; default: every LAN zone it can serve
 ```
 
 - `enabled` needs an internet-facing interface (a zone `nat.masquerade`
-  points at, or a zone named `wan`): IPv6 is taken from the provider
-  there -- an address by SLAAC (RFC 7217, not derived from the MAC) and
-  DHCPv6, and a delegated prefix (DHCPv6-PD), by dhcpcd
-  (`fr-dhcp6.service`).
-- The delegated prefix is recorded, not used: nothing is routed over
-  IPv6 and the LAN gets no IPv6 yet (FND-1b). The router's own services
-  are not reachable over IPv6 (FND-1c): the firewall drops every IPv6
-  packet to the router but neighbour discovery and the provider's router
-  advertisements (hop limit 255 only), the upstream's MLD queries, DHCPv6
-  replies, ICMPv6 errors and a rate-limited ping, on the internet-facing
-  interfaces only. `nat.masquerade` is IPv4 only.
+  points at, or a zone named `wan`). IPv6 is taken from the provider
+  there by dhcpcd (`fr-dhcp6.service`):
+  - an address by SLAAC (RFC 7217, not derived from the MAC);
+  - an address by DHCPv6;
+  - a delegated prefix (DHCPv6-PD).
+- `lan_zones`: the zones that get IPv6, in order. The prefix's /64s go to
+  their devices in that order, so the first device gets the prefix's
+  first /64. A provider that delegates a single /64 can serve only that
+  first device, and the status says so. The router's address on each is
+  `<network>::1`. A dedicated, RA-only dnsmasq (`fr-ra.service`)
+  advertises them: SLAAC only, no DHCPv6 server and no DNS server
+  option, so clients keep the router's IPv4 resolver.
+  - Without `lan_zones`: every zone with an interface that doesn't face
+    the internet, in config order, except those IPv6 would get around a
+    protection of (below). An added zone or device goes last and
+    renumbers nobody.
+  - `[]`: no LAN gets IPv6, and the router alone has it (FND-1a).
+  - A zone listed must exist, not face the internet, and have an
+    interface. WireGuard's tunnel doesn't count as one: its clients are
+    IPv4-only.
+- A zone can't have IPv6 while something that protects it is IPv4-only.
+  IPv6 would quietly open what was closed, because the same host would
+  reach the same place over IPv6. Such a zone is left out of the default
+  and refused in an explicit `lan_zones`, with the reason:
+  - a forward `drop`/`reject` rule with `src_address`/`dst_address`
+    (IPv4 networks) that names the zone or no zone. Block the host by
+    MAC (`src_mac`) instead. A rule whose traffic comes from an
+    internet-facing zone doesn't count, since nothing new comes in from
+    the internet over IPv6;
+  - the XDP SNI filter (and with it app control) on one of its devices
+    or their VLANs. The filter reads IPv4 only (FND-1d).
+- What the rules do over IPv6:
+  - They apply to both families. A rule by `proto` without a port now
+    matches IPv6 too (`meta l4proto`), and `proto: icmp` also matches
+    ICMPv6.
+  - IPv6 is routed only between the WAN and the LAN zones' devices.
+  - A LAN host may send only from its own network (BCP 38).
+  - Nothing new comes in from the internet over IPv6, whatever the rules
+    say. A rule written for a port forward would otherwise open that
+    port on every host of the zone.
+  - Nothing is translated: `nat.masquerade` is IPv4 only, and there is
+    no NAT66.
+- The router itself, over IPv6:
+  - From the WAN, it answers neighbour discovery and the provider's
+    router advertisements (hop limit 255 only), the upstream's MLD
+    queries, DHCPv6 replies, ICMPv6 errors and a rate-limited ping.
+  - From the LAN, it answers neighbour discovery, router solicitations
+    and a rate-limited ping.
+  - Its services (the webUI, SSH, DNS) are not reachable over IPv6
+    (FND-1c).
+- With `adblocker.force_dns`, plain DNS from the LAN over IPv6 is
+  refused, so the client falls back to the router's resolver over IPv4
+  (DoT/DoQ were already refused for both families).
+- An AI IDS quarantine also holds the host's MAC (from the router's
+  neighbour table, on a LAN device only), so the host's own IPv6
+  addresses don't get it out.
 - Off (the default), every IPv6 packet to and through the router is
-  dropped, as before; turning it off stops dhcpcd, which takes its
-  addresses and routes with it.
-- No other key is accepted yet.
+  dropped, as before. Turning it off stops dhcpcd and the RA instance,
+  which takes their addresses and routes with them.
 
 ## `iot`
 
@@ -612,9 +658,10 @@ update:
 ## Known limitations
 
 - Only IPv4 addresses/networks are supported in `src_address`/
-  `dst_address`/`to_address`/`address` fields, and the rules apply to
-  IPv4 only: IPv6 is the router's own, on the WAN (`ipv6`); the LAN's
-  IPv6 and services over IPv6 are planned (ROADMAP FND-1b, FND-1c).
+  `dst_address`/`to_address`/`address` fields. A rule with one matches
+  IPv4 only, so a drop rule by address keeps its zone off IPv6
+  (`ipv6.lan_zones`). Services over IPv6 and inbound IPv6 pinholes are
+  planned (ROADMAP FND-1c).
 - No hairpin/reflection NAT for port forwards (an internal client
   cannot reach its own WAN-side forwarded service via the public IP) --
   this can be added later if needed.

@@ -3622,9 +3622,9 @@ the resolver, and the records are IPv4 only (FND-1).
 
 FR_OS was IPv4-only, and the ruleset dropped every IPv6 packet. IPv6
 comes in four stages: the router's own IPv6 on the WAN (1a, this
-section), the LAN's (1b: the delegated prefix on the LAN zones, RA and
-DHCPv6 there, forwarding with the same zone rules), the router's
-services over IPv6 (1c), and the XDP programs and the security features
+section), the LAN's (1b: the delegated prefix on the LAN zones, RAs
+there, forwarding with the same zone rules; the next section), the
+router's services over IPv6 (1c), and the XDP programs and the security features
 that hold IPv4 addresses (1d). `ipv6.enabled` (off by default) turns 1a
 on; `frfw.ipv6` does the work in an apply's step after the interface
 addresses (`frfw.provision`, undone like the others).
@@ -3651,7 +3651,8 @@ its config changed: a restart drops the addresses and asks again.
 **The kernel takes nothing.** `accept_ra=0` on every interface and the
 defaults new ones get -- dhcpcd handles the WAN's RA; a LAN must never
 configure the router -- no redirects, no source routing, `autoconf=0`
-(dhcpcd does the WAN's SLAAC), and `forwarding=0`. The apply also writes
+(dhcpcd does the WAN's SLAAC), and `forwarding=0` while no LAN zone
+gets IPv6. The apply also writes
 what dhcpcd would write itself -- the IPv4 `promote_secondaries` on the
 WAN, which it insists on even with `ipv6only` -- because fr-dhcp6's
 sandbox keeps `/proc/sys` read-only (`ProtectKernelTunables`), and
@@ -3670,8 +3671,8 @@ every other IPv6 packet to the router is dropped -- multicast silently,
 unicast logged like any default-deny drop -- before any rule written for
 IPv4: the brute-force jail, the IDS quarantine and ZTNA hold IPv4
 addresses, and an admin's "accept TCP 8080 from wan" must not open it
-over IPv6 too. The forward chain drops all IPv6 first, and masquerade is
-IPv4 only: IPv6 is never translated. Off, a single
+over IPv6 too. With no LAN zone getting IPv6 the forward chain drops all
+IPv6 first, and masquerade is IPv4 only: IPv6 is never translated. Off, a single
 `meta nfproto ipv6 drop` in each, as before. The attack-surface view
 (`frfw.surface.ipv6_verdict`) judges a socket bound to an IPv6 address
 by these rules; DHCPv6's port counts as reachable from the provider's
@@ -3695,6 +3696,126 @@ router stays silent while IPv6 is off, then takes a SLAAC address that
 doesn't carry its MAC, a DHCPv6 address and a /56, answers a ping on its
 WAN address but not TCP 443 or 22, and ignores an RA sent with hop limit
 64.
+
+## IPv6 on the LAN (ROADMAP FND-1b)
+
+With `ipv6.enabled`, the delegated prefix now goes to the LAN zones
+(`ipv6.lan_zones`; by default every zone with an interface that doesn't
+face the internet). FR_OS is a community edition, so what a provider
+gives decides what the LAN gets. With a /56 or /60 every LAN device gets
+a /64. With a single /64 only the first device does, and the status says
+why. With an address only or nothing, the LAN gets nothing, explained as
+in 1a.
+
+**Who numbers the LAN.** dhcpcd itself (`ia_pd 101 eth1/0/64
+eth2/1/64 ...`), not a script reading its lease:
+- It assigns `<network>::1` on each device and follows the provider's
+  renumbering and lifetimes.
+- It installs an `unreachable` route for the rest of the prefix, so
+  traffic to the unused /64s doesn't loop to the provider.
+- `sla_id` 0 goes first: a delegated /64 is then given whole to the
+  first device (dhcpcd.conf(5)).
+- The order is `lan_zones`, then config order, so an added zone or
+  device goes last and renumbers nobody.
+- Only the first WAN delegates: two providers' prefixes on one LAN would
+  need source-address routing.
+- dhcpcd must run on the devices it delegates to (`allowinterfaces`). It
+  reads no RA there (the global `noipv6rs`; only the WAN's block has
+  `ipv6rs`), because a LAN must never configure the router. It asks for
+  nothing there either.
+- The apply writes what it would write on them too
+  (`promote_secondaries`, `disable_ipv6=0`), as on the WAN.
+
+**Who advertises it.** A dedicated dnsmasq instance, `fr-ra.service`, not
+the ad-block resolver's.
+- `enable-ra` with `dhcp-range=::,constructor:<device>,ra-only`, which
+  takes the prefix from the device's own address. A renumbered prefix is
+  advertised as it changes, with its lifetimes.
+- `ra-only` means SLAAC with no DHCPv6 server and no M or O flag.
+- `port=0` means no DNS. In dnsmasq that also leaves the RA without a
+  DNS server option, so clients keep the router's IPv4 resolver, the one
+  that filters (DNS over IPv6 is FND-1c). No pid file, no lease file.
+- It runs as a dynamic account (`DynamicUser=`) with CAP_NET_RAW alone,
+  for the ICMPv6 socket. dnsmasq started as non-root doesn't change user
+  itself.
+- An apply runs `dnsmasq --test` on the new config before it replaces
+  the old one, and restarts the instance only when the config changed.
+- Why not radvd: dnsmasq is already in the image, and its `constructor:`
+  follows dhcpcd's addresses with no glue.
+
+**Routing.** `forwarding=1` only while a LAN zone gets IPv6. `accept_ra`
+stays 0 everywhere: dhcpcd reads the WAN's RA in userspace, which
+forwarding doesn't change (checked in the boot test).
+
+**The firewall**, over IPv6:
+- **Input.** On the LAN zones' devices the router accepts neighbour
+  discovery and router solicitations (hop limit 255) and a rate-limited
+  ping. Everything else to the router is dropped as in 1a, so its
+  services stay IPv4-only (FND-1c).
+- **Forward**, first: IPv6 is routed only between the WAN's and the LAN
+  zones' devices. A zone left out of `lan_zones` gets none through the
+  router either.
+- **Forward**, then BCP 38: a LAN host's packet is dropped unless the
+  router routes its source back out the same device (`fib saddr . iif
+  oif missing`). This is strict reverse-path filtering on the LAN only;
+  on the WAN, with two providers the reply route may be the other one.
+- **Forward**, after the established accept: every new connection from
+  the WAN is dropped (and logged), ahead of every admin rule. The LAN's
+  addresses are public, and "allow 443 from wan to dmz", written next to
+  a DNAT to one host, would open 443 on every host of the zone. Pinholes
+  are later work. ICMPv6 errors for the LAN's own connections come in as
+  `related` (RFC 4890's must-not-drop list).
+- **Rules by protocol.** They are rendered `meta l4proto` instead of
+  `ip protocol`, which matched IPv4 only: "drop udp from guest" would
+  have let IPv6 through. `icmp` matches ICMPv6 too.
+
+**What stays IPv4-only, and how that is kept from opening a hole.** IPv6
+must not quietly open what the admin closed. Wherever a protection is
+IPv4-only, the zone it protects doesn't get IPv6 (FND-1d lifts these):
+- **A drop/reject forward rule by address.** `src_address`/`dst_address`
+  are IPv4 networks, so the same host would get around the rule over
+  IPv6. `frfw.config.loader.ipv6_lan_exclusions` leaves the zone out of
+  the default `lan_zones`, and the status says why ("block it by MAC
+  instead"). An explicit `lan_zones` naming it is refused. A rule from an
+  internet-facing zone doesn't count: nothing new comes in over IPv6.
+- **The XDP SNI filter (and app control).** It parses IPv4 only. The
+  same treatment applies to its devices and their VLANs. The boot test
+  turns the filter on after IPv6 and checks that the LAN zone goes off
+  IPv6.
+- **The IDS quarantine.** It holds IPv4 addresses, and a host picks its
+  own IPv6 addresses. When a host is quarantined, the helper also looks
+  its MAC up in the neighbour table, on a LAN device only (on the WAN it
+  would be the provider's gateway). The MAC goes into `ids_quarantine_mac`
+  with the same timeout, carried over reloads like the other runtime
+  sets. The forward chain drops IPv6 from it ahead of the established
+  accept.
+- **Force DNS.** The redirect to the resolver is IPv4-only (the resolver
+  doesn't serve IPv6 yet). Plain DNS over IPv6 from the LAN is refused,
+  so a client falls back at once to the resolver it got over IPv4.
+- **ZTNA.** Its sets hold IPv4 addresses, so a `require_ztna` accept
+  rule matches no IPv6 and fails closed.
+- **IoT isolation.** It is already by MAC and covers IPv6 as it is.
+
+**Checked.** The unit tests cover:
+- the config rules and the exclusions;
+- dhcpcd's config, parsed by the real dhcpcd;
+- the RA config, checked by the real `dnsmasq --test`;
+- the kernel settings and the apply step with its undo;
+- the status for every outcome (a /56, a whole /64, too many zones, a
+  zone left out);
+- the ruleset, with `nft -c`;
+- the quarantine's MAC lookup, against the real kernel set.
+
+The boot test turns IPv6 on in an Apply of its own, then checks that:
+- the LAN port got the first /64 of the delegated /56;
+- the host on it took an address there by SLAAC;
+- that host reaches the provider by ping and TCP, but not from a spoofed
+  source;
+- the provider can't reach the host, not even by ping;
+- the router answers the LAN's ping but not the webUI or SSH over IPv6.
+
+The next Apply turns the SNI filter on, and the test checks that the LAN
+zone goes off IPv6, with the reason on the card.
 
 ## Coarse application identification (phase 16)
 

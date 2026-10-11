@@ -590,6 +590,7 @@ def test_on_with_a_lan_starts_the_router_advertisements(minimal_config_dict, pro
     assert "the LAN gets a /64 each on eth1" in result.message
     assert calls == ["restart", "restart fr-ra"]
     assert paths.IPV6_RA_CONF_PATH.read_text() == ipv6.render_ra_conf(config)
+    assert paths.IPV6_RA_CONF_PATH.stat().st_mode & 0o777 == 0o644  # fr-ra's dynamic account reads it
     assert (proc / "ipv6/conf/all/forwarding").read_text() == "1\n"
     assert (proc / "ipv4/conf/eth1/promote_secondaries").read_text() == "1\n"
     # Unchanged: neither is restarted.

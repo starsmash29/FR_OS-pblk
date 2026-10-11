@@ -334,6 +334,8 @@ def sync(config: Config, *, dry_run: bool = False, conf_path: Path | None = None
         ra_changed = not ra_conf_path.exists() or ra_conf_path.read_text() != ra_text
         if ra_changed:
             ra_conf_path.write_text(ra_text)
+            # fr-ra's dynamic account reads it; it holds device names only.
+            ra_conf_path.chmod(0o644)
         _systemctl("restart" if ra_changed else "start", paths.IPV6_RA_SERVICE_NAME)
     return SyncResult(True, f"IPv6: dhcpcd on {', '.join(devices)} (SLAAC, DHCPv6 address and prefix "
                             f"delegation){where}")
