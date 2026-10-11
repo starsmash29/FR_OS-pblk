@@ -400,6 +400,221 @@ def _pyc_matches(data: bytes, source: bytes, optimize: int) -> bool:
         return False
 
 
+# --- the rest of the persistence layer (ROADMAP SEC-22) --------------------
+
+
+#: What a router writes on its persistence partition by itself, outside
+#: FR_OS's own files: its config and state, logs, caches and leases, the
+#: host keys and accounts first boot and live-config set up. Patterns over
+#: the whole path, `*` within one name, `/**` a whole subtree. Taken from
+#: the persistence layer after the boot test's boots, updates and kernel
+#: trials (installer/qemu-boot-test.py checks that a clean run adds
+#: nothing to it). The files of Debian named here are expected to change,
+#: so their content is not judged: see ROADMAP SEC-22 for what that leaves.
+PERSISTENCE_EXPECTED: tuple[str, ...] = (
+    # FR_OS's config and state, and what it generates outside /etc/fr_os.
+    "/etc/fr_os/**",
+    "/etc/issue.d/fr_os-*.issue",
+    "/etc/kea/kea-dhcp4.conf",
+    "/etc/modules-load.d/fr_os-*.conf",
+    "/etc/network/interfaces.d/fr_os-*",
+    "/etc/ssh/sshd_config.d/*-fr_os-*.conf",
+    "/var/lib/fr_os/**",
+    # The system's identity, set at first boot (live-config, fr-first-boot).
+    "/etc/hostname", "/etc/hosts", "/etc/machine-id", "/etc/resolv.conf",
+    "/etc/timezone", "/etc/localtime", "/etc/fstab",
+    "/etc/passwd", "/etc/passwd-", "/etc/group", "/etc/group-",
+    "/etc/shadow", "/etc/shadow-", "/etc/gshadow", "/etc/gshadow-", "/etc/.pwd.lock",
+    "/etc/ssh/ssh_host_*_key", "/etc/ssh/ssh_host_*_key.pub",
+    "/etc/ssh/sshd_config", "/etc/pam.d/login",
+    "/etc/rc[06S].d/[KS]01hwclock.sh",
+    # State, caches, leases and logs.
+    "/var/cache/debconf/*",
+    # Debian's daily timers on a router that stays up (logrotate, apt-daily,
+    # dpkg-db-backup, man-db): seen or expected after the first days.
+    "/var/lib/logrotate/status",
+    "/var/backups/**",
+    "/var/cache/apt/**", "/var/lib/apt/lists/**", "/var/lib/apt/periodic/**",
+    "/var/cache/man/**",
+    "/var/lib/dbus/machine-id",
+    "/var/lib/dhcp/dhclient.*.leases",
+    "/var/lib/kea/**",
+    "/var/lib/live/config/*",
+    "/var/lib/systemd/**",
+    "/var/log/**",
+    "/tmp/systemd-private-*/**", "/var/tmp/systemd-private-*/**",
+    # Nothing under /root or /home: FR_OS has no console login, so a
+    # shell's history there is someone else's too.
+)
+
+#: FR_OS's own files, compared with the signed release
+#: (compare_with_release), and the signed releases themselves.
+_OWN_TREES: tuple[str, ...] = (
+    "/usr/local/lib/python3*/dist-packages/frfw/**",
+    "/usr/local/share/fr_os/**",
+    "/opt/fr_os/releases/**",
+)
+
+_WANTS = re.compile(rf"{re.escape(UNITS_DIR)}/[^/]+\.(?:wants|requires)/(?P<unit>[^/]+)\Z")
+
+
+def release_targets(source: dict[str, bytes], *, xdp_object: str) -> set[str]:
+    """Where the image and the updater install the release's files outside
+    the Python package: the scripts, the units, the XDP program."""
+    targets = set()
+    for name in source:
+        target = INSTALLED_FROM_SOURCE.get(name)
+        if target is None and name.startswith("systemd/fr-") and "/" not in name[len("systemd/"):]:
+            target = f"{UNITS_DIR}/{name[len('systemd/'):]}"
+        if target is None and name == "bpf/xdp_sni_filter.o":
+            target = xdp_object
+        if target is not None:
+            targets.add(target)
+    return targets
+
+
+@dataclass(frozen=True)
+class PersistenceReport:
+    #: ("added" | "changed" | "removed", path), by path.
+    changes: list[tuple[str, str]]
+    #: Debian's compiled files for the router's Python, when the Python
+    #: comparing is another one: counted, not checked.
+    unchecked_pyc: int = 0
+
+
+def _path_matches(path: str, patterns: tuple[str, ...] | set[str]) -> bool:
+    rel = PurePosixPath(path.lstrip("/"))
+    for pattern in patterns:
+        pattern = pattern.lstrip("/")
+        if pattern.endswith("/**"):
+            base = PurePosixPath(pattern[:-3])
+            depth = len(base.parts)
+            if len(rel.parts) > depth and _glob_match(PurePosixPath(*rel.parts[:depth]), str(base)):
+                return True
+        elif _glob_match(rel, pattern):
+            return True
+    return False
+
+
+def _lstat(path: Path) -> os.stat_result | None:
+    try:
+        return path.lstat()
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+
+
+def _same_file(up: Path, a: os.stat_result, low: Path, b: os.stat_result) -> bool:
+    """Whether the upper layer's entry is the image's own, copied up
+    unchanged: same type, mode, owner, and content (or link target)."""
+    if (a.st_mode, a.st_uid, a.st_gid) != (b.st_mode, b.st_uid, b.st_gid):
+        return False
+    if stat.S_ISDIR(a.st_mode):
+        return True
+    if stat.S_ISLNK(a.st_mode):
+        return os.readlink(up) == os.readlink(low)
+    if stat.S_ISREG(a.st_mode):
+        if a.st_size != b.st_size:
+            return False
+        with up.open("rb") as fa, low.open("rb") as fb:
+            while True:
+                chunk = fa.read(1 << 20)
+                if chunk != fb.read(1 << 20):
+                    return False
+                if not chunk:
+                    return True
+    return False  # a device, a pipe or a socket on the persistence layer
+
+
+def persistence_changes(lower: Path | str, upper: Path | str, *, own_files: set[str],
+                        pyc_tag: str | None = None,
+                        expected: tuple[str, ...] = PERSISTENCE_EXPECTED) -> PersistenceReport:
+    """What the persistence layer (`upper`) adds to, changes in or removes
+    from the image (`lower`), outside FR_OS's own files (`own_files`, the
+    release's targets, and _OWN_TREES) and what a router writes by itself.
+
+    Review v0.2.1 #3: a root attacker's persistence -- a systemd unit,
+    another program, an SSH key, a patched Debian file -- lives here, and
+    the comparison with the signed release never looked. Both layers are
+    untrusted (review v0.2.1 #2): everything is read with lstat, no link is
+    followed, and a link is judged by the text of its target.
+
+    The router's Python compiles Debian's modules on first use, into the
+    persistence layer; such a `.pyc` is code it runs, so it must hold
+    exactly the code compiled from the image's source (`pyc_tag` is the
+    router's Python, cpython-311)."""
+    lower, upper = Path(lower), Path(upper)
+    pyc_tag = pyc_tag or sys.implementation.cache_tag
+    own_units = {Path(p).name for p in own_files if p.startswith(UNITS_DIR + "/")}
+    found: list[tuple[str, str]] = []
+    unchecked_pyc = 0
+
+    def judge(what: str, path: str) -> None:
+        if not (_path_matches(path, expected) or _path_matches(path, _OWN_TREES) or path in own_files):
+            found.append((what, path))
+
+    view = OverlayView(lower, upper)
+
+    def known(path: str, entry: Path, st: os.stat_result) -> bool:
+        """An FR_OS unit enabled (a link to it in a .wants directory), or
+        a compiled Debian module that holds its source's code."""
+        nonlocal unchecked_pyc
+        wants = _WANTS.match(path)
+        if wants and stat.S_ISLNK(st.st_mode):
+            unit = wants["unit"]
+            return unit in own_units and os.readlink(entry) == f"{UNITS_DIR}/{unit}"
+        rel = PurePosixPath(path)
+        pyc = _PYC.match(rel.name)
+        if not (pyc and rel.parent.name == "__pycache__" and stat.S_ISREG(st.st_mode)):
+            return False
+        source = PurePosixPath(*rel.parent.parent.parts[1:], f"{pyc['stem']}.py")
+        if not view._lower_visible(source) or OverlayView._through_link(lower, source):
+            return False
+        low_source, up_source = lower / source, upper / source
+        source_st = _lstat(low_source)
+        if source_st is None or not stat.S_ISREG(source_st.st_mode) or _lstat(up_source) is not None:
+            return False  # no source in the image, or one the upper layer changed (judged itself)
+        if pyc["tag"] != pyc_tag:
+            return False  # not the router's Python's: nothing there compiles it
+        if pyc_tag != sys.implementation.cache_tag:
+            unchecked_pyc += 1
+            return True
+        return _pyc_matches(entry.read_bytes(), low_source.read_bytes(), int(pyc["opt"] or 0))
+
+    def walk(rel: PurePosixPath, lower_visible: bool) -> None:
+        here = upper.joinpath(*rel.parts)
+        for name in sorted(os.listdir(here)):
+            entry, child = here / name, rel / name
+            path = "/" + str(child)
+            st = entry.lstat()
+            low = lower.joinpath(*child.parts)
+            # The image's entry, unless a link on the way (in the image) or
+            # a whiteout or opaque directory above it (here) hides it.
+            low_st = _lstat(low) if lower_visible and not OverlayView._through_link(lower, child) else None
+            if OverlayView._whiteout(entry):
+                if low_st is not None:
+                    judge("removed", path)
+                continue
+            if stat.S_ISDIR(st.st_mode):
+                opaque = OverlayView._opaque(entry)
+                if low_st is not None and not stat.S_ISDIR(low_st.st_mode):
+                    judge("changed", path)  # a file or link in the image
+                elif low_st is not None and not _same_file(entry, st, low, low_st):
+                    judge("changed", path + "/")  # its mode or owner
+                if opaque and low_st is not None and stat.S_ISDIR(low_st.st_mode) and os.listdir(low):
+                    judge("removed", path + "/")  # hides the image's files in it
+                walk(child, lower_visible and not opaque and low_st is not None
+                     and stat.S_ISDIR(low_st.st_mode))
+                continue
+            if low_st is not None and _same_file(entry, st, low, low_st):
+                continue
+            if known(path, entry, st):
+                continue
+            judge("added" if low_st is None else "changed", path)
+
+    walk(PurePosixPath(), True)
+    return PersistenceReport(sorted(found, key=lambda item: item[1]), unchecked_pyc)
+
+
 # --- this router -----------------------------------------------------------
 
 

@@ -75,6 +75,7 @@ import re
 import shutil
 import socket
 import ssl
+import stat
 import struct
 import subprocess
 import sys
@@ -90,7 +91,7 @@ from pathlib import Path
 # the router does (ROADMAP SEC-14) -- from this checkout, as
 # scripts/verify-medium.py uses it.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from frfw import kernel_boot  # noqa: E402
+from frfw import integrity, kernel_boot  # noqa: E402
 
 #: The router's LAN address, reached over the host's tap device.
 WEBUI_HOST = "10.73.1.1"
@@ -305,6 +306,26 @@ ExecStart=ip link set dev ens4 down
 [Install]
 WantedBy=multi-user.target
 """
+
+
+def unexpected_on_persistence(disk: Path, iso: Path) -> integrity.PersistenceReport:
+    """frfw.integrity.persistence_changes on the stick: what its persistence
+    layer adds to the image outside FR_OS's own files and what a router
+    writes by itself (ROADMAP SEC-22). FR_OS's units are this checkout's."""
+    units = Path(__file__).resolve().parents[1] / "systemd"
+    own = {f"{integrity.UNITS_DIR}/{unit.name}" for unit in units.glob("fr-*")}
+    own |= set(integrity.INSTALLED_FROM_SOURCE.values())
+    with image_root(iso) as lower, persistence_partition(disk) as upper:
+        return integrity.persistence_changes(lower, upper, own_files=own, pyc_tag="cpython-311")
+
+
+def check_persistence_layer(check, disk: Path, iso: Path, when: str) -> None:
+    report = unexpected_on_persistence(disk, iso)
+    listed = ", ".join(f"{what} {path}" for what, path in report.changes[:20])
+    check(not report.changes,
+          f"{when}, the persistence layer changes nothing outside FR_OS's files and the router's own state "
+          f"(ROADMAP SEC-22; {report.unchecked_pyc} compiled Debian modules not checked by this Python)"
+          + (f": {listed}" if listed else ""))
 
 
 def verify_medium(disk: Path) -> dict:
@@ -1302,6 +1323,33 @@ def run(args: argparse.Namespace) -> int:
         check(kept is not None and kept.group(1).split() == ["-", VPN_ADDRESS],
               "...which kept the unconfirmed config for the admin")
 
+    # ROADMAP SEC-22: after three boots, an update attempt, a password
+    # change and applies, the persistence layer holds only the router's
+    # own state; an attacker's unit and SSH key planted on it are found.
+    check_persistence_layer(check, disk, Path(args.iso), "after boot 3")
+    planted = ("etc/systemd/system/fr-boot-test-implant.service", "root/.ssh/authorized_keys")
+    created = []
+    with image_root(Path(args.iso)) as lower, persistence_partition(disk, writable=True) as upper:
+        for path in planted:
+            # Its directories as overlayfs copies them up: the image's mode
+            # and owner, so only the planted files differ from the image.
+            for parent in reversed(Path(path).parents[:-1]):
+                if not (upper / parent).exists():
+                    (upper / parent).mkdir(mode=0o700)
+                    created.append(parent)
+                    if (lower / parent).is_dir():
+                        image = (lower / parent).lstat()
+                        os.chown(upper / parent, image.st_uid, image.st_gid)
+                        os.chmod(upper / parent, stat.S_IMODE(image.st_mode))
+            (upper / path).write_text("stands in for an attacker's persistence\n")
+    found = unexpected_on_persistence(disk, Path(args.iso)).changes
+    check(found == [("added", "/" + path) for path in sorted(planted)],
+          f"...and finds a unit and an SSH key planted on it (ROADMAP SEC-22): {found}")
+    with persistence_partition(disk, writable=True) as upper:
+        for path in planted:
+            (upper / path).unlink()
+        for parent in reversed(created):
+            (upper / parent).rmdir()
     # ROADMAP SEC-15: the stick, checked from "another computer" -- the
     # host -- with this checkout's keys: clean; then an implant is planted
     # on the persistence partition, which the check must find, and which
@@ -1355,6 +1403,7 @@ def run(args: argparse.Namespace) -> int:
 
     run_kernel_trials(check, workdir, disk, Path(args.iso), kvm, uefi, boot_timeout)
     run_kernel_update_from_the_webui(check, workdir, disk, Path(args.iso), kvm, uefi, boot_timeout)
+    check_persistence_layer(check, disk, Path(args.iso), "after the kernel trials and update")
 
     print()
     if check.failures:

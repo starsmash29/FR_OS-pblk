@@ -1241,13 +1241,23 @@ they are counted and the result says so. The boot test runs it on the
 VM's disk image, plants a module on the persistence partition, and
 requires both this check and the router's own (next boot) to find it.
 
-**What both checks don't cover** (review v0.2.1 #3): they are about
-FR_OS's own files. A root attacker who persists anywhere else in the
-persistence layer -- another systemd unit, another program, an SSH key
--- is not reported, and the System screen, `firewall-cli integrity` and
-verify-medium's output say so. ROADMAP SEC-22 is the follow-up: the
-persistence layer is the only place a live router's changes can be, so
-it can be listed in full. The offline check treats the medium as
+**The rest of the persistence layer** (ROADMAP SEC-22, review v0.2.1
+#3). The persistence layer is the only place a live router's changes can
+be, so verify-medium lists it in full: every file it adds to, changes in
+(content, mode or owner) or removes from the image outside FR_OS's own
+files and what a router writes by itself (`PERSISTENCE_EXPECTED`: its
+config and state, leases, logs, host keys, the accounts files). Another
+systemd unit, another program, an SSH key or a patched Debian file is
+reported and fails the check. A Debian file copied up unchanged is not a
+change; a compiled Debian module (Python writes `__pycache__` on first
+use) must hold exactly the code of its source in the image. The expected
+set is what the boot test's router writes, and the boot test checks it
+stays complete. What it leaves: the Debian files the router changes
+itself (`/etc/passwd`, `sshd_config`, ...) are expected, so their content
+is not judged; the image is read from the same stick, so a changed
+squashfs is not found; and the router's own check (System screen,
+`firewall-cli integrity`) still covers FR_OS's files only, and says so.
+The offline check treats the medium as
 untrusted (review v0.2.1 #2): it mounts it `nodev,nosuid,noexec` and
 `nosymfollow` where the kernel has it, and never reads through a
 directory that is a symlink.
