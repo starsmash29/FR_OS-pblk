@@ -206,8 +206,8 @@ def _never_read_the_hosts_runtime_sets(request, monkeypatch):
 def _never_touch_the_hosts_ipv6(tmp_path_factory, monkeypatch):
     """IPv6 on the WAN (ROADMAP FND-1a): dhcpcd's config goes to a tmp
     dir, and the kernel's IPv6 settings are a tmp tree that has none --
-    tests that need them build one and point frfw.ipv6.PROC_IPV6 at it."""
+    tests that need them build one and point frfw.ipv6.PROC_NET at it."""
     from frfw import ipv6, paths
 
     monkeypatch.setattr(paths, "IPV6_DHCPCD_CONF_PATH", tmp_path_factory.mktemp("etc_fr_os_ipv6") / "dhcpcd6.conf")
-    monkeypatch.setattr(ipv6, "PROC_IPV6", tmp_path_factory.mktemp("proc_sys_net_ipv6"))
+    monkeypatch.setattr(ipv6, "PROC_NET", tmp_path_factory.mktemp("proc_sys_net"))

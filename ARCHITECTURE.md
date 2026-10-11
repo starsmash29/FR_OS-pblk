@@ -3651,7 +3651,11 @@ its config changed: a restart drops the addresses and asks again.
 **The kernel takes nothing.** `accept_ra=0` on every interface and the
 defaults new ones get -- dhcpcd handles the WAN's RA; a LAN must never
 configure the router -- no redirects, no source routing, `autoconf=0`
-off the WAN, and `forwarding=0`.
+(dhcpcd does the WAN's SLAAC), and `forwarding=0`. The apply also writes
+what dhcpcd would write itself -- the IPv4 `promote_secondaries` on the
+WAN, which it insists on even with `ipv6only` -- because fr-dhcp6's
+sandbox keeps `/proc/sys` read-only (`ProtectKernelTunables`), and
+dhcpcd leaves a setting alone that already has its value.
 
 **The firewall.** Ahead of the established accept, on the WAN devices
 only: neighbour solicitations and advertisements and Router

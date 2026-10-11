@@ -32,16 +32,18 @@ def _config(minimal_config_dict, enabled=True, **extra):
 
 @pytest.fixture
 def proc(monkeypatch, tmp_path):
-    """A /proc/sys/net/ipv6 with eth0 and eth1, every value as a fresh
-    kernel has it: RAs accepted, forwarding off."""
-    root = tmp_path / "proc_sys_net_ipv6"
+    """A /proc/sys/net with eth0 and eth1, every value as a fresh kernel
+    has it: RAs accepted, forwarding off."""
+    root = tmp_path / "proc_sys_net"
     for device in ("all", "default", "eth0", "eth1"):
-        conf = root / "conf" / device
+        conf = root / "ipv6" / "conf" / device
         conf.mkdir(parents=True)
         for key, value in (("accept_ra", "1"), ("accept_redirects", "1"), ("accept_source_route", "0"),
                            ("autoconf", "1"), ("disable_ipv6", "0"), ("forwarding", "0")):
             (conf / key).write_text(value + "\n")
-    monkeypatch.setattr(ipv6, "PROC_IPV6", root)
+        (root / "ipv4" / "conf" / device).mkdir(parents=True)
+        (root / "ipv4" / "conf" / device / "promote_secondaries").write_text("0\n")
+    monkeypatch.setattr(ipv6, "PROC_NET", root)
     return root
 
 
@@ -128,32 +130,36 @@ def test_real_dhcpcd_reads_the_config(minimal_config_dict, tmp_path):
 
 def test_the_kernel_takes_no_ra_and_routes_nothing(minimal_config_dict):
     settings = ipv6.sysctl_settings(_config(minimal_config_dict))
-    assert settings["conf/all/forwarding"] == "0"
+    assert settings["ipv6/conf/all/forwarding"] == "0"
     for device in ("all", "default", "eth0", "eth1"):
-        assert settings[f"conf/{device}/accept_ra"] == "0"
-        assert settings[f"conf/{device}/accept_redirects"] == "0"
-        assert settings[f"conf/{device}/accept_source_route"] == "0"
-    # Only the WAN may have addresses configured on it; dhcpcd adds them.
-    assert "conf/eth0/autoconf" not in settings
-    assert settings["conf/eth1/autoconf"] == "0"
-    assert settings["conf/eth0/disable_ipv6"] == "0"
-    assert "conf/eth1/disable_ipv6" not in settings
+        assert settings[f"ipv6/conf/{device}/accept_ra"] == "0"
+        assert settings[f"ipv6/conf/{device}/accept_redirects"] == "0"
+        assert settings[f"ipv6/conf/{device}/accept_source_route"] == "0"
+        # dhcpcd does the WAN's SLAAC; the kernel does none anywhere.
+        assert settings[f"ipv6/conf/{device}/autoconf"] == "0"
+    assert settings["ipv6/conf/eth0/disable_ipv6"] == "0"
+    assert "ipv6/conf/eth1/disable_ipv6" not in settings
+    # What dhcpcd would write itself, on the WAN only: its sandbox keeps
+    # /proc/sys read-only.
+    assert settings["ipv4/conf/eth0/promote_secondaries"] == "1"
+    assert not any(key.startswith("ipv4/") and "/eth0/" not in key for key in settings)
 
 
 def test_settings_are_written_read_back_and_a_missing_device_is_skipped(proc):
-    ipv6.write_sysctls({"conf/eth0/accept_ra": "0", "conf/eth9/accept_ra": "0", "conf/eth1/autoconf": None})
-    assert (proc / "conf/eth0/accept_ra").read_text() == "0\n"
-    assert not (proc / "conf/eth9").exists()
-    assert (proc / "conf/eth1/autoconf").read_text() == "1\n"
-    assert ipv6.read_sysctls(["conf/eth0/accept_ra", "conf/eth9/accept_ra"]) == {
-        "conf/eth0/accept_ra": "0", "conf/eth9/accept_ra": None}
+    ipv6.write_sysctls({"ipv6/conf/eth0/accept_ra": "0", "ipv6/conf/eth9/accept_ra": "0",
+                        "ipv6/conf/eth1/autoconf": None})
+    assert (proc / "ipv6/conf/eth0/accept_ra").read_text() == "0\n"
+    assert not (proc / "ipv6/conf/eth9").exists()
+    assert (proc / "ipv6/conf/eth1/autoconf").read_text() == "1\n"
+    assert ipv6.read_sysctls(["ipv6/conf/eth0/accept_ra", "ipv6/conf/eth9/accept_ra"]) == {
+        "ipv6/conf/eth0/accept_ra": "0", "ipv6/conf/eth9/accept_ra": None}
 
 
 def test_a_setting_that_cant_be_written_is_an_error(proc):
-    (proc / "conf/eth0/accept_ra").unlink()
-    (proc / "conf/eth0/accept_ra").mkdir()
+    (proc / "ipv6/conf/eth0/accept_ra").unlink()
+    (proc / "ipv6/conf/eth0/accept_ra").mkdir()
     with pytest.raises(ipv6.Ipv6Error, match="net.ipv6.conf.eth0.accept_ra"):
-        ipv6.write_sysctls({"conf/eth0/accept_ra": "0"})
+        ipv6.write_sysctls({"ipv6/conf/eth0/accept_ra": "0"})
 
 
 def test_preflight_needs_kernel_ipv6_and_dhcpcd(proc, tmp_path):
@@ -184,9 +190,10 @@ def test_on_writes_the_settings_and_config_then_restarts_dhcpcd(minimal_config_d
     assert "eth0" in result.message
     assert calls == ["restart"]
     assert paths.IPV6_DHCPCD_CONF_PATH.read_text() == ipv6.render_dhcpcd_conf(_config(minimal_config_dict))
-    assert (proc / "conf/all/accept_ra").read_text() == "0\n"
-    assert (proc / "conf/eth0/accept_ra").read_text() == "0\n"
-    assert (proc / "conf/eth1/autoconf").read_text() == "0\n"
+    assert (proc / "ipv6/conf/all/accept_ra").read_text() == "0\n"
+    assert (proc / "ipv6/conf/eth0/accept_ra").read_text() == "0\n"
+    assert (proc / "ipv6/conf/eth1/autoconf").read_text() == "0\n"
+    assert (proc / "ipv4/conf/eth0/promote_secondaries").read_text() == "1\n"
 
 
 def test_an_unchanged_config_doesnt_restart_dhcpcd(minimal_config_dict, proc, systemctl):
@@ -203,7 +210,7 @@ def test_dry_run_changes_nothing(minimal_config_dict, proc, systemctl):
     assert "dry-run" in ipv6.sync(_config(minimal_config_dict), dry_run=True).message
     assert calls == []
     assert not paths.IPV6_DHCPCD_CONF_PATH.exists()
-    assert (proc / "conf/eth0/accept_ra").read_text() == "1\n"
+    assert (proc / "ipv6/conf/eth0/accept_ra").read_text() == "1\n"
 
 
 def test_turning_it_off_stops_dhcpcd_and_removes_its_config(minimal_config_dict, proc, systemctl):
@@ -245,8 +252,9 @@ def test_the_apply_runs_the_step_and_undoes_it(minimal_config_dict, proc, system
                             adblock_hosts_path=tmp_path / "h", adblock_dnsmasq_conf_path=tmp_path / "d.conf")
     assert systemctl[0][0] == "restart"
     # Written back as they were.
-    assert (proc / "conf/eth0/accept_ra").read_text() == "1\n"
-    assert (proc / "conf/eth1/autoconf").read_text() == "1\n"
+    assert (proc / "ipv6/conf/eth0/accept_ra").read_text() == "1\n"
+    assert (proc / "ipv6/conf/eth1/autoconf").read_text() == "1\n"
+    assert (proc / "ipv4/conf/eth0/promote_secondaries").read_text() == "0\n"
     assert not paths.IPV6_DHCPCD_CONF_PATH.exists()
 
 

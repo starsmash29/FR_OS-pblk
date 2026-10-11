@@ -49,8 +49,9 @@ from frfw import paths, svc, validate
 from frfw.config.loader import internet_facing_zones
 from frfw.config.schema import Config
 
-#: The kernel's per-interface IPv6 settings.
-PROC_IPV6 = Path("/proc/sys/net/ipv6")
+#: The kernel's network settings (net.ipv6.*, and the one net.ipv4 one
+#: dhcpcd needs).
+PROC_NET = Path("/proc/sys/net")
 
 
 class Ipv6Error(Exception):
@@ -108,25 +109,33 @@ def render_dhcpcd_conf(config: Config) -> str:
 
 
 def sysctl_settings(config: Config) -> dict[str, str]:
-    """`conf/<device>/<key>` -> value, for every configured device (not
-    VPN tunnels, which never carry an RA) and the defaults new ones get."""
-    wan = set(wan_devices(config))
-    settings: dict[str, str] = {"conf/all/forwarding": "0"}
+    """`ipv6/conf/<device>/<key>` (under /proc/sys/net) -> value, for every
+    configured device (not VPN tunnels, which never carry an RA) and the
+    defaults new ones get.
+
+    These are also every value dhcpcd would otherwise write itself:
+    fr-dhcp6's sandbox keeps /proc/sys read-only, and dhcpcd leaves a
+    setting alone that already has the value it wants -- the IPv4
+    `promote_secondaries` among them, which it insists on even with
+    `ipv6only` (an interface it can't set it on is "not valid")."""
+    wan = wan_devices(config)
+    settings: dict[str, str] = {"ipv6/conf/all/forwarding": "0"}
     devices = sorted({validate.ifname(i.device) for i in config.interfaces.values()})
     for device in ["all", "default", *devices]:
-        settings[f"conf/{device}/accept_ra"] = "0"
-        settings[f"conf/{device}/accept_redirects"] = "0"
-        settings[f"conf/{device}/accept_source_route"] = "0"
-        if device not in wan:
-            settings[f"conf/{device}/autoconf"] = "0"
+        settings[f"ipv6/conf/{device}/accept_ra"] = "0"
+        settings[f"ipv6/conf/{device}/accept_redirects"] = "0"
+        settings[f"ipv6/conf/{device}/accept_source_route"] = "0"
+        # dhcpcd does SLAAC on the WAN, nothing does elsewhere.
+        settings[f"ipv6/conf/{device}/autoconf"] = "0"
     for device in wan:
-        settings[f"conf/{device}/disable_ipv6"] = "0"
+        settings[f"ipv6/conf/{device}/disable_ipv6"] = "0"
+        settings[f"ipv4/conf/{device}/promote_secondaries"] = "1"
     return settings
 
 
 def read_sysctls(keys, proc_root: Path | None = None) -> dict[str, str | None]:
     """The current values (None: no such device), to restore on undo."""
-    proc_root = proc_root or PROC_IPV6
+    proc_root = proc_root or PROC_NET
     out: dict[str, str | None] = {}
     for key in keys:
         try:
@@ -138,7 +147,7 @@ def read_sysctls(keys, proc_root: Path | None = None) -> dict[str, str | None]:
 
 def write_sysctls(settings: dict[str, str | None], proc_root: Path | None = None) -> None:
     """Write each value; a device that isn't there (yet) is skipped."""
-    proc_root = proc_root or PROC_IPV6
+    proc_root = proc_root or PROC_NET
     for key, value in settings.items():
         if value is None:
             continue
@@ -149,12 +158,12 @@ def write_sysctls(settings: dict[str, str | None], proc_root: Path | None = None
             if path.read_text().strip() != value:
                 path.write_text(value + "\n")
         except OSError as exc:
-            raise Ipv6Error(f"cannot set net.ipv6.{key.replace('/', '.')} = {value}: {exc}") from exc
+            raise Ipv6Error(f"cannot set net.{key.replace('/', '.')} = {value}: {exc}") from exc
 
 
 def kernel_has_ipv6(proc_root: Path | None = None) -> bool:
     """False with `ipv6.disable=1` on the kernel command line."""
-    return ((proc_root or PROC_IPV6) / "conf").is_dir()
+    return ((proc_root or PROC_NET) / "ipv6" / "conf").is_dir()
 
 
 #: Debian's dhcpcd-base.

@@ -22,10 +22,10 @@ ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes
-# dhcpcd turns the kernel's own RA handling off on the WAN
-# (net.ipv6.conf.<wan>.accept_ra); the rest of /proc/sys stays read-only.
+# /proc/sys stays read-only: the apply writes every setting dhcpcd would
+# (frfw.ipv6.sysctl_settings), and dhcpcd leaves one that already has the
+# value it wants.
 ProtectKernelTunables=yes
-ReadWritePaths=/proc/sys/net/ipv6/conf
 ProtectKernelModules=yes
 ProtectKernelLogs=yes
 ProtectControlGroups=yes
