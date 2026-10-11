@@ -44,7 +44,9 @@ MemoryDenyWriteExecute=yes
 # seccomp: they put themselves under a syscall filter of their own.
 SystemCallFilter=@system-service chroot seccomp
 SystemCallErrorNumber=EPERM
-RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET6
+# AF_INET too: dhcpcd opens an IPv4 socket for interface ioctls even
+# with ipv6only (if_opensockets).
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_SYS_CHROOT
 
 [Install]
