@@ -36,6 +36,7 @@ State and working agreements for the next session of the integrating agent
   - `python3 -m pytest tests --ignore=tests/webui -q`
   - `python3 -m pytest tests/webui -q`
   - Mount bpffs first and remove `/sys/fs/bpf/fr_os_xdp`.
+  - Run them with Python 3.11, the router's (`python3.11 -m venv` plus `pip install -e '.[webui,dev]'`). Under another Python, `test_the_offline_check_passes_a_clean_medium` fails because it cannot check the router's compiled files.
 - **Boot test.** Dispatch: `POST repos/starsmash29/FR_OS-pblk/actions/workflows/build-installer.yml/dispatches` with
   `ref=<branch>`, `inputs[boot_test]=true`. Logs come through the GitHub MCP `get_job_logs`. The run's `fr-os-installer` artifact is the ISO the owner writes to a stick.
 
@@ -52,6 +53,7 @@ State and working agreements for the next session of the integrating agent
 | #84 | P5-1, FND-2 | `docs/hardware.md`: the owner's box, verified |
 | #85 | FND-4 | `firmware-realtek` in the image |
 | #86 | NET-14 | Console port summary (`fr-console-ports`): every port's link, role and address, live; warns about a misplaced LAN cable, never moves a role |
+| #87 | SEC-22 | verify-medium reports what the persistence layer adds or changes outside FR_OS's files and the router's own state |
 
 ## Hardware test (owner's box): passed
 

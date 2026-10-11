@@ -34,6 +34,7 @@ with the public key of the checkout it runs from.
 from __future__ import annotations
 
 import base64
+import csv
 import fnmatch
 import hashlib
 import importlib.util
@@ -123,16 +124,19 @@ def check_record(dist: metadata.Distribution | None = None) -> IntegrityReport:
         return IntegrityReport(0, verifiable=False, note="the frfw package is not installed")
     checked, modified, missing = 0, [], []
     has_module = False
-    for entry in dist.files or []:
-        if entry.hash is None or entry.hash.mode != "sha256":
+    # RECORD itself, not `dist.files`: since Python 3.12 that leaves out
+    # every recorded file that no longer exists -- a deleted module would
+    # go unreported on a newer Python.
+    for row in csv.reader((dist.read_text("RECORD") or "").splitlines()):
+        if len(row) < 2 or not row[1].startswith("sha256="):
             continue
+        name, digest = row[0], row[1][len("sha256="):]
         checked += 1
-        name = str(entry)
         if name.startswith(f"{DISTRIBUTION}/") and name.endswith(".py"):
             has_module = True
-        path = Path(entry.locate())
+        path = Path(dist.locate_file(name))
         try:
-            if _sha256_b64(path) != entry.hash.value:
+            if _sha256_b64(path) != digest:
                 modified.append(name)
         except FileNotFoundError:
             missing.append(name)
