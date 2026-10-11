@@ -69,6 +69,7 @@ for unit in \
     fr-update-helper.service \
     fr-xdp-sni-logger.service \
     fr-adblock-dns.service \
+    fr-dhcp6.service \
     fr-adblock-refresh.service \
     fr-adblock-refresh.timer \
     fr-dns-log-trim.service \

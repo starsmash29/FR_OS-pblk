@@ -81,6 +81,10 @@ from __future__ import annotations
 #: never includes the previous config's text. "set_management_addresses"
 #: (ROADMAP SEC-27) is the one way to move the webUI and SSH: it sets
 #: management.addresses, alone, and applies that, held for confirmation.
+#: "ipv6_status" (ROADMAP FND-1a, frfw.ipv6.status) reports what IPv6 the
+#: provider gave the WAN -- addresses, default route, delegated prefix --
+#: read over netlink, which the webUI's sandbox has no socket family for.
+#: Read-only, no arguments.
 COMMANDS = (
     "ping",
     "apply",
@@ -110,6 +114,7 @@ COMMANDS = (
     "apply_revert",
     "restore_rejected",
     "set_management_addresses",
+    "ipv6_status",
 )
 
 #: Maximum accepted request/response line length, to bound memory use from

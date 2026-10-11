@@ -93,6 +93,8 @@ PROTECT_SYSTEM = {
 ROOT = {
     "fr-accounts.service": "creates the system accounts",
     "fr-adblock-dns.service": "dnsmasq binds :53, then drops to nobody itself",
+    "fr-dhcp6.service": "dhcpcd sets the WAN's IPv6 addresses and routes, then drops to its own account itself "
+                        "(privilege separation, ROADMAP FND-1a)",
     "fr-adblock-refresh.service": "writes root-owned /etc/fr_os files; no capability at all",
     "fr-apply-helper.service": "the privilege boundary: applies the network config",
     "fr-apply-revert.service": "goes back from an apply not confirmed in time: an apply (ROADMAP SEC-26)",
@@ -137,6 +139,11 @@ EXPOSURE_BUDGET.update({
     "fr-first-boot.service": 7.5,
     "fr-persistence-setup.service": 8.0,
     "fr-kernel-prepare.service": 7.0,
+    # dhcpcd starts as root to configure the WAN's addresses and routes
+    # (CAP_NET_ADMIN) and drops to its own account in a chroot itself
+    # (CAP_SETUID/SETGID/SYS_CHROOT, @privileged and @mount for chroot);
+    # an IP allow list would break a provider's DHCPv6 unicast option.
+    "fr-dhcp6.service": 3.0,
 })
 
 

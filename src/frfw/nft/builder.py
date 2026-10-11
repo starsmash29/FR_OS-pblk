@@ -212,12 +212,19 @@ def build_ruleset(config: Config, *, clock: ScheduleClock | None = None, now: fl
         # the moment it's isolated, not whenever they happen to close.
         lines.extend(f"\t\t{r}" for r in _render_iot_input_rules(config))
     lines.append('\t\tiifname "lo" accept')
+    # ROADMAP FND-1a: the IPv6 the WAN needs. Ahead of the established
+    # accept: neighbour discovery and RAs are not tracked connections.
+    lines.extend(f"\t\t{r}" for r in _render_ipv6_wan_input(config))
     # Phase 17: scheduled drop/reject rules with cut_established go ahead
     # of the established accept, so a connection opened before the window
     # started is cut when it starts, not left running.
     lines.extend(f"\t\t{line}" for r in input_cut for line in _render_rule(r, clock))
     lines.append("\t\tct state established,related accept")
     lines.append("\t\tct state invalid drop")
+    # Every other IPv6 packet to the router, before any rule below: those
+    # were written for IPv4 -- the brute-force jail, the IDS quarantine and
+    # ZTNA hold IPv4 addresses only -- and would otherwise match IPv6 too.
+    lines.extend(f"\t\t{r}" for r in _render_ipv6_input_drop(config))
     dns_zones = _dns_resolver_zones(config)
     for zone in dns_zones:
         for proto in ("udp", "tcp"):
@@ -252,6 +259,9 @@ def build_ruleset(config: Config, *, clock: ScheduleClock | None = None, now: fl
     lines.append("\tchain forward {")
     lines.append("\t\ttype filter hook forward priority filter; policy drop;")
     lines.append("")
+    # ROADMAP FND-1a: nothing is routed over IPv6 (the kernel's IPv6
+    # forwarding is off too, frfw.ipv6) -- the LAN gets IPv6 with FND-1b.
+    lines.append(f"\t\tmeta nfproto ipv6 drop {_comment('ipv6-no-routing')}")
     # A quarantined host is cut off from everything it would reach
     # *through* the router too (the internet, other zones), not only from
     # the router itself -- and ahead of the established accept, so its
@@ -315,6 +325,58 @@ def _render_drop_log(config: Config, chain: str) -> list[str]:
     rate = config.logging.drops_per_minute
     return ["", f'\t\tlimit rate {rate}/minute burst {rate} packets log prefix "{DROP_LOG_PREFIX}{chain}: " '
                 f'{_comment("log-default-drop")}']
+
+
+#: ICMPv6 errors a host needs (RFC 4890 4.4.1): path MTU discovery above all.
+_ICMPV6_ERRORS = "destination-unreachable, packet-too-big, time-exceeded, parameter-problem"
+
+
+def _render_ipv6_wan_input(config: Config) -> list[str]:
+    """What the WAN's IPv6 needs (ROADMAP FND-1a), on its interfaces only:
+    neighbour discovery and the provider's RA with hop limit 255 -- the
+    value a packet has only if no router forwarded it (RFC 4861), so they
+    can only come from the WAN's own link; an RA only from a link-local
+    address; the upstream router's MLD queries; ICMPv6 errors; a
+    rate-limited ping; DHCPv6 replies (from the
+    server's link-local address to the client port). Nothing on the other
+    interfaces: a LAN must never configure the router."""
+    from frfw.ipv6 import wan_devices
+
+    if not config.ipv6.enabled:
+        return []
+    devices = wan_devices(config)
+    if not devices:
+        return []
+    wan = "iifname { " + ", ".join(f'"{d}"' for d in devices) + " }"
+    return [
+        f"{wan} icmpv6 type {{ nd-neighbor-solicit, nd-neighbor-advert }} ip6 hoplimit 255 accept "
+        f"{_comment('ipv6-nd')}",
+        f"{wan} ip6 saddr fe80::/10 icmpv6 type nd-router-advert ip6 hoplimit 255 accept {_comment('ipv6-ra')}",
+        # The upstream router's MLD queries (link-local, hop limit 1): a
+        # host that never answers one drops out of a snooping switch's
+        # tables, and the neighbour solicitations for its addresses stop
+        # reaching it (RFC 4890 4.4.1).
+        f"{wan} ip6 saddr fe80::/10 icmpv6 type mld-listener-query ip6 hoplimit 1 accept {_comment('ipv6-mld')}",
+        f"{wan} icmpv6 type {{ {_ICMPV6_ERRORS} }} accept {_comment('ipv6-errors')}",
+        f"{wan} icmpv6 type echo-request limit rate 5/second burst 10 packets accept {_comment('ipv6-ping')}",
+        f"{wan} ip6 saddr fe80::/10 udp sport 547 udp dport 546 accept {_comment('ipv6-dhcpv6-client')}",
+    ]
+
+
+def _render_ipv6_input_drop(config: Config) -> list[str]:
+    """Every other IPv6 packet to the router is dropped. A unicast one is
+    logged like any default-deny drop (security-lessons K6); multicast --
+    the LAN's own IPv6 chatter, MLD and router solicitations -- is not,
+    so it can't use up the log's rate limit."""
+    if not config.ipv6.enabled:
+        return [f"meta nfproto ipv6 drop {_comment('ipv6-off')}"]
+    lines = [f"meta nfproto ipv6 meta pkttype != host drop {_comment('ipv6-not-for-the-router')}"]
+    if config.logging.drops:
+        rate = config.logging.drops_per_minute
+        lines.append(f'meta nfproto ipv6 limit rate {rate}/minute burst {rate} packets log prefix '
+                     f'"{DROP_LOG_PREFIX}input: " {_comment("log-ipv6-drop")}')
+    lines.append(f"meta nfproto ipv6 drop {_comment('ipv6-default-drop')}")
+    return lines
 
 
 def active_rules(config: Config, now: float | None = None) -> list[Rule]:
@@ -608,8 +670,11 @@ def _render_nat_chains(config: Config, force_dns_zones: list[str] | None = None)
 
 
 def _render_masquerade(masq: Masquerade) -> str:
+    # IPv4 only: in an `inet` table a bare masquerade takes IPv6 too, and
+    # IPv6 is never translated -- the router's own uses its addresses, the
+    # LAN gets a delegated prefix of its own (ROADMAP FND-1).
     return (
-        f"oifname @{_iface_set_name(masq.out_zone)} masquerade "
+        f"meta nfproto ipv4 oifname @{_iface_set_name(masq.out_zone)} masquerade "
         f"{_comment(f'nat:masquerade:{masq.out_zone}')}"
     )
 

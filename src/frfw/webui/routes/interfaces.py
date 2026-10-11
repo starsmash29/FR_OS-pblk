@@ -12,11 +12,24 @@ from frfw.webui.templating import templates
 router = APIRouter()
 
 
+def _ipv6_status(helper: HelperClient) -> dict:
+    """What the provider gives the WAN (ROADMAP FND-1a), through the
+    apply-helper: reading it takes netlink, which this process lacks."""
+    try:
+        result = helper.ipv6_status()
+    except OSError as exc:
+        return {"state": "unknown", "summary": f"The apply-helper didn't answer: {exc}"}
+    if not result.get("ok"):
+        return {"state": "unknown", "summary": str(result.get("message") or "unknown")}
+    return result
+
+
 @router.get("/interfaces")
 def list_interfaces(
     request: Request,
     username: str = Depends(require_login),
     raw: dict = Depends(get_raw_config),
+    helper: HelperClient = Depends(get_helper),
 ):
     interfaces = [
         {"name": name, **body} for name, body in sorted((raw.get("interfaces") or {}).items())
@@ -33,6 +46,8 @@ def list_interfaces(
             "interfaces": interfaces,
             "edit": edit,
             "detected": netdetect.list_interfaces(include_virtual=True),
+            "ipv6_enabled": bool((raw.get("ipv6") or {}).get("enabled", False)),
+            "ipv6": _ipv6_status(helper),
             "error": request.query_params.get("error"),
             "success": request.query_params.get("success"),
         },
@@ -88,4 +103,22 @@ def delete_interface(
     ok, message = try_save(raw, helper)
     if ok:
         return redirect_with("/interfaces", success=f"Interface {name!r} deleted")
+    return redirect_with("/interfaces", error=message)
+
+
+@router.post("/interfaces/ipv6")
+def save_ipv6(
+    enabled: bool = Form(False),
+    username: str = Depends(require_login),
+    raw: dict = Depends(get_raw_config),
+    helper: HelperClient = Depends(get_helper),
+):
+    """ROADMAP FND-1a: IPv6 on the WAN, for the router itself."""
+    raw["ipv6"] = {**(raw.get("ipv6") or {}), "enabled": enabled}
+    if not enabled and set(raw["ipv6"]) == {"enabled"}:
+        del raw["ipv6"]
+    ok, message = try_save(raw, helper)
+    if ok:
+        return redirect_with("/interfaces", success=f"IPv6 on the WAN {'on' if enabled else 'off'} -- "
+                                                    "Apply on the dashboard to use it")
     return redirect_with("/interfaces", error=message)

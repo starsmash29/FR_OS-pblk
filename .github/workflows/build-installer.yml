@@ -175,7 +175,9 @@ jobs:
       - name: Boot test in QEMU with BIOS (ten boots, persistence, first boot, webUI, kernel trial)
         if: ${{ inputs.boot_test }}
         run: |
-          sudo apt-get install -y qemu-system-x86 ovmf
+          # radvd and kea-dhcp6 are the test's IPv6 provider on the WAN
+          # (ROADMAP FND-1a): RA, DHCPv6 and prefix delegation.
+          sudo apt-get install -y qemu-system-x86 ovmf radvd kea-dhcp6-server
           sudo python3 installer/qemu-boot-test.py "${{ steps.iso.outputs.name }}" --kvm --workdir qemu-test \
             ${{ inputs.release_tag != '' && '--signed-build' || '' }}
 

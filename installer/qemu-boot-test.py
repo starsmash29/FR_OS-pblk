@@ -69,6 +69,7 @@ import argparse
 import base64
 import hashlib
 import http.cookiejar
+import ipaddress
 import json
 import os
 import re
@@ -126,6 +127,26 @@ ZTNA_PASSWORD = "otter-harbor-lamp-71"
 MOVED_LAN_ADDRESS = "10.73.1.3"
 SPARE_DEVICE = "ens9"
 SPARE_ADDRESS = "10.250.0.1/24"
+#: ROADMAP FND-1a: the WAN's IPv6 provider. The VM's WAN port is on a
+#: QEMU hub with the user network (IPv4, its IPv6 off) and the tap
+#: WAN_TAP, which `tc` wires to a veth in the network namespace ISP_NS:
+#: there radvd sends Router Advertisements for ISP_PREFIX and kea-dhcp6
+#: hands out addresses and /56 prefixes from PD_POOL, as a provider does.
+#: The host's own network stack takes no part.
+ISP_NS = "fr-isp"
+WAN_TAP = "frwan0"
+ISP_WIRE = "frwanv"
+ISP_DEVICE = "isp0"
+ISP_ADDRESS = "2001:db8:1::1"
+ISP_PREFIX = "2001:db8:1::/64"
+PD_POOL = "2001:db8:100::/48"
+#: What a forged Router Advertisement from the WAN's link offers: one sent
+#: with a hop limit below 255 has crossed a router (RFC 4861).
+FORGED_PREFIX = "2001:db8:bad::/64"
+#: The router's WAN port's MAC (in Vm) and the interface identifier
+#: (EUI-64) a SLAAC address made from it would end in.
+WAN_MAC = "52:54:00:00:00:01"
+WAN_MAC_IID = "5054:ff:fe00:1"
 DISK_SIZE = 2 * 2**30
 #: UEFI firmware for --uefi: Debian 12 / Ubuntu 24.04 name it with _4M.
 OVMF = [(Path("/usr/share/OVMF") / f"OVMF_CODE{s}.fd", Path("/usr/share/OVMF") / f"OVMF_VARS{s}.fd")
@@ -150,7 +171,15 @@ class Vm:
         self.monitor = workdir / f"mon{n}.sock"
         cmd = [
             "qemu-system-x86_64", "-m", "2048", "-smp", "2", "-no-reboot",
-            "-nic", f"user,model=virtio-net-pci,mac=52:54:00:00:00:01,net={UPSTREAM_NET},host=192.168.1.1",
+            # The WAN port: a hub joining QEMU's user network (the upstream's
+            # IPv4 and DHCP; its own IPv6 off) and the IPv6 provider's tap
+            # (ROADMAP FND-1a), like a modem's port with both on it.
+            "-netdev", f"user,id=upstream4,ipv6=off,net={UPSTREAM_NET},host=192.168.1.1",
+            "-netdev", "hubport,id=wanhub4,hubid=0,netdev=upstream4",
+            "-netdev", f"tap,id=upstream6,ifname={WAN_TAP},script=no,downscript=no",
+            "-netdev", "hubport,id=wanhub6,hubid=0,netdev=upstream6",
+            "-netdev", "hubport,id=wan,hubid=0",
+            "-device", f"virtio-net-pci,netdev=wan,mac={WAN_MAC}",
             # The LAN port: the host's tap, no DHCP server on it -- QEMU's
             # user network always runs one, which would make both ports
             # look like an upstream (ROADMAP SEC-8).
@@ -221,6 +250,218 @@ def lan_tap():
         yield
     finally:
         subprocess.run(["ip", "link", "del", LAN_TAP], capture_output=True)
+
+
+def _sysctl(path: str, value: str, ns: str | None = None) -> None:
+    cmd = ["sysctl", "-q", "-w", f"{path}={value}"]
+    subprocess.run(["ip", "netns", "exec", ns, *cmd] if ns else cmd, check=True)
+
+
+def isp_run(*cmd: str, timeout: float = 30) -> subprocess.CompletedProcess:
+    """A command on the provider's side (its network namespace)."""
+    return subprocess.run(["ip", "netns", "exec", ISP_NS, *cmd], capture_output=True, text=True, timeout=timeout)
+
+
+RADVD_CONF = f"""\
+interface {ISP_DEVICE} {{
+    AdvSendAdvert on;
+    MinRtrAdvInterval 3;
+    MaxRtrAdvInterval 10;
+    AdvDefaultLifetime 1800;
+    # DHCPv6 for the rest (an address of its own and the prefix).
+    AdvManagedFlag on;
+    AdvOtherConfigFlag on;
+    prefix {ISP_PREFIX} {{
+        AdvOnLink on;
+        AdvAutonomous on;
+    }};
+}};
+"""
+
+
+def kea6_conf(log: Path) -> dict:
+    return {"Dhcp6": {
+        "interfaces-config": {"interfaces": [ISP_DEVICE]},
+        # Nothing written outside the work directory: no DUID file, no
+        # lease file.
+        "server-id": {"type": "EN", "enterprise-id": 32473, "identifier": "0f05", "persist": False},
+        "lease-database": {"type": "memfile", "persist": False},
+        "subnet6": [{
+            "id": 1, "subnet": ISP_PREFIX, "interface": ISP_DEVICE,
+            "pools": [{"pool": "2001:db8:1::1000-2001:db8:1::1fff"}],
+            "pd-pools": [{"prefix": PD_POOL.split("/")[0], "prefix-len": int(PD_POOL.split("/")[1]),
+                          "delegated-len": 56}],
+        }],
+        "loggers": [{"name": "kea-dhcp6", "severity": "INFO",
+                     "output_options": [{"output": str(log), "flush": True}]},
+                    # Every message received, to tell "nothing asked" from
+                    # "asked, not answered".
+                    {"name": "kea-dhcp6.packets", "severity": "DEBUG", "debuglevel": 40,
+                     "output_options": [{"output": str(log), "flush": True}]}],
+    }}
+
+
+#: Where Ubuntu's kea-dhcp6 keeps its log, PID and lock files; the log is
+#: copied to the work directory at the end.
+KEA_LOG = Path("/var/log/kea/kea-dhcp6-fr-os-boot-test.log")
+KEA_RUN_DIR = Path("/run/kea")
+#: Ubuntu's AppArmor profile for kea-dhcp6 (the CI runner's): it allows
+#: only the packaged service's paths, and this one is no service.
+KEA_APPARMOR = Path("/etc/apparmor.d/usr.sbin.kea-dhcp6")
+
+
+class Isp:
+    def __init__(self, workdir: Path) -> None:
+        self.kea_log = KEA_LOG
+        self.radvd_log = workdir / "radvd.log"
+
+    def leases(self) -> str:
+        """What kea-dhcp6 handed out: an address and a prefix per lease."""
+        try:
+            text = self.kea_log.read_text(errors="replace")
+        except OSError:
+            return ""
+        return "\n".join(l for l in text.splitlines() if "LEASE_ALLOC" in l)
+
+    def print_logs(self) -> None:
+        # What crossed the wire to and from the router, and who the
+        # provider's side has seen.
+        for cmd in (["ip", "-s", "link", "show", ISP_DEVICE], ["ip", "-6", "neigh", "show"]):
+            print(f"    --- {' '.join(cmd)} ---")
+            for line in isp_run(*cmd).stdout.splitlines():
+                print(f"    {line}")
+        for log in (self.kea_log, self.radvd_log):
+            print(f"    --- {log.name} ---")
+            try:
+                for line in log.read_text(errors="replace").splitlines()[-25:]:
+                    print(f"    {line}")
+            except OSError:
+                print("    (none)")
+
+
+def _remove_isp() -> None:
+    subprocess.run(["ip", "netns", "del", ISP_NS], capture_output=True)
+    for device in (WAN_TAP, ISP_WIRE):
+        subprocess.run(["ip", "link", "del", device], capture_output=True)
+
+
+@contextmanager
+def isp(workdir: Path):
+    """The WAN's IPv6 provider (ROADMAP FND-1a), for every boot: radvd and
+    kea-dhcp6 in a network namespace of their own, wired to the VM's WAN
+    tap by `tc` -- not a bridge, so neither the host's stack nor its
+    firewall (Docker's, on a CI runner) sees the frames. The namespace
+    routes nothing: its default route is unreachable, so what the router
+    sends towards the internet over IPv6 is refused at once, not lost."""
+    _remove_isp()
+    procs: list[subprocess.Popen] = []
+    # The packaged services, started by apt, stay out of it.
+    for unit in ("radvd", "kea-dhcp6-server"):
+        subprocess.run(["systemctl", "stop", unit], capture_output=True)
+    try:
+        subprocess.run(["ip", "netns", "add", ISP_NS], check=True)
+        subprocess.run(["ip", "tuntap", "add", "dev", WAN_TAP, "mode", "tap"], check=True)
+        subprocess.run(["ip", "link", "add", ISP_WIRE, "type", "veth", "peer", "name", ISP_DEVICE,
+                        "netns", ISP_NS], check=True)
+        for device in (WAN_TAP, ISP_WIRE):
+            _sysctl(f"net.ipv6.conf.{device}.disable_ipv6", "1")
+            subprocess.run(["ip", "link", "set", device, "up"], check=True)
+            other = ISP_WIRE if device == WAN_TAP else WAN_TAP
+            subprocess.run(["tc", "qdisc", "add", "dev", device, "ingress"], check=True)
+            subprocess.run(["tc", "filter", "add", "dev", device, "parent", "ffff:", "matchall",
+                            "action", "mirred", "egress", "redirect", "dev", other], check=True)
+        _sysctl("net.ipv6.conf.all.forwarding", "1", ISP_NS)
+        for cmd in (["ip", "link", "set", "lo", "up"], ["ip", "link", "set", ISP_DEVICE, "up"],
+                    ["ip", "-6", "addr", "add", f"{ISP_ADDRESS}/64", "dev", ISP_DEVICE],
+                    ["ip", "-6", "route", "add", "unreachable", "default"]):
+            subprocess.run(["ip", "netns", "exec", ISP_NS, *cmd], check=True)
+        deadline = time.monotonic() + 30  # duplicate address detection
+        while time.monotonic() < deadline and "tentative" in isp_run("ip", "-6", "addr", "show", "dev",
+                                                                     ISP_DEVICE).stdout:
+            time.sleep(0.5)
+        provider = Isp(workdir)
+        radvd_conf = workdir / "radvd.conf"
+        radvd_conf.write_text(RADVD_CONF)
+        kea_conf = workdir / "kea-dhcp6.json"
+        kea_conf.write_text(json.dumps(kea6_conf(provider.kea_log), indent=2))
+        if KEA_APPARMOR.exists():
+            subprocess.run(["apparmor_parser", "-R", str(KEA_APPARMOR)], capture_output=True)
+        KEA_LOG.parent.mkdir(parents=True, exist_ok=True)
+        KEA_LOG.unlink(missing_ok=True)
+        KEA_RUN_DIR.mkdir(parents=True, exist_ok=True)
+        env = {**os.environ, "KEA_LOCKFILE_DIR": str(KEA_RUN_DIR), "KEA_PIDFILE_DIR": str(KEA_RUN_DIR)}
+        with provider.radvd_log.open("w") as radvd_out:
+            procs.append(subprocess.Popen(
+                ["ip", "netns", "exec", ISP_NS, "radvd", "--nodaemon", "--logmethod", "stderr",
+                 "--config", str(radvd_conf), "--pidfile", str(workdir / "radvd.pid")],
+                stdout=radvd_out, stderr=subprocess.STDOUT))
+        with (workdir / "kea-dhcp6.out").open("w") as kea_out:
+            procs.append(subprocess.Popen(["ip", "netns", "exec", ISP_NS, "kea-dhcp6", "-c", str(kea_conf)],
+                                          stdout=kea_out, stderr=subprocess.STDOUT, env=env))
+        time.sleep(2)
+        for proc in procs:
+            if proc.poll() is not None:
+                provider.print_logs()
+                print((workdir / "kea-dhcp6.out").read_text(errors="replace"))
+                raise RuntimeError(f"the IPv6 provider's {proc.args[4]} exited ({proc.returncode})")
+        yield provider
+    finally:
+        for proc in procs:
+            proc.terminate()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        if KEA_LOG.exists():
+            shutil.copyfile(KEA_LOG, workdir / "kea-dhcp6.log")
+        _remove_isp()
+
+
+def ping_sources(target: str) -> set[str]:
+    """Who answers a ping to `target` from the provider's side, the
+    provider's own addresses left out."""
+    out = isp_run("ping", "-6", "-n", "-c", "3", "-i", "0.5", "-w", "4", target).stdout
+    own = set(re.findall(r"inet6 ([0-9a-f:]+)/", isp_run("ip", "-6", "-o", "addr", "show").stdout))
+    return set(re.findall(r"from ([0-9a-f:]+)(?:%\S+)?: icmp_seq", out)) - own
+
+
+def tcp_from_isp(address: str, port: int) -> str:
+    """'open', 'refused' or 'no answer' for a TCP connection from the
+    provider's side to the router."""
+    code = ("import socket,sys\n"
+            "try:\n"
+            f"    socket.create_connection(({address!r}, {port}), timeout=4).close(); print('open')\n"
+            "except ConnectionRefusedError: print('refused')\n"
+            "except OSError: print('no answer')\n")
+    return isp_run("python3", "-I", "-c", code).stdout.strip() or "error"
+
+
+def forge_router_advert(prefix: str, hop_limit: int) -> None:
+    """A Router Advertisement for `prefix` from the provider's link, sent
+    with `hop_limit` (an RA that crossed a router has less than 255)."""
+    network = ipaddress.IPv6Network(prefix)
+    # Type 134, code 0, checksum (the kernel's), current hop limit 64, no
+    # flags, router lifetime 1800 s, reachable time, retransmit timer;
+    # then a Prefix Information option, on-link and autonomous.
+    ra = struct.pack("!BBHBBHII", 134, 0, 0, 64, 0, 1800, 0, 0)
+    ra += struct.pack("!BBBBIII", 3, 4, network.prefixlen, 0xC0, 86400, 14400, 0) + network.network_address.packed
+    code = ("import socket,sys\n"
+            "s = socket.socket(socket.AF_INET6, socket.SOCK_RAW, socket.IPPROTO_ICMPV6)\n"
+            f"s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS, {hop_limit})\n"
+            f"s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_IF, socket.if_nametoindex({ISP_DEVICE!r}))\n"
+            f"for _ in range(3): s.sendto(bytes.fromhex({ra.hex()!r}), ('ff02::1', 0, 0, "
+            f"socket.if_nametoindex({ISP_DEVICE!r})))\n")
+    isp_run("python3", "-I", "-c", code)
+
+
+def ipv6_card(opener) -> tuple[str, list[str], list[str]]:
+    """The Interfaces screen's IPv6 card: its state, the WAN's addresses
+    and the delegated prefixes."""
+    page = get(opener, "/interfaces")
+    state = re.search(r'id="ipv6-summary" data-state="([^"]*)"', page)
+    return (state.group(1) if state else "",
+            re.findall(r'<dd class="ipv6-address">([^<]*)</dd>', page),
+            re.findall(r'<dd class="ipv6-prefix">([^<]*)</dd>', page))
 
 
 @contextmanager
@@ -608,11 +849,11 @@ def journal(upper: Path, *args: str) -> str:
     ).stdout
 
 
-def print_journal(upper: Path, unit: str, *boot: str) -> None:
+def print_journal(upper: Path, unit: str, *boot: str, lines: int = 25) -> None:
     """The unit's last journal lines, timestamped, into the CI log: the
     QEMU artifacts are not always at hand when a check fails."""
     print(f"    --- journal of {unit} ---")
-    for line in journal(upper, *boot, "-u", unit, "-o", "short-monotonic").splitlines()[-25:]:
+    for line in journal(upper, *boot, "-u", unit, "-o", "short-monotonic").splitlines()[-lines:]:
         print(f"    {line}")
 
 
@@ -642,6 +883,55 @@ def check_sandboxed_services(check, upper: Path, *boot: str) -> None:
     firewall = journal(upper, *boot, "-u", "fr-firewall.service") + journal(upper, *boot, "-u", "fr-apply-helper.service")
     check("Permission denied" not in firewall and "Read-only file system" not in firewall,
           "applying the config hit no sandbox wall (EPERM/EROFS)")
+
+
+#: Set when the router got nothing from the provider: boot 3's journal
+#: of fr-dhcp6 is printed then.
+IPV6_FAILED = False
+
+
+def check_wan_ipv6(check, opener, provider: Isp) -> None:
+    """ROADMAP FND-1a, after the Apply that turned IPv6 on: the router
+    took an address and a prefix from the provider, answers a ping on its
+    WAN address and nothing else, and ignores a forged RA."""
+    deadline = time.monotonic() + 120
+    state, addresses, prefixes = ipv6_card(opener)
+    while state != "prefix" and time.monotonic() < deadline:
+        time.sleep(5)
+        state, addresses, prefixes = ipv6_card(opener)
+    found = [re.match(r"([0-9a-f:]+)/(\d+) \((\w+)\)", a) for a in addresses]
+    found = [(ipaddress.IPv6Address(m.group(1)), int(m.group(2)), m.group(3)) for m in found if m]
+    isp_net = ipaddress.IPv6Network(ISP_PREFIX)
+    slaac = [a for a, length, source in found if source == "SLAAC" and a in isp_net and length == 64]
+    dhcp = [a for a, length, source in found if source == "DHCPv6" and a in isp_net and length == 128]
+    delegated = [p for p in prefixes
+                 if ipaddress.IPv6Network(p).subnet_of(ipaddress.IPv6Network(PD_POOL))
+                 and ipaddress.IPv6Network(p).prefixlen == 56]
+    ok = check(state == "prefix" and bool(delegated),
+               f"the router got a /56 from the provider's prefix delegation (ROADMAP FND-1a): {state}, {prefixes}")
+    check(bool(slaac) and bool(dhcp),
+          f"...and WAN addresses by SLAAC and DHCPv6, in {ISP_PREFIX}: {addresses}")
+    check(bool(slaac) and not any(str(a).endswith(WAN_MAC_IID) for a in slaac),
+          "...its SLAAC address doesn't carry the WAN port's MAC (RFC 7217)")
+    leases = provider.leases()
+    check("DHCP6_LEASE_ALLOC" in leases and "DHCP6_PD_LEASE_ALLOC" in leases,
+          "...as the provider's DHCPv6 server handed them out")
+    if not ok:
+        provider.print_logs()
+        global IPV6_FAILED
+        IPV6_FAILED = True
+    if slaac:
+        address = str(slaac[0])
+        check(ping_sources(address) == {address}, f"the router answers a ping on its WAN address {address}")
+        reached = {port: tcp_from_isp(address, port) for port in (WEBUI_PORT, 22)}
+        check(set(reached.values()) == {"no answer"},
+              f"the webUI and SSH get no answer over IPv6 from the WAN (dropped, ROADMAP FND-1a): {reached}")
+    forge_router_advert(FORGED_PREFIX, hop_limit=64)
+    time.sleep(10)
+    _, addresses, _ = ipv6_card(opener)
+    forged = ipaddress.IPv6Network(FORGED_PREFIX)
+    taken = [a for a in addresses if ipaddress.IPv6Address(a.split("/")[0]) in forged]
+    check(not taken, f"a Router Advertisement that crossed a router (hop limit 64) gives the router nothing: {taken}")
 
 
 def webui_opener() -> urllib.request.OpenerDirector:
@@ -997,13 +1287,15 @@ def main() -> int:
     if args.uefi and not any(c.is_file() and v.is_file() for c, v in OVMF):
         print("--uefi: no OVMF firmware (install the ovmf package)", file=sys.stderr)
         return 2
-    with lan_tap():
-        return run(args)
-
-
-def run(args: argparse.Namespace) -> int:
-    workdir = args.workdir or Path(tempfile.mkdtemp(prefix="fros-qemu-"))
+    workdir = (args.workdir or Path(tempfile.mkdtemp(prefix="fros-qemu-"))).resolve()
     workdir.mkdir(parents=True, exist_ok=True)
+    args.workdir = workdir
+    with lan_tap(), isp(workdir) as provider:
+        return run(args, provider)
+
+
+def run(args: argparse.Namespace, provider: Isp) -> int:
+    workdir = args.workdir
     # ROADMAP SEC-15: a release run signs the source the image carries
     # (--signed-build; the CI's test builds are unsigned since review
     # v0.2.1 FR-NEW-002) -- or a SHA256SUMS.sig sits next to the ISO.
@@ -1168,6 +1460,14 @@ def run(args: argparse.Namespace) -> int:
         score = re.search(r'id="score">(\d+)%', score_page)
         check(score is not None, "the security score page works on the real router (security-lessons K8)"
               + (f": {score.group(1)}%" if score else ""))
+        # ROADMAP FND-1a: the provider's RAs have been on the WAN since
+        # boot 1; with IPv6 off the router took none of them, answers
+        # nothing over IPv6 and asked the provider for nothing.
+        silent = ping_sources(f"ff02::1%{ISP_DEVICE}")
+        check(not silent and not provider.leases(),
+              "with IPv6 off, the router answers nothing over IPv6 on the WAN and asks the provider for nothing "
+              f"(ROADMAP FND-1a){': ' + ', '.join(sorted(silent)) if silent else ''}")
+        post(opener, "/interfaces/ipv6", {"enabled": "true"})
         post(opener, "/rules/timezone", {"timezone": "Europe/Budapest"})
         # Security-lessons G8: the WireGuard VPN on Debian's own kernel
         # module (the unit tests use the userspace implementation).
@@ -1228,6 +1528,7 @@ def run(args: argparse.Namespace) -> int:
         # through the new ruleset.
         check("confirm it within 300 s" in applied, "the Apply is held until it is confirmed (ROADMAP SEC-26)")
         check(confirm_pending(opener), "...the dashboard confirms it, and the router keeps it")
+        check_wan_ipv6(check, opener, provider)
         # Security-lessons K5, ROADMAP SEC-27: the admin puts the webUI on
         # the VPN's tunnel address too -- its own action, held as well.
         moved = urllib.parse.unquote_plus(post(opener, "/system/management-addresses",
@@ -1320,6 +1621,13 @@ def run(args: argparse.Namespace) -> int:
         config = (upper / "etc" / "fr_os" / "config.yaml").read_text()
         check("Europe/Budapest" in config, "a change made in the webUI was saved to the persistence partition")
         check_sandboxed_services(check, upper, "-b")
+        dhcp6 = journal(upper, "-b", "-u", "fr-dhcp6.service")
+        check("Started" in dhcp6, "dhcpcd (fr-dhcp6) ran in its sandbox once IPv6 was turned on (ROADMAP FND-1a)")
+        if "Started" not in dhcp6 or "Failed" in dhcp6 or IPV6_FAILED:
+            print("    --- journal of fr-dhcp6.service (from its start) ---")
+            text = journal(upper, "-b", "-u", "fr-dhcp6.service", "-o", "short-monotonic")
+            for line in [l for l in text.splitlines() if "No such process" not in l][:80]:
+                print(f"    {line}")
         dropped_events = xdp_blocked_events(upper)
         check(any('"action": "drop"' in line for line in dropped_events),
               "the dropped ClientHello is in the XDP SNI event file (ROADMAP P4-1, SEC-4)")

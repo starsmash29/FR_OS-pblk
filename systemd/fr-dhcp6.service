@@ -1,0 +1,53 @@
+[Unit]
+Description=FR_OS IPv6 on the WAN: dhcpcd for SLAAC and DHCPv6 (frfw.ipv6, ROADMAP FND-1a)
+Documentation=https://github.com/starsmash29/FR_OS-pblk
+After=network.target
+# An apply writes the config while ipv6.enabled, and removes it otherwise.
+ConditionPathExists=/etc/fr_os/dhcpcd6.conf
+
+[Service]
+Type=simple
+# Starts as root: dhcpcd configures the WAN's addresses and routes over
+# netlink and listens on the DHCPv6 client port, then drops to its own
+# account (privilege separation, Debian's dhcpcd user) for everything
+# that parses what the network sends. Its config runs no hook script
+# (frfw.ipv6.render_dhcpcd_conf).
+ExecStart=/usr/sbin/dhcpcd --nobackground --config /etc/fr_os/dhcpcd6.conf
+Restart=on-failure
+StateDirectory=dhcpcd
+RuntimeDirectory=dhcpcd
+# Sandbox (security-lessons I1; checked by tests/test_systemd_sandbox.py).
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+# /proc/sys stays read-only: the apply writes every setting dhcpcd would
+# (frfw.ipv6.sysctl_settings), and dhcpcd leaves one that already has the
+# value it wants.
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+# Its own processes only: dhcpcd tracks its helpers by pid file and
+# socket, never through /proc.
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+MemoryDenyWriteExecute=yes
+# chroot: privilege separation chroots its unprivileged processes;
+# seccomp: they put themselves under a syscall filter of their own.
+SystemCallFilter=@system-service chroot seccomp
+SystemCallErrorNumber=EPERM
+# AF_INET too: dhcpcd opens an IPv4 socket for interface ioctls even
+# with ipv6only (if_opensockets).
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID CAP_SYS_CHROOT
+
+[Install]
+WantedBy=multi-user.target

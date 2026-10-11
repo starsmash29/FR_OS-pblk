@@ -228,3 +228,29 @@ def test_the_cli_says_so(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(surface, "collect", lambda: ([surface.Listener("tcp", "192.168.1.1", 8080)], ADDRESSES))
     assert cli.main(["surface", str(path)]) == 3
     assert "not needed by FR_OS, stop it: tcp/8080" in capsys.readouterr().err
+
+
+def test_an_ipv6_socket_follows_the_ipv6_rules():
+    """ROADMAP FND-1a: every IPv6 packet to the router is dropped ahead of
+    the admin's rules -- an accept for a port opens it over IPv4 only --
+    but for the DHCPv6 replies on the WAN once IPv6 is on."""
+    rules = [{"name": "web-in", "action": "accept", "to_zone": "self", "proto": "tcp", "dst_port": 8080}]
+    addresses = {**ADDRESSES, "eth0": ["203.0.113.7", "2001:db8:1::5", "fe80::2"]}
+    listeners = [surface.Listener("tcp", "2001:db8:1::5", 8080), surface.Listener("udp", "fe80::2", 546, "eth0"),
+                 surface.Listener("tcp", "::", 8080)]
+    rows = surface.surface(_config(rules), listeners, addresses)
+    by_address = {(r.listener.address, r.listener.port): r for r in rows}
+    off = by_address[("2001:db8:1::5", 8080)].zones["wan"]
+    assert off.state == surface.CLOSED and "IPv6 is off" in off.why
+    assert by_address[("fe80::2", 546)].zones["wan"].state == surface.CLOSED
+    # The wildcard takes IPv4 too: there the rule opens it.
+    assert by_address[("::", 8080)].zones["wan"].state == surface.OPEN
+
+    rows = surface.surface(_config(rules, ipv6={"enabled": True}), listeners, addresses)
+    by_address = {(r.listener.address, r.listener.port): r for r in rows}
+    assert by_address[("2001:db8:1::5", 8080)].zones["wan"].state == surface.CLOSED
+    dhcpv6 = by_address[("fe80::2", 546)]
+    # From the provider's link only: not reachable from the internet.
+    assert dhcpv6.zones["wan"].state == surface.RESTRICTED and not dhcpv6.internet
+    assert dhcpv6.needed == "IPv6 on the WAN (ipv6)" and dhcpv6.listener.label == "DHCPv6 client (dhcpcd)"
+    assert surface.ipv6_verdict(_config(rules, ipv6={"enabled": True}), "lan", "udp", 546).state == surface.CLOSED

@@ -39,6 +39,38 @@
 </div>
 
 <div class="card">
+  <h3>IPv6 on the WAN</h3>
+  <p class="muted">
+    The router takes IPv6 from the provider on its internet-facing
+    interfaces: an address (SLAAC or DHCPv6) and, if the provider
+    delegates one, a prefix for the LAN. Only the router itself uses it
+    for now: nothing is routed over IPv6, and every IPv6 packet to the
+    router is dropped but what the WAN needs: neighbour discovery, the
+    provider's router advertisements, DHCPv6, ICMPv6 errors and ping.
+  </p>
+  <p id="ipv6-summary" data-state="{{ ipv6.state }}">{{ ipv6.summary }}</p>
+  {% if ipv6.addresses or ipv6.prefixes or ipv6.default_routes %}
+  <dl>
+    {% for device, address, source in ipv6.addresses %}
+    <dt>{{ device }}</dt><dd class="ipv6-address">{{ address }} ({{ source }})</dd>
+    {% endfor %}
+    {% for device, gateway in ipv6.default_routes %}
+    <dt>Default route</dt><dd>via {{ gateway }} on {{ device }}</dd>
+    {% endfor %}
+    {% for prefix in ipv6.prefixes %}
+    <dt>Delegated prefix</dt><dd class="ipv6-prefix">{{ prefix }}</dd>
+    {% endfor %}
+  </dl>
+  {% endif %}
+  <form method="post" action="/interfaces/ipv6">
+    {{ csrf_input(request) }}
+    <label class="checkbox-row"><input type="checkbox" name="enabled" value="true" {{ "checked" if ipv6_enabled }}>
+      Take IPv6 from the provider</label>
+    <button type="submit">Save</button>
+  </form>
+</div>
+
+<div class="card">
   <h3>Detected network interfaces</h3>
   <table>
     <tr><th>Name</th><th>Driver</th><th>MAC</th><th>Link</th></tr>

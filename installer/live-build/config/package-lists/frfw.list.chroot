@@ -20,6 +20,10 @@ dbus
 # the dnsmasq binary for fr-adblock-dns.service (DNS filtering); -base
 # has no dnsmasq.service of its own to fight over port 53
 dnsmasq-base
+# dhcpcd for IPv6 on the WAN (ROADMAP FND-1a, fr-dhcp6.service): SLAAC,
+# DHCPv6 and prefix delegation, with privilege separation. -base: no
+# dhcpcd.service of its own, nothing runs until ipv6.enabled.
+dhcpcd-base
 # `wg` for the WireGuard VPN (frfw.wireguard, security-lessons G8); the
 # kernel module itself ships with Debian's kernel
 wireguard-tools

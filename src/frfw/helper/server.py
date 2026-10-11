@@ -30,7 +30,7 @@ from pathlib import Path
 
 import yaml
 
-from frfw import apply_confirm, bruteforce, conntrack, firewall_log, hwinfo, ids_quarantine, iot_isolation, kea, paths, surface, svc, wireguard, xdp, ztna
+from frfw import apply_confirm, bruteforce, conntrack, firewall_log, hwinfo, ids_quarantine, iot_isolation, ipv6, kea, paths, surface, svc, wireguard, xdp, ztna
 from frfw.adblock import AdblockError
 from frfw.iot import leases as iot_leases
 from frfw.iot_isolation import IotIsolationError
@@ -181,11 +181,16 @@ def _handle_request(request: dict, server: "ApplyHelperServer") -> dict:
         if cmd == "xdp_stats":
             return {"ok": True, "stats": xdp.get_stats()}
 
+        if cmd == "ipv6_status":
+            # ROADMAP FND-1a: read from the kernel's netlink, which the
+            # webUI's sandbox has no socket family for.
+            return _handle_ipv6_status(server)
+
         return {"ok": False, "message": f"unknown command {cmd!r}"}
     except (
         ConfigError, NftError, IfaddrError, KeaError, ZtnaError, PqcError, AdblockError,
         BruteforceError, IdsQuarantineError, ConntrackError, HwInfoError, IotIsolationError,
-        SurfaceError, ForwardingError, WireguardError, xdp.XdpError, FileNotFoundError, yaml.YAMLError,
+        SurfaceError, ForwardingError, WireguardError, xdp.XdpError, ipv6.Ipv6Error, FileNotFoundError, yaml.YAMLError,
         ApplyError, apply_confirm.PendingError,
     ) as exc:
         return {"ok": False, "message": str(exc)}
@@ -528,6 +533,16 @@ def _handle_audit_append(request: dict, server: "ApplyHelperServer") -> dict:
     webui_audit.prepare(server.audit_log_path)
     webui_audit.append(server.audit_log_path, {**clean, "via": "webui"})
     return {"ok": True}
+
+
+def _handle_ipv6_status(server: "ApplyHelperServer") -> dict:
+    """What the provider gave the WAN (frfw.ipv6.status), read as root:
+    the webUI's sandbox has no netlink socket."""
+    config = load_config(server.config_path)
+    try:
+        return {"ok": True, **ipv6.status(config).as_dict()}
+    except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired) as exc:
+        return {"ok": False, "message": f"could not read the IPv6 state: {exc}"}
 
 
 def _handle_listening_sockets() -> dict:
