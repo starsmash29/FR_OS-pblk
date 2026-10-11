@@ -293,6 +293,10 @@ def kea6_conf(log: Path) -> dict:
                           "delegated-len": 56}],
         }],
         "loggers": [{"name": "kea-dhcp6", "severity": "INFO",
+                     "output_options": [{"output": str(log), "flush": True}]},
+                    # Every message received, to tell "nothing asked" from
+                    # "asked, not answered".
+                    {"name": "kea-dhcp6.packets", "severity": "DEBUG", "debuglevel": 40,
                      "output_options": [{"output": str(log), "flush": True}]}],
     }}
 
@@ -320,6 +324,12 @@ class Isp:
         return "\n".join(l for l in text.splitlines() if "LEASE_ALLOC" in l)
 
     def print_logs(self) -> None:
+        # What crossed the wire to and from the router, and who the
+        # provider's side has seen.
+        for cmd in (["ip", "-s", "link", "show", ISP_DEVICE], ["ip", "-6", "neigh", "show"]):
+            print(f"    --- {' '.join(cmd)} ---")
+            for line in isp_run(*cmd).stdout.splitlines():
+                print(f"    {line}")
         for log in (self.kea_log, self.radvd_log):
             print(f"    --- {log.name} ---")
             try:
@@ -839,11 +849,11 @@ def journal(upper: Path, *args: str) -> str:
     ).stdout
 
 
-def print_journal(upper: Path, unit: str, *boot: str) -> None:
+def print_journal(upper: Path, unit: str, *boot: str, lines: int = 25) -> None:
     """The unit's last journal lines, timestamped, into the CI log: the
     QEMU artifacts are not always at hand when a check fails."""
     print(f"    --- journal of {unit} ---")
-    for line in journal(upper, *boot, "-u", unit, "-o", "short-monotonic").splitlines()[-25:]:
+    for line in journal(upper, *boot, "-u", unit, "-o", "short-monotonic").splitlines()[-lines:]:
         print(f"    {line}")
 
 
@@ -875,6 +885,11 @@ def check_sandboxed_services(check, upper: Path, *boot: str) -> None:
           "applying the config hit no sandbox wall (EPERM/EROFS)")
 
 
+#: Set when the router got nothing from the provider: boot 3's journal
+#: of fr-dhcp6 is printed then.
+IPV6_FAILED = False
+
+
 def check_wan_ipv6(check, opener, provider: Isp) -> None:
     """ROADMAP FND-1a, after the Apply that turned IPv6 on: the router
     took an address and a prefix from the provider, answers a ping on its
@@ -903,6 +918,8 @@ def check_wan_ipv6(check, opener, provider: Isp) -> None:
           "...as the provider's DHCPv6 server handed them out")
     if not ok:
         provider.print_logs()
+        global IPV6_FAILED
+        IPV6_FAILED = True
     if slaac:
         address = str(slaac[0])
         check(ping_sources(address) == {address}, f"the router answers a ping on its WAN address {address}")
@@ -1606,8 +1623,8 @@ def run(args: argparse.Namespace, provider: Isp) -> int:
         check_sandboxed_services(check, upper, "-b")
         dhcp6 = journal(upper, "-b", "-u", "fr-dhcp6.service")
         check("Started" in dhcp6, "dhcpcd (fr-dhcp6) ran in its sandbox once IPv6 was turned on (ROADMAP FND-1a)")
-        if "Started" not in dhcp6 or "Failed" in dhcp6:
-            print_journal(upper, "fr-dhcp6.service", "-b")
+        if "Started" not in dhcp6 or "Failed" in dhcp6 or IPV6_FAILED:
+            print_journal(upper, "fr-dhcp6.service", "-b", lines=120)
         dropped_events = xdp_blocked_events(upper)
         check(any('"action": "drop"' in line for line in dropped_events),
               "the dropped ClientHello is in the XDP SNI event file (ROADMAP P4-1, SEC-4)")
