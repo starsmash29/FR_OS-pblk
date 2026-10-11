@@ -297,9 +297,18 @@ def kea6_conf(log: Path) -> dict:
     }}
 
 
+#: Where Ubuntu's kea-dhcp6 keeps its log, PID and lock files; the log is
+#: copied to the work directory at the end.
+KEA_LOG = Path("/var/log/kea/kea-dhcp6-fr-os-boot-test.log")
+KEA_RUN_DIR = Path("/run/kea")
+#: Ubuntu's AppArmor profile for kea-dhcp6 (the CI runner's): it allows
+#: only the packaged service's paths, and this one is no service.
+KEA_APPARMOR = Path("/etc/apparmor.d/usr.sbin.kea-dhcp6")
+
+
 class Isp:
     def __init__(self, workdir: Path) -> None:
-        self.kea_log = workdir / "kea-dhcp6.log"
+        self.kea_log = KEA_LOG
         self.radvd_log = workdir / "radvd.log"
 
     def leases(self) -> str:
@@ -365,7 +374,12 @@ def isp(workdir: Path):
         radvd_conf.write_text(RADVD_CONF)
         kea_conf = workdir / "kea-dhcp6.json"
         kea_conf.write_text(json.dumps(kea6_conf(provider.kea_log), indent=2))
-        env = {**os.environ, "KEA_LOCKFILE_DIR": str(workdir), "KEA_PIDFILE_DIR": str(workdir)}
+        if KEA_APPARMOR.exists():
+            subprocess.run(["apparmor_parser", "-R", str(KEA_APPARMOR)], capture_output=True)
+        KEA_LOG.parent.mkdir(parents=True, exist_ok=True)
+        KEA_LOG.unlink(missing_ok=True)
+        KEA_RUN_DIR.mkdir(parents=True, exist_ok=True)
+        env = {**os.environ, "KEA_LOCKFILE_DIR": str(KEA_RUN_DIR), "KEA_PIDFILE_DIR": str(KEA_RUN_DIR)}
         with provider.radvd_log.open("w") as radvd_out:
             procs.append(subprocess.Popen(
                 ["ip", "netns", "exec", ISP_NS, "radvd", "--nodaemon", "--logmethod", "stderr",
@@ -388,6 +402,8 @@ def isp(workdir: Path):
                 proc.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 proc.kill()
+        if KEA_LOG.exists():
+            shutil.copyfile(KEA_LOG, workdir / "kea-dhcp6.log")
         _remove_isp()
 
 
@@ -1254,7 +1270,7 @@ def main() -> int:
     if args.uefi and not any(c.is_file() and v.is_file() for c, v in OVMF):
         print("--uefi: no OVMF firmware (install the ovmf package)", file=sys.stderr)
         return 2
-    workdir = args.workdir or Path(tempfile.mkdtemp(prefix="fros-qemu-"))
+    workdir = (args.workdir or Path(tempfile.mkdtemp(prefix="fros-qemu-"))).resolve()
     workdir.mkdir(parents=True, exist_ok=True)
     args.workdir = workdir
     with lan_tap(), isp(workdir) as provider:
