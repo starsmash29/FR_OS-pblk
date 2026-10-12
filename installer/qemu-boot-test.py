@@ -755,10 +755,13 @@ def check_vpn_ipv6(check, opener, boot_timeout: float) -> None:
     config_text = config_text.group(1) if config_text else ""
     address = _client_config_field(config_text, "Address") or ""
     v6 = [a.strip() for a in address.split(",") if ":" in a]
-    if not check(_client_config_field(config_text, "AllowedIPs") == "0.0.0.0/0, ::/0" and len(v6) == 1
-                 and ":ffff::" in v6[0],
+    allowed = _client_config_field(config_text, "AllowedIPs")
+    # Never the configuration itself in the log: it holds the device's
+    # private key (the log is public).
+    if not check(allowed == "0.0.0.0/0, ::/0" and len(v6) == 1 and ":ffff::" in v6[0],
                  f"a device added with its whole traffic through the VPN gets an IPv6 address in the tunnel, and "
-                 f"::/0 in its AllowedIPs: no IPv6 around the tunnel (ROADMAP FND-1d, H1): {config_text[:400]}"):
+                 f"::/0 in its AllowedIPs: no IPv6 around the tunnel (ROADMAP FND-1d, H1): Address {address!r}, "
+                 f"AllowedIPs {allowed!r}"):
         return
     screen = get(opener, "/vpn")
     check('id="vpn-ipv6"' in screen and 'data-reissue="laptop"' in screen and 'data-reissue="phone"' not in screen,
