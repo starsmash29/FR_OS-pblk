@@ -85,6 +85,10 @@ from __future__ import annotations
 #: provider gave the WAN -- addresses, default route, delegated prefix --
 #: read over netlink, which the webUI's sandbox has no socket family for.
 #: Read-only, no arguments.
+#: "source_device" (ROADMAP FND-1d, H3, frfw.bruteforce.device_key) gives
+#: the MAC of the LAN host behind an IPv6 source, from the neighbour
+#: table, so the webUI's failed-login counter holds a host to one count
+#: whichever addresses it picks. Read-only; webUI only.
 COMMANDS = (
     "ping",
     "apply",
@@ -115,6 +119,7 @@ COMMANDS = (
     "restore_rejected",
     "set_management_addresses",
     "ipv6_status",
+    "source_device",
 )
 
 #: Maximum accepted request/response line length, to bound memory use from

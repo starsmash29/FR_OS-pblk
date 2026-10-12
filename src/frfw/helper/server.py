@@ -135,7 +135,7 @@ def _handle_request(request: dict, server: "ApplyHelperServer") -> dict:
             return _handle_refresh_adblock(server)
 
         if cmd == "ban_ip":
-            return _handle_ban_ip(request)
+            return _handle_ban_ip(request, server)
 
         if cmd == "quarantine_ip":
             return _handle_quarantine_ip(request, server)
@@ -186,6 +186,9 @@ def _handle_request(request: dict, server: "ApplyHelperServer") -> dict:
             # ROADMAP FND-1a: read from the kernel's netlink, which the
             # webUI's sandbox has no socket family for.
             return _handle_ipv6_status(server)
+
+        if cmd == "source_device":
+            return _handle_source_device(request, server)
 
         return {"ok": False, "message": f"unknown command {cmd!r}"}
     except (
@@ -398,7 +401,7 @@ def _handle_refresh_adblock(server: "ApplyHelperServer") -> dict:
     }
 
 
-def _handle_ban_ip(request: dict) -> dict:
+def _handle_ban_ip(request: dict, server: "ApplyHelperServer") -> dict:
     ip = request.get("ip")
     duration_seconds = request.get("duration_seconds", 3600)
     if not isinstance(ip, str) or not ip:
@@ -406,8 +409,26 @@ def _handle_ban_ip(request: dict) -> dict:
     if not isinstance(duration_seconds, int) or isinstance(duration_seconds, bool):
         return {"ok": False, "message": "'duration_seconds' must be an integer"}
 
-    bruteforce.ban_ip(ip, duration_seconds)
-    return {"ok": True, "message": f"{ip} jailed for {duration_seconds}s"}
+    # ROADMAP FND-1d (H3): an IPv6 source is jailed by its host's MAC,
+    # looked up here, as root -- never one the webUI names.
+    mac = bruteforce.ban_ip(ip, duration_seconds, lan_devices=_lan_devices(server))
+    held = f" (by MAC {mac})" if mac else ""
+    return {"ok": True, "message": f"{ip} jailed for {duration_seconds}s{held}"}
+
+
+def _handle_source_device(request: dict, server: "ApplyHelperServer") -> dict:
+    """The MAC of the LAN host behind an IPv6 source, so the webUI counts
+    its failed sign-ins per host, whichever of its addresses it uses
+    (ROADMAP FND-1d, H3; frfw.bruteforce.device_key). Read-only. The
+    webUI's sandbox has no netlink to read the neighbour table itself."""
+    ip = request.get("ip")
+    if not isinstance(ip, str) or not ip:
+        return {"ok": False, "message": "'ip' is required"}
+    try:
+        device = bruteforce.device_key(ip, _lan_devices(server))
+    except ValueError as exc:  # validate.ArgumentError included
+        return {"ok": False, "message": f"invalid IP address {ip!r}: {exc}"}
+    return {"ok": True, "device": device}
 
 
 def _router_addresses(server: "ApplyHelperServer") -> frozenset[str]:

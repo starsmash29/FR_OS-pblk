@@ -651,6 +651,8 @@ def _read_runtime_sets(config: Config) -> RuntimeSets:
         ("the AI IDS quarantine's MACs", ids_quarantine.snapshot_macs_before_reload,
          ids_quarantine.IdsQuarantineError, True),
         ("the IPv6 brute-force jail", bruteforce.snapshot6_before_reload, bruteforce.BruteforceError, True),
+        ("the brute-force jail's MACs", bruteforce.snapshot_macs_before_reload, bruteforce.BruteforceError,
+         True),
     ]
     found = []
     for what, read, error, wanted in readers:

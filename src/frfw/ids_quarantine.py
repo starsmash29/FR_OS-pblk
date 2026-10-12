@@ -137,21 +137,26 @@ _USABLE_NEIGH_STATES = frozenset({"REACHABLE", "STALE", "DELAY", "PROBE", "PERMA
 
 def lan_neighbour_mac(ip: str, lan_devices: Iterable[str]) -> str | None:
     """The MAC the router's neighbour table holds for `ip` (an address
-    check_target accepted) on one of `lan_devices`, or None: not on a LAN
-    link, not known, or with no usable entry. The host has just been seen
-    sending, so a neighbour on the LAN has a fresh one."""
+    check_target accepted, or an IPv6 one -- frfw.bruteforce) on one of
+    `lan_devices`, or None: not on a LAN link, not known, or with no
+    usable entry. The host has just been seen sending, so a neighbour on
+    the LAN has a fresh one."""
     devices = set(lan_devices)
     if not devices:
         return None
-    ip = validate.ipv4(ip)
+    if ":" in ip:
+        ip, family = validate.ipv6(ip), "-6"
+    else:
+        ip, family = validate.ipv4(ip), "-4"
     try:
-        proc = subprocess.run(["ip", "-j", "-4", "neigh", "show", "to", ip],
+        proc = subprocess.run(["ip", "-j", family, "neigh", "show", "to", ip],
                               capture_output=True, text=True, timeout=10)
         entries = json.loads(proc.stdout or "[]") if proc.returncode == 0 else []
     except (FileNotFoundError, subprocess.TimeoutExpired, json.JSONDecodeError):
         return None
     for entry in entries if isinstance(entries, list) else []:
-        if not isinstance(entry, dict) or entry.get("dst") != ip or entry.get("dev") not in devices:
+        if not isinstance(entry, dict) or not _same_address(entry.get("dst"), ip) \
+                or entry.get("dev") not in devices:
             continue
         if not set(entry.get("state") or []) & _USABLE_NEIGH_STATES:
             continue
@@ -160,6 +165,14 @@ def lan_neighbour_mac(ip: str, lan_devices: Iterable[str]) -> str | None:
         except validate.ArgumentError:
             continue
     return None
+
+
+def _same_address(dst: object, ip: str) -> bool:
+    """`ip -j` writes an address in its own form; compare the values."""
+    try:
+        return isinstance(dst, str) and ipaddress.ip_address(dst) == ipaddress.ip_address(ip)
+    except ValueError:
+        return False
 
 
 def list_quarantined() -> list[tuple[str, int]]:

@@ -170,6 +170,12 @@ ipv6:
       proto: tcp
       port: {PINHOLE_PORT}
 """
+#: A second LAN host (ROADMAP FND-1d, H3): a macvlan on the LAN tap, so
+#: its own MAC, in a namespace of its own.
+NEIGHBOUR_NS = "fr-lan2"
+NEIGHBOUR_LINK = "frlan2"
+#: The interface IDs it adds by hand, as an attacker picking addresses.
+JAIL_IIDS = ("::a1", "::a2", "::a3", "::a4", "::a5")
 WAN_MAC = "52:54:00:00:00:01"
 WAN_MAC_IID = "5054:ff:fe00:1"
 DISK_SIZE = 2 * 2**30
@@ -587,6 +593,106 @@ def echo_sources_at_isp(seconds: float) -> subprocess.Popen:
             "print(' '.join(sorted(seen)))\n")
     return subprocess.Popen(["ip", "netns", "exec", ISP_NS, "python3", "-I", "-c", code],
                             stdout=subprocess.PIPE, text=True)
+
+
+@contextmanager
+def second_lan_host():
+    """A second host on the LAN segment, with a MAC of its own: a macvlan
+    on the LAN tap in its own namespace, taking SLAAC from the router's
+    RAs like the first."""
+    subprocess.run(["ip", "netns", "del", NEIGHBOUR_NS], capture_output=True)
+    subprocess.run(["ip", "netns", "add", NEIGHBOUR_NS], check=True)
+    try:
+        subprocess.run(["ip", "link", "add", NEIGHBOUR_LINK, "link", LAN_TAP, "type", "macvlan", "mode", "bridge"],
+                       check=True)
+        subprocess.run(["ip", "link", "set", NEIGHBOUR_LINK, "netns", NEIGHBOUR_NS], check=True)
+        for key, value in (("disable_ipv6", "0"), ("accept_ra", "2"), ("autoconf", "1"), ("use_tempaddr", "0")):
+            _sysctl(f"net.ipv6.conf.{NEIGHBOUR_LINK}.{key}", value, NEIGHBOUR_NS)
+        for link in ("lo", NEIGHBOUR_LINK):
+            subprocess.run(["ip", "netns", "exec", NEIGHBOUR_NS, "ip", "link", "set", link, "up"], check=True)
+        yield
+    finally:
+        subprocess.run(["ip", "netns", "del", NEIGHBOUR_NS], capture_output=True)
+
+
+#: Run in the second host's namespace: argv is the router's address,
+#: then "login" or "tcp", then the sources. Prints one result per source:
+#: where a failed sign-in landed, or the TCP connection's outcome.
+_NEIGHBOUR_CLIENT = """\
+import http.client, json, socket, ssl, sys, urllib.parse
+target, what, sources = sys.argv[1], sys.argv[2], sys.argv[3:]
+context = ssl.create_default_context(); context.check_hostname = False; context.verify_mode = ssl.CERT_NONE
+out = []
+for source in sources:
+    try:
+        if what == "tcp":
+            s = socket.socket(socket.AF_INET6, socket.SOCK_STREAM); s.settimeout(4)
+            s.bind((source, 0)); s.connect((target, 443)); s.close(); out.append("open")
+            continue
+        c = http.client.HTTPSConnection(target, 443, timeout=20, context=context, source_address=(source, 0))
+        c.request("POST", "/login", urllib.parse.urlencode({"username": "intruder", "password": "wrong"}),
+                  {"Content-Type": "application/x-www-form-urlencoded"})
+        r = c.getresponse(); out.append(urllib.parse.unquote_plus(r.getheader("Location") or str(r.status)))
+    except ConnectionRefusedError:
+        out.append("refused")
+    except OSError as exc:
+        out.append("no answer" if what == "tcp" else f"error: {exc}")
+print(json.dumps(out))
+"""
+
+
+def from_second_host(target: str, what: str, sources: list[str]) -> list[str]:
+    proc = subprocess.run(["ip", "netns", "exec", NEIGHBOUR_NS, "python3", "-I", "-c", _NEIGHBOUR_CLIENT,
+                           target, what, *sources], capture_output=True, text=True, timeout=300)
+    try:
+        return json.loads(proc.stdout)
+    except ValueError:
+        return [proc.stderr.strip()[-300:]]
+
+
+def second_host_address(network: ipaddress.IPv6Network, timeout: float = 60) -> str | None:
+    """The second host's SLAAC address in `network`, DAD done."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        out = subprocess.run(["ip", "netns", "exec", NEIGHBOUR_NS, "ip", "-j", "-6", "addr", "show", "dev",
+                              NEIGHBOUR_LINK], capture_output=True, text=True).stdout
+        for link in json.loads(out or "[]"):
+            for info in link.get("addr_info", []):
+                if info.get("tentative") or info.get("dadfailed"):
+                    continue
+                if ipaddress.IPv6Address(info["local"]) in network:
+                    return info["local"]
+        time.sleep(2)
+    return None
+
+
+def check_ipv6_jail(check, ula: str, ula_network: ipaddress.IPv6Network, ula_source: str) -> None:
+    """ROADMAP FND-1d (H3), with management over IPv6 on: a second LAN
+    host fails to sign in five times, from five addresses of its own
+    choosing. Counted as one host (by its MAC), the fifth gets it jailed;
+    it is then held on every address, a new one too. The first host, on
+    the same /64, still reaches the webUI -- FND-1c's /64 jail held it
+    too."""
+    with second_lan_host():
+        slaac = second_host_address(ula_network)
+        if not check(slaac is not None, "a second LAN host (its own MAC) took a stable address by SLAAC"):
+            return
+        picked = [str(ula_network.network_address + int(ipaddress.IPv6Address(iid))) for iid in JAIL_IIDS]
+        for address in picked:
+            subprocess.run(["ip", "netns", "exec", NEIGHBOUR_NS, "ip", "addr", "add", f"{address}/64", "dev",
+                            NEIGHBOUR_LINK, "nodad"], check=True)
+        sources = [slaac, *picked[:4]]
+        landed = from_second_host(ula, "login", sources)
+        check(len(landed) == 5 and all("Invalid credentials" in x for x in landed[:4])
+              and "temporarily blocked" in landed[4],
+              f"five failed sign-ins over IPv6 from five addresses of one host count as one host, and the "
+              f"fifth jails it: {landed}")
+        held = from_second_host(ula, "tcp", [*sources, picked[4]])
+        check(set(held) == {"no answer"},
+              f"...held by its MAC on every address, and on one it hadn't used yet: {held}")
+        neighbour = tcp_from_lan(ula, WEBUI_PORT, ula_source)
+        check(neighbour == "open",
+              f"...while the other LAN host on the same /64 still reaches the webUI over IPv6: {neighbour}")
 
 
 def ping_from_lan(target: str, source: str) -> bool:
@@ -1250,6 +1356,7 @@ def check_ipv6_services(check, opener, boot_timeout: float) -> bool:
     elsewhere = {port: tcp_from_lan(router, port, source) for port in (WEBUI_PORT, 22)}
     check(set(elsewhere.values()) == {"no answer"},
           f"...and not on its delegated address {router}, which the provider may change: {elsewhere}")
+    check_ipv6_jail(check, ula, router_ula.network, ula_source)
     for _ in range(5):  # the resolver was (re)started by the apply
         answer = dns_answer(ula, LOCAL_DNS_NAME, source=ula_source)
         if answer:

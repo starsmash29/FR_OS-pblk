@@ -93,8 +93,9 @@ def running_server(tmp_path, monkeypatch, neighbours):
     # Same fakery, for the same reason, as ztna_set above -- this socket
     # protocol test only cares that "ban_ip" maps to a correctly-formed
     # nft add-element call, not that the real kernel set exists.
-    # Keyed by set: the IPv4 jail and the IPv6 one (by /64, ROADMAP
-    # FND-1c), listed the way `nft -j` gives an interval set's prefix.
+    # Keyed by set: the IPv4 jail, the IPv6 one (an address, or a /64
+    # from before ROADMAP FND-1d) and the one by MAC, listed the way
+    # `nft -j` gives an interval set's prefix.
     jail_sets: dict[str, dict[str, int]] = {}
 
     def fake_bruteforce_run_nft(args):
@@ -555,14 +556,40 @@ def test_bruteforce_status_reflects_kernel_state_after_ban(running_server):
     assert response["banned"][0]["ip"] == "10.0.0.5"
 
 
-def test_ban_ip_jails_an_ipv6_source_by_its_64(running_server):
-    """ROADMAP FND-1c: a host picks its own IPv6 addresses, so the jail
-    holds the /64 -- in its own set, listed with the IPv4 bans."""
+def test_ban_ip_jails_an_ipv6_host_by_its_mac_or_its_address(running_server, neighbours):
+    """ROADMAP FND-1d (H3): a LAN host the neighbour table knows is
+    jailed by its MAC, whatever address it uses; one it doesn't know by
+    the address -- never the /64, which is every host on the segment.
+    Listed with the IPv4 bans."""
+    neighbours["2001:db8:100::1"] = LAPTOP
+    response = client.ban_ip("2001:db8:100:0:0:0:0:1", 100, running_server)
+    assert response["ok"] is True and LAPTOP.mac in response["message"]
     assert client.ban_ip("2001:db8:100:0:1234:5678:9abc:def0", 100, running_server)["ok"] is True
     client.ban_ip("10.0.0.5", 100, running_server)
     response = client.bruteforce_status(running_server)
-    assert response["count"] == 2
-    assert sorted(b["ip"] for b in response["banned"]) == ["10.0.0.5", "2001:db8:100::/64"]
+    assert response["count"] == 3
+    assert sorted(b["ip"] for b in response["banned"]) == [
+        "10.0.0.5", "2001:db8:100:0:1234:5678:9abc:def0", LAPTOP.mac]
+
+
+def test_a_host_on_the_wan_is_never_looked_up_by_mac(running_server, neighbours):
+    """The lookup is on the LAN devices only: on the WAN the MAC would be
+    the provider's gateway, and jailing it would cut everyone off."""
+    neighbours["2001:db8:100::1"] = ztna_mod.ClientLink(mac="aa:bb:cc:00:00:01", device="eth0")
+    assert client.source_device("2001:db8:100::1", running_server) == {"ok": True, "device": None}
+    client.ban_ip("2001:db8:100::1", 100, running_server)
+    assert [b["ip"] for b in client.bruteforce_status(running_server)["banned"]] == ["2001:db8:100::1"]
+
+
+def test_source_device_names_an_ipv6_lan_hosts_mac(running_server, neighbours):
+    neighbours["2001:db8:100::1"] = LAPTOP
+    neighbours["10.0.0.5"] = LAPTOP
+    assert client.source_device("2001:db8:100::1", running_server) == {"ok": True, "device": LAPTOP.mac}
+    assert client.source_device("2001:db8:100::2", running_server) == {"ok": True, "device": None}
+    # IPv4 counts by address, as before.
+    assert client.source_device("10.0.0.5", running_server) == {"ok": True, "device": None}
+    assert client.source_device("not an ip", running_server)["ok"] is False
+    assert client.source_device("", running_server)["ok"] is False
 
 
 def test_ztna_sessions_status_empty_when_gate_disabled(running_server):
