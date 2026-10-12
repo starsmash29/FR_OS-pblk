@@ -120,9 +120,10 @@ def test_internet_only_mode_allows_masquerade_zones(minimal_config_dict):
     lines = [l.strip() for l in forward.splitlines() if l.strip()]
     assert lines[1] == 'meta nfproto ipv6 drop comment "ipv6-no-routing"'  # ROADMAP FND-1a
     assert lines[2] == 'ip saddr @ids_quarantine drop comment "ids-quarantine-forward"'
-    assert lines[3] == 'ether saddr @iot_isolated oifname @wan_ifaces accept comment "iot-isolated-internet"'
-    assert lines[4] == 'ether saddr @iot_isolated drop comment "iot-isolated-forward"'
-    assert lines[5] == "ct state established,related accept"
+    assert lines[3] == 'meta nfproto ipv6 ether saddr @ids_quarantine_mac drop comment "ids-quarantine-ipv6"'  # FND-1b
+    assert lines[4] == 'ether saddr @iot_isolated oifname @wan_ifaces accept comment "iot-isolated-internet"'
+    assert lines[5] == 'ether saddr @iot_isolated drop comment "iot-isolated-forward"'
+    assert lines[6] == "ct state established,related accept"
 
 
 def test_block_mode_has_no_internet_exception(minimal_config_dict):

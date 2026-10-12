@@ -41,6 +41,9 @@ def neighbours(monkeypatch):
     neigh` is in test_ztna.py."""
     table: dict[str, ztna_mod.ClientLink] = {}
     monkeypatch.setattr(ztna_mod, "client_link", lambda ip: table.get(ip))
+    # The quarantine's lookup (ROADMAP FND-1b) reads the same table.
+    monkeypatch.setattr(ids_quarantine_mod, "lan_neighbour_mac",
+                        lambda ip, devices: table[ip].mac if ip in table and table[ip].device in devices else None)
     return table
 
 
@@ -438,6 +441,25 @@ def test_quarantine_ip_rejects_non_integer_duration(running_server):
 def test_quarantine_ip_success_calls_nft_add_element(running_server):
     response = client.quarantine_ip("10.0.0.9", 7200, running_server)
     assert response == {"ok": True, "message": "10.0.0.9 quarantined for 7200s"}
+
+
+@pytest.mark.parametrize("device, held", [("eth1", True), ("eth2", True), ("eth0", False)])
+def test_quarantine_ip_holds_a_lan_hosts_mac_for_ipv6(running_server, neighbours, monkeypatch, device, held):
+    """ROADMAP FND-1b: the MAC of a host on a LAN device (the example
+    config's lan and dmz) -- never one on the WAN, where it would be the
+    provider's gateway's."""
+    neighbours["10.0.0.9"] = ztna_mod.ClientLink(mac="aa:bb:cc:dd:ee:09", device=device)
+    added = []
+    run_nft = ids_quarantine_mod._run_nft
+    monkeypatch.setattr(ids_quarantine_mod, "_run_nft", lambda args: (added.append(args[4]), run_nft(args))[1])
+    response = client.quarantine_ip("10.0.0.9", 7200, running_server)
+    if held:
+        assert response == {"ok": True,
+                            "message": "10.0.0.9 quarantined for 7200s (and its IPv6, by MAC aa:bb:cc:dd:ee:09)"}
+        assert added == ["ids_quarantine", "ids_quarantine_mac"]
+    else:
+        assert response == {"ok": True, "message": "10.0.0.9 quarantined for 7200s"}
+        assert added == ["ids_quarantine"]
 
 
 def test_quarantine_ip_defaults_to_two_hours(running_server):

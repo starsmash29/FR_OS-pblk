@@ -40,6 +40,7 @@ from frfw.apply import NftError, rollback_last
 from frfw.bruteforce import BruteforceError
 from frfw.config import ConfigError, load_config, parse_config, read_config
 from frfw.config.export import refresh_sensor_copy, write_sensor_copy
+from frfw.config.loader import internet_facing_zones
 from frfw.conntrack import ConntrackError
 from frfw.helper.peer import PeerPolicy, peer_credentials
 from frfw.helper.protocol import MAX_LINE_BYTES
@@ -423,6 +424,19 @@ def _router_addresses(server: "ApplyHelperServer") -> frozenset[str]:
     return frozenset(own)
 
 
+def _lan_devices(server: "ApplyHelperServer") -> frozenset[str]:
+    """The devices of the zones that don't face the internet, per the
+    saved config: where a quarantined host's MAC may be looked up
+    (frfw.ids_quarantine) -- never the WAN's, where it would be the
+    provider's gateway. An unreadable config gives none."""
+    try:
+        config = load_config(server.config_path)
+    except (ConfigError, OSError, yaml.YAMLError):
+        return frozenset()
+    facing = internet_facing_zones(config.zones, config.nat)
+    return frozenset(i.device for i in config.interfaces.values() if i.zone not in facing)
+
+
 def _handle_quarantine_ip(request: dict, server: "ApplyHelperServer") -> dict:
     ip = request.get("ip")
     duration_seconds = request.get("duration_seconds", 7200)
@@ -431,8 +445,10 @@ def _handle_quarantine_ip(request: dict, server: "ApplyHelperServer") -> dict:
     if not isinstance(duration_seconds, int) or isinstance(duration_seconds, bool):
         return {"ok": False, "message": "'duration_seconds' must be an integer"}
 
-    ids_quarantine.quarantine_ip(ip, duration_seconds, own_addresses=_router_addresses(server))
-    return {"ok": True, "message": f"{ip} quarantined for {duration_seconds}s"}
+    mac = ids_quarantine.quarantine_ip(ip, duration_seconds, own_addresses=_router_addresses(server),
+                                       lan_devices=_lan_devices(server))
+    held = f" (and its IPv6, by MAC {mac})" if mac else ""
+    return {"ok": True, "message": f"{ip} quarantined for {duration_seconds}s{held}"}
 
 
 def _handle_ids_quarantine_status() -> dict:

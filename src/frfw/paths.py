@@ -225,6 +225,19 @@ IPV6_DHCPCD_CONF_PATH = Path("/etc/fr_os/dhcpcd6.conf")
 #: systemd unit of the WAN's dhcpcd (see above).
 IPV6_SERVICE_NAME = "fr-dhcp6"
 
+#: The LAN's Router Advertisements (ROADMAP FND-1b, frfw.ipv6): the
+#: config of a dedicated, RA-only dnsmasq instance, written by an apply
+#: while a LAN zone gets IPv6 and removed otherwise; the unit
+#: (IPV6_RA_SERVICE_NAME) runs only while it exists. Not the ad-block
+#: resolver's instance: that one serves DNS, this one only RAs.
+IPV6_RA_CONF_PATH = Path("/etc/fr_os/dnsmasq_ra.conf")
+
+#: systemd unit of the RA-only dnsmasq (see above).
+IPV6_RA_SERVICE_NAME = "fr-ra"
+
+#: Its account: a dynamic one (DynamicUser=), owning nothing on disk.
+RA_USER = "fr_os-ra"
+
 #: IoT device inventory (phase 14, see frfw.iot.scanner): the last
 #: scan's discovered devices, their classification and the reasons for
 #: it. Display-only state written by the unprivileged scanner (running

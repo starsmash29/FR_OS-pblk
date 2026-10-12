@@ -238,12 +238,13 @@ class FakeHelper:
 
         return {"ok": True, "stats": {name: self.xdp_counters.get(name, 0) for name in xdp.STAT_NAMES}}
 
-    #: What `ipv6_status` reports (ROADMAP FND-1a); tests set it.
+    #: What `ipv6_status` reports (ROADMAP FND-1a/1b); tests set it.
     ipv6: dict = {}
 
     def ipv6_status(self) -> dict:
         return {"ok": True, "state": "off", "summary": "IPv6 is off.", "devices": [], "addresses": [],
-                "default_routes": [], "prefixes": [], "service_active": False, **self.ipv6}
+                "default_routes": [], "prefixes": [], "service_active": False, "lan": [], "ra_active": False,
+                "excluded": [], **self.ipv6}
 
 
 class FakeUpdateHelper:

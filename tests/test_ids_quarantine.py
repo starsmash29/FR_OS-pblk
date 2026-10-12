@@ -9,6 +9,7 @@ the test process isn't root.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -74,6 +75,76 @@ def test_quarantine_ip_calls_nft_add_element_with_ttl(monkeypatch):
     ]
 
 
+def test_quarantine_ip_holds_the_hosts_mac_for_ipv6_too(monkeypatch):
+    """ROADMAP FND-1b: the host's IPv6 addresses are its own choice, so
+    its MAC goes into the IPv6 set, with the same timeout."""
+    calls = []
+    monkeypatch.setattr(ids_quarantine_mod, "_run_nft", lambda args: (calls.append(args), _fake_completed())[1])
+    looked_up = []
+    mac = ids_quarantine_mod.quarantine_ip(
+        "10.0.0.5", 3600, lan_devices=frozenset({"eth1"}),
+        neighbour=lambda ip, devices: (looked_up.append((ip, set(devices))), "aa:bb:cc:dd:ee:01")[1])
+    assert mac == "aa:bb:cc:dd:ee:01" and looked_up == [("10.0.0.5", {"eth1"})]
+    assert calls[1] == ["add", "element", "inet", ids_quarantine_mod.FILTER_TABLE,
+                        ids_quarantine_mod.IDS_QUARANTINE_MAC_SET_NAME, "{", "aa:bb:cc:dd:ee:01 timeout 3600s", "}"]
+
+
+def test_quarantine_ip_without_a_known_mac_holds_the_address_alone(monkeypatch):
+    calls = []
+    monkeypatch.setattr(ids_quarantine_mod, "_run_nft", lambda args: (calls.append(args), _fake_completed())[1])
+    assert ids_quarantine_mod.quarantine_ip("10.0.0.5", 3600, neighbour=lambda ip, devices: None) is None
+    assert len(calls) == 1
+
+
+def _neigh(monkeypatch, entries, returncode=0):
+    seen = []
+
+    def run(argv, **kwargs):
+        seen.append(argv)
+        return subprocess.CompletedProcess(argv, returncode, stdout=json.dumps(entries), stderr="")
+
+    monkeypatch.setattr(ids_quarantine_mod.subprocess, "run", run)
+    return seen
+
+
+def test_the_mac_comes_from_the_neighbour_table_on_a_lan_device(monkeypatch):
+    seen = _neigh(monkeypatch, [{"dst": "10.0.0.5", "dev": "eth1", "lladdr": "AA:BB:CC:DD:EE:01",
+                                 "state": ["STALE"]}])
+    assert ids_quarantine_mod.lan_neighbour_mac("10.0.0.5", {"eth1"}) == "aa:bb:cc:dd:ee:01"
+    assert seen == [["ip", "-j", "-4", "neigh", "show", "to", "10.0.0.5"]]
+
+
+@pytest.mark.parametrize("entry", [
+    # On the WAN: the provider's gateway, never held.
+    {"dst": "10.0.0.5", "dev": "eth0", "lladdr": "aa:bb:cc:dd:ee:01", "state": ["REACHABLE"]},
+    # No usable entry.
+    {"dst": "10.0.0.5", "dev": "eth1", "lladdr": "aa:bb:cc:dd:ee:01", "state": ["FAILED"]},
+    {"dst": "10.0.0.5", "dev": "eth1", "state": ["INCOMPLETE"]},
+    {"dst": "10.0.0.5", "dev": "eth1", "lladdr": "not-a-mac", "state": ["REACHABLE"]},
+    # Someone else's entry.
+    {"dst": "10.0.0.6", "dev": "eth1", "lladdr": "aa:bb:cc:dd:ee:01", "state": ["REACHABLE"]},
+])
+def test_no_mac_for_anything_but_a_live_lan_neighbour(monkeypatch, entry):
+    _neigh(monkeypatch, [entry])
+    assert ids_quarantine_mod.lan_neighbour_mac("10.0.0.5", {"eth1"}) is None
+
+
+def test_no_lan_devices_no_lookup(monkeypatch):
+    seen = _neigh(monkeypatch, [])
+    assert ids_quarantine_mod.lan_neighbour_mac("10.0.0.5", ()) is None
+    assert seen == []
+
+
+def test_the_macs_are_carried_over_a_reload(monkeypatch):
+    listing = {"nftables": [{"set": {"name": "ids_quarantine_mac", "elem": [
+        {"elem": {"val": "aa:bb:cc:dd:ee:01", "timeout": 3600, "expires": 1200}}]}}]}
+    calls = []
+    monkeypatch.setattr(ids_quarantine_mod, "_run_nft",
+                        lambda args: (calls.append(args), _fake_completed(stdout=json.dumps(listing)))[1])
+    assert ids_quarantine_mod.snapshot_macs_before_reload() == [("aa:bb:cc:dd:ee:01", 1200)]
+    assert calls == [["-j", "list", "set", "inet", "fr_os", "ids_quarantine_mac"]]
+
+
 def test_quarantine_ip_raises_on_nft_failure(monkeypatch):
     monkeypatch.setattr(ids_quarantine_mod, "_run_nft", lambda args: _fake_completed(1, stderr="boom"))
     with pytest.raises(ids_quarantine_mod.IdsQuarantineError, match="boom"):
@@ -123,6 +194,19 @@ def test_real_quarantine_ip_adds_element_with_expected_ttl(real_jail_table):
     snapshot = ids_quarantine_mod.snapshot_before_reload()
     matches = [remaining for ip, remaining in snapshot if ip == "10.98.0.1"]
     assert matches and 3590 <= matches[0] <= 3600
+
+
+@requires_nft
+@requires_root
+def test_real_quarantine_ip_holds_the_mac_with_the_same_ttl(real_jail_table, monkeypatch):
+    """ROADMAP FND-1b: the MAC set, against the real kernel."""
+    monkeypatch.setattr(ids_quarantine_mod, "IDS_QUARANTINE_MAC_SET_NAME", "quarantine_mac_test")
+    subprocess.run(["nft", "add", "set", "inet", real_jail_table, "quarantine_mac_test",
+                    "{", "type", "ether_addr", ";", "flags", "timeout", ";", "}"], check=True)
+    ids_quarantine_mod.quarantine_ip("10.98.0.4", 3600, lan_devices={"eth1"},
+                                     neighbour=lambda ip, devices: "aa:bb:cc:dd:ee:04")
+    [(mac, remaining)] = ids_quarantine_mod.snapshot_macs_before_reload()
+    assert mac == "aa:bb:cc:dd:ee:04" and 3590 <= remaining <= 3600
 
 
 @requires_nft

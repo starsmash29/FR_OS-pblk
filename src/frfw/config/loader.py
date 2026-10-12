@@ -161,7 +161,7 @@ def parse_config(raw: Any) -> Config:
     wireguard = _parse_wireguard(raw.get("wireguard", {}) or {}, zones, nat, interfaces)
     _check_management_addresses(management, zones, nat, interfaces, wireguard)
     logging_config = _parse_logging(raw.get("logging", {}) or {})
-    ipv6 = _parse_ipv6(raw.get("ipv6", {}) or {}, interfaces, zones, nat)
+    ipv6 = _parse_ipv6(raw.get("ipv6", {}) or {}, interfaces, zones, nat, rules, xdp_sni_filter)
 
     return Config(
         version=version,
@@ -709,23 +709,97 @@ def internet_facing_zones(zones: dict[str, Zone], nat: NatConfig) -> set[str]:
     return {m.out_zone for m in nat.masquerade} | ({"wan"} & set(zones))
 
 
-def _parse_ipv6(raw: Any, interfaces: dict[str, Interface], zones: dict[str, Zone], nat: NatConfig) -> Ipv6Config:
+def ipv6_lan_zones(ipv6: Ipv6Config, interfaces: dict[str, Interface], zones: dict[str, Zone],
+                   nat: NatConfig, rules: list[Rule] = (),
+                   xdp_sni_filter: XdpSniFilterConfig | None = None) -> list[str]:
+    """The zones the delegated prefix goes to (ROADMAP FND-1b), in order:
+    `ipv6.lan_zones`, or every zone with an interface that doesn't face
+    the internet, in config order -- but those IPv6 would get around a
+    protection of (ipv6_lan_exclusions). Empty while IPv6 is off."""
+    if not ipv6.enabled:
+        return []
+    if ipv6.lan_zones is not None:
+        return list(ipv6.lan_zones)
+    facing = internet_facing_zones(zones, nat)
+    with_interface = {i.zone for i in interfaces.values()}
+    excluded = ipv6_lan_exclusions(interfaces, zones, nat, rules, xdp_sni_filter)
+    return [z for z in zones if z not in facing and z in with_interface and z not in excluded]
+
+
+def ipv6_lan_exclusions(interfaces: dict[str, Interface], zones: dict[str, Zone], nat: NatConfig,
+                        rules: list[Rule] = (), xdp_sni_filter: XdpSniFilterConfig | None = None) -> dict[str, str]:
+    """Zone -> why it can't have IPv6 (ROADMAP FND-1b): something that
+    protects it is IPv4-only, so IPv6 would quietly open what the admin
+    closed -- the host blocked by its IPv4 address reaching the same place
+    over IPv6. Left out of the default `lan_zones`, refused in an explicit
+    one.
+
+    - A forward drop/reject rule by address (`src_address`,
+      `dst_address`: IPv4 networks, rendered `ip saddr`/`ip daddr`)
+      touching the zone -- naming it, or no zone at all. One whose traffic
+      comes from the internet is no gap: nothing new comes in from the
+      internet over IPv6.
+    - The XDP SNI filter (and with it app control) on one of its devices:
+      it reads IPv4 only (FND-1d), so a blocked site would stay reachable
+      over IPv6."""
+    facing = internet_facing_zones(zones, nat)
+    out: dict[str, str] = {}
+    for rule in rules:
+        if rule.action == Action.ACCEPT or rule.to_zone == SELF_ZONE:
+            continue
+        if rule.src_address is None and rule.dst_address is None:
+            continue
+        if rule.from_zone is not None and rule.from_zone in facing:
+            continue
+        reason = (f"rule {rule.name!r} blocks by IPv4 address, which IPv6 would get around "
+                  "(block the host by MAC, src_mac, instead)")
+        for zone in zones:
+            if zone not in facing and (rule.from_zone in (None, zone) or rule.to_zone in (None, zone)):
+                out.setdefault(zone, reason)
+    if xdp_sni_filter is not None and xdp_sni_filter.enabled:
+        ports = {interfaces[n].device for n in xdp_sni_filter.interfaces if n in interfaces}
+        for name, iface in interfaces.items():
+            if iface.zone not in facing and (iface.device in ports or iface.vlan_parent in ports):
+                out.setdefault(iface.zone, f"the SNI filter on interface {name!r} sees IPv4 only (ROADMAP FND-1d), "
+                                           "so the sites it blocks would stay reachable over IPv6")
+    return out
+
+
+def _parse_ipv6(raw: Any, interfaces: dict[str, Interface], zones: dict[str, Zone], nat: NatConfig,
+                rules: list[Rule] = (), xdp_sni_filter: XdpSniFilterConfig | None = None) -> Ipv6Config:
     if not isinstance(raw, dict):
         raise ConfigError("'ipv6' must be a mapping")
-    unknown = set(raw) - {"enabled"}
+    unknown = set(raw) - {"enabled", "lan_zones"}
     if unknown:
         raise ConfigError(f"ipv6: unknown key(s) {sorted(unknown)}")
     enabled = raw.get("enabled", False)
     if not isinstance(enabled, bool):
         raise ConfigError("ipv6.enabled must be true or false")
-    if enabled:
-        facing = internet_facing_zones(zones, nat)
-        if not any(i.zone in facing for i in interfaces.values()):
-            raise ConfigError(
-                "ipv6.enabled needs an internet-facing interface (a zone nat.masquerade points at, "
-                "or a zone named wan): IPv6 is taken from the provider there"
-            )
-    return Ipv6Config(enabled=enabled)
+    facing = internet_facing_zones(zones, nat)
+    lan_zones = raw.get("lan_zones")
+    if lan_zones is not None:
+        if not isinstance(lan_zones, list) or not all(isinstance(z, str) for z in lan_zones):
+            raise ConfigError("ipv6.lan_zones must be a list of zone names")
+        if len(set(lan_zones)) != len(lan_zones):
+            raise ConfigError("ipv6.lan_zones names a zone more than once")
+        with_interface = {i.zone for i in interfaces.values()}
+        excluded = ipv6_lan_exclusions(interfaces, zones, nat, rules, xdp_sni_filter) if enabled else {}
+        for zone in lan_zones:
+            if zone not in zones:
+                raise ConfigError(f"ipv6.lan_zones: unknown zone {zone!r}")
+            if zone in facing:
+                raise ConfigError(f"ipv6.lan_zones: {zone!r} faces the internet; the prefix comes from there")
+            if zone not in with_interface:
+                raise ConfigError(f"ipv6.lan_zones: zone {zone!r} has no interface to give a prefix to")
+            if zone in excluded:
+                raise ConfigError(f"ipv6.lan_zones: zone {zone!r} can't have IPv6: {excluded[zone]}")
+        lan_zones = tuple(lan_zones)
+    if enabled and not any(i.zone in facing for i in interfaces.values()):
+        raise ConfigError(
+            "ipv6.enabled needs an internet-facing interface (a zone nat.masquerade points at, "
+            "or a zone named wan): IPv6 is taken from the provider there"
+        )
+    return Ipv6Config(enabled=enabled, lan_zones=lan_zones)
 
 
 def _parse_management(raw: Any, zones: dict[str, Zone], nat: NatConfig) -> ManagementConfig:

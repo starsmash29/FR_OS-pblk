@@ -68,6 +68,7 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import html
 import http.cookiejar
 import ipaddress
 import json
@@ -145,6 +146,10 @@ PD_POOL = "2001:db8:100::/48"
 FORGED_PREFIX = "2001:db8:bad::/64"
 #: The router's WAN port's MAC (in Vm) and the interface identifier
 #: (EUI-64) a SLAAC address made from it would end in.
+#: A source address outside every network of the router's (BCP 38).
+SPOOFED_SOURCE = "2001:db8:bad::5"
+#: A TCP port the LAN host listens on, for a connection from the provider.
+LAN_HOST_PORT = 8443
 WAN_MAC = "52:54:00:00:00:01"
 WAN_MAC_IID = "5054:ff:fe00:1"
 DISK_SIZE = 2 * 2**30
@@ -239,10 +244,16 @@ class Vm:
 
 @contextmanager
 def lan_tap():
-    """The host's side of the VM's LAN port, for every boot."""
+    """The host's side of the VM's LAN port, for every boot. Over IPv6 it
+    is a LAN host (ROADMAP FND-1b): SLAAC from the router's RAs -- taken
+    even with the host's own forwarding on (accept_ra=2), but no default
+    route from them: the host's own IPv6 stays as it is."""
     subprocess.run(["ip", "link", "del", LAN_TAP], capture_output=True)
     subprocess.run(["ip", "tuntap", "add", "dev", LAN_TAP, "mode", "tap"], check=True)
     try:
+        for key, value in (("disable_ipv6", "0"), ("accept_ra", "2"), ("autoconf", "1"),
+                           ("accept_ra_defrtr", "0"), ("use_tempaddr", "0")):
+            _sysctl(f"net.ipv6.conf.{LAN_TAP}.{key}", value)
         subprocess.run(["ip", "addr", "add", LAN_TAP_ADDRESS, "dev", LAN_TAP], check=True)
         subprocess.run(["ip", "link", "set", LAN_TAP, "up"], check=True)
         subprocess.run(["ip", "route", "add", BEYOND_NET, "via", WEBUI_HOST, "dev", LAN_TAP], check=True)
@@ -462,6 +473,75 @@ def ipv6_card(opener) -> tuple[str, list[str], list[str]]:
     return (state.group(1) if state else "",
             re.findall(r'<dd class="ipv6-address">([^<]*)</dd>', page),
             re.findall(r'<dd class="ipv6-prefix">([^<]*)</dd>', page))
+
+
+def ipv6_card_lan(opener) -> tuple[str, dict[str, str]]:
+    """The card's summary, and its LAN networks: "zone (device)" -> network."""
+    page = get(opener, "/interfaces")
+    summary = re.search(r'id="ipv6-summary" data-state="[^"]*">([^<]*)</p>', page)
+    return (html.unescape(summary.group(1)) if summary else "",
+            dict(re.findall(r'<dt>([^<]*)</dt><dd class="ipv6-lan">([^<]*)</dd>', page)))
+
+
+def lan_host_addresses() -> list[ipaddress.IPv6Interface]:
+    """The host's global IPv6 addresses on the LAN tap, DAD done."""
+    out = subprocess.run(["ip", "-j", "-6", "addr", "show", "dev", LAN_TAP], capture_output=True, text=True).stdout
+    found = []
+    for link in json.loads(out or "[]"):
+        for info in link.get("addr_info", []):
+            if info.get("scope") == "global" and not info.get("tentative") and not info.get("dadfailed"):
+                found.append(ipaddress.IPv6Interface(f"{info['local']}/{info['prefixlen']}"))
+    return found
+
+
+def solicit_router() -> None:
+    """A Router Solicitation from the LAN host (hop limit 255), so the
+    router's RA comes at once rather than at its next interval."""
+    rs = struct.pack("!BBHI", 133, 0, 0, 0)
+    s = socket.socket(socket.AF_INET6, socket.SOCK_RAW, socket.IPPROTO_ICMPV6)
+    try:
+        s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_HOPS, 255)
+        index = socket.if_nametoindex(LAN_TAP)
+        s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_MULTICAST_IF, index)
+        s.sendto(rs, ("ff02::2", 0, 0, index))
+    finally:
+        s.close()
+
+
+def echo_sources_at_isp(seconds: float) -> subprocess.Popen:
+    """Listens in the provider's namespace for `seconds`; its output is
+    the source of every ICMPv6 echo request that reached the provider."""
+    code = ("import select,socket,time\n"
+            "s = socket.socket(socket.AF_INET6, socket.SOCK_RAW, socket.IPPROTO_ICMPV6)\n"
+            f"end, seen = time.time() + {seconds}, set()\n"
+            "while time.time() < end:\n"
+            "    if select.select([s], [], [], 0.2)[0]:\n"
+            "        data, peer = s.recvfrom(2048)\n"
+            "        if data and data[0] == 128: seen.add(peer[0])\n"
+            "print(' '.join(sorted(seen)))\n")
+    return subprocess.Popen(["ip", "netns", "exec", ISP_NS, "python3", "-I", "-c", code],
+                            stdout=subprocess.PIPE, text=True)
+
+
+def ping_from_lan(target: str, source: str) -> bool:
+    proc = subprocess.run(["ping", "-6", "-n", "-c", "3", "-i", "0.5", "-w", "4", "-I", source, target],
+                          capture_output=True, text=True)
+    return proc.returncode == 0
+
+
+def tcp_from_lan(target: str, port: int, source: str) -> str:
+    """'open', 'refused' or 'no answer' for a TCP connection from the LAN
+    host, sent from `source`."""
+    try:
+        with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as s:
+            s.settimeout(4)
+            s.bind((source, 0))
+            s.connect((target, port))
+        return "open"
+    except ConnectionRefusedError:
+        return "refused"
+    except OSError:
+        return "no answer"
 
 
 @contextmanager
@@ -890,10 +970,11 @@ def check_sandboxed_services(check, upper: Path, *boot: str) -> None:
 IPV6_FAILED = False
 
 
-def check_wan_ipv6(check, opener, provider: Isp) -> None:
+def check_wan_ipv6(check, opener, provider: Isp) -> str | None:
     """ROADMAP FND-1a, after the Apply that turned IPv6 on: the router
     took an address and a prefix from the provider, answers a ping on its
-    WAN address and nothing else, and ignores a forged RA."""
+    WAN address and nothing else, and ignores a forged RA. Returns the
+    router's SLAAC address on the WAN."""
     deadline = time.monotonic() + 120
     state, addresses, prefixes = ipv6_card(opener)
     while state != "prefix" and time.monotonic() < deadline:
@@ -932,6 +1013,82 @@ def check_wan_ipv6(check, opener, provider: Isp) -> None:
     forged = ipaddress.IPv6Network(FORGED_PREFIX)
     taken = [a for a in addresses if ipaddress.IPv6Address(a.split("/")[0]) in forged]
     check(not taken, f"a Router Advertisement that crossed a router (hop limit 64) gives the router nothing: {taken}")
+    return str(slaac[0]) if slaac else None
+
+
+def check_lan_ipv6(check, opener, provider: Isp, wan_address: str | None) -> str | None:
+    """ROADMAP FND-1b, after the same Apply: the LAN port got the first
+    /64 of the delegated prefix, the host on it took an address there by
+    SLAAC from the router's RAs, and reaches the provider through the
+    router -- but only from that address (BCP 38), and the provider can't
+    reach it. The router itself answers the LAN's ping, nothing else.
+    Returns the host's address."""
+    global IPV6_FAILED
+    if wan_address:
+        # The provider routes the delegated prefixes to the router's WAN
+        # address, as a provider does.
+        isp_run("ip", "-6", "route", "replace", PD_POOL, "via", wan_address, "dev", ISP_DEVICE)
+    deadline = time.monotonic() + 90
+    lan, network, host = {}, None, None
+    while time.monotonic() < deadline:
+        solicit_router()
+        time.sleep(5)
+        _, lan = ipv6_card_lan(opener)
+        network = next((ipaddress.IPv6Network(n) for d, n in lan.items() if d.startswith("lan (") and "/" in n),
+                       None)
+        host = next((a for a in lan_host_addresses() if network and a.ip in network), None)
+        if host:
+            break
+    pool = ipaddress.IPv6Network(PD_POOL)
+    check(network is not None and network.subnet_of(pool) and network.prefixlen == 64
+          and int(network.network_address) % 2 ** 72 == 0,
+          f"the LAN port got the first /64 of the delegated prefix (ROADMAP FND-1b): {lan}")
+    ok = check(host is not None, f"the host on the LAN took an address in it by SLAAC from the router's RAs: "
+                                 f"{[str(a) for a in lan_host_addresses()]}")
+    if not ok:
+        IPV6_FAILED = True
+        provider.print_logs()
+        return None
+    source, router = str(host.ip), str(network.network_address + 1)
+    subprocess.run(["ip", "-6", "route", "replace", ISP_PREFIX, "via", router, "dev", LAN_TAP], check=True)
+    subprocess.run(["ip", "-6", "addr", "add", f"{SPOOFED_SOURCE}/128", "dev", LAN_TAP, "nodad"], check=True)
+    listener = echo_sources_at_isp(12)
+    time.sleep(1)
+    reached = ping_from_lan(ISP_ADDRESS, source)
+    ping_from_lan(ISP_ADDRESS, SPOOFED_SOURCE)
+    seen = set(listener.communicate(timeout=30)[0].split())
+    subprocess.run(["ip", "-6", "addr", "del", f"{SPOOFED_SOURCE}/128", "dev", LAN_TAP], capture_output=True)
+    check(reached and source in seen, f"the LAN host reaches the provider over IPv6 through the router: {seen}")
+    check(SPOOFED_SOURCE not in seen, "...but only from its own network: a spoofed source is dropped (BCP 38)")
+    out = tcp_from_lan(ISP_ADDRESS, 9, source)
+    check(out == "refused", f"...TCP too, as the lan-to-wan rule allows (the provider's RST came back): {out}")
+    with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as server:
+        server.bind((source, LAN_HOST_PORT))
+        server.listen()
+        inbound = tcp_from_isp(source, LAN_HOST_PORT)
+    check(inbound == "no answer" and not ping_sources(source),
+          f"the provider can't reach the LAN host over IPv6, not even a ping (nothing new comes in): {inbound}")
+    check(ping_from_lan(router, source), f"the router answers the LAN's ping on its LAN address {router}")
+    services = {port: tcp_from_lan(router, port, source) for port in (WEBUI_PORT, 22)}
+    check(set(services.values()) == {"no answer"},
+          f"...and nothing else over IPv6 yet: the webUI and SSH stay on IPv4 (ROADMAP FND-1c): {services}")
+    return source
+
+
+def check_lan_ipv6_withdrawn(check, opener, host: str | None) -> None:
+    """ROADMAP FND-1b, after the Apply that turned the XDP SNI filter on
+    on the LAN port: the filter reads IPv4 only, so the LAN zone is off
+    IPv6 -- the card says why -- and nothing goes through any more."""
+    deadline = time.monotonic() + 120  # dhcpcd asks the provider again with its new config
+    summary, lan = ipv6_card_lan(opener)
+    while "Zone lan gets no IPv6" not in summary and time.monotonic() < deadline:
+        time.sleep(5)
+        summary, lan = ipv6_card_lan(opener)
+    check("Zone lan gets no IPv6: the SNI filter" in summary and not any(d.startswith("lan (") for d in lan),
+          f"with the SNI filter on the LAN port, the LAN zone is off IPv6, and the card says why: {summary}")
+    if host:
+        check(not ping_from_lan(ISP_ADDRESS, host),
+              "...and the router routes nothing of it any more: the filter can't be got around over IPv6")
 
 
 def webui_opener() -> urllib.request.OpenerDirector:
@@ -1468,6 +1625,14 @@ def run(args: argparse.Namespace, provider: Isp) -> int:
               "with IPv6 off, the router answers nothing over IPv6 on the WAN and asks the provider for nothing "
               f"(ROADMAP FND-1a){': ' + ', '.join(sorted(silent)) if silent else ''}")
         post(opener, "/interfaces/ipv6", {"enabled": "true"})
+        # ROADMAP FND-1b: IPv6 on an Apply of its own, before the XDP SNI
+        # filter below takes the LAN zone off it.
+        first = urllib.parse.unquote_plus(post(opener, "/apply", {}))
+        check("confirm it within 300 s" in first and confirm_pending(opener),
+              "the Apply turning IPv6 on is held, and confirmed from the dashboard"
+              + ("" if "confirm it" in first else f": {first[:300]}"))
+        wan_address = check_wan_ipv6(check, opener, provider)
+        lan_host = check_lan_ipv6(check, opener, provider, wan_address)
         post(opener, "/rules/timezone", {"timezone": "Europe/Budapest"})
         # Security-lessons G8: the WireGuard VPN on Debian's own kernel
         # module (the unit tests use the userspace implementation).
@@ -1528,7 +1693,7 @@ def run(args: argparse.Namespace, provider: Isp) -> int:
         # through the new ruleset.
         check("confirm it within 300 s" in applied, "the Apply is held until it is confirmed (ROADMAP SEC-26)")
         check(confirm_pending(opener), "...the dashboard confirms it, and the router keeps it")
-        check_wan_ipv6(check, opener, provider)
+        check_lan_ipv6_withdrawn(check, opener, lan_host)
         # Security-lessons K5, ROADMAP SEC-27: the admin puts the webUI on
         # the VPN's tunnel address too -- its own action, held as well.
         moved = urllib.parse.unquote_plus(post(opener, "/system/management-addresses",
@@ -1627,6 +1792,14 @@ def run(args: argparse.Namespace, provider: Isp) -> int:
             print("    --- journal of fr-dhcp6.service (from its start) ---")
             text = journal(upper, "-b", "-u", "fr-dhcp6.service", "-o", "short-monotonic")
             for line in [l for l in text.splitlines() if "No such process" not in l][:80]:
+                print(f"    {line}")
+        ra = journal(upper, "-b", "-u", "fr-ra.service")
+        check("Started" in ra and "Failed" not in ra,
+              "dnsmasq (fr-ra) sent the LAN's Router Advertisements in its sandbox, as a dynamic account "
+              "(ROADMAP FND-1b)")
+        if "Started" not in ra or "Failed" in ra or IPV6_FAILED:
+            print("    --- journal of fr-ra.service ---")
+            for line in journal(upper, "-b", "-u", "fr-ra.service", "-o", "short-monotonic").splitlines()[:60]:
                 print(f"    {line}")
         dropped_events = xdp_blocked_events(upper)
         check(any('"action": "drop"' in line for line in dropped_events),
