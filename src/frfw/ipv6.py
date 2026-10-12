@@ -678,7 +678,8 @@ class Ipv6Status:
                 "lan": [list(n) for n in self.lan], "ra_active": self.ra_active,
                 "excluded": [list(e) for e in self.excluded], "ula_prefix": self.ula_prefix,
                 "ula": [list(u) for u in self.ula],
-                "pinholes": [[name, zone, what, list(targets)] for name, zone, what, targets in self.pinholes]}
+                "pinholes": [[name, zone, what, None if targets is None else list(targets)]
+                             for name, zone, what, targets in self.pinholes]}
 
 
 def lan_networks(prefix: str) -> int:
@@ -752,13 +753,18 @@ def status(config: Config, *, proc_root: Path | None = None, ip_json=None) -> Ip
     return result
 
 
-def pinhole_targets(config: Config, lan: list[tuple[str, str, str]]) -> list[tuple[str, str, str, list[str]]]:
+def pinhole_targets(config: Config, lan: list[tuple[str, str, str]]
+                    ) -> list[tuple[str, str, str, list[str] | None]]:
     """(name, zone, "tcp 443", addresses) per pinhole (FND-1c): an
     interface identifier in each network its zone has now (`lan`, from
-    status()), a full address as it is."""
+    status()), a full address as it is -- None when the zone has no IPv6
+    now, so the pinhole is off."""
+    served = {zone for zone, _ in lan_devices(config)}
     out = []
     for pinhole in config.ipv6.pinholes:
-        if pinhole.is_suffix:
+        if pinhole.zone not in served:
+            targets = None
+        elif pinhole.is_suffix:
             suffix = int(ipaddress.IPv6Address(pinhole.host))
             targets = [str(ipaddress.IPv6Network(network).network_address + suffix)
                        for zone, _, network in lan if zone == pinhole.zone and network]

@@ -802,9 +802,7 @@ def _parse_ipv6(raw: Any, interfaces: dict[str, Interface], zones: dict[str, Zon
             "or a zone named wan): IPv6 is taken from the provider there"
         )
     ula_prefix = _parse_ula_prefix(raw.get("ula_prefix"))
-    config = Ipv6Config(enabled=enabled, lan_zones=lan_zones, ula_prefix=ula_prefix)
-    served = ipv6_lan_zones(config, interfaces, zones, nat, rules, xdp_sni_filter)
-    pinholes = _parse_pinholes(raw.get("pinholes", []), enabled, served, facing, rules)
+    pinholes = _parse_pinholes(raw.get("pinholes", []), enabled, set(zones), facing, rules)
     return Ipv6Config(enabled=enabled, lan_zones=lan_zones, ula_prefix=ula_prefix, pinholes=pinholes)
 
 
@@ -873,11 +871,15 @@ def _port_bounds(spec: str) -> tuple[int, int]:
     return int(low), int(high or low)
 
 
-def _parse_pinholes(raw: Any, enabled: bool, served: list[str], facing: set[str],
+def _parse_pinholes(raw: Any, enabled: bool, zones: set[str], facing: set[str],
                     rules: list[Rule]) -> tuple[Ipv6Pinhole, ...]:
     """ipv6.pinholes (ROADMAP FND-1c). While IPv6 is off they are kept
     but not checked against the zones (the webUI's IPv6 switch keeps
-    them), and nothing renders them."""
+    them), and nothing renders them. A LAN zone that has no IPv6 now --
+    left out of `lan_zones`, or taken off it by an IPv4-only protection
+    turned on later (the SNI filter) -- keeps its pinholes too, unused
+    and shown as off: a pinhole must never stand in the way of a
+    protection."""
     if raw is None:
         return ()
     if not isinstance(raw, list):
@@ -896,9 +898,8 @@ def _parse_pinholes(raw: Any, enabled: bool, served: list[str], facing: set[str]
         zone = body.get("zone")
         if not isinstance(zone, str):
             raise ConfigError(f"{what}: zone is required")
-        if enabled and zone not in served:
-            raise ConfigError(f"{what}: zone {zone!r} has no IPv6 (it is not one of ipv6.lan_zones: "
-                              f"{', '.join(served) or 'none'})")
+        if enabled and (zone not in zones or zone in facing):
+            raise ConfigError(f"{what}: zone {zone!r} is not a LAN zone of this config")
         host = _pinhole_host(body.get("host"), what)
         proto_raw = body.get("proto")
         if proto_raw not in (Protocol.TCP.value, Protocol.UDP.value):

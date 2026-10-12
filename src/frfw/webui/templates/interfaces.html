@@ -72,7 +72,7 @@
     <dt>{{ zone }} ({{ device }}), stable</dt><dd class="ipv6-ula">{{ address }}</dd>
     {% endfor %}
     {% for name, zone, what, targets in ipv6.pinholes %}
-    <dt>Pinhole {{ name }}</dt><dd class="ipv6-pinhole">{{ what }} to {{ targets | join(", ") if targets else "no address in " ~ zone ~ " yet" }}</dd>
+    <dt>Pinhole {{ name }}</dt><dd class="ipv6-pinhole">{% if targets is none %}{{ what }}, off: zone {{ zone }} has no IPv6{% else %}{{ what }} to {{ targets | join(", ") if targets else "no address in " ~ zone ~ " yet" }}{% endif %}</dd>
     {% endfor %}
   </dl>
   {% endif %}

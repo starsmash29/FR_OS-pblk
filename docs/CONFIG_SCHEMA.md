@@ -414,7 +414,10 @@ ipv6:
   (RFC 6724).
 - `pinholes` (FND-1c): the exceptions to "nothing new comes in from the
   internet over IPv6", one host and port (range) each:
-  - `zone`: an IPv6 LAN zone (one of `lan_zones`' result).
+  - `zone`: a LAN zone. While it has no IPv6 -- left out of
+    `lan_zones`, or taken off by an IPv4-only protection such as the SNI
+    filter -- the pinhole is kept but off (the card says so): a pinhole
+    never stands in the way of a protection.
   - `host`: an interface ID (`::…`, the low 64 bits) matches that host
     in whatever /64 the zone has now, so it survives the provider
     changing the prefix. It needs a stable interface ID: EUI-64 or set by

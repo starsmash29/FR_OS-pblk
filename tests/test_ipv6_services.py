@@ -112,8 +112,8 @@ def test_a_pinhole_by_interface_identifier_or_full_address(minimal_config_dict):
     ({"from": "fd12::/16"}, "can't come from the internet"),
     ({"from": "fe80::/64"}, "can't come from the internet"),
     ({"from": "10.0.0.0/8"}, "must be an IPv6 network"),
-    ({"zone": "wan"}, "has no IPv6"),
-    ({"zone": "dmz"}, "has no IPv6"),
+    ({"zone": "wan"}, "is not a LAN zone"),
+    ({"zone": "dmz"}, "is not a LAN zone"),
     ({"to": "x"}, "unknown key"),
     ({"name": "Bad Name"}, "Invalid"),
 ])
@@ -136,10 +136,24 @@ def test_a_pinhole_is_kept_while_ipv6_is_off(minimal_config_dict):
     assert "pinhole:" not in build_ruleset(config)
 
 
-def test_a_pinhole_to_a_zone_without_ipv6_is_refused(minimal_config_dict):
+def test_a_pinhole_to_a_lan_zone_without_ipv6_is_kept_and_off(minimal_config_dict, kernel):
+    """A zone left out of lan_zones -- or taken off IPv6 later by an
+    IPv4-only protection, the SNI filter (found by the boot test: the
+    filter's setting was refused) -- keeps its pinhole, unused: a
+    pinhole never stands in the way of a protection."""
     _with_guest(minimal_config_dict)
-    with pytest.raises(ConfigError, match="zone 'guest' has no IPv6"):
-        _config(minimal_config_dict, lan_zones=["lan"], pinholes=[{**PINHOLE, "zone": "guest"}])
+    config = _config(minimal_config_dict, lan_zones=["lan"], pinholes=[{**PINHOLE, "zone": "guest"}])
+    assert config.ipv6.pinholes[0].zone == "guest"
+    assert "pinhole:" not in build_ruleset(config)
+    state = ipv6.status(config, ip_json=lambda *args: [])
+    assert state.pinholes == [("nas-https", "guest", "tcp 443", None)]
+    assert state.as_dict()["pinholes"] == [["nas-https", "guest", "tcp 443", None]]
+
+
+def test_the_sni_filter_turns_a_zones_pinholes_off_rather_than_being_refused(minimal_config_dict):
+    minimal_config_dict["xdp_sni_filter"] = {"enabled": True, "interfaces": ["lan"], "blocklist": ["x.example"]}
+    config = _config(minimal_config_dict, pinholes=[PINHOLE])
+    assert config.ipv6.pinholes and "pinhole:" not in build_ruleset(config)
 
 
 @pytest.mark.parametrize("rule", [

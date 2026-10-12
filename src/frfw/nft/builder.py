@@ -584,14 +584,18 @@ def _render_ipv6_pinholes(config: Config) -> list[str]:
     to one LAN host's port, the only exceptions to the drop that follows
     (_render_ipv6_no_inbound). To the zone's devices only, and to one
     host: its full address, or its interface identifier in whatever
-    prefix the zone has now (`ip6 daddr & ::ffff:ffff:ffff:ffff`)."""
+    prefix the zone has now (`ip6 daddr & ::ffff:ffff:ffff:ffff`). A
+    zone without IPv6 now gets none (the loader keeps them, unused)."""
     from frfw.ipv6 import wan_devices
 
-    if not _ipv6_lan_devices(config) or not config.ipv6.pinholes:
+    served = {zone for zone, _ in _ipv6_lan_zone_devices(config)}
+    if not served or not config.ipv6.pinholes:
         return []
     wan = _devices(wan_devices(config))
     lines = []
     for pinhole in config.ipv6.pinholes:
+        if pinhole.zone not in served:
+            continue
         exprs = [f"meta nfproto ipv6 iifname {wan} oifname @{_iface_set_name(pinhole.zone)}"]
         if pinhole.source is not None:
             exprs.append(f"ip6 saddr {ipaddress.IPv6Network(pinhole.source)}")

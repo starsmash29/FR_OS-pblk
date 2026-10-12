@@ -1003,7 +1003,10 @@ def _cmd_ipv6_status(args: argparse.Namespace) -> int:
     for zone, device, address in state.ula:
         print(f"  LAN {zone} ({device}), stable: {address}")
     for name, zone, what, targets in state.pinholes:
-        print(f"  pinhole {name}: {what} to {', '.join(targets) or f'no address in {zone} yet'}")
+        if targets is None:
+            print(f"  pinhole {name}: {what}, off: zone {zone} has no IPv6")
+        else:
+            print(f"  pinhole {name}: {what} to {', '.join(targets) or f'no address in {zone} yet'}")
     if state.state not in (ipv6.OFF, ipv6.NO_KERNEL):
         print(f"  dhcpcd ({paths.IPV6_SERVICE_NAME}): {'running' if state.service_active else 'not running'}")
         if state.lan:

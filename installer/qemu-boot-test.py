@@ -1292,9 +1292,11 @@ def check_lan_ipv6_withdrawn(check, opener, host: str | None) -> None:
         summary, lan = ipv6_card_lan(opener)
     check("Zone lan gets no IPv6: the SNI filter" in summary and not any(d.startswith("lan (") for d in lan),
           f"with the SNI filter on the LAN port, the LAN zone is off IPv6, and the card says why: {summary}")
-    stable, _ = ipv6_card_stable(opener)
+    stable, pinholes = ipv6_card_stable(opener)
     check(not any(d.startswith("lan (") for d in stable),
           f"...its stable (ULA) address is gone from the LAN port too (ROADMAP FND-1c): {stable}")
+    check(pinholes.get("boot-test-nas", "").endswith("off: zone lan has no IPv6"),
+          f"...and its pinhole is kept but off, rather than refusing the filter: {pinholes}")
     if host:
         check(not ping_from_lan(ISP_ADDRESS, host),
               "...and the router routes nothing of it any more: the filter can't be got around over IPv6")

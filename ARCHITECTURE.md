@@ -3945,6 +3945,10 @@ comes in from the internet":
   pinhole goes ahead of the rules, and a drop must never silently stop
   holding. (A rule by IPv4 address doesn't match IPv6, and its zone has
   no IPv6 anyway, 1b.)
+- A pinhole to a LAN zone that has no IPv6 now is kept, off, and the
+  card says so. Refusing it instead would refuse turning the SNI filter
+  on for that zone (it takes the zone off IPv6, 1b): a pinhole must
+  never stand in the way of a protection. Found by the boot test.
 - Inbound ICMPv6 echo stays dropped; errors for a pinhole's connections
   come in as `related`.
 - The Interfaces card and `firewall-cli ipv6-status` list them with the
@@ -3973,7 +3977,8 @@ IPv6 on: the webUI answers on the ULA, SSH is let through there, neither
 on the delegated address; the resolver answers over IPv6 on the ULA, the
 RA names it as RDNSS, and a query to the provider's address is answered
 by the router. One more Apply turns management over IPv6 off: closed
-again. After the SNI filter's Apply the ULA is gone from the LAN port too.
+again. After the SNI filter's Apply the ULA is gone from the LAN port
+too, and the pinhole is shown as off.
 
 ## Coarse application identification (phase 16)
 
