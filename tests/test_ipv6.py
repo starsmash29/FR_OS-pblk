@@ -421,7 +421,9 @@ def test_on_accepts_what_the_wan_needs_and_drops_the_rest(minimal_config_dict):
     jump = rules.index("meta nfproto ipv6 jump ipv6_input")
     assert rules[jump - 1] == "ct state invalid drop"
     assert any("dport" in r for r in rules[jump + 1:])  # the management and service rules come later
-    assert not any("dport" in r for r in rules[:jump] if "547" not in r and "bruteforce-jail6" not in r)
+    # (The jail's drops on 22/443 are the exception: drops, at the top.)
+    assert not any("dport" in r for r in rules[:jump]
+                   if "547" not in r and "bruteforce-jail6" not in r and "bruteforce-jail-mac" not in r)
     assert _chain(ruleset, "ipv6_input") == [
         'meta nfproto ipv6 meta pkttype != host drop comment "ipv6-not-for-the-router"',
         'meta nfproto ipv6 limit rate 10/minute burst 10 packets log prefix "fr_os/drop/input: " '
@@ -706,7 +708,7 @@ def test_the_lan_may_ask_the_router_for_its_ra_and_ping_it(minimal_config_dict):
     # through the IPv6 chain ahead of the services (FND-1c).
     assert not any("nd-router-advert" in r and "eth1" in r for r in rules)
     assert rules.index("meta nfproto ipv6 jump ipv6_input") < next(
-        i for i, r in enumerate(rules) if "dport" in r and "547" not in r and "jail6" not in r)
+        i for i, r in enumerate(rules) if "dport" in r and "547" not in r and "bruteforce-jail" not in r)
 
 
 def test_ipv6_is_routed_only_between_the_wan_and_the_lan_zones(minimal_config_dict):
