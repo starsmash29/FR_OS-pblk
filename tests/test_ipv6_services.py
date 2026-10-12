@@ -469,15 +469,30 @@ def test_pinholes_are_the_only_way_in_and_go_just_ahead_of_the_drop(minimal_conf
     assert rules.index("ct state established,related accept") < inbound - 2
 
 
-def test_the_ipv6_jail_holds_a_64_off_management_only(minimal_config_dict):
-    ruleset = build_ruleset(_config(minimal_config_dict), runtime=RuntimeSets(bruteforce_jail6=(
-        ("2001:db8:100::/64", 600), ("2001:db8:200::/64", 0))))
+def test_the_ipv6_jail_holds_an_address_or_a_mac_off_management_only(minimal_config_dict):
+    """ROADMAP FND-1d (H3): a host by its MAC, or its address when the
+    neighbour table doesn't know it; a /64 jailed before the change
+    carries over a reload until it runs out."""
+    ruleset = build_ruleset(_config(minimal_config_dict), runtime=RuntimeSets(
+        bruteforce_jail6=(("2001:db8:300::7", 600), ("2001:db8:100::/64", 300), ("2001:db8:200::/64", 0)),
+        bruteforce_jail_mac=(("52:54:00:12:34:56", 900), ("52:54:00:12:34:57", 0))))
     assert ("\tset bruteforce_jail6 {\n\t\ttype ipv6_addr\n\t\tflags interval, timeout\n"
-            "\t\telements = { 2001:db8:100::/64 timeout 600s }\n\t}") in ruleset
-    assert ('ip6 saddr @bruteforce_jail6 tcp dport { 22, 443 } drop comment "bruteforce-jail6"'
-            in _chain(ruleset, "input")[:4])
+            "\t\telements = { 2001:db8:300::7 timeout 600s, 2001:db8:100::/64 timeout 300s }\n\t}") in ruleset
+    assert ("\tset bruteforce_jail_mac {\n\t\ttype ether_addr\n\t\tflags timeout\n"
+            "\t\telements = { 52:54:00:12:34:56 timeout 900s }\n\t}") in ruleset
+    top = _chain(ruleset, "input")[:5]
+    assert 'ip6 saddr @bruteforce_jail6 tcp dport { 22, 443 } drop comment "bruteforce-jail6"' in top
+    assert 'ether saddr @bruteforce_jail_mac tcp dport { 22, 443 } drop comment "bruteforce-jail-mac"' in top
     with pytest.raises(ValueError):
         build_ruleset(_config(minimal_config_dict), runtime=RuntimeSets(bruteforce_jail6=(("not; a net", 5),)))
+    # An address inside a /64 jailed before FND-1d: nft refuses the two as
+    # conflicting intervals, and the /64 already holds it.
+    covered = build_ruleset(_config(minimal_config_dict), runtime=RuntimeSets(
+        bruteforce_jail6=(("2001:db8:100::7", 600), ("2001:db8:100::/64", 300))))
+    assert "\t\telements = { 2001:db8:100::/64 timeout 300s }\n" in covered
+    # A MAC read back from nft that isn't one is left out, never rendered.
+    assert "evil" not in build_ruleset(_config(minimal_config_dict), runtime=RuntimeSets(
+        bruteforce_jail_mac=(("evil }", 5),)))
 
 
 def test_a_quarantined_host_reaches_none_of_the_routers_ipv6_services(minimal_config_dict):
@@ -496,7 +511,9 @@ def test_nft_accepts_everything_together(dhcp_config_dict):
     full = {**PINHOLE, "name": "cam", "host": "2001:db8:100::beef", "proto": "udp", "port": "5000-5010",
             "from": "2001:db8:42::/48"}
     config = _config(dhcp_config_dict, pinholes=[PINHOLE, full])
-    ruleset = build_ruleset(config, runtime=RuntimeSets(bruteforce_jail6=(("2001:db8:100::/64", 600),)))
+    ruleset = build_ruleset(config, runtime=RuntimeSets(
+        bruteforce_jail6=(("2001:db8:100::/64", 600), ("2001:db8:100::7", 600)),
+        bruteforce_jail_mac=(("52:54:00:12:34:56", 600),)))
     proc = subprocess.run(["nft", "-c", "-f", "-"], input=ruleset, capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr
 
@@ -506,61 +523,173 @@ def test_nft_accepts_everything_together(dhcp_config_dict):
 
 @pytest.mark.parametrize("ip, key", [
     ("192.0.2.5", "192.0.2.5"),
-    ("2001:db8:100:0:1234:5678:9abc:def0", "2001:db8:100::/64"),
-    ("fd12:3456:789a:1::99", "fd12:3456:789a:1::/64"),
+    ("2001:db8:100:0:1234:5678:9abc:def0", "2001:db8:100:0:1234:5678:9abc:def0"),
+    ("fd12:3456:789a:1:0:0:0:99", "fd12:3456:789a:1::99"),
     ("::ffff:192.0.2.5", "192.0.2.5"),
 ])
-def test_an_ipv6_source_is_its_64(ip, key):
+def test_a_source_address_is_itself_not_its_64(ip, key):
+    """ROADMAP FND-1d (H3): FND-1c keyed an IPv6 source by its /64, which
+    on the LAN is every host on the segment."""
     assert bruteforce.jail_key(ip) == key
 
 
-def test_ban_ip_puts_an_ipv6_source_in_the_ipv6_jail(monkeypatch):
+def _neighbours(table):
+    seen = []
+
+    def neighbour(ip, devices):
+        seen.append((ip, frozenset(devices)))
+        return table.get(ip)
+    return neighbour, seen
+
+
+def _recording_nft(monkeypatch):
     calls = []
     monkeypatch.setattr(bruteforce, "_run_nft", lambda args: calls.append(args) or subprocess.CompletedProcess(
         args, 0, "", ""))
-    bruteforce.ban_ip("2001:db8:100::abcd", 3600)
+    return calls
+
+
+def test_ban_ip_jails_an_ipv6_host_by_its_mac(monkeypatch):
+    calls = _recording_nft(monkeypatch)
+    neighbour, seen = _neighbours({"fd12:3456:789a:1::99": "52:54:00:12:34:56"})
+    assert bruteforce.ban_ip("fd12:3456:789a:1:0:0:0:99", 3600, lan_devices=("eth1",),
+                             neighbour=neighbour) == "52:54:00:12:34:56"
+    assert seen == [("fd12:3456:789a:1::99", frozenset({"eth1"}))]
+    assert calls == [["add", "element", "inet", "fr_os", "bruteforce_jail_mac", "{",
+                      "52:54:00:12:34:56 timeout 3600s", "}"]]
+
+
+def test_ban_ip_jails_an_unknown_ipv6_host_by_its_address_not_its_64(monkeypatch):
+    calls = _recording_nft(monkeypatch)
+    neighbour, _ = _neighbours({})
+    assert bruteforce.ban_ip("2001:db8:100::abcd", 3600, lan_devices=("eth1",), neighbour=neighbour) is None
     assert calls == [["add", "element", "inet", "fr_os", "bruteforce_jail6", "{",
-                      "2001:db8:100::/64 timeout 3600s", "}"]]
+                      "2001:db8:100::abcd timeout 3600s", "}"]]
+
+
+def test_ban_ip_never_looks_up_an_ipv4_source(monkeypatch):
+    calls = _recording_nft(monkeypatch)
+    neighbour, seen = _neighbours({"192.0.2.5": "52:54:00:12:34:56"})
+    assert bruteforce.ban_ip("192.0.2.5", 60, lan_devices=("eth1",), neighbour=neighbour) is None
+    assert seen == []
+    assert calls == [["add", "element", "inet", "fr_os", "bruteforce_jail", "{", "192.0.2.5 timeout 60s", "}"]]
 
 
 def test_the_ipv6_jail_is_read_back_from_nft_json(monkeypatch):
     listing = {"nftables": [{"set": {"elem": [
         {"elem": {"val": {"prefix": {"addr": "2001:db8:100::", "len": 64}}, "expires": 120}},
+        {"elem": {"val": "2001:db8:100::7", "expires": 90}},
         {"elem": {"val": {"range": ["2001:db8::", "2001:db8::5"]}, "expires": 1}}]}}]}
     monkeypatch.setattr(bruteforce, "_run_nft", lambda args: subprocess.CompletedProcess(
         args, 0, json.dumps(listing), ""))
-    assert bruteforce.snapshot6_before_reload() == [("2001:db8:100::/64", 120)]
+    assert bruteforce.snapshot6_before_reload() == [("2001:db8:100::/64", 120), ("2001:db8:100::7", 90)]
+
+
+@pytest.mark.reads_runtime_sets
+def test_the_mac_jail_is_carried_over_a_reload(monkeypatch, minimal_config_dict):
+    from frfw import ids_quarantine, provision
+
+    def run_nft(args):
+        if args[-1] == "bruteforce_jail_mac":
+            return subprocess.CompletedProcess(args, 0, json.dumps({"nftables": [{"set": {"elem": [
+                {"elem": {"val": "52:54:00:12:34:56", "expires": 500}}]}}]}), "")
+        return subprocess.CompletedProcess(args, 1, "", "Error: No such file or directory")
+    monkeypatch.setattr(bruteforce, "_run_nft", run_nft)
+    monkeypatch.setattr(ids_quarantine, "_run_nft", run_nft)
+    assert bruteforce.snapshot_macs_before_reload() == [("52:54:00:12:34:56", 500)]
+    assert ("52:54:00:12:34:56", 500) in bruteforce.list_banned()
+    runtime = provision._read_runtime_sets(_config(minimal_config_dict))
+    assert runtime.bruteforce_jail_mac == (("52:54:00:12:34:56", 500),)
+    assert runtime.bruteforce_jail == runtime.bruteforce_jail6 == ()
 
 
 @pytest.mark.skipif(shutil.which("nft") is None or os.geteuid() != 0, reason="needs nft and root")
-def test_real_ipv6_jail_round_trip(monkeypatch):
-    """The set as build_ruleset declares it, in a throwaway table: a ban
-    goes in as the /64 and reads back with its time left, as a reload
-    carries it over."""
+def test_real_jail_round_trip_by_mac_and_by_address(monkeypatch):
+    """The sets as build_ruleset declares them, in a throwaway table: a
+    known host goes in by its MAC, an unknown one as its address, and
+    both read back with their time left, as a reload carries them over."""
     table = "fr_os_jail6_test"
     monkeypatch.setattr(bruteforce, "FILTER_TABLE", table)
-    from frfw.nft.builder import _render_bruteforce_jail6_set
+    from frfw.nft.builder import _render_bruteforce_jail6_set, _render_bruteforce_jail_mac_set
 
-    declaration = "\n".join(["table inet fr_os_jail6_test {", *_render_bruteforce_jail6_set(), "}"])
+    declaration = "\n".join([f"table inet {table} {{", *_render_bruteforce_jail6_set(),
+                             *_render_bruteforce_jail_mac_set(), "}"])
     subprocess.run(["nft", "-f", "-"], input=declaration, text=True, check=True)
+    neighbour, _ = _neighbours({"2001:db8:100::1": "52:54:00:12:34:56"})
     try:
-        bruteforce.ban_ip("2001:db8:100:0:1234:5678:9abc:def0", 3600)
-        bruteforce.ban_ip("2001:db8:100::77", 3600)  # the same /64: one element
-        (member,) = bruteforce.snapshot6_before_reload()
-        assert member[0] == "2001:db8:100::/64" and 3500 < member[1] <= 3600
-        assert ("2001:db8:100::/64", member[1]) in bruteforce.list_banned()
+        bruteforce.ban_ip("2001:db8:100::1", 3600, lan_devices=("eth1",), neighbour=neighbour)
+        bruteforce.ban_ip("2001:db8:100::2", 3600, lan_devices=("eth1",), neighbour=neighbour)
+        (mac,) = bruteforce.snapshot_macs_before_reload()
+        (address,) = bruteforce.snapshot6_before_reload()
+        assert mac[0] == "52:54:00:12:34:56" and 3500 < mac[1] <= 3600
+        assert address[0] == "2001:db8:100::2" and 3500 < address[1] <= 3600
+        assert {mac, address} <= set(bruteforce.list_banned())
     finally:
         subprocess.run(["nft", "delete", "table", "inet", table], check=False)
 
 
-def test_failed_sign_ins_from_one_64_count_together():
+def test_one_lan_host_failing_over_ipv6_no_longer_counts_against_its_neighbours():
+    """The H3 bug: under FND-1c, three hosts on the same /64 shared one
+    count, and the third one's single failure jailed all of them."""
     from frfw.webui.auth_rate_limiter import BruteforceGuard
 
     guard = BruteforceGuard(max_attempts=3)
     assert not guard.record_failure("2001:db8:100::1")
     assert not guard.record_failure("2001:db8:100::2")
+    assert not guard.record_failure("2001:db8:100::3")
+    assert not guard.record_failure("2001:db8:100::1")
+    assert guard.record_failure("2001:db8:100::1")
+
+
+def test_a_host_changing_its_ipv6_address_keeps_its_count():
+    """With the MAC from the neighbour table, a host gets no fresh budget
+    for a new address; one the table doesn't know counts as its address."""
+    from frfw.webui.auth_rate_limiter import BruteforceGuard
+
+    macs = {"2001:db8:100::1": "52:54:00:12:34:56", "2001:db8:100::2": "52:54:00:12:34:56",
+            "2001:db8:100::3": "52:54:00:12:34:56"}
+    asked = []
+    guard = BruteforceGuard(max_attempts=3, device_of=lambda ip: asked.append(ip) or macs.get(ip))
+    assert not guard.record_failure("2001:db8:100::1")
+    assert not guard.record_failure("2001:db8:100::2")
     assert guard.record_failure("2001:db8:100::3")  # a new address doesn't start over
-    assert not guard.record_failure("2001:db8:200::1")
+    assert not guard.record_failure("2001:db8:100::9")  # unknown: its own count
+    assert not guard.record_failure("192.0.2.5")
+    assert not guard.record_failure("2001:db8:100::1")
+    assert asked == ["2001:db8:100::1", "2001:db8:100::2", "2001:db8:100::3", "2001:db8:100::9"]  # cached
+
+
+def test_the_device_lookup_is_cached_for_a_minute_only(monkeypatch):
+    from frfw.webui import auth_rate_limiter
+    from frfw.webui.auth_rate_limiter import BruteforceGuard
+
+    clock = [1000.0]
+    monkeypatch.setattr(auth_rate_limiter, "_now", lambda: clock[0])
+    answers = iter(["52:54:00:12:34:56", None])
+    guard = BruteforceGuard(max_attempts=2, device_of=lambda ip: next(answers))
+    assert not guard.record_failure("2001:db8:100::1")
+    clock[0] += auth_rate_limiter.DEVICE_CACHE_SECONDS
+    # The host left the table: its address now counts on its own.
+    assert not guard.record_failure("2001:db8:100::1")
+
+
+def test_the_helper_lookup_falls_back_to_the_address():
+    from frfw.helper.client import HelperError
+    from frfw.webui.auth_rate_limiter import device_lookup
+
+    class Helper:
+        def __init__(self, answer):
+            self.answer = answer
+
+        def source_device(self, ip):
+            if isinstance(self.answer, Exception):
+                raise self.answer
+            return self.answer
+
+    assert device_lookup(Helper({"ok": True, "device": "52:54:00:12:34:56"}))("2001:db8::1") == "52:54:00:12:34:56"
+    assert device_lookup(Helper({"ok": True, "device": None}))("2001:db8::1") is None
+    assert device_lookup(Helper({"ok": False, "message": "no"}))("2001:db8::1") is None
+    assert device_lookup(Helper(HelperError("down")))("2001:db8::1") is None
 
 
 # --- where the webUI and SSH listen ------------------------------------------------

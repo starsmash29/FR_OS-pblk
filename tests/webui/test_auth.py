@@ -86,6 +86,35 @@ def test_failed_logins_from_different_ips_do_not_share_a_counter(app, webui_env)
     assert webui_env["helper"].banned == []
 
 
+def test_an_ipv6_host_counts_as_one_whatever_its_address_and_alone(app, webui_env):
+    """ROADMAP FND-1d (H3): over IPv6 a LAN host counts by the MAC the
+    helper's neighbour lookup gives, so a fresh address is no fresh
+    budget; a neighbour on the same /64 has its own count and still signs
+    in (FND-1c counted the whole /64 together)."""
+    from frfw.webui.auth_rate_limiter import BruteforceGuard, device_lookup
+
+    helper = webui_env["helper"]
+    helper.devices = {f"fd12:3456:789a:1::{i}": "52:54:00:12:34:56" for i in range(1, 6)}
+    helper.devices["fd12:3456:789a:1::99"] = "52:54:00:aa:bb:cc"
+    app.state.bruteforce_guard = BruteforceGuard(device_of=device_lookup(helper))
+    webui_env["admin_store"].set_password("admin", "hunter22")
+
+    for i in range(1, 5):
+        attacker = TestClient(app, client=(f"fd12:3456:789a:1::{i}", 12345), follow_redirects=False)
+        response = attacker.post("/login", data={"username": "admin", "password": "wrong"})
+        assert response.headers["location"] == "/login?error=Invalid+credentials"
+    attacker = TestClient(app, client=("fd12:3456:789a:1::5", 12345), follow_redirects=False)
+    fifth = attacker.post("/login", data={"username": "admin", "password": "wrong"})
+    assert "blocked" in fifth.headers["location"].lower()
+    # The helper jails the host by its MAC, looked up as root.
+    assert helper.banned == [("fd12:3456:789a:1::5", 60 * 60)]
+
+    neighbour = TestClient(app, client=("fd12:3456:789a:1::99", 12345), follow_redirects=False)
+    neighbour.post("/login", data={"username": "admin", "password": "wrong"})
+    assert neighbour.post("/login", data={"username": "admin", "password": "hunter22"}).headers["location"] == "/"
+    assert len(helper.banned) == 1
+
+
 def test_successful_login_resets_the_failure_counter(app, webui_env):
     webui_env["admin_store"].set_password("admin", "hunter22")
     attacker = TestClient(app, client=("203.0.113.9", 12345), follow_redirects=False)

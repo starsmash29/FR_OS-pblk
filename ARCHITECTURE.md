@@ -3912,15 +3912,49 @@ off).**
   certificate is made once at first boot and pinned by browsers that
   accepted it. A browser warns on the ULA address as it does on any
   self-signed one.
-- The brute-force guard keys an IPv6 source by its /64
-  (`frfw.bruteforce.jail_key`): a host picks any address in its /64 at
-  will, so per address it would get a fresh budget per guess. The jail
-  is a second set, `bruteforce_jail6` (interval, /64 elements), dropped
-  on 22/443 at the top of the input chain; the webUI's rate limiter
-  keys the same way.
+- The brute-force guard holds an IPv6 source as its host, by MAC
+  (FND-1d, H3; see "The brute-force jail over IPv6" below). 1c keyed it
+  by its /64, which was wrong on the LAN.
 - ZTNA sign-in over IPv6 is refused with a message to use IPv4: its
   binding is to an IPv4 address and the router's view of its MAC
   (SEC-6), and the IPv6 version is FND-1d.
+
+**The brute-force jail over IPv6 (FND-1d, H3).** 1c counted and jailed
+an IPv6 source by its /64, because a host picks its own interface
+identifier: per address, every guess would get a fresh budget. But
+management over IPv6 listens on the router's ULA only, so every IPv6
+sign-in comes from a LAN host, and on the LAN a /64 is the whole
+segment: one host's five failures locked every neighbour out of the
+webUI and SSH over IPv6 for an hour, and failures from different hosts
+added up. Now:
+- **Counting is per host.** The webUI's rate limiter asks the helper
+  (`source_device`, read-only, webUI only) for the MAC the router's
+  neighbour table has for an IPv6 source on a LAN device, and counts
+  under that MAC (`mac:<mac>`), whatever address the host uses. The
+  answer is cached a minute per address, so it is one helper call per
+  new address. The webUI's sandbox has no netlink to read the table
+  itself, and isn't given one. A source the table doesn't know, or a
+  helper that can't answer, counts as the address (`/128`): counting
+  never breaks the sign-in it guards. IPv4 counts by address, as before.
+  The per-account lock's known sources follow the same key, so a device
+  stays known when its privacy address changes. (Pretending to be a
+  known device takes its MAC, as on IPv4 it takes its address: both are
+  a LAN host's to forge.)
+- **The jail is per host.** `ban_ip` gets only the address from the
+  webUI; the helper looks the MAC up itself, as root, on the LAN
+  devices only (on the WAN the MAC would be the provider's gateway),
+  and adds it to `bruteforce_jail_mac` (`ether_addr`, timeout), dropped
+  on 22/443 at the top of the input chain for both families: a jailed
+  host can't switch to IPv4 for a fresh budget. A host the table
+  doesn't know is jailed by its address in `bruteforce_jail6`.
+- `bruteforce_jail6` stays an interval set, so a /64 jailed by 1c
+  carries over the reload of an upgrade until it runs out. The builder
+  leaves out a carried member inside another (nft refuses the two as
+  conflicting intervals, and the wider one holds it).
+- A LAN host can change its MAC too. That takes it off the network until
+  it has a new lease and a neighbour entry, and buys it five more
+  guesses an hour per MAC, which the per-account lock (10 in 15 minutes
+  from any source) bounds anyway.
 
 **WireGuard** is accepted from the WAN over IPv6 when the VPN is on, as
 over IPv4: it answers no unknown key. The tunnel stays IPv4 (FND-1d).
@@ -3959,8 +3993,10 @@ its validation, the address sync and its undo, the RA config (by the
 real `dnsmasq --test`), the resolver's config, every refusal of the
 loader, the ruleset (each piece and all of it together by `nft -c`), the
 management addresses and the sshd drop-in (and its reload when sshd
-misses an address), the /64 jail against the real kernel
-set, and the status; the webUI tests cover the System switch, the card
+misses an address), the jail by MAC and by address against the real
+kernel sets (and, in `tests/test_bruteforce.py`, with real packets: two
+hosts on one bridge, one jailed by its MAC, the other not), and the
+status; the webUI tests cover the System switch, the card
 and the ZTNA refusal. The container's kernel has no IPv6, so what needs
 packets runs in the boot test. After the Apply that turns IPv6 on:
 - the router has its ULA `::1/64` on the LAN, the host took a ULA by
@@ -3974,7 +4010,11 @@ packets runs in the boot test. After the Apply that turns IPv6 on:
 
 The next Apply turns the resolver (with force-DNS) and management over
 IPv6 on: the webUI answers on the ULA, SSH is let through there, neither
-on the delegated address; the resolver answers over IPv6 on the ULA, the
+on the delegated address; a second LAN host (a macvlan with its own
+MAC) fails five sign-ins over IPv6 from five addresses it picks, is
+jailed on the fifth, and is then held on every address, an unused one
+too, while the first host on the same /64 still reaches the webUI
+(FND-1d, H3); the resolver answers over IPv6 on the ULA, the
 RA names it as RDNSS, and a query to the provider's address is answered
 by the router. One more Apply turns management over IPv6 off: closed
 again. After the SNI filter's Apply the ULA is gone from the LAN port

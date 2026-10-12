@@ -173,3 +173,88 @@ def test_real_generated_ruleset_puts_jail_drop_rule_first_in_input_chain():
         assert rules[0].get("comment") == "bruteforce-jail"
     finally:
         subprocess.run(["nft", "flush", "ruleset"], check=False)
+
+
+# --- real packets: the jail by MAC holds one LAN host, not its neighbours ----
+
+_LAB_SERVER = """
+import socket, sys
+s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("0.0.0.0", int(sys.argv[1]))); s.listen(8)
+while True:
+    c, _ = s.accept(); c.sendall(b"ok"); c.close()
+"""
+
+_LAB_CLIENT = """
+import socket, sys
+try:
+    c = socket.create_connection((sys.argv[1], int(sys.argv[2])), timeout=1.5)
+    print("OK" if c.recv(2) == b"ok" else "BAD")
+except OSError:
+    print("FAIL")
+"""
+
+
+@requires_nft
+@requires_root
+def test_real_packets_the_mac_jail_holds_one_lan_host_not_its_neighbour(tmp_path):
+    """ROADMAP FND-1d (H3), against the real kernel: two hosts on one LAN
+    segment (a bridge in the router's namespace), the router's input
+    chain as build_ruleset renders the jail by MAC. Once one host's MAC
+    is jailed, it can't reach 443 (the management port) and still reaches
+    another port; its neighbour still reaches 443. Over IPv4, since this
+    rule names no family and the test kernel may have no IPv6; the boot
+    test covers IPv6 (installer/qemu-boot-test.py)."""
+    import sys
+
+    from frfw.nft.builder import _render_bruteforce_jail_mac_drop_rule, _render_bruteforce_jail_mac_set
+
+    if shutil.which("ip") is None:
+        pytest.skip("needs iproute2")
+    (tmp_path / "server.py").write_text(_LAB_SERVER)
+    (tmp_path / "client.py").write_text(_LAB_CLIENT)
+    router, hosts = "frjl-r", (("frjl-a", "10.79.0.10"), ("frjl-b", "10.79.0.11"))
+
+    def sh(*cmd, ns=None, check=True):
+        full = (["ip", "netns", "exec", ns] if ns else []) + list(cmd)
+        return subprocess.run(full, capture_output=True, text=True, check=check)
+
+    procs = []
+    try:
+        sh("ip", "netns", "add", router)
+        sh("ip", "link", "add", "br0", "type", "bridge", ns=router)
+        sh("ip", "addr", "add", "10.79.0.1/24", "dev", "br0", ns=router)
+        sh("ip", "link", "set", "br0", "up", ns=router)
+        sh("ip", "link", "set", "lo", "up", ns=router)
+        for ns, address in hosts:
+            sh("ip", "netns", "add", ns)
+            sh("ip", "link", "add", "eth0", "netns", ns, "type", "veth", "peer", "name", f"{ns}-p", "netns", router)
+            sh("ip", "link", "set", f"{ns}-p", "master", "br0", ns=router)
+            sh("ip", "link", "set", f"{ns}-p", "up", ns=router)
+            sh("ip", "addr", "add", f"{address}/24", "dev", "eth0", ns=ns)
+            sh("ip", "link", "set", "eth0", "up", ns=ns)
+        ruleset = "\n".join([
+            "table inet fr_os {", *_render_bruteforce_jail_mac_set(),
+            "\tchain input {", "\t\ttype filter hook input priority filter; policy accept;",
+            f"\t\t{_render_bruteforce_jail_mac_drop_rule()}", "\t}", "}"])
+        subprocess.run(["ip", "netns", "exec", router, "nft", "-f", "-"], input=ruleset, text=True, check=True)
+        for port in ("443", "8080"):
+            procs.append(subprocess.Popen(["ip", "netns", "exec", router, sys.executable,
+                                           str(tmp_path / "server.py"), port]))
+        time.sleep(0.8)
+
+        def connect(ns, port):
+            return sh(sys.executable, str(tmp_path / "client.py"), "10.79.0.1", str(port), ns=ns).stdout.strip()
+
+        assert connect("frjl-a", 443) == "OK" and connect("frjl-b", 443) == "OK"
+        mac = sh("cat", "/sys/class/net/eth0/address", ns="frjl-a").stdout.strip()
+        sh("nft", "add", "element", "inet", "fr_os", "bruteforce_jail_mac", "{", f"{mac} timeout 60s", "}",
+           ns=router)
+        assert connect("frjl-a", 443) == "FAIL"
+        assert connect("frjl-a", 8080) == "OK"  # the jail is the management ports only
+        assert connect("frjl-b", 443) == "OK"  # the neighbour isn't held (H3)
+    finally:
+        for p in procs:
+            p.kill()
+        for ns in (router, *(ns for ns, _ in hosts)):
+            subprocess.run(["ip", "netns", "del", ns], check=False)

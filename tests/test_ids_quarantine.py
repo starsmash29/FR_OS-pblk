@@ -129,6 +129,24 @@ def test_no_mac_for_anything_but_a_live_lan_neighbour(monkeypatch, entry):
     assert ids_quarantine_mod.lan_neighbour_mac("10.0.0.5", {"eth1"}) is None
 
 
+def test_an_ipv6_lan_neighbours_mac(monkeypatch):
+    """ROADMAP FND-1d (H3): the brute-force jail looks an IPv6 source up
+    the same way; `ip -j` may write the address in another form."""
+    seen = _neigh(monkeypatch, [
+        {"dst": "fd12:3456:789a:1::99", "dev": "eth0", "lladdr": "aa:bb:cc:dd:ee:09", "state": ["REACHABLE"]},
+        {"dst": "fd12:3456:789a:1:0::99", "dev": "eth1", "lladdr": "AA:BB:CC:DD:EE:01", "state": ["STALE"]}])
+    assert ids_quarantine_mod.lan_neighbour_mac("fd12:3456:789a:1::99", {"eth1"}) == "aa:bb:cc:dd:ee:01"
+    assert seen == [["ip", "-j", "-6", "neigh", "show", "to", "fd12:3456:789a:1::99"]]
+
+
+@pytest.mark.parametrize("ip", ["fd12:3456:789a:1:0:0:0:99", "-6", "10.0.0.5; x", "::ffff:zz"])
+def test_a_lookup_takes_a_canonical_address_only(monkeypatch, ip):
+    seen = _neigh(monkeypatch, [])
+    with pytest.raises(ValueError):
+        ids_quarantine_mod.lan_neighbour_mac(ip, {"eth1"})
+    assert seen == []
+
+
 def test_no_lan_devices_no_lookup(monkeypatch):
     seen = _neigh(monkeypatch, [])
     assert ids_quarantine_mod.lan_neighbour_mac("10.0.0.5", ()) is None

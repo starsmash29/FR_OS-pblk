@@ -66,6 +66,19 @@ def ipv4(value: object) -> str:
     return value
 
 
+def ipv6(value: object) -> str:
+    """An IPv6 address in its compressed form (ROADMAP FND-1d: a jailed
+    host's neighbour lookup)."""
+    value = _text(value, "IPv6 address")
+    try:
+        parsed = ipaddress.IPv6Address(value)
+    except ValueError as exc:
+        raise ArgumentError(f"invalid IPv6 address {value!r}") from exc
+    if str(parsed) != value:
+        raise ArgumentError(f"invalid IPv6 address {value!r}")
+    return value
+
+
 def ipv4_interface(value: object) -> str:
     """An address with prefix, e.g. 192.168.1.1/24."""
     value = _text(value, "IPv4 address/prefix")

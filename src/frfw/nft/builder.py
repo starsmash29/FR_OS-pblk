@@ -67,13 +67,23 @@ FILTER_TABLE = "fr_os"
 BRUTEFORCE_JAIL_SET_NAME = "bruteforce_jail"
 
 #: The brute-force jail over IPv6 (ROADMAP FND-1c, with
-#: `management.ipv6`): a /64, not an address -- a host picks its own
-#: interface identifier (SLAAC, privacy addresses), so one address is no
-#: limit at all. A /64 is a whole LAN segment, though, so the jail holds
-#: it off the webUI and SSH only, not off the router's DNS: one host's
-#: failed sign-ins don't take its neighbours' name resolution with them.
-#: An interval set with per-element timeouts; same reload handling.
+#: `management.ipv6`): a single address, for a host the neighbour table
+#: doesn't know (BRUTEFORCE_JAIL_MAC_SET_NAME is the usual case). Held
+#: off the webUI and SSH only, not off the router's DNS. FND-1c keyed it
+#: by /64, which on the LAN -- the only place management over IPv6 is
+#: reachable from, the router's ULA -- is the whole segment: one host's
+#: failed sign-ins locked every neighbour out (FND-1d, H3). Still an
+#: interval set, so a /64 banned before that change carries over a
+#: reload until it runs out. Per-element timeouts; same reload handling.
 BRUTEFORCE_JAIL6_SET_NAME = "bruteforce_jail6"
+
+#: The brute-force jail by device (ROADMAP FND-1d, H3): the MAC of a LAN
+#: host that failed to sign in over IPv6, as the router's neighbour table
+#: has it (frfw.bruteforce.ban_ip). A host picks its own IPv6 addresses
+#: (SLAAC, privacy addresses, any of 2^64 by hand), so a jailed address
+#: is no limit; its MAC holds all of them, and its IPv4 too, so it can't
+#: switch families for a fresh budget. Management ports (22/443) only.
+BRUTEFORCE_JAIL_MAC_SET_NAME = "bruteforce_jail_mac"
 
 #: The regular chain every IPv6 packet to the router goes through
 #: (ROADMAP FND-1a/1c), while IPv6 is on: what the router serves over
@@ -175,8 +185,11 @@ class RuntimeSets:
     iot_isolated: tuple[str, ...] = ()
     #: (mac, seconds left), see IDS_QUARANTINE_MAC_SET_NAME.
     ids_quarantine_mac: tuple[tuple[str, int], ...] = ()
-    #: ("<network>/64", seconds left), see BRUTEFORCE_JAIL6_SET_NAME.
+    #: ("<address>" or "<network>/64", seconds left), see
+    #: BRUTEFORCE_JAIL6_SET_NAME.
     bruteforce_jail6: tuple[tuple[str, int], ...] = ()
+    #: (mac, seconds left), see BRUTEFORCE_JAIL_MAC_SET_NAME.
+    bruteforce_jail_mac: tuple[tuple[str, int], ...] = ()
 
 
 def build_ruleset(config: Config, *, clock: ScheduleClock | None = None, now: float | None = None,
@@ -200,6 +213,7 @@ def build_ruleset(config: Config, *, clock: ScheduleClock | None = None, now: fl
     lines.append("")
     lines.extend(_render_bruteforce_jail_set(runtime.bruteforce_jail))
     lines.extend(_render_bruteforce_jail6_set(runtime.bruteforce_jail6))
+    lines.extend(_render_bruteforce_jail_mac_set(runtime.bruteforce_jail_mac))
 
     lines.append("")
     lines.extend(_render_ids_quarantine_set(runtime.ids_quarantine))
@@ -235,9 +249,11 @@ def build_ruleset(config: Config, *, clock: ScheduleClock | None = None, now: fl
     # ones below) gets a chance to match it first.
     lines.append(f"\t\t{_render_bruteforce_drop_rule()}")
     lines.append(f"\t\t{_render_ids_quarantine_drop_rule()}")
-    # ROADMAP FND-1c: the same two over IPv6 -- the jail by /64, a
-    # quarantined host by its MAC (the router now serves IPv6 on the LAN).
+    # ROADMAP FND-1c/1d: the same two over IPv6 -- the jail by MAC (or
+    # the address, see BRUTEFORCE_JAIL6_SET_NAME), a quarantined host by
+    # its MAC (the router now serves IPv6 on the LAN).
     lines.append(f"\t\t{_render_bruteforce_jail6_drop_rule()}")
+    lines.append(f"\t\t{_render_bruteforce_jail_mac_drop_rule()}")
     lines.append(f"\t\t{_render_ids_quarantine_mac_forward_rule()}")
     if config.iot.enabled:
         # Ahead of `ct state established,related accept` on purpose: an
@@ -668,9 +684,15 @@ def _render_bruteforce_drop_rule() -> str:
 
 
 def _render_bruteforce_jail6_set(members: tuple[tuple[str, int], ...] = ()) -> list[str]:
-    """BRUTEFORCE_JAIL6_SET_NAME: /64s, each with its own timeout; the
-    members carried over a reload are re-validated (from `nft -j`)."""
-    items = [f"{ipaddress.IPv6Network(net)} timeout {int(left)}s" for net, left in members if int(left) > 0]
+    """BRUTEFORCE_JAIL6_SET_NAME: addresses (or a /64 from before FND-1d),
+    each with its own timeout; the members carried over a reload are
+    re-validated (from `nft -j`)."""
+    live = [(ipaddress.IPv6Network(net), int(left)) for net, left in members if int(left) > 0]
+    # An address inside a carried-over /64 would make nft refuse the whole
+    # ruleset ("conflicting intervals"); the /64 holds it anyway.
+    kept = [(net, left) for net, left in live
+            if not any(other != net and net.subnet_of(other) for other, _ in live)]
+    items = [f"{_jail6_member(net)} timeout {left}s" for net, left in kept]
     return [
         f"\tset {BRUTEFORCE_JAIL6_SET_NAME} {{",
         "\t\ttype ipv6_addr",
@@ -680,10 +702,34 @@ def _render_bruteforce_jail6_set(members: tuple[tuple[str, int], ...] = ()) -> l
     ]
 
 
+def _jail6_member(network: ipaddress.IPv6Network) -> str:
+    return str(network.network_address) if network.prefixlen == 128 else str(network)
+
+
 def _render_bruteforce_jail6_drop_rule() -> str:
     ports = ", ".join(str(p) for p in management.MANAGEMENT_PORTS)
     return (f"ip6 saddr @{BRUTEFORCE_JAIL6_SET_NAME} tcp dport {{ {ports} }} drop "
             f"{_comment('bruteforce-jail6')}")
+
+
+def _render_bruteforce_jail_mac_set(members: tuple[tuple[str, int], ...] = ()) -> list[str]:
+    """BRUTEFORCE_JAIL_MAC_SET_NAME; the members carried over a reload
+    are re-validated (from `nft -j`)."""
+    items = [f"{mac} timeout {int(left)}s" for mac, left in members
+             if _MAC_RE.fullmatch(mac) and int(left) > 0]
+    return [
+        f"\tset {BRUTEFORCE_JAIL_MAC_SET_NAME} {{",
+        "\t\ttype ether_addr",
+        "\t\tflags timeout",
+        *([f"\t\telements = {{ {', '.join(items)} }}"] if items else []),
+        "\t}",
+    ]
+
+
+def _render_bruteforce_jail_mac_drop_rule() -> str:
+    ports = ", ".join(str(p) for p in management.MANAGEMENT_PORTS)
+    return (f"ether saddr @{BRUTEFORCE_JAIL_MAC_SET_NAME} tcp dport {{ {ports} }} drop "
+            f"{_comment('bruteforce-jail-mac')}")
 
 
 def _render_ids_quarantine_set(members: tuple[tuple[str, int], ...] = ()) -> list[str]:

@@ -7,8 +7,12 @@ Two counters (security-lessons G6):
   jailed at the firewall for an hour, through the privileged apply-helper
   (see `frfw.bruteforce` for the enforcement side and
   `frfw.nft.builder.BRUTEFORCE_JAIL_SET_NAME` for the nftables set). An
-  IPv6 source counts, and is jailed, as its /64 (`frfw.bruteforce.
-  jail_key`, ROADMAP FND-1c): a host picks its own IPv6 addresses;
+  IPv6 source counts as its host, by the MAC the router's neighbour
+  table has for it (`device_of`, through the helper's `source_device`),
+  and is jailed by that MAC: a host picks its own IPv6 addresses, so an
+  address is no limit, while the /64 FND-1c counted is every host on
+  the LAN segment (ROADMAP FND-1d, H3). A source the table doesn't know
+  counts as its address;
 - **per account**: 10 failures within 15 minutes, from any number of
   addresses, and the account's sign-in is refused for the rest of that
   window -- what stops credential stuffing spread over a botnet, which
@@ -37,8 +41,10 @@ import os
 import threading
 import time
 from pathlib import Path
+from typing import Callable
 
 from frfw.bruteforce import jail_key
+from frfw.helper.client import HelperError
 from frfw.webui.helper_client import HelperClient
 from frfw.webui.responses import redirect_with
 
@@ -64,6 +70,11 @@ _SWEEP_INTERVAL = 100
 #: Keep the state file small whatever an attacker sends.
 _MAX_TRACKED = 5000
 
+#: How long an IPv6 source's MAC is remembered, and for how many sources:
+#: one helper call per new address, not one per request.
+DEVICE_CACHE_SECONDS = 60
+_DEVICE_CACHE_SIZE = 1024
+
 
 def _now() -> float:
     return time.time()
@@ -80,7 +91,8 @@ def _source(ip: str) -> str:
 
 class BruteforceGuard:
     """Thread-safe failed-login counters, per source IP and per account,
-    optionally persisted to `state_path`."""
+    optionally persisted to `state_path`. `device_of`: the MAC of the LAN
+    host behind an IPv6 source, or None (see this module's docstring)."""
 
     def __init__(
         self,
@@ -90,6 +102,7 @@ class BruteforceGuard:
         account_max_attempts: int = ACCOUNT_MAX_ATTEMPTS,
         account_window_seconds: float = ACCOUNT_WINDOW_SECONDS,
         state_path: Path | None = None,
+        device_of: Callable[[str], str | None] | None = None,
     ) -> None:
         self._max_attempts = max_attempts
         self._window_seconds = window_seconds
@@ -101,7 +114,29 @@ class BruteforceGuard:
         self._account_attempts: dict[str, list[float]] = {}
         self._known: dict[str, dict[str, float]] = {}
         self._calls_since_sweep = 0
+        self._device_of = device_of
+        self._devices: dict[str, tuple[str | None, float]] = {}
         self._load()
+
+    def _key(self, ip: str) -> str:
+        """The key `ip` counts under: its host's MAC ("mac:<mac>") for an
+        IPv6 source the neighbour table knows, else the address (_source).
+        Looked up outside the lock: it is a call to the helper."""
+        key = _source(ip)
+        if self._device_of is None or ":" not in key:
+            return key
+        now = _now()
+        with self._lock:
+            cached = self._devices.get(key)
+        if cached is not None and now - cached[1] < DEVICE_CACHE_SECONDS:
+            device = cached[0]
+        else:
+            device = self._device_of(key)
+            with self._lock:
+                if len(self._devices) >= _DEVICE_CACHE_SIZE:
+                    self._devices.clear()
+                self._devices[key] = (device, now)
+        return f"mac:{device}" if device else key
 
     # -- per source address ----------------------------------------------------
 
@@ -112,7 +147,7 @@ class BruteforceGuard:
         that IP's counter immediately after, so the caller's own
         "ask the helper to ban" action happens exactly once per
         threshold crossing."""
-        ip = _source(ip)
+        ip = self._key(ip)
         now = _now()
         with self._lock:
             self._calls_since_sweep += 1
@@ -135,7 +170,7 @@ class BruteforceGuard:
         `account`, also the account's, and `ip` becomes (or stays) a
         known source of it. Returns True when the account has signed in
         before, but never (or not for 90 days) from `ip`."""
-        ip = _source(ip)
+        ip = self._key(ip)
         now = _now()
         with self._lock:
             self._attempts.pop(ip, None)
@@ -166,7 +201,7 @@ class BruteforceGuard:
     def account_locked(self, account: str, ip: str) -> int:
         """Seconds until `account` can be tried again from `ip` (0: now).
         A known source of the account is never locked out."""
-        ip = _source(ip)
+        ip = self._key(ip)
         now = _now()
         with self._lock:
             seen = self._known.get(account, {}).get(ip)
@@ -233,6 +268,20 @@ class BruteforceGuard:
             # Counting must never break the sign-in it guards; the
             # in-memory counters still apply.
             pass
+
+
+def device_lookup(helper: HelperClient) -> Callable[[str], str | None]:
+    """BruteforceGuard's `device_of`, through the helper's read-only
+    `source_device`. If the helper can't answer, the source counts as its
+    address: counting must never break the sign-in it guards."""
+    def device_of(ip: str) -> str | None:
+        try:
+            response = helper.source_device(ip)
+        except HelperError:
+            return None
+        device = response.get("device") if isinstance(response, dict) and response.get("ok") else None
+        return device if isinstance(device, str) and device else None
+    return device_of
 
 
 def reject_failed_login(

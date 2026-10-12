@@ -46,6 +46,7 @@ class HelperClient(Protocol):
     def firewall_drops(self) -> dict: ...
     def xdp_stats(self) -> dict: ...
     def ipv6_status(self) -> dict: ...
+    def source_device(self, ip: str) -> dict: ...
 
 
 class SocketHelperClient:
@@ -132,6 +133,9 @@ class SocketHelperClient:
 
     def ipv6_status(self) -> dict:
         return helper_client.ipv6_status(self.socket_path)
+
+    def source_device(self, ip: str) -> dict:
+        return helper_client.source_device(ip, self.socket_path)
 
 
 class UpdateHelperClient(Protocol):

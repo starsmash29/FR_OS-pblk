@@ -241,6 +241,12 @@ class FakeHelper:
     #: What `ipv6_status` reports (ROADMAP FND-1a/1b); tests set it.
     ipv6: dict = {}
 
+    #: ip -> MAC that `source_device` reports (ROADMAP FND-1d, H3); tests set it.
+    devices: dict = {}
+
+    def source_device(self, ip: str) -> dict:
+        return {"ok": True, "device": self.devices.get(ip)}
+
     def ipv6_status(self) -> dict:
         return {"ok": True, "state": "off", "summary": "IPv6 is off.", "devices": [], "addresses": [],
                 "default_routes": [], "prefixes": [], "service_active": False, "lan": [], "ra_active": False,
