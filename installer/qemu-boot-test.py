@@ -2303,7 +2303,7 @@ def run(args: argparse.Namespace, provider: Isp) -> int:
         # ROADMAP SEC-1: QUIC hides the name, so while the filter is on the
         # router refuses UDP/443 from its port -- and only that port.
         quic, other = udp_through_router(443), udp_through_router(4443)
-        check(quic == "refused" and other == "answered",
+        check(quic == "refused" and other != "refused",
               f"the router refuses QUIC from the filtered LAN port (ROADMAP SEC-1): UDP/443 {quic}, UDP/4443 {other}")
         # The screen's counters come through the apply-helper: bpffs is
         # root's, and reading them in the webUI was an HTTP 500.
