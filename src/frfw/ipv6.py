@@ -101,8 +101,9 @@ def lan_devices(config: Config) -> list[tuple[str, str]]:
     (ROADMAP FND-1b): the LAN zones' devices, zone by zone in
     `ipv6.lan_zones` order, then in config order. The position is the
     device's /64 in the prefix ("sla_id"), so an added zone or device
-    goes last and renumbers nobody. Not the VPN tunnel: its clients are
-    IPv4-only. Empty while IPv6 is off."""
+    goes last and renumbers nobody. Not the VPN tunnel: it has a ULA /64
+    of its own and no delegated one (tunnel_network6, FND-1d). Empty while
+    IPv6 is off."""
     zones = ipv6_lan_zones(config.ipv6, config.interfaces, config.zones, config.nat, config.rules,
                            config.xdp_sni_filter)
     out: list[tuple[str, str]] = []
@@ -289,6 +290,41 @@ def ensure_ula_prefix(config: Config, state_path: Path | None = None) -> ipaddre
     return ula_prefix(config, state_path)
 
 
+#: The VPN tunnel's /64 of the ULA /48 (ROADMAP FND-1d): the last one,
+#: far from the LAN devices', which count up from the first.
+TUNNEL_SLA = 0xFFFF
+
+
+def tunnel_network6(prefix: ipaddress.IPv6Network) -> ipaddress.IPv6Network:
+    """The VPN tunnel's IPv6 network: `<ULA>:ffff::/64`. The router is
+    `::1` there, and each client the same host number as its IPv4 tunnel
+    address (frfw.wireguard). From the ULA, so a provider's renumbering
+    never touches it, and it is there whatever the provider gives."""
+    return ipaddress.IPv6Network((int(prefix.network_address) | (TUNNEL_SLA << 64), 64))
+
+
+def tunnel_served(config: Config) -> bool:
+    """Whether the router routes IPv6 for the VPN's clients (ROADMAP
+    FND-1d): WireGuard and IPv6 on, and the tunnel's zone not kept off
+    IPv6 by an IPv4-only protection (frfw.config.loader.
+    ipv6_lan_exclusions, as a LAN zone). Otherwise its clients' IPv6 is
+    refused at once (frfw.nft.builder), never let around the tunnel."""
+    wg = config.wireguard
+    if not (wg.enabled and config.ipv6.enabled):
+        return False
+    return wg.zone not in ipv6_lan_exclusions(config.interfaces, config.zones, config.nat, config.rules,
+                                              config.xdp_sni_filter)
+
+
+def forwarding_wanted(config: Config) -> bool:
+    """The kernel routes IPv6 while a LAN zone gets it (FND-1b), and while
+    the VPN is on (FND-1d): a client's IPv6 must reach the forward chain
+    to be refused there (admin-prohibited) -- with forwarding off the
+    kernel drops it silently, and the client waits for a timeout before
+    it tries IPv4. Nothing goes through but what the forward chain lets."""
+    return bool(lan_devices(config)) or config.wireguard.enabled
+
+
 def ula_addresses(config: Config, prefix: ipaddress.IPv6Network | None) -> list[tuple[str, str, str]]:
     """(zone, device, "<network>::1/64") for every LAN device: its /64 of
     the ULA /48 at the same position ("sla_id") as in the provider's
@@ -400,8 +436,8 @@ def sysctl_settings(config: Config) -> dict[str, str]:
     it on is "not valid"): the WAN's and the LAN's."""
     wan = wan_devices(config)
     lan = [d for _, d in lan_devices(config)]
-    # Routing only while there is a LAN to route to (FND-1b).
-    settings: dict[str, str] = {"ipv6/conf/all/forwarding": "1" if lan else "0"}
+    # Routing only while there is a LAN or a VPN to route for (FND-1b/1d).
+    settings: dict[str, str] = {"ipv6/conf/all/forwarding": "1" if forwarding_wanted(config) else "0"}
     devices = sorted({validate.ifname(i.device) for i in config.interfaces.values()})
     for device in ["all", "default", *devices]:
         settings[f"ipv6/conf/{device}/accept_ra"] = "0"
@@ -500,9 +536,9 @@ def sync(config: Config, *, dry_run: bool = False, conf_path: Path | None = None
         sync_ula(config, state_path=ula_state_path)
         _systemctl("stop")
         conf_path.unlink(missing_ok=True)
-        # Routing off with it; the kernel's other settings stay as safe as
-        # they are.
-        write_sysctls({"ipv6/conf/all/forwarding": "0"}, proc_root)
+        # Routing off with it (but for the VPN, forwarding_wanted); the
+        # kernel's other settings stay as safe as they are.
+        write_sysctls({"ipv6/conf/all/forwarding": "1" if forwarding_wanted(config) else "0"}, proc_root)
         return SyncResult(False, "IPv6 turned off")
 
     devices = wan_devices(config)

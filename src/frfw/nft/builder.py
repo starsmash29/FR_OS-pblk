@@ -433,11 +433,23 @@ def _render_ipv6_wan_input(config: Config) -> list[str]:
 
 
 def _render_ipv6_input_jump(config: Config) -> list[str]:
-    """IPv6 off: every IPv6 packet to the router is dropped. On: it goes
-    through IPV6_INPUT_CHAIN (_render_ipv6_input_chain)."""
+    """IPv6 off: every IPv6 packet to the router is dropped -- a VPN
+    client's refused (FND-1d: it has an IPv6 tunnel address, and must try
+    IPv4 at once). On: it goes through IPV6_INPUT_CHAIN
+    (_render_ipv6_input_chain)."""
     if not config.ipv6.enabled:
-        return [f"meta nfproto ipv6 drop {_comment('ipv6-off')}"]
+        return [*_render_vpn_ipv6_refused(config, "ipv6-vpn-off"), f"meta nfproto ipv6 drop {_comment('ipv6-off')}"]
     return [f"meta nfproto ipv6 jump {IPV6_INPUT_CHAIN}"]
+
+
+def _render_vpn_ipv6_refused(config: Config, comment: str) -> list[str]:
+    """A VPN client's IPv6, refused with "administratively prohibited"
+    (FND-1d), so its apps fall back to IPv4 -- through the tunnel -- at
+    once instead of after a timeout."""
+    if not config.wireguard.enabled:
+        return []
+    return [f'iifname "{WIREGUARD_IFACE}" meta nfproto ipv6 reject with icmpv6 type admin-prohibited '
+            f'{_comment(comment)}']
 
 
 def _render_ipv6_input_chain(config: Config) -> list[str]:
@@ -454,8 +466,13 @@ def _render_ipv6_input_chain(config: Config) -> list[str]:
       as IPv4 does -- "allow 443 from lan to self" lets it in, nothing
       else does.
     - WireGuard from the WAN, as over IPv4: it answers nothing to a packet
-      that isn't from a known key."""
-    from frfw.ipv6 import wan_devices
+      that isn't from a known key.
+    - From the VPN tunnel (FND-1d) a rate-limited ping to the router, when
+      it routes IPv6 for the tunnel (frfw.ipv6.tunnel_served); the rest
+      of a client's IPv6 to the router is refused. The router's services
+      stay on the tunnel's IPv4 address, which the admin chooses
+      (security-lessons K5)."""
+    from frfw.ipv6 import tunnel_served, wan_devices
 
     lines = []
     served = set(dns_resolver_zones(config))
@@ -472,6 +489,10 @@ def _render_ipv6_input_chain(config: Config) -> list[str]:
     if config.wireguard.enabled and wan:
         lines.append(f"iifname {_devices(wan)} udp dport {config.wireguard.listen_port} accept "
                      f"{_comment('ipv6-wireguard')}")
+    if tunnel_served(config):
+        lines.append(f'iifname "{WIREGUARD_IFACE}" icmpv6 type echo-request limit rate 5/second burst 10 packets '
+                     f'accept {_comment("ipv6-vpn-ping")}')
+    lines.extend(_render_vpn_ipv6_refused(config, "ipv6-vpn-not-served"))
     return lines + _render_ipv6_input_drop(config)
 
 
@@ -532,19 +553,41 @@ def _render_ipv6_lan_input(config: Config) -> list[str]:
 
 def _render_ipv6_forward_guard(config: Config) -> list[str]:
     """First in the forward chain. With no LAN zone getting IPv6, nothing
-    is routed over it (the kernel's IPv6 forwarding is off too). Else
-    only between the WAN's and those zones' devices -- a zone left out
-    of ipv6.lan_zones gets none through the router either -- and from a
-    LAN host only from an address the router routes back to that device
-    (BCP 38: no spoofed source leaves the LAN). Not on the WAN: with two
-    providers the reply route may be the other one."""
-    from frfw.ipv6 import wan_devices
+    is routed over it (the kernel's IPv6 forwarding is off too, but for
+    the VPN). Else only between the WAN's and those zones' devices -- a
+    zone left out of ipv6.lan_zones gets none through the router either
+    -- and from a LAN host only from an address the router routes back to
+    that device (BCP 38: no spoofed source leaves the LAN). Not on the
+    WAN: with two providers the reply route may be the other one.
+
+    The VPN tunnel (FND-1d) ahead of that: its clients' IPv6 reaches the
+    LAN's stable (ULA) networks only, while the router routes IPv6 for the
+    tunnel (frfw.ipv6.tunnel_served) -- WireGuard itself holds each client
+    to its own addresses. Everything else from it, the internet above all
+    (there is no NAT66), is refused at once, so the client goes over IPv4
+    through the tunnel instead of waiting for a timeout -- and never
+    around it (H1). Towards the tunnel, only from the ULA networks."""
+    from frfw.ipv6 import tunnel_served, wan_devices
 
     lan = _ipv6_lan_devices(config)
+    routes_tunnel = bool(lan) and config.wireguard.enabled and tunnel_served(config)
+    vpn: list[str] = []
+    if config.wireguard.enabled:
+        if routes_tunnel:
+            tunnel = f'"{WIREGUARD_IFACE}" meta nfproto ipv6'
+            vpn = [
+                f"iifname {tunnel} ip6 daddr != fc00::/7 reject with icmpv6 type admin-prohibited "
+                f"{_comment('ipv6-vpn-ula-only')}",
+                f"oifname {tunnel} ip6 saddr != fc00::/7 drop {_comment('ipv6-vpn-ula-only')}",
+            ]
+        else:
+            vpn = _render_vpn_ipv6_refused(config, "ipv6-vpn-not-routed")
     if not lan:
-        return [f"meta nfproto ipv6 drop {_comment('ipv6-no-routing')}"]
-    routed = _devices(wan_devices(config) + [d for d in lan if d not in wan_devices(config)])
+        return [*vpn, f"meta nfproto ipv6 drop {_comment('ipv6-no-routing')}"]
+    wan = wan_devices(config)
+    routed = _devices(wan + [d for d in lan if d not in wan] + ([WIREGUARD_IFACE] if routes_tunnel else []))
     return [
+        *vpn,
         f"meta nfproto ipv6 iifname != {routed} drop {_comment('ipv6-not-routed-here')}",
         f"meta nfproto ipv6 oifname != {routed} drop {_comment('ipv6-not-routed-here')}",
         f"meta nfproto ipv6 iifname {_devices(lan)} fib saddr . iif oif missing drop {_comment('ipv6-lan-spoofed')}",

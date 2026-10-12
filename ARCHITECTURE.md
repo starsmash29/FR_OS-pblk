@@ -3957,7 +3957,8 @@ added up. Now:
   from any source) bounds anyway.
 
 **WireGuard** is accepted from the WAN over IPv6 when the VPN is on, as
-over IPv4: it answers no unknown key. The tunnel stays IPv4 (FND-1d).
+over IPv4: it answers no unknown key. Inside the tunnel, see "WireGuard
+over IPv6" below (FND-1d).
 
 **Pinholes (`ipv6.pinholes`).** The admin's exceptions to "nothing new
 comes in from the internet":
@@ -4019,6 +4020,95 @@ RA names it as RDNSS, and a query to the provider's address is answered
 by the router. One more Apply turns management over IPv6 off: closed
 again. After the SNI filter's Apply the ULA is gone from the LAN port
 too, and the pinhole is shown as off.
+
+## WireGuard over IPv6 (ROADMAP FND-1d, 1d-1)
+
+Until 1d the tunnel was IPv4 only, and a device set to send all its
+traffic through the VPN got `AllowedIPs = 0.0.0.0/0`. Its IPv6 then went
+**around** the tunnel, in the clear on whatever network the device was
+on (a café's Wi-Fi, a mobile network): H1 in the FND-1d design, a leak
+of exactly what the user meant the VPN to cover. Now:
+
+- **The tunnel has an IPv6 network of its own**, the last /64 of the
+  router's ULA /48 (`<ULA>:ffff::/64`, `frfw.ipv6.tunnel_network6`): the
+  LAN devices' count up from the first, so the two never meet. The
+  router is `::1`, and each device has the same host number as its IPv4
+  tunnel address (`10.99.0.3` is `<ULA>:ffff::3`), so nothing new is
+  stored per device. From the ULA, so the provider's renumbering never
+  touches it, and it is there whatever the provider gives: a delegated
+  prefix, an address only, or no IPv6 at all.
+- **A full tunnel is `AllowedIPs = 0.0.0.0/0, ::/0`, always**, whatever
+  the router can route. A device's IPv6 never goes around the tunnel,
+  even while the router has no IPv6 to give it: then it is refused (next
+  point), and the device's apps fall back to IPv4 through the tunnel.
+  The configuration's `Address` has the device's IPv6 /128 too, once
+  the router has its ULA prefix (an apply with the VPN on makes it).
+- **What the device's IPv6 can reach.** The router routes it
+  (`frfw.ipv6.tunnel_served`) while IPv6 is on and the tunnel's zone
+  isn't kept off it by an IPv4-only protection (a drop rule by IPv4
+  address, the XDP SNI filter; as for a LAN zone, FND-1b). Then the
+  device reaches the router's tunnel address by ping, and, while a LAN
+  zone has IPv6, the LAN's stable (ULA) networks, through the rules
+  (`from_zone: vpn`), as over IPv4. Everything else is refused at once
+  with ICMPv6 "administratively prohibited": the internet above all,
+  since the tunnel's addresses are ULAs and there is no NAT66.
+  Refused, not dropped: a dropped packet makes the device wait for a
+  timeout before it tries IPv4, which looks like a broken VPN. So:
+  - `wg0` gets its ULA address whenever the VPN is on and the kernel has
+    IPv6, IPv6 off included, and the kernel's IPv6 forwarding is on
+    while the VPN is (`frfw.ipv6.forwarding_wanted`): with forwarding
+    off the kernel drops a routed packet silently, before the forward
+    chain could refuse it. Nothing goes through that the forward chain
+    doesn't let.
+  - The input chain refuses the tunnel's IPv6 ahead of the IPv6-off
+    drop (`ipv6-vpn-off`); with IPv6 on it lets in a rate-limited ping
+    (`ipv6-vpn-ping`) when the tunnel is served and refuses the rest
+    (`ipv6-vpn-not-served`).
+  - The forward chain, first: while the tunnel is served and a LAN zone
+    has IPv6, IPv6 from `wg0` to anything outside `fc00::/7` is refused
+    and IPv6 to `wg0` from outside it is dropped (`ipv6-vpn-ula-only`),
+    and `wg0` joins the devices IPv6 is routed between. Otherwise all of
+    it is refused (`ipv6-vpn-not-routed`).
+  - WireGuard itself holds each device to its own addresses
+    (`AllowedIPs` on the router's side has its IPv4 and IPv6 /32 and
+    /128), so a device can't send from a neighbour's address.
+- **The router's services stay on the tunnel's IPv4 address.** The
+  webUI and SSH listen where the admin puts them (security-lessons K5,
+  ROADMAP SEC-27), and the resolver the configuration names is the
+  tunnel's IPv4 address. Over IPv6 the router answers ping only.
+- **Devices added before.** A device's configuration is on the device,
+  not on the router: the router can't change it. A peer gets
+  `dual_stack: true` when the VPN screen made its configuration with its
+  IPv6 address (a key pair made by the router, with the ULA known); every
+  other peer is marked on the VPN screen as having no IPv6 in its
+  configuration, with what to do: add it again for a new configuration
+  (a new key: the old private key was never stored), or add its IPv6
+  address and `::/0` to its configuration by hand. The old configuration
+  keeps working (IPv4) until then. A device with its own key (the admin
+  pasted its public key) is marked too: the router can't know what its
+  configuration says.
+- **Not covered: a device that sends IPv6 from an address that isn't
+  its tunnel address** (an old configuration with `::/0` but without the
+  /128). WireGuard drops such packets on the router's side before any
+  rule sees them, so they can't be refused: the device waits for its
+  timeout. It doesn't leak: `::/0` holds the traffic in the tunnel.
+- **ZTNA over the tunnel's IPv6** stays refused (fails closed) until
+  1d-3.
+
+**Checked.** `tests/test_wireguard_ipv6.py` covers the addresses, the
+router's and the device's configuration (`::/0` in every full tunnel,
+the /128s), `dual_stack` parsing, the split tunnel's networks,
+`tunnel_served`, the ruleset with IPv6 off, on and the zone kept off
+(each by `nft -c`), the forwarding switch and the tunnel's sync (stale
+addresses removed, the ULA made, no IPv6 in the kernel). The webUI tests
+cover the new configuration's address and the mark on a device without
+one. In the boot test, after the SNI filter's Apply (so the LAN has no
+IPv6): a device added with the whole traffic through the VPN gets an IPv6
+address and `::/0`, the screen marks the device added with its own key,
+and on the next Apply a WireGuard client on the runner's kernel, in a
+namespace whose only way out is the tunnel, pings the router's tunnel
+address over IPv6, and has its IPv6 to the internet refused
+("administratively prohibited") without any of it reaching the provider.
 
 ## Coarse application identification (phase 16)
 

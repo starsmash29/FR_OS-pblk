@@ -15,6 +15,7 @@
     <div><dt>Devices</dt><dd>{{ peers|length }}</dd></div>
     <div><dt>Port</dt><dd>UDP {{ listen_port }}</dd></div>
   </dl>
+  {% if tunnel_ipv6 %}<p class="muted" id="vpn-ipv6">IPv6 in the tunnel: {{ tunnel_ipv6 }}</p>{% endif %}
 </div>
 
 <div class="card">
@@ -47,7 +48,8 @@
     {% for p in peers %}
     <tr>
       <td>{{ p.name }}</td>
-      <td>{{ p.address }}</td>
+      <td>{{ p.address }}{% if p.address6 %}<br><code>{{ p.address6 }}</code>{% endif %}
+        {% if not p.dual_stack %}<br><span class="badge badge-red" data-reissue="{{ p.name }}">No IPv6 in its configuration</span>{% endif %}</td>
       <td><code>{{ p.public_key[:12] }}...</code></td>
       <td>{% if p.handshake %}{{ p.handshake }}{% if p.endpoint_seen %} from {{ p.endpoint_seen }}{% endif %}{% else %}<span class="muted">never</span>{% endif %}</td>
       <td>
@@ -59,6 +61,15 @@
     </tr>
     {% endfor %}
   </table>
+  {% if peers|rejectattr("dual_stack")|list %}
+  <p class="muted" id="vpn-reissue">
+    A device marked <em>No IPv6 in its configuration</em> was added before the tunnel had IPv6, or with its own key.
+    If its configuration sends all traffic through the VPN, its IPv6 still goes <strong>around</strong> the tunnel,
+    in the clear on whatever network it is on. Remove it and add it again for a new configuration (a new key: the
+    old private key was never stored), or add its IPv6 address shown here to <code>Address</code> and
+    <code>::/0</code> to <code>AllowedIPs</code> on the device. Its old configuration keeps working until then.
+  </p>
+  {% endif %}
   {% endif %}
 
   <h3 style="margin-top:1.2rem;">Add a device</h3>

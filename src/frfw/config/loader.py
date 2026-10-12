@@ -1204,10 +1204,13 @@ def _parse_wireguard(
             raise ConfigError(f"wireguard.peers[{i}] ({name}): {ip} is not a free host address in {network}")
         if ip in addresses:
             raise ConfigError(f"wireguard.peers[{i}] ({name}): address {ip} is used twice")
+        dual_stack = body.get("dual_stack", False)
+        if not isinstance(dual_stack, bool):
+            raise ConfigError(f"wireguard.peers[{i}] ({name}): dual_stack must be true or false")
         names.add(name)
         keys.add(key)
         addresses.add(ip)
-        peers.append(WireguardPeer(name=name, public_key=key, address=f"{ip}/32"))
+        peers.append(WireguardPeer(name=name, public_key=key, address=f"{ip}/32", dual_stack=dual_stack))
 
     if enabled and network is None:
         raise ConfigError("wireguard.enabled is true but wireguard.address (the tunnel subnet) is not set")

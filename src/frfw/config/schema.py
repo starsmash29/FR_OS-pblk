@@ -626,6 +626,11 @@ class WireguardPeer:
     name: str
     public_key: str
     address: str
+    #: Whether the device's configuration was issued with its IPv6 tunnel
+    #: address and, for a full tunnel, `::/0` (ROADMAP FND-1d): one issued
+    #: before has neither, and a full-tunnel one of those sends the
+    #: device's IPv6 outside the tunnel (H1). The VPN screen says so.
+    dual_stack: bool = False
 
 
 @dataclass(frozen=True)

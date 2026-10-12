@@ -620,6 +620,7 @@ wireguard:
     - name: laptop
       public_key: 3Ld5...=     # the device's public key; its private key never is here
       address: 10.99.0.2       # the device in the tunnel (a /32 in the tunnel subnet)
+      dual_stack: true         # optional, default false: its configuration has its IPv6 address (FND-1d)
 ```
 
 - The tunnel interface is `wg0`. It belongs to `zone`, so rules decide
@@ -640,6 +641,19 @@ wireguard:
   (ROADMAP SEC-27).
 - Needs the `wireguard` kernel module (Debian's kernel has it; the FR_OS
   image loads it at boot) and `wg` from wireguard-tools.
+- IPv6 in the tunnel (ROADMAP FND-1d): the tunnel has the last /64 of
+  the router's ULA /48 (`<ULA>:ffff::/64`), the router `::1` and each
+  peer the same host number as its `address` (`10.99.0.2` is
+  `<ULA>:ffff::2`). Nothing to set: it follows `address` and
+  `ipv6.ula_prefix`. A full tunnel's configuration always has
+  `AllowedIPs = 0.0.0.0/0, ::/0`, so the device's IPv6 never goes around
+  the tunnel; the router routes it to the LAN's ULA networks while
+  `ipv6.enabled` is on, and refuses the rest.
+- `dual_stack` is set by the VPN screen when it made the peer's
+  configuration with its IPv6 address. A peer without it is marked on
+  the screen: its configuration may send IPv6 around the tunnel. It is
+  a record, not a switch: the router can't change a device's
+  configuration. Must be `true` or `false`.
 
 ## `management`
 

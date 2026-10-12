@@ -18,6 +18,19 @@ like the LAN), instead of opening the webUI to the internet
   `wg` on its standard input, never through a file or the command line.
 - The firewall side is in frfw.nft.builder: wg0 is in its zone's
   interface set, and the listen port is open on the input chain.
+- IPv6 inside the tunnel (ROADMAP FND-1d): a full tunnel used to route
+  `0.0.0.0/0` only, so a device on a network with IPv6 (most mobile
+  providers) sent all its IPv6 *beside* the tunnel, in the clear for that
+  network (H1). Now the tunnel has a ULA /64 of its own
+  (frfw.ipv6.tunnel_network6, the router `::1`, each client the host
+  number of its IPv4 address), a full-tunnel client routes `::/0` into
+  it, and the router lets its IPv6 reach the LAN's ULA networks only:
+  everything else -- the internet above all, there is no NAT66 -- is
+  refused at once (admin-prohibited), so the device's apps go over IPv4,
+  through the tunnel, without waiting for a timeout. With IPv6 off on the
+  router, all of it is refused (frfw.nft.builder). A configuration issued
+  before has neither, and leaks until it is issued again
+  (WireguardPeer.dual_stack).
 
 Shells out to `ip` and `wg` (wireguard-tools), like frfw.ifaddr.
 """
@@ -35,7 +48,7 @@ from pathlib import Path
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 
-from frfw import paths
+from frfw import ipv6, paths
 from frfw.config.loader import internet_facing_zones
 from frfw.config.schema import Config, WireguardConfig
 
@@ -124,12 +137,28 @@ def router_public_key(path: Path | None = None) -> str | None:
 # -- configuration ---------------------------------------------------------------------
 
 
-def render_conf(wg: WireguardConfig, private_key: str) -> str:
-    """The `wg syncconf` configuration: keys, port and peers. (Addresses
-    are the interface's business, set with `ip`.)"""
+def router_address6(prefix: ipaddress.IPv6Network) -> ipaddress.IPv6Interface:
+    """The router's IPv6 address in the tunnel: `<ULA>:ffff::1/64`."""
+    return ipaddress.IPv6Interface((ipv6.tunnel_network6(prefix).network_address + 1, 64))
+
+
+def peer_address6(wg: WireguardConfig, address: str, prefix: ipaddress.IPv6Network) -> str:
+    """A client's IPv6 address in the tunnel, `<ULA>:ffff::<n>/128`: the
+    same host number `n` as its IPv4 address there, so it needs no
+    setting of its own and a device keeps it."""
+    host = int(ipaddress.IPv4Interface(address).ip) - int(tunnel_network(wg).network_address)
+    return f"{ipv6.tunnel_network6(prefix).network_address + host}/128"
+
+
+def render_conf(wg: WireguardConfig, private_key: str, ula: ipaddress.IPv6Network | None = None) -> str:
+    """The `wg syncconf` configuration: keys, port and peers -- each with
+    its IPv6 address too once the ULA prefix is known: WireGuard takes
+    from a key only the addresses listed for it. (Addresses are the
+    interface's business, set with `ip`.)"""
     lines = ["[Interface]", f"PrivateKey = {private_key}", f"ListenPort = {wg.listen_port}"]
     for peer in wg.peers:
-        lines += ["", f"# {peer.name}", "[Peer]", f"PublicKey = {peer.public_key}", f"AllowedIPs = {peer.address}"]
+        allowed = peer.address + (f", {peer_address6(wg, peer.address, ula)}" if ula is not None else "")
+        lines += ["", f"# {peer.name}", "[Peer]", f"PublicKey = {peer.public_key}", f"AllowedIPs = {allowed}"]
     return "\n".join(lines) + "\n"
 
 
@@ -147,9 +176,13 @@ def next_free_address(wg: WireguardConfig) -> str:
     raise WireguardError(f"no free address left in {tunnel_network(wg)}")
 
 
-def split_tunnel_networks(config: Config) -> list[str]:
+def split_tunnel_networks(config: Config, ula: ipaddress.IPv6Network | None = None) -> list[str]:
     """What a client routes through the tunnel by default: the tunnel
-    itself and the networks of the zones that don't face the internet."""
+    itself and the networks of the zones that don't face the internet --
+    with the ULA prefix, the tunnel's IPv6 network too and, while the
+    router routes IPv6 for the tunnel (frfw.ipv6.tunnel_served), the
+    LAN zones' stable (ULA) networks. Never a provider's prefix: it
+    changes, and the client's config doesn't."""
     internet = internet_facing_zones(config.zones, config.nat)
     nets = [str(tunnel_network(config.wireguard))]
     for iface in sorted(config.interfaces.values(), key=lambda i: i.name):
@@ -157,20 +190,36 @@ def split_tunnel_networks(config: Config) -> list[str]:
             net = str(ipaddress.IPv4Interface(iface.address).network)
             if net not in nets:
                 nets.append(net)
+    if ula is not None:
+        nets.append(str(ipv6.tunnel_network6(ula)))
+        if ipv6.tunnel_served(config):
+            for _, _, address in ipv6.ula_addresses(config, ula):
+                net = str(ipaddress.IPv6Interface(address).network)
+                if net not in nets:
+                    nets.append(net)
     return nets
 
 
+#: A full tunnel: every IPv4 and every IPv6 destination (FND-1d, H1).
+FULL_TUNNEL = "0.0.0.0/0, ::/0"
+
+
 def client_config(config: Config, *, private_key: str, address: str, router_key: str,
-                  full_tunnel: bool = False) -> str:
+                  full_tunnel: bool = False, ula: ipaddress.IPv6Network | None = None) -> str:
     """The configuration for a new device (the WireGuard app imports it,
-    also as a QR code)."""
+    also as a QR code). A full tunnel routes `::/0` too, whatever the
+    router does with IPv6: otherwise the device's IPv6 goes around the
+    tunnel (H1). With the ULA prefix (frfw.ipv6.ula_prefix, made by the
+    first apply with the VPN on) the device gets its IPv6 tunnel address
+    as well, so the router can answer that IPv6 at once."""
     wg = config.wireguard
     endpoint = wg.endpoint or "YOUR-ROUTER-ADDRESS"
-    allowed = "0.0.0.0/0" if full_tunnel else ", ".join(split_tunnel_networks(config))
+    allowed = FULL_TUNNEL if full_tunnel else ", ".join(split_tunnel_networks(config, ula))
+    addresses = address + (f", {peer_address6(wg, address, ula)}" if ula is not None else "")
     return "\n".join([
         "[Interface]",
         f"PrivateKey = {private_key}",
-        f"Address = {address}",
+        f"Address = {addresses}",
         "",
         "[Peer]",
         f"PublicKey = {router_key}",
@@ -195,25 +244,33 @@ def tunnel_exists(*, run: Runner | None = None) -> bool:
 
 
 def sync(config: Config, *, dry_run: bool = False, key_path: Path | None = None,
-         run: Runner | None = None) -> SyncResult:
+         run: Runner | None = None, proc_root: Path | None = None,
+         ula_state_path: Path | None = None) -> SyncResult:
     run = run or _run
     wg = config.wireguard
+    with_ipv6 = ipv6.kernel_has_ipv6(proc_root)
     if not wg.enabled:
         if dry_run:
             return SyncResult("WireGuard off (dry-run: nothing checked)")
         if _link_exists(run):
             run(["ip", "link", "del", "dev", IFACE])
+            if with_ipv6:
+                ipv6.write_sysctls({"ipv6/conf/all/forwarding": "1" if ipv6.forwarding_wanted(config) else "0"},
+                                   proc_root)
             return SyncResult(f"WireGuard off: {IFACE} removed")
         return SyncResult("WireGuard off")
     summary = f"{IFACE} {wg.address}, UDP {wg.listen_port}, {len(wg.peers)} peer(s)"
     if dry_run:
         return SyncResult(f"WireGuard: would bring up {summary}")
     private_key = ensure_private_key(key_path)
+    # ROADMAP FND-1d: the tunnel's IPv6 (on whatever the router's own
+    # IPv6 setting: a client's IPv6 is refused rather than lost).
+    ula = ipv6.ensure_ula_prefix(config, ula_state_path) if with_ipv6 else None
     if not _link_exists(run):
         run(["ip", "link", "add", "dev", IFACE, "type", "wireguard"])
     # From standard input: the private key is never in a file wg could
     # leave behind, nor on a command line other users can read.
-    run(["wg", "syncconf", IFACE, "/dev/stdin"], input=render_conf(wg, private_key))
+    run(["wg", "syncconf", IFACE, "/dev/stdin"], input=render_conf(wg, private_key, ula))
     wanted = ipaddress.IPv4Interface(wg.address)
     shown = run(["ip", "-o", "-4", "addr", "show", "dev", IFACE]).stdout
     for line in shown.splitlines():
@@ -223,6 +280,20 @@ def sync(config: Config, *, dry_run: bool = False, key_path: Path | None = None,
             if ipaddress.IPv4Interface(current) != wanted:
                 run(["ip", "addr", "del", current, "dev", IFACE])
     run(["ip", "addr", "replace", str(wanted), "dev", IFACE])
+    if ula is not None:
+        ipv6.write_sysctls({f"ipv6/conf/{IFACE}/disable_ipv6": "0", "ipv6/conf/all/forwarding": "1"}, proc_root)
+        wanted6 = router_address6(ula)
+        shown = run(["ip", "-o", "-6", "addr", "show", "dev", IFACE, "scope", "global"]).stdout
+        for line in shown.splitlines():
+            parts = line.split()
+            if "inet6" in parts:
+                current = parts[parts.index("inet6") + 1]
+                if ipaddress.IPv6Interface(current) != wanted6:
+                    run(["ip", "-6", "addr", "del", current, "dev", IFACE])
+        # No duplicate address detection: nothing else is on a tunnel, and
+        # a tentative address can't be used.
+        run(["ip", "-6", "addr", "replace", str(wanted6), "dev", IFACE, "nodad"])
+        summary += f"; IPv6 {wanted6} in the tunnel"
     run(["ip", "link", "set", "dev", IFACE, "up"])
     return SyncResult(f"WireGuard up: {summary}")
 
