@@ -1,8 +1,8 @@
 # Integrator handover
 
 State and working agreements for the next session of the integrating agent
-(Claude Code), so work picks up where it stopped. Last updated 2026-10-11,
-`main` at `e71bcfe`.
+(Claude Code), so work picks up where it stopped. Last updated 2026-10-12,
+`main` at `6ad07e5`.
 
 ## How the owner and the integrator work
 
@@ -58,6 +58,7 @@ State and working agreements for the next session of the integrating agent
 | #89 | SEC-29 | verify-medium judges the accounts, sshd, PAM and fstab files against the image and lists who can log in (`--login-ok NAME` for the admin's own SSH users) |
 | #90 | DNS-1 | Local names and split-horizon overrides in the router's resolver (`local_dns`), never blocked, never asked upstream |
 | #91 | FND-1a | The router's own IPv6 on the WAN (`ipv6.enabled`): dhcpcd in a sandbox (SLAAC RFC 7217, DHCPv6, PD recorded), IPv6 dropped but what the WAN needs; the boot test has an IPv6 provider (radvd + kea-dhcp6 in a netns) |
+| #92 | FND-1b | IPv6 on the LAN: `ia_pd` /64 per LAN zone (`ipv6.lan_zones`), RA-only dnsmasq `fr-ra.service` (no RDNSS), forwarding only while a LAN has IPv6, WAN-new drop, BCP 38, `meta l4proto` rules, IDS quarantine by MAC; zones behind an IPv4-only protection stay off IPv6 |
 
 ## Hardware test (owner's box): passed
 
@@ -73,7 +74,7 @@ State and working agreements for the next session of the integrating agent
 
 ## Open, candidates for next
 
-- **FND-1 (IPv6), four stages agreed with the owner:** 1a the router's own IPv6 on the WAN (done, #91), 1b the LAN (delegated prefix, RA, forwarding; in review, branch `claude/project-thread-gq31th`), 1c services over IPv6 (DNS/RDNSS, webUI, SSH, inbound pinholes), 1d XDP and the IPv4-only security features. FR_OS is a community edition: every provider (prefix, address only, nothing) must work and be explained.
+- **FND-1 (IPv6), four stages agreed with the owner:** 1a the router's own IPv6 on the WAN (done, #91), 1b the LAN (delegated prefix, RA, forwarding; done, #92), 1c services over IPv6 and inbound pinholes (done, branch `claude/project-thread-gq31th`: ULA, RDNSS, DNS, `management.ipv6` off by default, no DHCPv6 server by decision, `ipv6.pinholes`), 1d next: XDP and the IPv4-only security features (the SNI filter, address rules, ZTNA and the WireGuard tunnel over IPv6). FND-1c gotchas: the boot test's SSH is off (nobody has a key), so over IPv6 it shows as "refused" (let through, nothing listens); pinholes are config-only, so the boot test writes one into config.yaml after boot 2; the container's kernel has no IPv6, so everything with packets is in the boot test. FR_OS is a community edition: every provider (prefix, address only, nothing) must work and be explained.
 
 - **FND-4:** Realtek firmware (`firmware-realtek`) is in the image (Partly). Other vendors' NIC firmware is still out.
 - **P5-1 / FND-2:** the owner's box is recorded in `docs/hardware.md` (Partly). Add boxes as they are tested.

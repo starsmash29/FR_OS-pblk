@@ -238,6 +238,13 @@ IPV6_RA_SERVICE_NAME = "fr-ra"
 #: Its account: a dynamic one (DynamicUser=), owning nothing on disk.
 RA_USER = "fr_os-ra"
 
+#: The LAN's stable IPv6 networks (ROADMAP FND-1c, frfw.ipv6): the ULA
+#: /48 (RFC 4193) the router generated once, at random, and the router
+#: addresses an apply put on the LAN devices from it -- so the next apply
+#: removes exactly those it no longer wants. Not secret: the webUI reads
+#: it for its listen addresses.
+IPV6_ULA_STATE_PATH = Path("/etc/fr_os/ipv6_ula.json")
+
 #: IoT device inventory (phase 14, see frfw.iot.scanner): the last
 #: scan's discovered devices, their classification and the reasons for
 #: it. Display-only state written by the unprivileged scanner (running

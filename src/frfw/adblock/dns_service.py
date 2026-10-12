@@ -102,7 +102,10 @@ no-resolv
 no-hosts
 {hosts_lines}
 {listen_lines}
-bind-interfaces
+# Each address of those interfaces, and the ones they get later (ROADMAP
+# FND-1c): IPv6 addresses come and go -- the provider's prefix is
+# renumbered, the stable ULA one is added by the next apply.
+bind-dynamic
 {server_lines}
 {extra_lines}user=nobody
 group=nogroup

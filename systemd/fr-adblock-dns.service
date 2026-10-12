@@ -27,7 +27,9 @@ ExecStart=/usr/sbin/dnsmasq --keep-in-foreground --conf-file=/etc/fr_os/dnsmasq_
 Restart=on-failure
 # Sandbox (security-lessons I1; checked by tests/test_systemd_sandbox.py).
 # dnsmasq binds :53 on the DHCP zones' interfaces only (interface= +
-# bind-interfaces, frfw.adblock.dns_service), then drops to nobody itself.
+# bind-dynamic, frfw.adblock.dns_service), then drops to nobody itself,
+# keeping CAP_NET_BIND_SERVICE alone to bind the addresses those
+# interfaces get later (IPv6, ROADMAP FND-1c).
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes

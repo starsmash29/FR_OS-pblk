@@ -46,7 +46,7 @@ import json
 import subprocess
 
 from frfw import validate
-from frfw.nft.builder import BRUTEFORCE_JAIL_SET_NAME, FILTER_TABLE
+from frfw.nft.builder import BRUTEFORCE_JAIL6_SET_NAME, BRUTEFORCE_JAIL_SET_NAME, FILTER_TABLE
 
 
 class BruteforceError(Exception):
@@ -54,33 +54,50 @@ class BruteforceError(Exception):
     binary itself is unavailable."""
 
 
+def jail_key(ip: str) -> str:
+    """What one source is, for counting and jailing: an IPv4 address as
+    it is, an IPv6 one as its /64 (ROADMAP FND-1c). A host picks its own
+    interface identifier -- SLAAC, privacy addresses, any of 2^64 by
+    hand -- so an IPv6 address is no limit at all."""
+    address = ipaddress.ip_address(ip)
+    if address.version == 6:
+        if address.ipv4_mapped is not None:
+            return str(address.ipv4_mapped)
+        return str(ipaddress.IPv6Network((address, 64), strict=False))
+    return str(address)
+
+
 def ban_ip(ip: str, duration_seconds: int) -> None:
     """Adds `ip` to the kernel's brute-force jail set for
-    `duration_seconds` -- the sole enforcement action. Requires root and
-    the set to already exist (i.e. at least one firewall apply must have
-    run since install, same precondition `frfw.ztna.authorize_ip` has for
-    its own set)."""
+    `duration_seconds` -- the sole enforcement action: an IPv4 address to
+    BRUTEFORCE_JAIL_SET_NAME, an IPv6 one's /64 to
+    BRUTEFORCE_JAIL6_SET_NAME (jail_key). Requires root and the set to
+    already exist (i.e. at least one firewall apply must have run since
+    install, same precondition `frfw.ztna.authorize_ip` has for its own
+    set)."""
     try:
-        ipaddress.IPv4Address(ip)
+        key = jail_key(ip)
     except ValueError as exc:
-        raise BruteforceError(f"invalid IPv4 address {ip!r}: {exc}") from exc
+        raise BruteforceError(f"invalid IP address {ip!r}: {exc}") from exc
     if duration_seconds <= 0:
         raise BruteforceError(f"duration_seconds must be positive, got {duration_seconds}")
 
+    set_name = BRUTEFORCE_JAIL6_SET_NAME if ":" in key else BRUTEFORCE_JAIL_SET_NAME
     _nft(
         [
-            "add", "element", "inet", FILTER_TABLE, BRUTEFORCE_JAIL_SET_NAME,
-            "{", f"{ip} timeout {duration_seconds}s", "}",
+            "add", "element", "inet", FILTER_TABLE, set_name,
+            "{", f"{key} timeout {duration_seconds}s", "}",
         ]
     )
 
 
 def list_banned() -> list[tuple[str, int]]:
     """Live (ip, remaining_seconds) pairs for every currently jailed IP
-    -- a status query, e.g. for the metrics exporter's
-    `fros_bruteforce_banned_ips` gauge (see frfw.metrics). Surfaces a
-    genuine nft problem rather than silently reporting zero banned IPs."""
-    return _list_set_elements()
+    -- an IPv6 /64 as "<network>/64" -- a status query, e.g. for the
+    metrics exporter's `fros_bruteforce_banned_ips` gauge (see
+    frfw.metrics). Surfaces a genuine nft problem rather than silently
+    reporting zero banned IPs."""
+    return _list_set_elements() + _list_set_elements(BRUTEFORCE_JAIL6_SET_NAME)
 
 
 def snapshot_before_reload() -> list[tuple[str, int]]:
@@ -96,11 +113,17 @@ def snapshot_before_reload() -> list[tuple[str, int]]:
     return _list_set_elements()
 
 
+def snapshot6_before_reload() -> list[tuple[str, int]]:
+    """The same for the IPv6 jail: ("<network>/64", seconds left)."""
+    return _list_set_elements(BRUTEFORCE_JAIL6_SET_NAME)
+
+
 # --- kernel state (nft) -------------------------------------------------
 
 
-def _list_set_elements() -> list[tuple[str, int]]:
-    proc = _run_nft(["-j", "list", "set", "inet", FILTER_TABLE, BRUTEFORCE_JAIL_SET_NAME])
+def _list_set_elements(set_name: str | None = None) -> list[tuple[str, int]]:
+    set_name = set_name or BRUTEFORCE_JAIL_SET_NAME
+    proc = _run_nft(["-j", "list", "set", "inet", FILTER_TABLE, set_name])
     if proc.returncode != 0:
         stderr = proc.stderr.strip()
         if "No such file or directory" in stderr or "does not exist" in stderr:
@@ -121,11 +144,24 @@ def _list_set_elements() -> list[tuple[str, int]]:
             elem = entry.get("elem") if isinstance(entry, dict) else None
             if not isinstance(elem, dict):
                 continue
-            ip = elem.get("val")
-            if not isinstance(ip, str):
+            ip = _element_value(elem.get("val"))
+            if ip is None:
                 continue
             elements.append((ip, int(elem.get("expires") or 0)))
     return elements
+
+
+def _element_value(val) -> str | None:
+    """An address ("192.0.2.1"), or an interval set's prefix -- `nft -j`
+    gives {"prefix": {"addr": "2001:db8::", "len": 64}} -- as
+    "2001:db8::/64"."""
+    if isinstance(val, str):
+        return val
+    if isinstance(val, dict) and isinstance(val.get("prefix"), dict):
+        prefix = val["prefix"]
+        if isinstance(prefix.get("addr"), str) and isinstance(prefix.get("len"), int):
+            return f"{prefix['addr']}/{prefix['len']}"
+    return None
 
 
 def _nft(args: list[str]) -> None:

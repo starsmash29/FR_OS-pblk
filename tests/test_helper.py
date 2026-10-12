@@ -93,16 +93,24 @@ def running_server(tmp_path, monkeypatch, neighbours):
     # Same fakery, for the same reason, as ztna_set above -- this socket
     # protocol test only cares that "ban_ip" maps to a correctly-formed
     # nft add-element call, not that the real kernel set exists.
-    jail_set: dict[str, int] = {}
+    # Keyed by set: the IPv4 jail and the IPv6 one (by /64, ROADMAP
+    # FND-1c), listed the way `nft -j` gives an interval set's prefix.
+    jail_sets: dict[str, dict[str, int]] = {}
 
     def fake_bruteforce_run_nft(args):
         if args[:2] == ["add", "element"]:
             ip, ttl = args[-2].split(" timeout ")
-            jail_set[ip] = int(ttl.rstrip("s"))
+            jail_sets.setdefault(args[4], {})[ip] = int(ttl.rstrip("s"))
             return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
         if args[:2] == ["-j", "list"]:
             import json as _json
-            elems = [{"elem": {"val": ip, "expires": ttl}} for ip, ttl in jail_set.items()]
+
+            def val(ip):
+                if "/" not in ip:
+                    return ip
+                addr, length = ip.split("/")
+                return {"prefix": {"addr": addr, "len": int(length)}}
+            elems = [{"elem": {"val": val(ip), "expires": ttl}} for ip, ttl in jail_sets.get(args[5], {}).items()]
             return subprocess.CompletedProcess(
                 args, 0, stdout=_json.dumps({"nftables": [{"set": {"elem": elems}}]}), stderr=""
             )
@@ -388,7 +396,7 @@ def test_refresh_adblock_success(running_server, tmp_path, monkeypatch):
 def test_ban_ip_rejects_invalid_address(running_server):
     response = client.ban_ip("not-an-ip", 3600, running_server)
     assert response["ok"] is False
-    assert "invalid ipv4 address" in response["message"].lower()
+    assert "invalid ip address" in response["message"].lower()
 
 
 def test_ban_ip_rejects_missing_ip(running_server):
@@ -545,6 +553,16 @@ def test_bruteforce_status_reflects_kernel_state_after_ban(running_server):
     assert response["ok"] is True
     assert response["count"] == 1
     assert response["banned"][0]["ip"] == "10.0.0.5"
+
+
+def test_ban_ip_jails_an_ipv6_source_by_its_64(running_server):
+    """ROADMAP FND-1c: a host picks its own IPv6 addresses, so the jail
+    holds the /64 -- in its own set, listed with the IPv4 bans."""
+    assert client.ban_ip("2001:db8:100:0:1234:5678:9abc:def0", 100, running_server)["ok"] is True
+    client.ban_ip("10.0.0.5", 100, running_server)
+    response = client.bruteforce_status(running_server)
+    assert response["count"] == 2
+    assert sorted(b["ip"] for b in response["banned"]) == ["10.0.0.5", "2001:db8:100::/64"]
 
 
 def test_ztna_sessions_status_empty_when_gate_disabled(running_server):

@@ -174,9 +174,14 @@ def test_bruteforce_jail_drop_rule_is_first_rule_in_input_chain(minimal_config_d
 
     assert rule_lines[0] == 'ip saddr @bruteforce_jail drop comment "bruteforce-jail"'
     assert rule_lines[1] == 'ip saddr @ids_quarantine drop comment "ids-quarantine"'
+    # ROADMAP FND-1c: the same over IPv6 -- the jail by /64 (management
+    # ports only), a quarantined host by its MAC.
+    assert rule_lines[2] == ('ip6 saddr @bruteforce_jail6 tcp dport { 22, 443 } drop '
+                             'comment "bruteforce-jail6"')
+    assert rule_lines[3] == 'meta nfproto ipv6 ether saddr @ids_quarantine_mac drop comment "ids-quarantine-ipv6"'
     # Must come before even the loopback accept, which is otherwise the
     # first rule in the chain.
-    assert rule_lines[2] == 'iifname "lo" accept'
+    assert rule_lines[4] == 'iifname "lo" accept'
 
 
 def test_ids_quarantine_also_cuts_forwarded_traffic(minimal_config_dict):

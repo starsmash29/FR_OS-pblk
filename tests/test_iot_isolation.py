@@ -108,10 +108,11 @@ def test_iot_input_rules_precede_established_accept(minimal_config_dict):
     ruleset = build_ruleset(parse_config(_iot_raw(minimal_config_dict)))
     input_chain = ruleset.split("chain input {")[1].split("chain forward {")[0]
     lines = [l.strip() for l in input_chain.splitlines() if l.strip()]
-    assert lines[3] == 'iifname @lan_ifaces udp sport 5353 udp dport 53530 accept comment "iot-mdns-replies"'
-    assert lines[4].startswith("ether saddr @iot_isolated udp dport { 53, 67 } accept")
-    assert lines[6] == 'ether saddr @iot_isolated drop comment "iot-isolated-input"'
-    assert lines.index('ct state established,related accept') > 6
+    # After the jail and the quarantine drops (lines 1-4, IPv4 and IPv6).
+    assert lines[5] == 'iifname @lan_ifaces udp sport 5353 udp dport 53530 accept comment "iot-mdns-replies"'
+    assert lines[6].startswith("ether saddr @iot_isolated udp dport { 53, 67 } accept")
+    assert lines[8] == 'ether saddr @iot_isolated drop comment "iot-isolated-input"'
+    assert lines.index('ct state established,related accept') > 8
 
 
 def test_internet_only_mode_allows_masquerade_zones(minimal_config_dict):

@@ -131,3 +131,32 @@ def test_a_lan_address_change_that_takes_the_webui_s_address_is_refused_on_save(
                                                      "address": "192.168.1.3/24"})
     assert "System+-%3E+webUI+address" in response.headers["location"]
     assert webui_env["config_path"].read_text() == before
+
+
+# --- over IPv6 (ROADMAP FND-1c) ------------------------------------------------------------
+
+
+def test_the_system_screen_offers_management_over_ipv6_once_ipv6_is_on(system_page):
+    from frfw import ipv6
+
+    assert "IPv6 is off (Interfaces screen)" in system_page()
+    page = system_page(ipv6={"enabled": True})
+    assert 'action="/system/management-ipv6"' in page and 'name="ipv6" value="true" >' in page
+    ipv6._write_ula_state({"generated": "fd12:3456:789a::/48"})
+    page = system_page(ipv6={"enabled": True}, management={"ipv6": True})
+    assert 'name="ipv6" value="true" checked>' in page
+    assert '<code id="management-ipv6-addresses">fd12:3456:789a::1</code>' in page
+
+
+def test_turning_management_over_ipv6_on_is_saved_and_audited(webui_env):
+    client = _admin(webui_env)
+    raw = yaml.safe_load(webui_env["config_path"].read_text())
+    raw["ipv6"] = {"enabled": True}
+    webui_env["config_path"].write_text(yaml.safe_dump(raw))
+    response = client.post("/system/management-ipv6", data={"ipv6": "true"})
+    assert "success=Management+over+IPv6+on" in response.headers["location"]
+    saved = yaml.safe_load(webui_env["config_path"].read_text())["management"]
+    assert saved == {"addresses": ["192.168.1.1"], "ipv6": True}  # nothing else moved
+    assert "management over IPv6 turned on" in webui_env["audit_log_path"].read_text()
+    client.post("/system/management-ipv6", data={})
+    assert yaml.safe_load(webui_env["config_path"].read_text())["management"]["ipv6"] is False

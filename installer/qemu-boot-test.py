@@ -28,7 +28,10 @@ boxes: the LAN must stay out of its way (ROADMAP NET-12).
    included -- and a LAN address change that would is refused: the
    admin's webUI address setting puts it on the VPN's address too
    (SEC-27). A move nobody confirms -- the webUI on the VPN alone -- goes
-   back by itself at the deadline. At its end a config
+   back by itself at the deadline. IPv6 is turned on against a test
+   provider (ROADMAP FND-1): the router's WAN and LAN addresses, the LAN
+   host's, its stable (ULA) address and DNS over IPv6, management over
+   IPv6 on and off again, and the admin's pinhole. At its end a config
    is saved that names a device the VM doesn't have; its apply changes
    nothing.
 4. Fourth boot: config.yaml can't be applied (that device), so the router
@@ -150,6 +153,23 @@ FORGED_PREFIX = "2001:db8:bad::/64"
 SPOOFED_SOURCE = "2001:db8:bad::5"
 #: A TCP port the LAN host listens on, for a connection from the provider.
 LAN_HOST_PORT = 8443
+#: ROADMAP FND-1c: the admin's pinhole to the LAN host -- by interface ID,
+#: an address the host is given by hand in whatever /64 the LAN has, and
+#: one port of it. Written into config.yaml before boot 3, the way a
+#: pinhole is set in this step (the webUI lists them, it doesn't edit
+#: them); kept, unused, while IPv6 is off.
+PINHOLE_IID = "::f00d:1"
+PINHOLE_PORT = 8444
+PINHOLE_YAML = f"""\
+ipv6:
+  enabled: false
+  pinholes:
+    - name: boot-test-nas
+      zone: lan
+      host: "{PINHOLE_IID}"
+      proto: tcp
+      port: {PINHOLE_PORT}
+"""
 WAN_MAC = "52:54:00:00:00:01"
 WAN_MAC_IID = "5054:ff:fe00:1"
 DISK_SIZE = 2 * 2**30
@@ -473,6 +493,52 @@ def ipv6_card(opener) -> tuple[str, list[str], list[str]]:
     return (state.group(1) if state else "",
             re.findall(r'<dd class="ipv6-address">([^<]*)</dd>', page),
             re.findall(r'<dd class="ipv6-prefix">([^<]*)</dd>', page))
+
+
+def ipv6_card_stable(opener) -> tuple[dict[str, str], dict[str, str]]:
+    """The card's stable (ULA) addresses of the router, "zone (device)" ->
+    address, and its pinholes, name -> where they lead (ROADMAP FND-1c)."""
+    page = get(opener, "/interfaces")
+    return (dict(re.findall(r'<dt>([^<]*), stable</dt><dd class="ipv6-ula">([^<]*)</dd>', page)),
+            {k: html.unescape(v) for k, v in
+             re.findall(r'<dt>Pinhole ([^<]*)</dt><dd class="ipv6-pinhole">([^<]*)</dd>', page)})
+
+
+def router_advert(timeout: float = 15) -> tuple[list[ipaddress.IPv6Network], list[str]] | None:
+    """The router's Router Advertisement on the LAN, solicited: the
+    prefixes it advertises (Prefix Information) and the DNS servers
+    (RDNSS, RFC 8106) -- or None when none came."""
+    s = socket.socket(socket.AF_INET6, socket.SOCK_RAW, socket.IPPROTO_ICMPV6)
+    try:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, LAN_TAP.encode())
+        s.settimeout(1)
+        solicit_router()
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                data = s.recv(4096)
+            except OSError:
+                continue
+            if data and data[0] == 134:
+                return parse_router_advert(data)
+        return None
+    finally:
+        s.close()
+
+
+def parse_router_advert(data: bytes) -> tuple[list[ipaddress.IPv6Network], list[str]]:
+    """A Router Advertisement's prefixes (Prefix Information, RFC 4861
+    4.6.2) and DNS servers (RDNSS, RFC 8106 5.1)."""
+    prefixes, servers, offset = [], [], 16  # past the RA's fixed part
+    while offset + 8 <= len(data) and data[offset + 1]:
+        kind, length = data[offset], data[offset + 1] * 8
+        body = data[offset:offset + length]
+        if kind == 3 and length == 32:
+            prefixes.append(ipaddress.IPv6Network((bytes(body[16:32]), body[2]), strict=False))
+        elif kind == 25:
+            servers += [str(ipaddress.IPv6Address(bytes(body[i:i + 16]))) for i in range(8, length - 15, 16)]
+        offset += length
+    return prefixes, servers
 
 
 def ipv6_card_lan(opener) -> tuple[str, dict[str, str]]:
@@ -822,15 +888,19 @@ def udp_through_router(port: int, timeout: float = 3) -> str:
             return "no answer"
 
 
-def dns_answer(server: str, name: str, qtype: int = 1, timeout: float = 3) -> tuple[int, list[bytes]] | None:
-    """(rcode, the answers' RDATA) of one query to `server`, or None
-    without an answer."""
+def dns_answer(server: str, name: str, qtype: int = 1, timeout: float = 3,
+               source: str | None = None) -> tuple[int, list[bytes]] | None:
+    """(rcode, the answers' RDATA) of one query to `server` -- over IPv6
+    for an IPv6 one, sent from `source` if given -- or None without an
+    answer."""
     packet = struct.pack("!HHHHHH", 0x4652, 0x0100, 1, 0, 0, 0)
     packet += b"".join(bytes([len(label)]) + label.encode() for label in name.split(".")) + b"\0"
     packet += struct.pack("!HH", qtype, 1)
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+    with socket.socket(socket.AF_INET6 if ":" in server else socket.AF_INET, socket.SOCK_DGRAM) as sock:
         sock.settimeout(timeout)
         try:
+            if source:
+                sock.bind((source, 0))
             sock.sendto(packet, (server, 53))
             data = sock.recv(4096)
         except OSError:
@@ -1069,10 +1139,146 @@ def check_lan_ipv6(check, opener, provider: Isp, wan_address: str | None) -> str
     check(inbound == "no answer" and not ping_sources(source),
           f"the provider can't reach the LAN host over IPv6, not even a ping (nothing new comes in): {inbound}")
     check(ping_from_lan(router, source), f"the router answers the LAN's ping on its LAN address {router}")
-    services = {port: tcp_from_lan(router, port, source) for port in (WEBUI_PORT, 22)}
+    # ROADMAP FND-1c: the router's stable address on the LAN, a ULA /64
+    # advertised next to the delegated one -- the host takes one there too.
+    deadline = time.monotonic() + 60
+    stable, pinholes = ipv6_card_stable(opener)
+    router_ula = next((ipaddress.IPv6Interface(a) for d, a in stable.items() if d.startswith("lan (")), None)
+    host_ula = None
+    while router_ula and time.monotonic() < deadline:
+        host_ula = next((a for a in lan_host_addresses() if a.ip in router_ula.network), None)
+        if host_ula:
+            break
+        solicit_router()
+        time.sleep(3)
+    check(router_ula is not None and router_ula.ip in ipaddress.IPv6Network("fd00::/8")
+          and router_ula.network.prefixlen == 64 and router_ula.ip == router_ula.network.network_address + 1
+          and router_ula.ip not in ipaddress.IPv6Network("fd00::/48"),
+          f"the router has a stable address on the LAN: <random ULA /48>:<sla>::1/64 (RFC 4193, ROADMAP FND-1c): "
+          f"{stable}")
+    ok = check(host_ula is not None, f"...advertised: the LAN host took an address in it by SLAAC as well: "
+                                     f"{[str(a) for a in lan_host_addresses()]}")
+    advert = router_advert()
+    check(advert is not None and router_ula is not None and network in advert[0]
+          and router_ula.network in advert[0] and not advert[1],
+          "the router's RA carries both prefixes, and no DNS server (RDNSS) while its resolver doesn't serve "
+          f"the LAN: {advert}")
+    if not ok:
+        IPV6_FAILED = True
+        return source
+    ula, ula_source = str(router_ula.ip), str(host_ula.ip)
+    check(ping_from_lan(ula, ula_source), f"the router answers on its stable address {ula}")
+    listener = echo_sources_at_isp(8)
+    time.sleep(1)
+    leaked = ping_from_lan(ISP_ADDRESS, ula_source)
+    seen = set(listener.communicate(timeout=30)[0].split())
+    check(not leaked and ula_source not in seen,
+          f"...which never reaches the internet: a ULA source towards the provider is refused (RFC 4193): {seen}")
+    services = {(address, port): tcp_from_lan(address, port, own)
+                for address, own in ((router, source), (ula, ula_source)) for port in (WEBUI_PORT, 22)}
     check(set(services.values()) == {"no answer"},
-          f"...and nothing else over IPv6 yet: the webUI and SSH stay on IPv4 (ROADMAP FND-1c): {services}")
+          f"the webUI and SSH get no answer over IPv6 while management over IPv6 is off (its default, ROADMAP "
+          f"FND-1c): {services}")
+    # The admin's pinhole (PINHOLE_YAML): the host's address with that
+    # interface ID, whatever the delegated /64 is, and that one port.
+    target = str(network.network_address + int(ipaddress.IPv6Address(PINHOLE_IID)))
+    check(target in pinholes.get("boot-test-nas", ""),
+          f"the card lists the pinhole with the address it leads to now: {pinholes}")
+    subprocess.run(["ip", "-6", "addr", "add", f"{target}/64", "dev", LAN_TAP, "nodad"], check=True)
+    try:
+        with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as opened, \
+                socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as other:
+            opened.bind((target, PINHOLE_PORT))
+            other.bind((target, LAN_HOST_PORT))
+            opened.listen()
+            other.listen()
+            through = tcp_from_isp(target, PINHOLE_PORT)
+            beside = tcp_from_isp(target, LAN_HOST_PORT)
+    finally:
+        subprocess.run(["ip", "-6", "addr", "del", f"{target}/64", "dev", LAN_TAP], capture_output=True)
+    check(through == "open", f"the provider reaches the LAN host through its pinhole, TCP {PINHOLE_PORT} "
+                             f"(ROADMAP FND-1c): {through}")
+    check(beside == "no answer", f"...and no other port of that host: {beside}")
     return source
+
+
+def check_ipv6_services(check, opener, boot_timeout: float) -> bool:
+    """ROADMAP FND-1c, on an Apply of its own: the router's resolver serves
+    the LAN (with force-DNS) and management over IPv6 is turned on. The RA
+    then names the router's stable address as the LAN's DNS server, it
+    answers there, a query to any other server is answered by it too,
+    and the webUI and SSH answer on that address only -- not on the
+    delegated one. Turned off again on a second Apply: closed. Whether
+    both Applies were confirmed."""
+    stable, _ = ipv6_card_stable(opener)
+    router_ula = next((ipaddress.IPv6Interface(a) for d, a in stable.items() if d.startswith("lan (")), None)
+    _, lan = ipv6_card_lan(opener)
+    network = next((ipaddress.IPv6Network(n) for d, n in lan.items() if d.startswith("lan (") and "/" in n), None)
+    hosts = lan_host_addresses()
+    host_ula = next((a for a in hosts if router_ula and a.ip in router_ula.network), None)
+    host = next((a for a in hosts if network and a.ip in network), None)
+    # ROADMAP DNS-1: a local name, answered by the router's resolver
+    # (which serves the LAN for it). The list URL is never fetched.
+    post(opener, "/adblock/settings", {"enabled": "true", "source_urls": "https://lists.fr-os.test/hosts",
+                                       "serve_lan": "true", "force_dns": "true"})
+    post(opener, "/adblock/local-dns/add", {"kind": "hosts", "name": LOCAL_DNS_NAME,
+                                            "address": LOCAL_DNS_ADDRESS})
+    saved = urllib.parse.unquote_plus(post(opener, "/system/management-ipv6", {"ipv6": "true"}))
+    check("Management over IPv6 on" in saved, f"the System screen turns management over IPv6 on: {saved[:300]}")
+    applied = urllib.parse.unquote_plus(post(opener, "/apply", {}))
+    if not (router_ula and host_ula and host):
+        check(False, f"the LAN host has no stable and delegated IPv6 address to go on with: {hosts}")
+        wait_for_webui(opener, boot_timeout)
+        return confirm_pending(opener)
+    ula, ula_source, router, source = str(router_ula.ip), str(host_ula.ip), str(network.network_address + 1), \
+        str(host.ip)
+    check(ula in applied and "webUI restarting" in applied,
+          "the Apply restarts the webUI onto the router's stable address too: the admin's own change "
+          "(ROADMAP SEC-27)" + ("" if ula in applied else f": {applied[:300]}"))
+    # Only the restarted webUI listens there.
+    deadline = time.monotonic() + boot_timeout
+    while tcp_from_lan(ula, WEBUI_PORT, ula_source) != "open" and time.monotonic() < deadline:
+        time.sleep(1)
+    wait_for_webui(opener, boot_timeout)
+    confirmed = check(confirm_pending(opener), "...held until confirmed, and confirmed from the dashboard")
+    management = {port: tcp_from_lan(ula, port, ula_source) for port in (WEBUI_PORT, 22)}
+    # sshd itself is off while nobody has a key (see boot 3's end): the
+    # firewall letting SSH through shows as the kernel's refusal.
+    check(management == {WEBUI_PORT: "open", 22: "refused"},
+          f"with management over IPv6, the webUI answers on the router's stable address {ula}, and SSH is let "
+          f"through to it: {management}")
+    elsewhere = {port: tcp_from_lan(router, port, source) for port in (WEBUI_PORT, 22)}
+    check(set(elsewhere.values()) == {"no answer"},
+          f"...and not on its delegated address {router}, which the provider may change: {elsewhere}")
+    for _ in range(5):  # the resolver was (re)started by the apply
+        answer = dns_answer(ula, LOCAL_DNS_NAME, source=ula_source)
+        if answer:
+            break
+        time.sleep(2)
+    expected = (0, [socket.inet_aton(LOCAL_DNS_ADDRESS)])
+    check(answer == expected, f"the router's resolver answers over IPv6, on its stable address: {answer}")
+    for _ in range(3):  # fr-ra was restarted by the apply
+        advert = router_advert()
+        if advert and advert[1] == [ula]:
+            break
+    check(advert is not None and advert[1] == [ula],
+          f"...which the RA now names as the LAN's DNS server (RDNSS, RFC 8106): {advert}")
+    forced = dns_answer(ISP_ADDRESS, LOCAL_DNS_NAME, source=source)
+    check(forced == expected,
+          f"force-DNS: a query to another server over IPv6 is answered by the router's resolver: {forced}")
+    saved = urllib.parse.unquote_plus(post(opener, "/system/management-ipv6", {}))
+    applied = urllib.parse.unquote_plus(post(opener, "/apply", {}))
+    # The new ruleset closes the ULA at once, while the old webUI process
+    # still answers on the LAN's address: wait for it to go away (its
+    # restart, a few seconds after the apply), then for the new one.
+    wait_until_unreachable(WEBUI_HOST, 120)
+    wait_for_webui(opener, boot_timeout)
+    confirmed = check(confirm_pending(opener), "management over IPv6 turned off again, on an Apply confirmed "
+                                               "from the dashboard" + ("" if "Management over IPv6 off" in saved
+                                                                       else f": {saved[:300]}")) and confirmed
+    closed = {port: tcp_from_lan(ula, port, ula_source) for port in (WEBUI_PORT, 22)}
+    check(set(closed.values()) == {"no answer"}, f"...and the webUI and SSH are closed over IPv6 again: {closed}")
+    return confirmed
 
 
 def check_lan_ipv6_withdrawn(check, opener, host: str | None) -> None:
@@ -1086,6 +1292,11 @@ def check_lan_ipv6_withdrawn(check, opener, host: str | None) -> None:
         summary, lan = ipv6_card_lan(opener)
     check("Zone lan gets no IPv6: the SNI filter" in summary and not any(d.startswith("lan (") for d in lan),
           f"with the SNI filter on the LAN port, the LAN zone is off IPv6, and the card says why: {summary}")
+    stable, pinholes = ipv6_card_stable(opener)
+    check(not any(d.startswith("lan (") for d in stable),
+          f"...its stable (ULA) address is gone from the LAN port too (ROADMAP FND-1c): {stable}")
+    check(pinholes.get("boot-test-nas", "").endswith("off: zone lan has no IPv6"),
+          f"...and its pinhole is kept but off, rather than refusing the filter: {pinholes}")
     if host:
         check(not ping_from_lan(ISP_ADDRESS, host),
               "...and the router routes nothing of it any more: the filter can't be got around over IPv6")
@@ -1548,6 +1759,15 @@ def run(args: argparse.Namespace, provider: Isp) -> int:
         check("FR_OS webUI:" not in upper_issue(upper),
               "...and first boot no longer writes a one-off line into /etc/issue")
         check((upper / "etc" / "fr_os" / "config.yaml").exists(), "config.yaml is on the persistence partition")
+    # ROADMAP FND-1c: the admin's pinhole, written into config.yaml by hand
+    # (PINHOLE_YAML); first boot's config has no ipv6 section.
+    with persistence_partition(disk, writable=True) as upper:
+        config_file = upper / "etc" / "fr_os" / "config.yaml"
+        text = config_file.read_text() if config_file.exists() else ""
+        check(bool(text) and not re.search(r"^ipv6:", text, re.M),
+              "first boot's config.yaml has no ipv6 section; the boot test's pinhole goes in by hand")
+        if text:
+            config_file.write_text(text.rstrip("\n") + "\n" + PINHOLE_YAML)
         # A DHCP client on the LAN port flushed the router's own address on
         # the boots after this one (live-boot used to put one on every port).
         wan_dhcp = upper / "etc" / "network" / "interfaces.d" / "fr_os-wan"
@@ -1633,6 +1853,13 @@ def run(args: argparse.Namespace, provider: Isp) -> int:
               + ("" if "confirm it" in first else f": {first[:300]}"))
         wan_address = check_wan_ipv6(check, opener, provider)
         lan_host = check_lan_ipv6(check, opener, provider, wan_address)
+        if lan_host:
+            check_ipv6_services(check, opener, boot_timeout)
+        else:  # the resolver's settings, for ROADMAP DNS-1 below
+            post(opener, "/adblock/settings", {"enabled": "true", "source_urls": "https://lists.fr-os.test/hosts",
+                                               "serve_lan": "true", "force_dns": "true"})
+            post(opener, "/adblock/local-dns/add", {"kind": "hosts", "name": LOCAL_DNS_NAME,
+                                                    "address": LOCAL_DNS_ADDRESS})
         post(opener, "/rules/timezone", {"timezone": "Europe/Budapest"})
         # Security-lessons G8: the WireGuard VPN on Debian's own kernel
         # module (the unit tests use the userspace implementation).
@@ -1649,12 +1876,6 @@ def run(args: argparse.Namespace, provider: Isp) -> int:
         # ROADMAP SEC-6: the ZTNA gate, with one user, signed in below.
         post(opener, "/ztna/users/add", {"new_username": ZTNA_USERNAME, "new_password": ZTNA_PASSWORD})
         post(opener, "/ztna/settings", {"enabled": "true", "session_ttl_seconds": "3600"})
-        # ROADMAP DNS-1: a local name, answered by the router's resolver
-        # (which serves the LAN for it). The list URL is never fetched.
-        post(opener, "/adblock/settings", {"enabled": "true", "source_urls": "https://lists.fr-os.test/hosts",
-                                           "serve_lan": "true"})
-        post(opener, "/adblock/local-dns/add", {"kind": "hosts", "name": LOCAL_DNS_NAME,
-                                                "address": LOCAL_DNS_ADDRESS})
         try:
             applied = urllib.parse.unquote_plus(post(opener, "/apply", {}))
         except urllib.error.HTTPError as err:
@@ -1671,7 +1892,8 @@ def run(args: argparse.Namespace, provider: Isp) -> int:
               and re.search(r"\.40=192\.168\.40\.1/24", applied) is not None,
               "the IoT and guest segments came up on VLANs of the LAN port (security-lessons K4)"
               + ("" if ".30=" in applied else f": {applied[:300]}"))
-        for _ in range(5):  # the resolver was restarted by the apply
+        # ROADMAP DNS-1: the local name set before (check_ipv6_services).
+        for _ in range(5):  # the resolver may have been restarted by the apply
             local_answer = dns_answer(WEBUI_HOST, LOCAL_DNS_NAME)
             if local_answer:
                 break

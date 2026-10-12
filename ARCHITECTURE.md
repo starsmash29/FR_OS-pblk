@@ -3734,7 +3734,8 @@ the ad-block resolver's.
 - `ra-only` means SLAAC with no DHCPv6 server and no M or O flag.
 - `port=0` means no DNS. In dnsmasq that also leaves the RA without a
   DNS server option, so clients keep the router's IPv4 resolver, the one
-  that filters (DNS over IPv6 is FND-1c). No pid file, no lease file.
+  that filters. No pid file, no lease file. (FND-1c adds the RDNSS
+  option explicitly: "IPv6 services and pinholes" below.)
 - It runs as a dynamic account (`DynamicUser=`) with two capabilities:
   CAP_NET_RAW for the ICMPv6 socket, and CAP_NET_ADMIN, without which
   dnsmasq refuses to start RA (found in the boot test). dnsmasq started
@@ -3790,9 +3791,10 @@ IPv4-only, the zone it protects doesn't get IPv6 (FND-1d lifts these):
   with the same timeout, carried over reloads like the other runtime
   sets. The forward chain drops IPv6 from it ahead of the established
   accept.
-- **Force DNS.** The redirect to the resolver is IPv4-only (the resolver
-  doesn't serve IPv6 yet). Plain DNS over IPv6 from the LAN is refused,
-  so a client falls back at once to the resolver it got over IPv4.
+- **Force DNS.** The redirect to the resolver was IPv4-only (the
+  resolver didn't serve IPv6 yet), so plain DNS over IPv6 from the LAN
+  was refused, and a client fell back at once to the resolver it got
+  over IPv4. FND-1c redirects it instead.
 - **ZTNA.** Its sets hold IPv4 addresses, so a `require_ztna` accept
   rule matches no IPv6 and fails closed.
 - **IoT isolation.** It is already by MAC and covers IPv6 as it is.
@@ -3817,6 +3819,166 @@ The boot test turns IPv6 on in an Apply of its own, then checks that:
 
 The next Apply turns the SNI filter on, and the test checks that the LAN
 zone goes off IPv6, with the reason on the card.
+
+## IPv6 services and pinholes (ROADMAP FND-1c)
+
+After 1b the LAN hosts reach the internet over IPv6, but the router
+itself answers only ping and neighbour discovery there, and nothing
+comes in from the internet. 1c gives the router a stable address on the
+LAN, DNS over IPv6 with the RA naming it, the webUI and SSH over IPv6 on
+request, and the admin's inbound pinholes.
+
+**A stable address: ULA (RFC 4193).** The delegated prefix is the
+provider's: it changes when the provider renumbers, and with an address
+only or nothing there is none. A DNS server or a management address on
+it would move with it, and clients would keep the old one. So, as
+OpenWrt does, the router has a network of its own that never depends on
+the provider:
+- `frfw.ipv6.ensure_ula_prefix` generates a random /48 once
+  (`fd` + 40 bits from `secrets`, never `fd00::/48`, RFC 4193 3.2) and
+  keeps it in `/etc/fr_os/ipv6_ula.json` with the addresses it put on.
+  `ipv6.ula_prefix` overrides it, to keep the same one after a reinstall.
+- Each LAN zone's device gets the /64 at the same position (sla_id) as
+  its delegated /64, and the router `<network>::1` there (`ip -6 addr
+  replace ... nodad`: a tentative address can't be bound by the webUI or
+  sshd, and the router's own `::1` can't collide with a SLAAC host).
+  `keep_addr_on_down=1` keeps it over a link flap. Addresses the last
+  apply put on and this one doesn't want are removed by the recorded
+  list, and an apply that fails is undone to the recorded state
+  (`UlaState`, in `frfw.provision`'s undo).
+- dnsmasq's `constructor:` advertises every permanent, non-temporary
+  address of the device, so the ULA /64 is advertised for SLAAC beside
+  the delegated one with no extra config (dnsmasq 2.90, `dhcp6.c`).
+- RFC 6724 has a host with only a ULA use IPv4 for the internet, so a
+  ULA without a delegated prefix doesn't break dual stack.
+- **The border.** The forward chain, right after the spoofing guard,
+  drops a ULA source or destination coming in from the WAN and refuses
+  one going out to it (ICMPv6 admin-prohibited, so a host fails fast
+  rather than timing out): RFC 4193 4.3.
+- The router lifetime is not changed when there is no delegated prefix:
+  dnsmasq advertises the router as default router whenever it
+  advertises a prefix. A host then sends internet traffic from its ULA
+  to the router, which refuses it at once (above), and RFC 6724 prefers
+  IPv4 for it anyway. Zeroing the lifetime would also need dnsmasq to
+  know the WAN's state, which it doesn't.
+
+**DNS over IPv6.**
+- The resolver (`fr-adblock-dns`) now runs with `bind-dynamic` instead of
+  `bind-interfaces`: it follows the addresses as they come and go (the
+  delegated prefix renumbered, the ULA put on after it started) and
+  keeps CAP_NET_BIND_SERVICE for that. It listens on the same zones as
+  before (`interface=`), and the input chain still lets DNS in only from
+  the served zones' devices.
+- **RDNSS.** The RA-only dnsmasq stays `port=0`, but for each zone the
+  resolver serves it gets `dhcp-option=tag:<device>,option6:dns-server,
+  [<ULA>::1]`, which dnsmasq puts in the RA as RDNSS (RFC 8106) even
+  with no DNS of its own (`radv.c`; the device name is a tag by itself).
+  Zones it doesn't serve get no RDNSS, and their clients keep the DNS
+  server they got over IPv4.
+- **Force DNS** redirects plain DNS over IPv6 to the resolver, as over
+  IPv4, for the zones with IPv6.
+- **No DHCPv6 server**, stateless or stateful. Every current client
+  takes RDNSS (Android, iOS, macOS, Windows 10 since 1703, Linux), and
+  Android has no DHCPv6 client at all; an older client keeps the
+  resolver it got over IPv4. A DHCPv6 server would be one more
+  privileged, network-parsing service (security-lessons I1) for nothing
+  a LAN host needs. This is a decision, not a gap.
+
+**The webUI and SSH over IPv6: opt-in (`management.ipv6`, default
+off).**
+- On, they also listen on the router's ULA `::1` of each management
+  zone with IPv6 (`frfw.management.ipv6_addresses`) -- never on the
+  delegated address, which is public and changes.
+- Why off by default: from a dual-stack LAN the webUI is reachable over
+  IPv4 anyway, and the management plane grows only when the admin asks
+  (security-lessons F2/G4). It only adds addresses, so SEC-27's guard
+  ("an apply never moves the webUI by itself") is untouched:
+  `moves_management` still compares the IPv4 addresses, and turning it
+  on is a setting of its own on the System screen, loaded by Apply.
+- The input chain's `ipv6_input` chain returns 22/443 to the input
+  chain only when the destination is the router's own ULA on the device
+  it came in on (`ip6 daddr fc00::/7 fib daddr . iif type local`). There
+  they meet the "no management from elsewhere" drops and the admin's
+  input rules, exactly as over IPv4; everything else over IPv6 is still
+  dropped. A rule that keeps a host off 22/443 by IPv4 address can't
+  hold over IPv6, so `management.ipv6` is refused while there is one
+  for a zone it would open (the 1b reasoning).
+- The webUI binds an IPv6 address with `IPV6_V6ONLY` and
+  `IPV6_FREEBIND`, so a restart while the address is being put on
+  doesn't fail. sshd skips an address that isn't there when it starts
+  and never binds it later, so `sync_sshd` reloads it when something
+  listens on 22 but not on every wanted address.
+- The certificate's SAN is not regenerated with the ULA addresses: the
+  certificate is made once at first boot and pinned by browsers that
+  accepted it. A browser warns on the ULA address as it does on any
+  self-signed one.
+- The brute-force guard keys an IPv6 source by its /64
+  (`frfw.bruteforce.jail_key`): a host picks any address in its /64 at
+  will, so per address it would get a fresh budget per guess. The jail
+  is a second set, `bruteforce_jail6` (interval, /64 elements), dropped
+  on 22/443 at the top of the input chain; the webUI's rate limiter
+  keys the same way.
+- ZTNA sign-in over IPv6 is refused with a message to use IPv4: its
+  binding is to an IPv4 address and the router's view of its MAC
+  (SEC-6), and the IPv6 version is FND-1d.
+
+**WireGuard** is accepted from the WAN over IPv6 when the VPN is on, as
+over IPv4: it answers no unknown key. The tunnel stays IPv4 (FND-1d).
+
+**Pinholes (`ipv6.pinholes`).** The admin's exceptions to "nothing new
+comes in from the internet":
+- One line each, just before `ipv6-no-inbound`: `iifname <WAN> oifname
+  @<zone>_ifaces ip6 daddr ... <proto> dport ... accept`. The
+  quarantines, the spoofing guard and the ULA border are ahead of it,
+  so they stay stronger.
+- The host is an interface ID or a full address. An interface ID
+  matches `ip6 daddr & ::ffff:ffff:ffff:ffff == ::<iid>`: whatever /64
+  the zone has, so a renumbering doesn't break it, and no apply is
+  needed for it. A full address is fixed (and can't be checked against
+  the zone's prefix at load time: the prefix is the provider's, and
+  changes).
+- The loader refuses a target that means more than one host or the
+  router (`::`, `::1`, RFC 5453's reserved identifiers), a ULA or
+  non-global full address, more than 1000 ports, and a `from` that
+  isn't on the internet. A forward drop/reject rule without an address
+  that would cover the pinhole's traffic refuses the pinhole: the
+  pinhole goes ahead of the rules, and a drop must never silently stop
+  holding. (A rule by IPv4 address doesn't match IPv6, and its zone has
+  no IPv6 anyway, 1b.)
+- A pinhole to a LAN zone that has no IPv6 now is kept, off, and the
+  card says so. Refusing it instead would refuse turning the SNI filter
+  on for that zone (it takes the zone off IPv6, 1b): a pinhole must
+  never stand in the way of a protection. Found by the boot test.
+- Inbound ICMPv6 echo stays dropped; errors for a pinhole's connections
+  come in as `related`.
+- The Interfaces card and `firewall-cli ipv6-status` list them with the
+  address they lead to now. They are set in config.yaml in this step.
+
+**Checked.** `tests/test_ipv6_services.py` covers the ULA generation and
+its validation, the address sync and its undo, the RA config (by the
+real `dnsmasq --test`), the resolver's config, every refusal of the
+loader, the ruleset (each piece and all of it together by `nft -c`), the
+management addresses and the sshd drop-in (and its reload when sshd
+misses an address), the /64 jail against the real kernel
+set, and the status; the webUI tests cover the System switch, the card
+and the ZTNA refusal. The container's kernel has no IPv6, so what needs
+packets runs in the boot test. After the Apply that turns IPv6 on:
+- the router has its ULA `::1/64` on the LAN, the host took a ULA by
+  SLAAC, and the RA carries both prefixes and no RDNSS (the resolver
+  isn't serving yet);
+- the router answers a ping on its ULA, and a ULA source towards the
+  provider is refused;
+- the webUI and SSH get no answer over IPv6 on either address;
+- the pinhole written into config.yaml lets the provider reach the
+  host's address with that interface ID on its port, and not on another.
+
+The next Apply turns the resolver (with force-DNS) and management over
+IPv6 on: the webUI answers on the ULA, SSH is let through there, neither
+on the delegated address; the resolver answers over IPv6 on the ULA, the
+RA names it as RDNSS, and a query to the provider's address is answered
+by the router. One more Apply turns management over IPv6 off: closed
+again. After the SNI filter's Apply the ULA is gone from the LAN port
+too, and the pinhole is shown as off.
 
 ## Coarse application identification (phase 16)
 

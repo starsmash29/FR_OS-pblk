@@ -77,6 +77,22 @@ def test_the_card_shows_the_lan_networks(logged_in_client, webui_env):
     assert '<dt>guest (eth2)</dt><dd class="ipv6-lan">no network yet</dd>' in text
 
 
+def test_the_card_shows_the_stable_networks_and_the_pinholes(logged_in_client, webui_env):
+    """ROADMAP FND-1c."""
+    _write(webui_env, ipv6={"enabled": True})
+    webui_env["helper"].ipv6 = {
+        "state": "nothing", "summary": "Nothing from the provider (yet).",
+        "ula": [["lan", "eth1", "fd12:3456:789a::1/64"]],
+        "pinholes": [["nas-https", "lan", "tcp 443", ["2001:db8:100:0:5054:ff:fe12:3456"]],
+                     ["cam", "lan", "udp 5000", []], ["game", "guest", "udp 3074", None]],
+    }
+    text = logged_in_client.get("/interfaces").text
+    assert '<dt>lan (eth1), stable</dt><dd class="ipv6-ula">fd12:3456:789a::1/64</dd>' in text
+    assert '<dd class="ipv6-pinhole">tcp 443 to 2001:db8:100:0:5054:ff:fe12:3456</dd>' in text
+    assert '<dd class="ipv6-pinhole">udp 5000 to no address in lan yet</dd>' in text
+    assert '<dd class="ipv6-pinhole">udp 3074, off: zone guest has no IPv6</dd>' in text
+
+
 def test_the_switch_keeps_the_lan_zones(logged_in_client, webui_env):
     _write(webui_env, ipv6={"enabled": True, "lan_zones": []})
     logged_in_client.post("/interfaces/ipv6", data={})

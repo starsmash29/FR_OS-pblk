@@ -20,22 +20,37 @@ discovery included. With `ipv6.enabled`:
   files (resolv.conf, its hostname, NTP), and it sends no hostname. It
   drops to its own account itself (privilege separation) inside a
   systemd sandbox.
+- **A stable network per LAN zone** (FND-1c): the provider may renumber
+  the delegated prefix at any time, and may delegate none. So each LAN
+  device also gets a /64 of a ULA /48 (RFC 4193: `fdXX:XXXX:XXXX::/48`,
+  40 random bits the router picks once, `ula_prefix`) at the same
+  position ("sla_id"), and the router's address `<network>::1` there
+  (`ula_addresses`). The router's services answer on it: DNS, and the
+  webUI and SSH with `management.ipv6` (frfw.management) -- never on the
+  provider's addresses. It is added without duplicate address detection
+  (`nodad`: a tentative address can't be bound, and no SLAAC host takes
+  `::1`), and kept when the link goes down (`keep_addr_on_down`). ULA is
+  never routed to or from the internet (frfw.nft.builder).
 - **dnsmasq, RA only** (`fr-ra.service`, FND-1b): a dedicated instance
-  that advertises each LAN device's /64 for SLAAC (`constructor:`, so a
-  renumbered prefix is advertised as it changes) and does nothing else --
-  no DNS (`port=0`, which also leaves the RA without a DNS server option:
-  the LAN keeps the router's IPv4 resolver, FND-1c), no DHCPv4, no DHCPv6
-  (`ra-only`). It runs as a dynamic account with CAP_NET_RAW and the
-  CAP_NET_ADMIN dnsmasq insists on for RA, nothing else.
+  that advertises each LAN device's /64s for SLAAC (`constructor:`, so a
+  renumbered prefix is advertised as it changes; it takes every permanent
+  address on the device, the ULA one too) and does nothing else -- no
+  DNS (`port=0`), no DHCPv4, no DHCPv6 (`ra-only`). Where the router's
+  resolver serves the zone, the RA names it (RDNSS, RFC 8106): the
+  router's ULA address there (FND-1c). It runs as a dynamic account with
+  CAP_NET_RAW and the CAP_NET_ADMIN dnsmasq insists on for RA, nothing
+  else.
 - **The kernel** takes no Router Advertisement on any interface
   (`accept_ra=0`: dhcpcd reads the WAN's itself), follows no redirect,
   and routes IPv6 (`forwarding=1`) only while a LAN zone gets it.
 - **The firewall** (frfw.nft.builder) accepts the ICMPv6 the WAN needs,
-  and on the LAN neighbour discovery, router solicitations and ping; every
-  other IPv6 packet to the router is dropped, before any rule written for
-  IPv4 -- the router's services come with FND-1c. Forwarded IPv6 goes only
-  between the WAN and the LAN zones' devices, nothing new comes in from
-  the internet, and a LAN host may only send from its own network.
+  and on the LAN neighbour discovery, router solicitations and ping, DNS
+  where the resolver serves the zone, and with `management.ipv6` the
+  webUI and SSH on the ULA address -- through the same rules as over
+  IPv4; every other IPv6 packet to the router is dropped. Forwarded IPv6
+  goes only between the WAN and the LAN zones' devices, nothing new comes
+  in from the internet but through a pinhole (`ipv6.pinholes`, FND-1c),
+  and a LAN host may only send from its own network.
 
 `status()` says what the provider gave and what that means: a delegated
 prefix and the LAN networks made of it, an address only (a single /64 on
@@ -44,7 +59,8 @@ every outcome is a state to explain, never an error.
 
 Off (the default), the ruleset drops all IPv6 to and through the router,
 and an apply stops dhcpcd -- which takes its addresses and routes with it
--- and the RA instance if they were running.
+-- and the RA instance if they were running, and takes the ULA addresses
+off.
 """
 
 from __future__ import annotations
@@ -52,6 +68,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import os
+import secrets
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -171,10 +188,11 @@ DNSMASQ_BINARY = "/usr/sbin/dnsmasq"
 
 _RA_TEMPLATE = """\
 # Managed by FR_OS (frfw.ipv6) -- regenerated on every `apply`, do not edit.
-# Router Advertisements on the LAN (ROADMAP FND-1b), and nothing else: the
-# /64 dhcpcd gave each device, for SLAAC.
-# No DNS: this also leaves the RA without a DNS server option, so the LAN
-# keeps using the router's IPv4 resolver (FND-1c).
+# Router Advertisements on the LAN (ROADMAP FND-1b/1c), and nothing else:
+# each device's /64s, for SLAAC -- the one dhcpcd gave it from the
+# provider's prefix and the stable ULA one -- and, where the router's
+# resolver serves the zone, the resolver's address (RDNSS).
+# No DNS here: the ad-block resolver (fr-adblock-dns) answers it.
 port=0
 no-resolv
 no-hosts
@@ -188,15 +206,185 @@ enable-ra
 {interfaces}"""
 
 
-def render_ra_conf(config: Config) -> str:
+def render_ra_conf(config: Config, ula: ipaddress.IPv6Network | None = None) -> str:
     """dnsmasq's config: an RA-only context per LAN device. `constructor:`
-    takes the prefix from the device's own address, as dhcpcd set it, and
-    follows it when the provider renumbers; `ra-only`: SLAAC with no
-    DHCPv6 server (no M or O flag)."""
+    takes the prefixes from the device's own permanent addresses -- the
+    provider's, as dhcpcd set it and following it when the provider
+    renumbers, and the ULA one -- `ra-only`: SLAAC with no DHCPv6 server
+    (no M or O flag). With `ula`, the router's ULA address goes in the RA
+    as the DNS server (RDNSS) on the devices of the zones the resolver
+    serves: dnsmasq takes it from `option6:dns-server`, tagged with the
+    device's name (radv.c), even with its own DNS off (`port=0`)."""
+    from frfw.nft.builder import dns_resolver_zones
+
+    served = set(dns_resolver_zones(config))
+    addresses = {device: address for _, device, address in ula_addresses(config, ula)} if ula else {}
     lines = []
-    for _, device in lan_devices(config):
+    for zone, device in lan_devices(config):
         lines.append(f"interface={device}\ndhcp-range=::,constructor:{device},ra-only\n")
+        if zone in served and device in addresses:
+            server = ipaddress.IPv6Interface(addresses[device]).ip
+            lines.append(f"dhcp-option=tag:{device},option6:dns-server,[{server}]\n")
     return _RA_TEMPLATE.format(interfaces="".join(lines))
+
+
+# --- the stable (ULA) networks ------------------------------------------------
+
+#: RFC 4193: locally assigned ULAs, fd00::/8.
+ULA_LOCAL = ipaddress.IPv6Network("fd00::/8")
+#: RFC 4193: every unique local address, fc00::/7.
+ULA = ipaddress.IPv6Network("fc00::/7")
+
+
+def generate_ula_prefix() -> ipaddress.IPv6Network:
+    """A ULA /48 with a 40-bit random global ID (RFC 4193 3.2), from the
+    OS's CSPRNG -- not the RFC's SHA-1 of a timestamp and an EUI-64, which
+    is only a way to get random bits without a good generator."""
+    global_id = secrets.randbits(40) or 1  # never fd00::/48, the one everyone would pick
+    return ipaddress.IPv6Network(((0xfd << 120) | (global_id << 80), 48))
+
+
+def _read_ula_state(state_path: Path | None = None) -> dict:
+    state_path = state_path or paths.IPV6_ULA_STATE_PATH
+    try:
+        data = json.loads(state_path.read_text())
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_ula_state(state: dict, state_path: Path | None = None) -> None:
+    state_path = state_path or paths.IPV6_ULA_STATE_PATH
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = state_path.with_name(f".{state_path.name}.tmp")
+    tmp.write_text(json.dumps(state, indent=1, sort_keys=True) + "\n")
+    tmp.chmod(0o644)
+    tmp.replace(state_path)
+
+
+def _valid_ula(value) -> ipaddress.IPv6Network | None:
+    try:
+        network = ipaddress.IPv6Network(value)
+    except (TypeError, ValueError):
+        return None
+    return network if network.prefixlen == 48 and network.subnet_of(ULA_LOCAL) else None
+
+
+def ula_prefix(config: Config, state_path: Path | None = None) -> ipaddress.IPv6Network | None:
+    """The ULA /48 of the LAN's stable networks: `ipv6.ula_prefix`, or
+    the one the router generated (None until an apply generated it)."""
+    if config.ipv6.ula_prefix:
+        return ipaddress.IPv6Network(config.ipv6.ula_prefix)
+    return _valid_ula(_read_ula_state(state_path).get("generated"))
+
+
+def ensure_ula_prefix(config: Config, state_path: Path | None = None) -> ipaddress.IPv6Network:
+    """ula_prefix(), generating and keeping one the first time. The
+    generated one is kept even while `ipv6.ula_prefix` overrides it, so
+    taking the override out doesn't renumber the LAN again."""
+    state = _read_ula_state(state_path)
+    if _valid_ula(state.get("generated")) is None:
+        state["generated"] = str(generate_ula_prefix())
+        _write_ula_state(state, state_path)
+    return ula_prefix(config, state_path)
+
+
+def ula_addresses(config: Config, prefix: ipaddress.IPv6Network | None) -> list[tuple[str, str, str]]:
+    """(zone, device, "<network>::1/64") for every LAN device: its /64 of
+    the ULA /48 at the same position ("sla_id") as in the provider's
+    prefix. Empty without a prefix."""
+    if prefix is None:
+        return []
+    out = []
+    for sla, (zone, device) in enumerate(lan_devices(config)):
+        network = ipaddress.IPv6Network((int(prefix.network_address) | (sla << 64), 64))
+        out.append((zone, device, f"{network.network_address + 1}/64"))
+    return out
+
+
+def _run_ip(args: list[str]) -> subprocess.CompletedProcess:
+    try:
+        return subprocess.run(["ip", "-6", *args], capture_output=True, text=True, timeout=10)
+    except FileNotFoundError as exc:
+        raise Ipv6Error("'ip' binary not found; install the iproute2 package") from exc
+
+
+#: iproute2's answers when there is nothing to take off: no such address
+#: on the device, no such device.
+_GONE = ("Cannot assign requested address", "Cannot find device")
+
+
+def _set_ula_addresses(wanted: list[tuple[str, str]], before: list[tuple[str, str]]) -> None:
+    """Take off the ULA addresses an earlier apply put on and this one
+    doesn't want (gone already is fine: a device unplugged), then put on
+    the wanted ones. Security-lessons F1: every value validated, the
+    device always after `dev` (iproute2 takes what follows it as the
+    name, never as an option)."""
+    for device, address in before:
+        if (device, address) in wanted:
+            continue
+        device, address = validate.ifname(device), str(ipaddress.IPv6Interface(address))
+        proc = _run_ip(["addr", "del", address, "dev", device])
+        if proc.returncode != 0 and not any(gone in proc.stderr for gone in _GONE):
+            raise Ipv6Error(f"cannot take {address} off {device}: {proc.stderr.strip()}")
+    for device, address in wanted:
+        device, address = validate.ifname(device), str(ipaddress.IPv6Interface(address))
+        proc = _run_ip(["addr", "replace", address, "dev", device, "nodad"])
+        if proc.returncode != 0:
+            raise Ipv6Error(f"cannot put {address} on {device}: {proc.stderr.strip()}")
+
+
+def _applied(state: dict) -> list[tuple[str, str]]:
+    pairs = []
+    for item in state.get("addresses") or []:
+        if not (isinstance(item, list) and len(item) == 2 and all(isinstance(v, str) for v in item)):
+            continue
+        try:
+            validate.ifname(item[0])
+            if ipaddress.IPv6Interface(item[1]).ip in ULA:
+                pairs.append((item[0], item[1]))
+        except (validate.ArgumentError, ValueError):
+            continue
+    return pairs
+
+
+def sync_ula(config: Config, *, state_path: Path | None = None) -> list[tuple[str, str, str]]:
+    """Put the LAN devices' ULA addresses on, take the stale ones off, and
+    record what is on (the IPv6 step of an apply, after dhcpcd)."""
+    lan = lan_devices(config)
+    prefix = ensure_ula_prefix(config, state_path) if lan else ula_prefix(config, state_path)
+    addresses = ula_addresses(config, prefix) if lan else []
+    state = _read_ula_state(state_path)
+    wanted = [(device, address) for _, device, address in addresses]
+    _set_ula_addresses(wanted, _applied(state))
+    state["addresses"] = [list(pair) for pair in wanted]
+    _write_ula_state(state, state_path)
+    return addresses
+
+
+@dataclass(frozen=True)
+class UlaState:
+    """The ULA addresses an apply's IPv6 step may change, as they were:
+    on undo the step's own additions come off and its removals go back
+    (frfw.provision)."""
+
+    text: str | None
+
+    @classmethod
+    def capture(cls, state_path: Path | None = None) -> "UlaState":
+        try:
+            return cls((state_path or paths.IPV6_ULA_STATE_PATH).read_text())
+        except OSError:
+            return cls(None)
+
+    def restore(self, state_path: Path | None = None) -> None:
+        state_path = state_path or paths.IPV6_ULA_STATE_PATH
+        before = _applied(json.loads(self.text)) if self.text else []
+        _set_ula_addresses(before, _applied(_read_ula_state(state_path)))
+        if self.text is None:
+            state_path.unlink(missing_ok=True)
+        else:
+            state_path.write_text(self.text)
 
 
 def sysctl_settings(config: Config) -> dict[str, str]:
@@ -224,6 +412,11 @@ def sysctl_settings(config: Config) -> dict[str, str]:
     for device in [*wan, *lan]:
         settings[f"ipv6/conf/{device}/disable_ipv6"] = "0"
         settings[f"ipv4/conf/{device}/promote_secondaries"] = "1"
+    for device in lan:
+        # FND-1c: the router's ULA address stays when the link is set
+        # down, as an IPv4 address does -- the kernel drops even static
+        # IPv6 addresses then, and the webUI and SSH listen on it.
+        settings[f"ipv6/conf/{device}/keep_addr_on_down"] = "1"
     return settings
 
 
@@ -286,22 +479,25 @@ class SyncResult:
 
 
 def sync(config: Config, *, dry_run: bool = False, conf_path: Path | None = None,
-         proc_root: Path | None = None, ra_conf_path: Path | None = None) -> SyncResult:
-    """Reconcile the kernel's IPv6 settings, dhcpcd and the LAN's RA
-    instance with `config.ipv6` (an apply's step, frfw.provision)."""
+         proc_root: Path | None = None, ra_conf_path: Path | None = None,
+         ula_state_path: Path | None = None) -> SyncResult:
+    """Reconcile the kernel's IPv6 settings, dhcpcd, the LAN's ULA
+    addresses and its RA instance with `config.ipv6` (an apply's step,
+    frfw.provision)."""
     conf_path = conf_path or paths.IPV6_DHCPCD_CONF_PATH
     ra_conf_path = ra_conf_path or paths.IPV6_RA_CONF_PATH
     lan = lan_devices(config)
     if not config.ipv6.enabled:
         # Nothing to do -- not even a systemctl call -- unless an earlier
         # apply turned it on: tests and machines without dhcpcd apply too.
-        if not (conf_path.exists() or ra_conf_path.exists() or service_active()
-                or service_active(paths.IPV6_RA_SERVICE_NAME)):
+        if not (conf_path.exists() or ra_conf_path.exists() or _applied(_read_ula_state(ula_state_path))
+                or service_active() or service_active(paths.IPV6_RA_SERVICE_NAME)):
             return SyncResult(False, "IPv6 off")
         if dry_run:
             return SyncResult(False, "Would turn IPv6 off (dry-run)")
         _require_root()
         _stop_ra(ra_conf_path)
+        sync_ula(config, state_path=ula_state_path)
         _systemctl("stop")
         conf_path.unlink(missing_ok=True)
         # Routing off with it; the kernel's other settings stay as safe as
@@ -317,7 +513,8 @@ def sync(config: Config, *, dry_run: bool = False, conf_path: Path | None = None
     if dry_run:
         return SyncResult(True, f"Would take IPv6 from the provider on {', '.join(devices)}{where} (dry-run)")
     _require_root()
-    ra_text = render_ra_conf(config) if lan else None
+    ula = ensure_ula_prefix(config, ula_state_path) if lan else None
+    ra_text = render_ra_conf(config, ula) if lan else None
     if ra_text is not None:
         _test_ra_conf(ra_text, ra_conf_path)
     write_sysctls(sysctl_settings(config), proc_root)
@@ -329,6 +526,11 @@ def sync(config: Config, *, dry_run: bool = False, conf_path: Path | None = None
     # A restart drops the addresses (the LAN's too) and asks the provider
     # again: only for a new config, not on every apply.
     _systemctl("restart" if changed else "start")
+    # FND-1c: the stable addresses, after dhcpcd (which takes off only
+    # what it put on) and before the RA instance advertises them.
+    stable = sync_ula(config, state_path=ula_state_path)
+    if stable:
+        where += "; stable addresses " + ", ".join(f"{device} {address}" for _, device, address in stable)
     if ra_text is None:
         _stop_ra(ra_conf_path)
     else:
@@ -417,6 +619,14 @@ class Ipv6Status:
     ra_active: bool = False
     #: (zone, why) for the zones left out (excluded_zones).
     excluded: list[tuple[str, str]] = field(default_factory=list)
+    #: The ULA /48 of the stable networks (FND-1c), "" before one exists.
+    ula_prefix: str = ""
+    #: (zone, device, the router's ULA address/64) on each LAN device that
+    #: has it now.
+    ula: list[tuple[str, str, str]] = field(default_factory=list)
+    #: (name, zone, "tcp 443", [the addresses it opens now]) per pinhole:
+    #: an interface identifier in every network its zone has now.
+    pinholes: list[tuple[str, str, str, list[str]]] = field(default_factory=list)
 
     @property
     def summary(self) -> str:
@@ -424,6 +634,16 @@ class Ipv6Status:
             return "IPv6 is off."
         if self.state == NO_KERNEL:
             return "This router's kernel runs without IPv6."
+        return self._provider_summary() + self._stable_summary()
+
+    def _stable_summary(self) -> str:
+        """FND-1c: the LAN's own networks, whatever the provider gives."""
+        if not self.ula:
+            return ""
+        return (f" The LAN's stable networks come from {self.ula_prefix} (ULA, never routed to the internet): "
+                "the router answers there whatever the provider gives.")
+
+    def _provider_summary(self) -> str:
         if self.state == NOTHING:
             return ("Nothing from the provider (yet): no IPv6 address on the WAN. Either the network "
                     "upstream has no IPv6, or it hasn't answered yet; the router keeps using IPv4.")
@@ -456,7 +676,10 @@ class Ipv6Status:
                 "default_routes": [list(r) for r in self.default_routes],
                 "prefixes": self.prefixes, "service_active": self.service_active,
                 "lan": [list(n) for n in self.lan], "ra_active": self.ra_active,
-                "excluded": [list(e) for e in self.excluded]}
+                "excluded": [list(e) for e in self.excluded], "ula_prefix": self.ula_prefix,
+                "ula": [list(u) for u in self.ula],
+                "pinholes": [[name, zone, what, None if targets is None else list(targets)]
+                             for name, zone, what, targets in self.pinholes]}
 
 
 def lan_networks(prefix: str) -> int:
@@ -486,12 +709,20 @@ def status(config: Config, *, proc_root: Path | None = None, ip_json=None) -> Ip
                         ra_active=bool(lan) and service_active(paths.IPV6_RA_SERVICE_NAME),
                         excluded=excluded_zones(config))
     lan_network: dict[str, str] = {}
+    ula = ula_prefix(config)
+    result.ula_prefix = str(ula) if ula and lan else ""
+    stable = {(device, address) for _, device, address in ula_addresses(config, ula)}
+    present: set[tuple[str, str]] = set()
     for link in ip_json("addr", "show"):
         device = link.get("ifname")
         for info in link.get("addr_info", []):
             if info.get("family") != "inet6" or info.get("scope") != "global":
                 continue
             address = ipaddress.IPv6Interface(f"{info['local']}/{int(info['prefixlen'])}")
+            if address.ip in ULA:
+                # FND-1c: the router's own stable addresses, not the provider's.
+                present.add((device, str(address)))
+                continue
             if device in devices:
                 # dhcpcd adds a DHCPv6 (IA_NA) address as a /128, a SLAAC
                 # one with its prefix's length.
@@ -500,6 +731,9 @@ def status(config: Config, *, proc_root: Path | None = None, ip_json=None) -> Ip
             elif any(device == d for _, d in lan) and address.network.prefixlen == 64:
                 lan_network.setdefault(device, str(address.network))
     result.lan = [(zone, device, lan_network.get(device, "")) for zone, device in lan]
+    result.ula = [(zone, device, address) for zone, device, address in ula_addresses(config, ula)
+                  if (device, address) in present & stable]
+    result.pinholes = pinhole_targets(config, result.lan)
     for route in ip_json("route", "show", "table", "main"):
         dst = route.get("dst")
         if dst == "default" and route.get("dev") in devices and route.get("gateway"):
@@ -517,3 +751,24 @@ def status(config: Config, *, proc_root: Path | None = None, ip_json=None) -> Ip
     elif result.addresses:
         result.state = ADDRESS_ONLY
     return result
+
+
+def pinhole_targets(config: Config, lan: list[tuple[str, str, str]]
+                    ) -> list[tuple[str, str, str, list[str] | None]]:
+    """(name, zone, "tcp 443", addresses) per pinhole (FND-1c): an
+    interface identifier in each network its zone has now (`lan`, from
+    status()), a full address as it is -- None when the zone has no IPv6
+    now, so the pinhole is off."""
+    served = {zone for zone, _ in lan_devices(config)}
+    out = []
+    for pinhole in config.ipv6.pinholes:
+        if pinhole.zone not in served:
+            targets = None
+        elif pinhole.is_suffix:
+            suffix = int(ipaddress.IPv6Address(pinhole.host))
+            targets = [str(ipaddress.IPv6Network(network).network_address + suffix)
+                       for zone, _, network in lan if zone == pinhole.zone and network]
+        else:
+            targets = [pinhole.host]
+        out.append((pinhole.name, pinhole.zone, f"{pinhole.proto.value} {pinhole.port}", targets))
+    return out

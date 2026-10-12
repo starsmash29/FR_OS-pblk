@@ -34,6 +34,7 @@ from frfw.config.schema import (
     IotConfig,
     IotIsolationMode,
     Ipv6Config,
+    Ipv6Pinhole,
     LocalDnsConfig,
     LoggingConfig,
     ManagementConfig,
@@ -162,6 +163,7 @@ def parse_config(raw: Any) -> Config:
     _check_management_addresses(management, zones, nat, interfaces, wireguard)
     logging_config = _parse_logging(raw.get("logging", {}) or {})
     ipv6 = _parse_ipv6(raw.get("ipv6", {}) or {}, interfaces, zones, nat, rules, xdp_sni_filter)
+    _check_management_ipv6(management, ipv6, interfaces, zones, nat, rules, xdp_sni_filter)
 
     return Config(
         version=version,
@@ -769,7 +771,7 @@ def _parse_ipv6(raw: Any, interfaces: dict[str, Interface], zones: dict[str, Zon
                 rules: list[Rule] = (), xdp_sni_filter: XdpSniFilterConfig | None = None) -> Ipv6Config:
     if not isinstance(raw, dict):
         raise ConfigError("'ipv6' must be a mapping")
-    unknown = set(raw) - {"enabled", "lan_zones"}
+    unknown = set(raw) - {"enabled", "lan_zones", "ula_prefix", "pinholes"}
     if unknown:
         raise ConfigError(f"ipv6: unknown key(s) {sorted(unknown)}")
     enabled = raw.get("enabled", False)
@@ -799,7 +801,204 @@ def _parse_ipv6(raw: Any, interfaces: dict[str, Interface], zones: dict[str, Zon
             "ipv6.enabled needs an internet-facing interface (a zone nat.masquerade points at, "
             "or a zone named wan): IPv6 is taken from the provider there"
         )
-    return Ipv6Config(enabled=enabled, lan_zones=lan_zones)
+    ula_prefix = _parse_ula_prefix(raw.get("ula_prefix"))
+    pinholes = _parse_pinholes(raw.get("pinholes", []), enabled, set(zones), facing, rules)
+    return Ipv6Config(enabled=enabled, lan_zones=lan_zones, ula_prefix=ula_prefix, pinholes=pinholes)
+
+
+#: RFC 4193: a ULA is fd00::/8 with a 40-bit random global ID -- a /48.
+_ULA_LOCAL = ipaddress.IPv6Network("fd00::/8")
+
+
+def _parse_ula_prefix(raw: Any) -> str | None:
+    if raw is None:
+        return None
+    try:
+        network = ipaddress.IPv6Network(raw) if isinstance(raw, str) else None
+    except ValueError:
+        network = None
+    if network is None or network.prefixlen != 48 or not network.subnet_of(_ULA_LOCAL):
+        raise ConfigError(f"ipv6.ula_prefix must be a ULA /48 in fd00::/8 (RFC 4193), e.g. fd12:3456:789a::/48, "
+                          f"got {raw!r}")
+    if network == ipaddress.IPv6Network("fd00::/48"):
+        # RFC 4193 3.2: the global ID is random, so two networks joined
+        # later (a VPN, a merger) don't collide; all zeros is the one
+        # everyone would pick.
+        raise ConfigError("ipv6.ula_prefix: fd00::/48 is not a random global ID (RFC 4193 3.2); "
+                          "leave ula_prefix out and the router picks one")
+    return str(network)
+
+
+#: The widest port range one pinhole may open: a pinhole is for a
+#: service, not for a host's whole port space.
+PINHOLE_MAX_PORTS = 1000
+
+#: RFC 5453: reserved interface identifiers (the subnet's anycast ones).
+_RESERVED_IID_FROM = 0xfdff_ffff_ffff_ff80
+
+
+def _pinhole_host(raw: Any, what: str) -> str:
+    """A host part a pinhole may point at: an interface identifier (the
+    low 64 bits, `::…`) or a full global unicast address -- never one
+    that means more than one host or the router itself."""
+    try:
+        address = ipaddress.IPv6Address(raw) if isinstance(raw, str) else None
+    except ValueError:
+        address = None
+    if address is None:
+        raise ConfigError(f"{what}: host must be an IPv6 address or an interface identifier such as "
+                          f"::5054:ff:fe12:3456, got {raw!r}")
+    iid = int(address) & ((1 << 64) - 1)
+    if iid == 0:
+        raise ConfigError(f"{what}: host {raw!r} is the subnet-router anycast address (all hosts' router), not a host")
+    if iid == 1:
+        raise ConfigError(f"{what}: host {raw!r} is the router's own address on the LAN (::1), not a host")
+    if iid >= _RESERVED_IID_FROM:
+        raise ConfigError(f"{what}: host {raw!r} is a reserved anycast identifier (RFC 5453), not a host")
+    if int(address) >> 64 and not (address in _GLOBAL_UNICAST and address not in _ULA):
+        raise ConfigError(f"{what}: host {raw!r} must be a global unicast address (2000::/3), or an interface "
+                          "identifier (::…) to follow the provider's prefix")
+    return str(address)
+
+
+_GLOBAL_UNICAST = ipaddress.IPv6Network("2000::/3")
+#: RFC 4193: unique local addresses, never routed to or from the internet.
+_ULA = ipaddress.IPv6Network("fc00::/7")
+
+
+def _port_bounds(spec: str) -> tuple[int, int]:
+    low, _, high = spec.partition("-")
+    return int(low), int(high or low)
+
+
+def _parse_pinholes(raw: Any, enabled: bool, zones: set[str], facing: set[str],
+                    rules: list[Rule]) -> tuple[Ipv6Pinhole, ...]:
+    """ipv6.pinholes (ROADMAP FND-1c). While IPv6 is off they are kept
+    but not checked against the zones (the webUI's IPv6 switch keeps
+    them), and nothing renders them. A LAN zone that has no IPv6 now --
+    left out of `lan_zones`, or taken off it by an IPv4-only protection
+    turned on later (the SNI filter) -- keeps its pinholes too, unused
+    and shown as off: a pinhole must never stand in the way of a
+    protection."""
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ConfigError("ipv6.pinholes must be a list")
+    out: list[Ipv6Pinhole] = []
+    for index, body in enumerate(raw):
+        if not isinstance(body, dict):
+            raise ConfigError(f"ipv6.pinholes[{index}] must be a mapping")
+        name = _require_name(body.get("name"), f"ipv6.pinholes[{index}]")
+        what = f"ipv6.pinholes[{name!r}]"
+        unknown = set(body) - {"name", "zone", "host", "proto", "port", "from"}
+        if unknown:
+            raise ConfigError(f"{what}: unknown key(s) {sorted(unknown)}")
+        if any(p.name == name for p in out):
+            raise ConfigError(f"ipv6.pinholes: {name!r} is named twice")
+        zone = body.get("zone")
+        if not isinstance(zone, str):
+            raise ConfigError(f"{what}: zone is required")
+        if enabled and (zone not in zones or zone in facing):
+            raise ConfigError(f"{what}: zone {zone!r} is not a LAN zone of this config")
+        host = _pinhole_host(body.get("host"), what)
+        proto_raw = body.get("proto")
+        if proto_raw not in (Protocol.TCP.value, Protocol.UDP.value):
+            raise ConfigError(f"{what}: proto must be tcp or udp, got {proto_raw!r}")
+        proto = Protocol(proto_raw)
+        if body.get("port") is None:
+            raise ConfigError(f"{what}: port is required")
+        port_from, port_to = _port_bounds(_validate_port_spec(body.get("port"), f"{what} port"))
+        if port_to - port_from + 1 > PINHOLE_MAX_PORTS:
+            raise ConfigError(f"{what}: {port_to - port_from + 1} ports is more than one pinhole may open "
+                              f"({PINHOLE_MAX_PORTS})")
+        source = body.get("from")
+        if source is not None:
+            try:
+                network = ipaddress.IPv6Network(source, strict=False) if isinstance(source, str) else None
+            except ValueError:
+                network = None
+            if network is None:
+                raise ConfigError(f"{what}: from must be an IPv6 network such as 2001:db8:42::/48, got {source!r}")
+            if network.overlaps(_ULA) or network.is_link_local or network.is_multicast:
+                raise ConfigError(f"{what}: from {source!r} can't come from the internet")
+            source = str(network)
+        pinhole = Ipv6Pinhole(name=name, zone=zone, host=host, proto=proto, port_from=port_from,
+                              port_to=port_to, source=source)
+        blocker = _rule_dropping_pinhole(pinhole, facing, rules)
+        if blocker is not None:
+            raise ConfigError(
+                f"{what}: rule {blocker!r} drops this traffic, and a pinhole goes ahead of the rules "
+                "(a drop rule would not hold). Remove the rule, or narrow the pinhole"
+            )
+        out.append(pinhole)
+    return tuple(out)
+
+
+def _rule_dropping_pinhole(pinhole: Ipv6Pinhole, facing: set[str], rules: list[Rule]) -> str | None:
+    """A forward drop/reject rule that would match a pinhole's traffic --
+    from the internet, to its zone, its protocol and a port of it. The
+    pinholes are rendered ahead of every rule (after the "nothing new
+    from the internet" drop, which they are the exceptions to), so such a
+    rule would silently stop holding. A rule by IPv4 address never
+    matches IPv6: no conflict."""
+    for rule in rules:
+        if rule.action == Action.ACCEPT or rule.to_zone == SELF_ZONE:
+            continue
+        if rule.src_address is not None or rule.dst_address is not None:
+            continue
+        if rule.from_zone is not None and rule.from_zone not in facing:
+            continue
+        if rule.to_zone not in (None, pinhole.zone):
+            continue
+        if rule.proto not in (Protocol.ANY, pinhole.proto):
+            continue
+        if rule.dst_port is not None:
+            low, high = _port_bounds(rule.dst_port)
+            if high < pinhole.port_from or low > pinhole.port_to:
+                continue
+        return rule.name
+    return None
+
+
+#: The management ports (frfw.management.MANAGEMENT_PORTS): sshd, the webUI.
+_MANAGEMENT_PORTS = (22, 443)
+
+
+def _check_management_ipv6(management: ManagementConfig, ipv6: Ipv6Config, interfaces: dict[str, Interface],
+                           zones: dict[str, Zone], nat: NatConfig, rules: list[Rule],
+                           xdp_sni_filter: XdpSniFilterConfig) -> None:
+    """ROADMAP FND-1c: management over IPv6 goes through the same input
+    rules as over IPv4 -- and a drop/reject rule by IPv4 address can't
+    hold there. So with such a rule on the management ports from a zone
+    that would be managed over IPv6, management.ipv6 is refused (the
+    same reason a zone with such a forward rule gets no IPv6, FND-1b)."""
+    if not (management.ipv6 and ipv6.enabled):
+        return
+    facing = internet_facing_zones(zones, nat)
+    if management.zones:
+        managed = set(management.zones)
+    elif management.allow_wan:
+        managed = set(zones)
+    else:
+        managed = {z for z in zones if z not in facing}
+    over_ipv6 = managed & set(ipv6_lan_zones(ipv6, interfaces, zones, nat, rules, xdp_sni_filter))
+    for rule in rules:
+        if rule.action == Action.ACCEPT or rule.to_zone != SELF_ZONE:
+            continue
+        if rule.src_address is None and rule.dst_address is None:
+            continue
+        if rule.from_zone is not None and rule.from_zone not in over_ipv6:
+            continue
+        if rule.proto not in (Protocol.ANY, Protocol.TCP):
+            continue
+        if rule.dst_port is not None:
+            low, high = _port_bounds(rule.dst_port)
+            if not any(low <= port <= high for port in _MANAGEMENT_PORTS):
+                continue
+        raise ConfigError(
+            f"management.ipv6: rule {rule.name!r} keeps hosts off the webUI or SSH by IPv4 address, which "
+            "IPv6 would get around. Block them by MAC (src_mac) instead, or leave management.ipv6 off"
+        )
 
 
 def _parse_management(raw: Any, zones: dict[str, Zone], nat: NatConfig) -> ManagementConfig:
@@ -842,8 +1041,11 @@ def _parse_management(raw: Any, zones: dict[str, Zone], nat: NatConfig) -> Manag
             raise ConfigError(f"management.addresses: {address!r} is not an IPv4 address")
         if address not in addresses:
             addresses.append(address)
+    ipv6 = raw.get("ipv6", False)
+    if not isinstance(ipv6, bool):
+        raise ConfigError("management.ipv6 must be true or false")
     return ManagementConfig(zones=tuple(chosen), allow_wan=allow_wan, confirm_apply_seconds=confirm,
-                            addresses=tuple(addresses))
+                            addresses=tuple(addresses), ipv6=ipv6)
 
 
 def _check_management_addresses(management: ManagementConfig, zones: dict[str, Zone], nat: NatConfig,

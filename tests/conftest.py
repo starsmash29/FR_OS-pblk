@@ -213,4 +213,5 @@ def _never_touch_the_hosts_ipv6(tmp_path_factory, monkeypatch):
     etc = tmp_path_factory.mktemp("etc_fr_os_ipv6")
     monkeypatch.setattr(paths, "IPV6_DHCPCD_CONF_PATH", etc / "dhcpcd6.conf")
     monkeypatch.setattr(paths, "IPV6_RA_CONF_PATH", etc / "dnsmasq_ra.conf")
+    monkeypatch.setattr(paths, "IPV6_ULA_STATE_PATH", etc / "ipv6_ula.json")
     monkeypatch.setattr(ipv6, "PROC_NET", tmp_path_factory.mktemp("proc_sys_net"))
