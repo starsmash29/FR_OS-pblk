@@ -1269,9 +1269,9 @@ def check_ipv6_services(check, opener, boot_timeout: float) -> bool:
     saved = urllib.parse.unquote_plus(post(opener, "/system/management-ipv6", {}))
     applied = urllib.parse.unquote_plus(post(opener, "/apply", {}))
     # The new ruleset closes the ULA at once, while the old webUI process
-    # still runs: nothing outside tells its restart (3 s after the apply)
-    # apart, so give it the time before waiting for the webUI.
-    time.sleep(10)
+    # still answers on the LAN's address: wait for it to go away (its
+    # restart, a few seconds after the apply), then for the new one.
+    wait_until_unreachable(WEBUI_HOST, 120)
     wait_for_webui(opener, boot_timeout)
     confirmed = check(confirm_pending(opener), "management over IPv6 turned off again, on an Apply confirmed "
                                                "from the dashboard" + ("" if "Management over IPv6 off" in saved
