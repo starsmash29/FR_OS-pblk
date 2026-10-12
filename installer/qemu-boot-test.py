@@ -915,6 +915,7 @@ Before=fr-kernel-confirm.service
 
 [Service]
 Type=oneshot
+ExecStart=ip -4 addr flush dev ens4
 ExecStart=ip link set dev ens4 down
 
 [Install]
@@ -1574,21 +1575,48 @@ def hello_bytes_at_isp(source: str, record: bytes, cut: int | None = None) -> in
             listener.wait()
 
 
+#: Run in the provider's namespace: answer one datagram on the port in
+#: argv[1], and say "ready" once bound.
+_ISP_UDP_ECHO = """\
+import socket, sys
+s = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+s.bind(("::", int(sys.argv[1])))
+s.settimeout(10)
+print("ready", flush=True)
+try:
+    data, peer = s.recvfrom(2048)
+    s.sendto(b"ok", peer)
+except OSError:
+    pass
+"""
+
+
 def udp6_to_isp(port: int, source: str, timeout: float = 3) -> str:
     """udp_through_router() over IPv6, from the LAN host's `source` to the
-    provider's address."""
-    with socket.socket(socket.AF_INET6, socket.SOCK_DGRAM) as sock:
-        sock.settimeout(timeout)
-        sock.bind((source, 0))
-        sock.connect((ISP_ADDRESS, port))
-        try:
-            sock.send(b"\xc0" + os.urandom(1199))
-            sock.recv(1)
-            return "answered"
-        except ConnectionRefusedError:
-            return "refused"
-        except OSError:
-            return "no answer"
+    provider's address. The provider is this runner's own namespace, which
+    would refuse a port nobody listens on just like the router's `reject`:
+    so it listens, and answers what reaches it -- "answered" is the
+    datagram through the router, "refused" the router's reject."""
+    listener = subprocess.Popen(["ip", "netns", "exec", ISP_NS, "python3", "-I", "-c", _ISP_UDP_ECHO, str(port)],
+                                stdout=subprocess.PIPE, text=True)
+    try:
+        if listener.stdout.readline().strip() != "ready":
+            return "no listener"
+        with socket.socket(socket.AF_INET6, socket.SOCK_DGRAM) as sock:
+            sock.settimeout(timeout)
+            sock.bind((source, 0))
+            sock.connect((ISP_ADDRESS, port))
+            try:
+                sock.send(b"\xc0" + os.urandom(1199))
+                sock.recv(2)
+                return "answered"
+            except ConnectionRefusedError:
+                return "refused"
+            except OSError:
+                return "no answer"
+    finally:
+        listener.kill()
+        listener.wait()
 
 
 def check_lan_ipv6_kept(check, opener, host: str | None) -> None:
@@ -1626,7 +1654,7 @@ def check_lan_ipv6_kept(check, opener, host: str | None) -> None:
     check(0 <= got < len(record), f"...so is a browser-sized one, split across segments, whose name is in the "
                                   f"second (ROADMAP SEC-17): {got} of {len(record)} bytes arrived")
     quic, other = udp6_to_isp(443, host), udp6_to_isp(4443, host)
-    check(quic == "refused" and other != "refused",
+    check(quic == "refused" and other == "answered",
           f"...and QUIC over IPv6 is refused from the filtered port (ROADMAP SEC-1): UDP/443 {quic}, "
           f"UDP/4443 {other}")
 
@@ -1785,7 +1813,9 @@ def run_kernel_trials(check, workdir: Path, disk: Path, iso: Path, kvm: bool, ue
         unit.unlink(missing_ok=True)
         unit.symlink_to("/dev/null")
         # ROADMAP SEC-23: as if the kernel broke the LAN NIC -- on the
-        # trial boot only.
+        # trial boot only. Its address goes too: since FND-1d the LAN
+        # keeps IPv6 with the SNI filter on, and dhcpcd, which hands the
+        # LAN its delegated prefix, sets a port it serves back up.
         (upper / LINK_DOWN_UNIT).write_text(LINK_DOWN_UNIT_TEXT)
         (upper / LINK_DOWN_WANTS).parent.mkdir(parents=True, exist_ok=True)
         (upper / LINK_DOWN_WANTS).symlink_to(f"/{LINK_DOWN_UNIT}")
@@ -2273,7 +2303,7 @@ def run(args: argparse.Namespace, provider: Isp) -> int:
         # ROADMAP SEC-1: QUIC hides the name, so while the filter is on the
         # router refuses UDP/443 from its port -- and only that port.
         quic, other = udp_through_router(443), udp_through_router(4443)
-        check(quic == "refused" and other != "refused",
+        check(quic == "refused" and other == "answered",
               f"the router refuses QUIC from the filtered LAN port (ROADMAP SEC-1): UDP/443 {quic}, UDP/4443 {other}")
         # The screen's counters come through the apply-helper: bpffs is
         # root's, and reading them in the webUI was an HTTP 500.
