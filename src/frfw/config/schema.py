@@ -9,6 +9,7 @@ their own inputs.
 
 from __future__ import annotations
 
+import ipaddress
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -362,8 +363,39 @@ class AdblockerConfig:
 
 
 @dataclass(frozen=True)
+class Ipv6Pinhole:
+    """An inbound pinhole (ROADMAP FND-1c): new connections from the
+    internet to one LAN host's port over IPv6, which is otherwise dropped
+    (FND-1b). There is no NAT in IPv6, so this is the IPv6 counterpart of
+    a port forward.
+
+    `host`: the host's interface identifier (`::5054:ff:fe12:3456`, the
+    low 64 bits: matched in whatever prefix the zone has now, so the
+    provider's renumbering doesn't break it) or a full global address.
+    `port_from`..`port_to`: one port or a range. `source`: only from this
+    IPv6 network (None: from anywhere)."""
+
+    name: str
+    zone: str
+    host: str
+    proto: Protocol
+    port_from: int
+    port_to: int
+    source: str | None = None
+
+    @property
+    def is_suffix(self) -> bool:
+        return int(ipaddress.IPv6Address(self.host)) >> 64 == 0
+
+    @property
+    def port(self) -> str:
+        return str(self.port_from) if self.port_from == self.port_to else f"{self.port_from}-{self.port_to}"
+
+
+@dataclass(frozen=True)
 class Ipv6Config:
-    """IPv6 (ROADMAP FND-1): FND-1a the WAN, FND-1b the LAN.
+    """IPv6 (ROADMAP FND-1): FND-1a the WAN, FND-1b the LAN, FND-1c the
+    router's services and inbound pinholes.
 
     `enabled` runs dhcpcd on the internet-facing interfaces (frfw.ipv6,
     fr-dhcp6.service): an address from the provider's Router
@@ -372,16 +404,24 @@ class Ipv6Config:
     RA-only dnsmasq (fr-ra.service) advertises it there (SLAAC), and the
     router routes IPv6 between them and the WAN: out from the LAN as the
     rules allow, nothing new in from the internet. The router's own
-    services stay IPv4-only (FND-1c). Off by default.
+    services answer on a stable ULA address of each LAN zone (FND-1c):
+    DNS, advertised in the RA, and the webUI and SSH with
+    `management.ipv6`. Off by default.
 
     `lan_zones`: the zones that get IPv6, in order -- the first zone's
     devices get the prefix's first /64s. None (the default): every zone
     with an interface that doesn't face the internet, in config order;
     an empty tuple: none (the router alone has IPv6, as in FND-1a).
+    `ula_prefix`: the ULA /48 (RFC 4193) the LAN zones' stable networks
+    come from; None (the default): one the router generated at random
+    once (frfw.ipv6.ula_prefix).
+    `pinholes`: inbound IPv6 to LAN hosts, see Ipv6Pinhole.
     """
 
     enabled: bool = False
     lan_zones: tuple[str, ...] | None = None
+    ula_prefix: str | None = None
+    pinholes: tuple[Ipv6Pinhole, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -551,12 +591,16 @@ class ManagementConfig:
     the static address of a management zone's interface, or the VPN's
     tunnel address. Set only by the admin's own "webUI address" action
     (ROADMAP SEC-27): no other change moves them. Empty (a config from
-    before SEC-27) means every management interface's static address."""
+    before SEC-27) means every management interface's static address.
+    `ipv6`: also listen over IPv6, on the stable ULA address of each
+    management zone that has IPv6 (ROADMAP FND-1c) -- never on the
+    provider's addresses. Off by default."""
 
     zones: tuple[str, ...] = ()
     allow_wan: bool = False
     confirm_apply_seconds: int = 300
     addresses: tuple[str, ...] = ()
+    ipv6: bool = False
 
 
 @dataclass(frozen=True)

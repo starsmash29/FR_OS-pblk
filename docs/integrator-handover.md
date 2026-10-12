@@ -1,7 +1,7 @@
 # Integrator handover
 
 State and working agreements for the next session of the integrating agent
-(Claude Code), so work picks up where it stopped. Last updated 2026-10-11,
+(Claude Code), so work picks up where it stopped. Last updated 2026-10-12,
 `main` at `6ad07e5`.
 
 ## How the owner and the integrator work
@@ -74,7 +74,7 @@ State and working agreements for the next session of the integrating agent
 
 ## Open, candidates for next
 
-- **FND-1 (IPv6), four stages agreed with the owner:** 1a the router's own IPv6 on the WAN (done, #91), 1b the LAN (delegated prefix, RA, forwarding; done, #92), 1c services over IPv6, next (DNS/RDNSS, webUI, SSH, inbound pinholes), 1d XDP and the IPv4-only security features. FR_OS is a community edition: every provider (prefix, address only, nothing) must work and be explained.
+- **FND-1 (IPv6), four stages agreed with the owner:** 1a the router's own IPv6 on the WAN (done, #91), 1b the LAN (delegated prefix, RA, forwarding; done, #92), 1c services over IPv6 and inbound pinholes (done, branch `claude/project-thread-gq31th`: ULA, RDNSS, DNS, `management.ipv6` off by default, no DHCPv6 server by decision, `ipv6.pinholes`), 1d next: XDP and the IPv4-only security features (the SNI filter, address rules, ZTNA and the WireGuard tunnel over IPv6). FND-1c gotchas: the boot test's SSH is off (nobody has a key), so over IPv6 it shows as "refused" (let through, nothing listens); pinholes are config-only, so the boot test writes one into config.yaml after boot 2; the container's kernel has no IPv6, so everything with packets is in the boot test. FR_OS is a community edition: every provider (prefix, address only, nothing) must work and be explained.
 
 - **FND-4:** Realtek firmware (`firmware-realtek`) is in the image (Partly). Other vendors' NIC firmware is still out.
 - **P5-1 / FND-2:** the owner's box is recorded in `docs/hardware.md` (Partly). Add boxes as they are tested.

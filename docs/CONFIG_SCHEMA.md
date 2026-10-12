@@ -311,21 +311,31 @@ local_dns:
   `adblocker.allowlist` entry (on `apply` and at every refresh). As with
   the allowlist, a name taken *off* `local_dns` is blocked again only
   from the next list refresh.
-- Addresses are IPv4 (FR_OS is IPv4-only, ROADMAP FND-1). DHCP clients'
+- Addresses are IPv4 (no AAAA records yet, ROADMAP FND-1). DHCP clients'
   own names (`laptop.lan`) are not registered: Kea hands out the leases.
 
 ## `ipv6`
 
-IPv6 (ROADMAP FND-1): the router's own on the WAN (FND-1a), and the LAN's
-(FND-1b). See `frfw.ipv6` and ARCHITECTURE.md's "IPv6 on the WAN" and
-"IPv6 on the LAN" sections. The webUI switches it on the Interfaces
-screen ("IPv6"), which also shows what the provider gave and the LAN
-networks made of it; `firewall-cli ipv6-status` says the same.
+IPv6 (ROADMAP FND-1): the router's own on the WAN (FND-1a), the LAN's
+(FND-1b), and the router's services and inbound pinholes over it
+(FND-1c). See `frfw.ipv6` and ARCHITECTURE.md's "IPv6 on the WAN",
+"IPv6 on the LAN" and "IPv6 services and pinholes" sections. The webUI
+switches it on the Interfaces screen ("IPv6"), which also shows what the
+provider gave, the LAN networks made of it, the router's stable
+addresses and the pinholes; `firewall-cli ipv6-status` says the same.
 
 ```yaml
 ipv6:
   enabled: true      # default false
   lan_zones: [lan, guest]   # optional; default: every LAN zone it can serve
+  ula_prefix: fd12:3456:789a::/48   # optional; default: generated once, at random
+  pinholes:                 # optional; default: none
+    - name: nas-https
+      zone: lan
+      host: "::5054:ff:fe12:3456"   # an interface ID, or a full global address
+      proto: tcp                    # tcp | udp
+      port: 443                     # or "8000-8010"
+      from: 2001:db8:42::/48        # optional: only from there
 ```
 
 - `enabled` needs an internet-facing interface (a zone `nat.masquerade`
@@ -339,8 +349,11 @@ ipv6:
   first /64. A provider that delegates a single /64 can serve only that
   first device, and the status says so. The router's address on each is
   `<network>::1`. A dedicated, RA-only dnsmasq (`fr-ra.service`)
-  advertises them: SLAAC only, no DHCPv6 server and no DNS server
-  option, so clients keep the router's IPv4 resolver.
+  advertises them, with the zone's stable network (`ula_prefix`):
+  SLAAC only, and no DHCPv6 server (below). Where the router's resolver
+  serves the zone (`adblocker.serve_lan`), the RA names it as the DNS
+  server (RDNSS, RFC 8106) at the router's stable address; elsewhere it
+  names none, and clients keep the DNS server they got over IPv4.
   - Without `lan_zones`: every zone with an interface that doesn't face
     the internet, in config order, except those IPv6 would get around a
     protection of (below). An added zone or device goes last and
@@ -377,11 +390,54 @@ ipv6:
     queries, DHCPv6 replies, ICMPv6 errors and a rate-limited ping.
   - From the LAN, it answers neighbour discovery, router solicitations
     and a rate-limited ping.
-  - Its services (the webUI, SSH, DNS) are not reachable over IPv6
-    (FND-1c).
+  - Its resolver answers DNS over IPv6 from the zones it serves, on
+    any of the router's addresses there.
+  - The webUI and SSH answer over IPv6 only with `management.ipv6`, and
+    only on the router's stable address of a management zone.
+  - With the VPN on, WireGuard's port is open from the WAN over IPv6
+    as over IPv4 (it answers no unknown key); the tunnel itself stays
+    IPv4 (FND-1d).
 - With `adblocker.force_dns`, plain DNS from the LAN over IPv6 is
-  refused, so the client falls back to the router's resolver over IPv4
-  (DoT/DoQ were already refused for both families).
+  redirected to the router's resolver, as over IPv4 (DoT/DoQ are
+  refused for both families).
+- `ula_prefix` (FND-1c): the router's stable network, a ULA /48 in
+  `fd00::/8` (RFC 4193). Without it the router generates one at random
+  the first time IPv6 is applied (40 random bits, never `fd00::/48`) and
+  keeps it in `/etc/fr_os/ipv6_ula.json`; set it to keep the same one
+  after a reinstall. Each LAN zone's device gets the /64 at the same
+  position as its delegated /64, and the router `<network>::1` there.
+  It doesn't depend on the provider: it stays when the delegated prefix
+  changes or there is none, so the router's DNS and management
+  addresses don't move. A ULA never crosses the WAN: from the LAN to the
+  internet it is refused (admin-prohibited), from the internet dropped.
+  A host with a ULA but no global address uses IPv4 for the internet
+  (RFC 6724).
+- `pinholes` (FND-1c): the exceptions to "nothing new comes in from the
+  internet over IPv6", one host and port (range) each:
+  - `zone`: an IPv6 LAN zone (one of `lan_zones`' result).
+  - `host`: an interface ID (`::…`, the low 64 bits) matches that host
+    in whatever /64 the zone has now, so it survives the provider
+    changing the prefix. It needs a stable interface ID: EUI-64 or set by
+    hand on the host, not an RFC 7217 or temporary address. A full
+    address must be global unicast (`2000::/3`, not a ULA) and is fixed.
+    Refused: the subnet's anycast (`::`), the router's own `::1`, and
+    the RFC 5453 reserved identifiers.
+  - `proto`: `tcp` or `udp`; `port`: one port or a range of at most
+    1000.
+  - `from`: optional, an IPv6 network on the internet; only from there.
+  - A pinhole goes ahead of the forward rules (after the quarantines,
+    the spoofing guard and the ULA border), so a forward `drop`/`reject`
+    rule that would cover its traffic (from the internet or any zone, to
+    its zone or any, its protocol and port) is refused with it, rather
+    than silently losing to it.
+  - While IPv6 is off they are kept, not checked against the zones and
+    not used. The webUI lists them; they are set here.
+- No DHCPv6 server (FND-1c), stateless or stateful: every current
+  client (Android, iOS, macOS, Windows 10 1703 and later, Linux) takes
+  its DNS server from the RA's RDNSS, and an older one keeps the one it
+  got over IPv4. A DHCPv6 server would be one more privileged,
+  network-parsing service (security-lessons I1) for nothing a LAN host
+  needs (Android has no DHCPv6 client for either).
 - An AI IDS quarantine also holds the host's MAC (from the router's
   neighbour table, on a LAN device only), so the host's own IPv6
   addresses don't get it out.
@@ -593,6 +649,7 @@ management:
   allow_wan: false    # explicit opt-in to manage from the internet (not recommended)
   confirm_apply_seconds: 300   # optional; 0 = off, else 60-3600
   addresses: [10.73.1.1]       # where the webUI and SSH listen; set by System -> webUI address
+  ipv6: false                  # also on the router's stable IPv6 address (ROADMAP FND-1c)
 ```
 
 - `addresses` (ROADMAP SEC-27): where the webUI and SSH listen, besides
@@ -622,6 +679,19 @@ management:
   `ListenAddress` drop-in, `/etc/ssh/sshd_config.d/40-fr_os-management.conf`).
   With `allow_wan` they listen on every address; `apply` and the System
   screen warn.
+- `ipv6` (ROADMAP FND-1c, default off): the webUI and SSH also listen
+  on the router's stable (ULA, `ipv6.ula_prefix`) address of each
+  management zone that has IPv6, and the input chain lets 22/443 in
+  over IPv6 to those addresses only -- never to the delegated one, which
+  is public and changes with the provider. Then your input rules decide,
+  as over IPv4. Off by default: from a dual-stack LAN the webUI is
+  reachable over IPv4 anyway, and the management plane grows only when
+  asked (security-lessons F2/G4). It only adds addresses, so it is not a
+  move of the webUI (`addresses`): the System screen's "Over IPv6"
+  switch saves it like any setting, and Apply loads it. Refused while a
+  `drop`/`reject` rule by IPv4 address keeps hosts of such a zone off
+  22/443 -- it couldn't hold over IPv6. A ZTNA sign-in over IPv6 is not
+  possible yet (FND-1d): it says to use IPv4.
 
 ## `update`
 
@@ -660,8 +730,9 @@ update:
 - Only IPv4 addresses/networks are supported in `src_address`/
   `dst_address`/`to_address`/`address` fields. A rule with one matches
   IPv4 only, so a drop rule by address keeps its zone off IPv6
-  (`ipv6.lan_zones`). Services over IPv6 and inbound IPv6 pinholes are
-  planned (ROADMAP FND-1c).
+  (`ipv6.lan_zones`) and is refused with `management.ipv6` when it
+  covers the webUI or SSH. Address rules in IPv6 are planned (ROADMAP
+  FND-1d).
 - No hairpin/reflection NAT for port forwards (an internal client
   cannot reach its own WAN-side forwarded service via the public IP) --
   this can be added later if needed.

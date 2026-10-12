@@ -31,7 +31,7 @@ def _fake_completed(returncode=0, stdout="", stderr=""):
 
 def test_ban_ip_rejects_invalid_address(monkeypatch):
     monkeypatch.setattr(bruteforce_mod, "_run_nft", lambda args: pytest.fail("nft should not be invoked"))
-    with pytest.raises(bruteforce_mod.BruteforceError, match="invalid IPv4 address"):
+    with pytest.raises(bruteforce_mod.BruteforceError, match="invalid IP address"):
         bruteforce_mod.ban_ip("not-an-ip", 3600)
 
 

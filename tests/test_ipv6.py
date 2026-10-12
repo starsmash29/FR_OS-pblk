@@ -52,7 +52,8 @@ def proc(monkeypatch, tmp_path):
         conf = root / "ipv6" / "conf" / device
         conf.mkdir(parents=True)
         for key, value in (("accept_ra", "1"), ("accept_redirects", "1"), ("accept_source_route", "0"),
-                           ("autoconf", "1"), ("disable_ipv6", "0"), ("forwarding", "0")):
+                           ("autoconf", "1"), ("disable_ipv6", "0"), ("forwarding", "0"),
+                           ("keep_addr_on_down", "0")):
             (conf / key).write_text(value + "\n")
         (root / "ipv4" / "conf" / device).mkdir(parents=True)
         (root / "ipv4" / "conf" / device / "promote_secondaries").write_text("0\n")
@@ -64,14 +65,21 @@ def proc(monkeypatch, tmp_path):
 def systemctl(monkeypatch):
     """What was asked of fr-dhcp6 ("restart") and fr-ra ("restart fr-ra"),
     and whether they run. dnsmasq's check of the RA config passes; the
-    real one is tested on its own."""
+    real one is tested on its own. `ip -6` calls (the ULA addresses,
+    FND-1c) are recorded in state["ip"] and succeed."""
     calls: list[str] = []
-    state = {"active": False, "ra_active": False}
+    state = {"active": False, "ra_active": False, "ip": []}
     monkeypatch.setattr(ipv6, "_systemctl",
                         lambda action, unit=None: calls.append(f"{action} {unit}" if unit else action))
     monkeypatch.setattr(ipv6, "service_active",
                         lambda unit=None: state["ra_active" if unit == paths.IPV6_RA_SERVICE_NAME else "active"])
     monkeypatch.setattr(ipv6, "_test_ra_conf", lambda text, path: None)
+
+    def run_ip(args):
+        state["ip"].append(" ".join(args))
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(ipv6, "_run_ip", run_ip)
     monkeypatch.setattr("os.geteuid", lambda: 0)
     return calls, state
 
@@ -407,21 +415,26 @@ def test_on_accepts_what_the_wan_needs_and_drops_the_rest(minimal_config_dict):
     # and nothing for the LAN.
     assert rules.index("ct state established,related accept") > start + len(expected) - 1
     assert "eth1" not in "\n".join(expected)
-    # Everything else to the router: dropped before any IPv4-era rule.
-    drop = rules.index('meta nfproto ipv6 drop comment "ipv6-default-drop"')
-    assert rules[drop - 1].startswith("meta nfproto ipv6 limit rate") or \
-        rules[drop - 1] == 'meta nfproto ipv6 meta pkttype != host drop comment "ipv6-not-for-the-router"'
-    assert rules.index("ct state invalid drop") < drop
-    after = rules[drop + 1:]
-    assert any("dport" in r for r in after)  # the management and service rules come later
-    assert not any("dport" in r for r in rules[:drop] if "547" not in r)
+    # Everything else to the router goes through the IPv6 chain before any
+    # IPv4-era rule (FND-1c), which drops it -- the router alone serves
+    # nothing over IPv6.
+    jump = rules.index("meta nfproto ipv6 jump ipv6_input")
+    assert rules[jump - 1] == "ct state invalid drop"
+    assert any("dport" in r for r in rules[jump + 1:])  # the management and service rules come later
+    assert not any("dport" in r for r in rules[:jump] if "547" not in r and "bruteforce-jail6" not in r)
+    assert _chain(ruleset, "ipv6_input") == [
+        'meta nfproto ipv6 meta pkttype != host drop comment "ipv6-not-for-the-router"',
+        'meta nfproto ipv6 limit rate 10/minute burst 10 packets log prefix "fr_os/drop/input: " '
+        'comment "log-ipv6-drop"',
+        'meta nfproto ipv6 drop comment "ipv6-default-drop"',
+    ]
     assert _chain(ruleset, "forward")[1] == 'meta nfproto ipv6 drop comment "ipv6-no-routing"'
 
 
 def test_on_logs_unicast_drops_only_when_drops_are_logged(minimal_config_dict):
-    rules = _chain(build_ruleset(_config(minimal_config_dict, logging={"drops": False})), "input")
+    rules = _chain(build_ruleset(_config(minimal_config_dict, logging={"drops": False})), "ipv6_input")
     assert not any("log-ipv6-drop" in r for r in rules)
-    rules = _chain(build_ruleset(_config(minimal_config_dict, logging={"drops": True})), "input")
+    rules = _chain(build_ruleset(_config(minimal_config_dict, logging={"drops": True})), "ipv6_input")
     log = next(i for i, r in enumerate(rules) if "log-ipv6-drop" in r)
     assert "ipv6-not-for-the-router" in rules[log - 1]  # multicast never reaches the log
     assert "ipv6-default-drop" in rules[log + 1]
@@ -689,11 +702,11 @@ def test_the_lan_may_ask_the_router_for_its_ra_and_ping_it(minimal_config_dict):
         'accept comment "ipv6-lan-nd"',
         f'{lan} icmpv6 type echo-request limit rate 5/second burst 10 packets accept comment "ipv6-lan-ping"',
     ]
-    # No RA from the LAN, and every other IPv6 packet to the router is
-    # still dropped ahead of the services (FND-1c).
+    # No RA from the LAN, and every other IPv6 packet to the router goes
+    # through the IPv6 chain ahead of the services (FND-1c).
     assert not any("nd-router-advert" in r and "eth1" in r for r in rules)
-    assert rules.index('meta nfproto ipv6 drop comment "ipv6-default-drop"') < next(
-        i for i, r in enumerate(rules) if "dport" in r and "547" not in r)
+    assert rules.index("meta nfproto ipv6 jump ipv6_input") < next(
+        i for i, r in enumerate(rules) if "dport" in r and "547" not in r and "jail6" not in r)
 
 
 def test_ipv6_is_routed_only_between_the_wan_and_the_lan_zones(minimal_config_dict):
@@ -731,23 +744,23 @@ def test_router_only_routes_nothing(minimal_config_dict):
     assert not any("ipv6-no-inbound" in r or "fib" in r for r in rules)
 
 
-def test_force_dns_refuses_plain_dns_over_ipv6(dhcp_config_dict):
-    """The resolver doesn't serve IPv6 (FND-1c): the redirect is IPv4
-    only, and plain DNS from the LAN over IPv6 is refused, so a client
-    falls back to the resolver it got over IPv4."""
+def test_force_dns_redirects_plain_dns_over_ipv6_too(dhcp_config_dict):
+    """FND-1c: the resolver serves IPv6, so plain DNS from the LAN over
+    IPv6 is redirected to it as over IPv4 -- not refused any more (1b)."""
     dhcp_config_dict["adblocker"] = {"enabled": True, "serve_lan": True, "force_dns": True,
                                      "source_urls": ["https://lists.example/hosts"]}
     ruleset = build_ruleset(_config(dhcp_config_dict))
     forward = _chain(ruleset, "forward")
-    for proto in ("udp", "tcp"):
-        rule = f'meta nfproto ipv6 iifname @lan_ifaces {proto} dport 53 reject comment "force-dns-ipv6"'
-        assert forward.index(rule) > forward.index("ct state established,related accept")
-        assert (f'meta nfproto ipv4 iifname @lan_ifaces {proto} dport 53 redirect to :53 comment "force-dns"'
-                in _chain(ruleset, "prerouting"))
+    prerouting = _chain(ruleset, "prerouting")
+    for family in ("ipv4", "ipv6"):
+        for proto in ("udp", "tcp"):
+            assert (f'meta nfproto {family} iifname @lan_ifaces {proto} dport 53 redirect to :53 '
+                    'comment "force-dns"') in prerouting
+    assert "force-dns-ipv6" not in ruleset
     # DoT/DoQ were already refused for both.
     assert 'iifname @lan_ifaces tcp dport 853 reject comment "force-dns-block-dot"' in forward
-    # Router only: nothing of the LAN's is routed, nothing to refuse.
-    assert "force-dns-ipv6" not in build_ruleset(_router_only(dhcp_config_dict))
+    # Router only: no LAN zone has IPv6, nothing to redirect.
+    assert "meta nfproto ipv6 iifname @lan_ifaces" not in build_ruleset(_router_only(dhcp_config_dict))
 
 
 def test_a_quarantined_host_is_held_by_its_mac_over_ipv6(minimal_config_dict):

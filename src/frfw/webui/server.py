@@ -24,6 +24,8 @@ from frfw.webui.tls import ensure_self_signed_cert
 
 #: linux/in.h; not exported by Python's socket module.
 _IP_FREEBIND = getattr(socket, "IP_FREEBIND", 15)
+#: linux/in6.h; Python's socket module doesn't name it.
+_IPV6_FREEBIND = 78
 
 
 def _pqc_enabled(config_path: Path) -> bool:
@@ -85,13 +87,20 @@ def listen_addresses(config_path: Path, listen_path: Path | None = None) -> list
 
 def bind_sockets(addresses: list[str], port: int) -> list[socket.socket]:
     """One listening socket per address. IP_FREEBIND lets it bind an
-    address that isn't on an interface yet (a LAN port still coming up)
-    instead of failing."""
+    address that isn't on an interface yet (a LAN port still coming up,
+    the ULA address the boot's apply puts on, ROADMAP FND-1c) instead of
+    failing. An IPv6 socket takes IPv6 only (IPV6_V6ONLY): its address
+    is one ULA address, never a way in for IPv4."""
     sockets = []
     for address in addresses:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        if ipaddress.ip_address(address).version == 6:
+            sock = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+            sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            sock.setsockopt(socket.IPPROTO_IPV6, _IPV6_FREEBIND, 1)
+        else:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.setsockopt(socket.IPPROTO_IP, _IP_FREEBIND, 1)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.setsockopt(socket.IPPROTO_IP, _IP_FREEBIND, 1)
         sock.bind((address, port))
         sock.listen(2048)
         sock.set_inheritable(True)

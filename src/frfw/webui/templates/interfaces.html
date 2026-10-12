@@ -46,12 +46,15 @@
     delegates one, a prefix. Each LAN zone's interface gets a /64 network
     of that prefix, which its devices configure themselves from (SLAAC;
     <code>ipv6.lan_zones</code> chooses the zones, all of them by
-    default). The rules decide what the LAN reaches over IPv6, as over
-    IPv4; nothing new comes in from the internet, and the router's own
-    services stay on IPv4 for now.
+    default). Each also gets a stable network of the router's own (ULA),
+    where the router answers DNS whatever the provider gives. The rules
+    decide what the LAN reaches over IPv6, as over IPv4; nothing new comes
+    in from the internet but through a pinhole (<code>ipv6.pinholes</code>).
+    The webUI and SSH answer over IPv6 only with
+    <code>management.ipv6</code>, on the stable address.
   </p>
   <p id="ipv6-summary" data-state="{{ ipv6.state }}">{{ ipv6.summary }}</p>
-  {% if ipv6.addresses or ipv6.prefixes or ipv6.default_routes or ipv6.lan %}
+  {% if ipv6.addresses or ipv6.prefixes or ipv6.default_routes or ipv6.lan or ipv6.ula or ipv6.pinholes %}
   <dl>
     {% for device, address, source in ipv6.addresses %}
     <dt>{{ device }}</dt><dd class="ipv6-address">{{ address }} ({{ source }})</dd>
@@ -64,6 +67,12 @@
     {% endfor %}
     {% for zone, device, network in ipv6.lan %}
     <dt>{{ zone }} ({{ device }})</dt><dd class="ipv6-lan">{{ network or "no network yet" }}</dd>
+    {% endfor %}
+    {% for zone, device, address in ipv6.ula %}
+    <dt>{{ zone }} ({{ device }}), stable</dt><dd class="ipv6-ula">{{ address }}</dd>
+    {% endfor %}
+    {% for name, zone, what, targets in ipv6.pinholes %}
+    <dt>Pinhole {{ name }}</dt><dd class="ipv6-pinhole">{{ what }} to {{ targets | join(", ") if targets else "no address in " ~ zone ~ " yet" }}</dd>
     {% endfor %}
   </dl>
   {% endif %}

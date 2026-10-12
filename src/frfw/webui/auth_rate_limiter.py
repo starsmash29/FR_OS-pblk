@@ -6,7 +6,9 @@ Two counters (security-lessons G6):
 - **per source address**: 5 failures within 5 minutes and the address is
   jailed at the firewall for an hour, through the privileged apply-helper
   (see `frfw.bruteforce` for the enforcement side and
-  `frfw.nft.builder.BRUTEFORCE_JAIL_SET_NAME` for the nftables set);
+  `frfw.nft.builder.BRUTEFORCE_JAIL_SET_NAME` for the nftables set). An
+  IPv6 source counts, and is jailed, as its /64 (`frfw.bruteforce.
+  jail_key`, ROADMAP FND-1c): a host picks its own IPv6 addresses;
 - **per account**: 10 failures within 15 minutes, from any number of
   addresses, and the account's sign-in is refused for the rest of that
   window -- what stops credential stuffing spread over a botnet, which
@@ -36,6 +38,7 @@ import threading
 import time
 from pathlib import Path
 
+from frfw.bruteforce import jail_key
 from frfw.webui.helper_client import HelperClient
 from frfw.webui.responses import redirect_with
 
@@ -64,6 +67,15 @@ _MAX_TRACKED = 5000
 
 def _now() -> float:
     return time.time()
+
+
+def _source(ip: str) -> str:
+    """The key a source address counts under (jail_key); anything that
+    isn't an address (a test client's name) as it is."""
+    try:
+        return jail_key(ip)
+    except ValueError:
+        return ip
 
 
 class BruteforceGuard:
@@ -100,6 +112,7 @@ class BruteforceGuard:
         that IP's counter immediately after, so the caller's own
         "ask the helper to ban" action happens exactly once per
         threshold crossing."""
+        ip = _source(ip)
         now = _now()
         with self._lock:
             self._calls_since_sweep += 1
@@ -122,6 +135,7 @@ class BruteforceGuard:
         `account`, also the account's, and `ip` becomes (or stays) a
         known source of it. Returns True when the account has signed in
         before, but never (or not for 90 days) from `ip`."""
+        ip = _source(ip)
         now = _now()
         with self._lock:
             self._attempts.pop(ip, None)
@@ -152,6 +166,7 @@ class BruteforceGuard:
     def account_locked(self, account: str, ip: str) -> int:
         """Seconds until `account` can be tried again from `ip` (0: now).
         A known source of the account is never locked out."""
+        ip = _source(ip)
         now = _now()
         with self._lock:
             seen = self._known.get(account, {}).get(ip)

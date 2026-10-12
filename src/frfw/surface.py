@@ -31,7 +31,7 @@ import re
 import subprocess
 from dataclasses import dataclass, field
 
-from frfw import management
+from frfw import ipv6, management
 from frfw.config.schema import SELF_ZONE, Action, Config, Protocol, Rule
 from frfw.nft import builder
 
@@ -241,18 +241,32 @@ def input_verdict(config: Config, zone: str, proto: str, port: int, family: int 
 
 def ipv6_verdict(config: Config, zone: str, proto: str, port: int) -> Verdict:
     """What the input chain does for a socket bound to an IPv6 address
-    (not the wildcard, which takes IPv4 too): every IPv6 packet is dropped
-    ahead of the admin's rules, but for what the WAN needs (ROADMAP
-    FND-1a) and, first in the chain, the isolated IoT devices' DNS/DHCP."""
+    (not the wildcard, which takes IPv4 too): every IPv6 packet goes
+    through builder.IPV6_INPUT_CHAIN ahead of the admin's rules -- what
+    the WAN needs (ROADMAP FND-1a), DNS on the LAN zones the resolver
+    serves, WireGuard from the WAN, and with management.ipv6 the webUI
+    and SSH, which then meet the admin's rules as over IPv4 (FND-1c) --
+    and, first in the chain, the isolated IoT devices' DNS/DHCP."""
     isolated_dns_dhcp = (proto == "udp" and port in (53, 67)) or (proto == "tcp" and port == 53)
     if config.iot.enabled and isolated_dns_dhcp:
         return Verdict(RESTRICTED, "only isolated IoT devices (DNS/DHCP)")
     if not config.ipv6.enabled:
         return Verdict(CLOSED, "IPv6 is off (ipv6.enabled)")
-    if proto == "udp" and port == 546 and zone in management.internet_zones(config):
+    internet = management.internet_zones(config)
+    if proto == "udp" and port == 546 and zone in internet:
         return Verdict(RESTRICTED, "only DHCPv6 replies from the provider's link-local address",
                        link_local_only=True)
-    return Verdict(CLOSED, "the router takes IPv6 only for what the WAN needs (ROADMAP FND-1a)")
+    ipv6_zones = {z for z, _ in ipv6.lan_devices(config)}
+    if port == 53 and proto in ("tcp", "udp") and zone in ipv6_zones and zone in builder.dns_resolver_zones(config):
+        return Verdict(OPEN, "the ad-block DNS resolver serves this zone over IPv6")
+    if (config.wireguard.enabled and proto == "udp" and port == config.wireguard.listen_port
+            and zone in internet):
+        return Verdict(OPEN, "the WireGuard VPN (answers known keys only)")
+    if (proto == "tcp" and port in management.MANAGEMENT_PORTS and config.management.ipv6
+            and zone in ipv6_zones and zone in management.management_zones(config)):
+        return _chain_verdict(config, zone, proto, port, 6)
+    return Verdict(CLOSED, "over IPv6 the router answers only what the WAN needs, DNS on the LAN, and "
+                           "the webUI and SSH with management.ipv6 (ROADMAP FND-1a/1c)")
 
 
 def _chain_verdict(config: Config, zone: str, proto: str, port: int, family: int) -> Verdict:
@@ -282,7 +296,7 @@ def _chain_verdict(config: Config, zone: str, proto: str, port: int, family: int
     found = decide(cut)
     if found:
         return found
-    if zone in builder._dns_resolver_zones(config) and port == 53:
+    if zone in builder.dns_resolver_zones(config) and port == 53:
         return Verdict(OPEN, "the ad-block DNS resolver serves this zone")
     if (proto == "tcp" and port in management.MANAGEMENT_PORTS
             and zone in management.blocked_zones(config)):

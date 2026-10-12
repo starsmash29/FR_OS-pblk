@@ -82,6 +82,10 @@ def _render_system(request: Request, username: str, raw: dict, cert_path: Path, 
         and str(ipaddress.IPv4Interface(config.wireguard.address).ip) in management.listen_addresses(config),
         "choices": management.address_choices(config),
         "confirm_seconds": config.management.confirm_apply_seconds,
+        # ROADMAP FND-1c: over IPv6 on the stable (ULA) addresses, opt-in.
+        "ipv6": config.management.ipv6,
+        "ipv6_available": config.ipv6.enabled,
+        "ipv6_addresses": management.ipv6_addresses(config),
     }
     metrics_raw = raw.get("metrics") or {}
     # Unprivileged: no blkid probing, only /proc (which is all the webUI needs).
@@ -162,6 +166,30 @@ def save_management(
                     user=username, client=client_ip(request))
         return redirect_with("/system", error="Saved. " + management.WAN_WARNING + " Click Apply to load it.")
     return redirect_with("/system", success="Management is LAN-only again -- click Apply to load it")
+
+
+@router.post("/system/management-ipv6")
+def save_management_ipv6(
+    request: Request,
+    ipv6: bool = Form(False),
+    username: str = Depends(require_login),
+    raw: dict = Depends(get_raw_config),
+    helper: HelperClient = Depends(get_helper),
+    audit_log_path: Path = Depends(get_audit_log_path),
+):
+    """ROADMAP FND-1c: the webUI and SSH also over IPv6, on the router's
+    stable (ULA) address of each management zone -- off by default. It
+    only adds addresses (IPv4 stays where it is), so it is saved like
+    any setting and loaded by the next Apply."""
+    section = dict(raw.get("management") or {})
+    section["ipv6"] = ipv6
+    raw["management"] = section
+    ok, message = try_save(raw, helper)
+    if not ok:
+        return redirect_with("/system", error=message)
+    audit.append(audit_log_path, {"user": username, "client": client_ip(request),
+                                  "event": f"management over IPv6 turned {'on' if ipv6 else 'off'}"})
+    return redirect_with("/system", success=f"Management over IPv6 {'on' if ipv6 else 'off'} -- click Apply to load it")
 
 
 @router.post("/system/management-addresses")

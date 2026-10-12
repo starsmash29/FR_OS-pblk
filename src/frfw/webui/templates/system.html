@@ -123,6 +123,19 @@
   {% else %}
   <p class="muted">No management interface has a static address: the webUI is reachable from the router itself only.</p>
   {% endif %}
+  <h4>Over IPv6</h4>
+  <p>The webUI and SSH can also listen on the router's stable IPv6 address (ULA) in each management zone that has IPv6 --
+    never on the provider's addresses, which change and are public. The same rules apply as over IPv4.
+    {% if management.ipv6 and management.ipv6_addresses %}They listen on <code id="management-ipv6-addresses">{{ management.ipv6_addresses | join(", ") }}</code>.{% endif %}</p>
+  {% if management.ipv6_available %}
+  <form method="post" action="/system/management-ipv6">
+    {{ csrf_input(request) }}
+    <label class="checkbox-row"><input type="checkbox" name="ipv6" value="true" {{ "checked" if management.ipv6 }}> Also over IPv6 (stable address)</label>
+    <button type="submit">Save</button>
+  </form>
+  {% else %}
+  <p class="muted">IPv6 is off (Interfaces screen).</p>
+  {% endif %}
 </div>
 <div class="card">
   <h3>Software integrity</h3>

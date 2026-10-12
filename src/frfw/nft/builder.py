@@ -66,6 +66,21 @@ FILTER_TABLE = "fr_os"
 #: ruleset (RuntimeSets, from frfw.bruteforce.snapshot_before_reload).
 BRUTEFORCE_JAIL_SET_NAME = "bruteforce_jail"
 
+#: The brute-force jail over IPv6 (ROADMAP FND-1c, with
+#: `management.ipv6`): a /64, not an address -- a host picks its own
+#: interface identifier (SLAAC, privacy addresses), so one address is no
+#: limit at all. A /64 is a whole LAN segment, though, so the jail holds
+#: it off the webUI and SSH only, not off the router's DNS: one host's
+#: failed sign-ins don't take its neighbours' name resolution with them.
+#: An interval set with per-element timeouts; same reload handling.
+BRUTEFORCE_JAIL6_SET_NAME = "bruteforce_jail6"
+
+#: The regular chain every IPv6 packet to the router goes through
+#: (ROADMAP FND-1a/1c), while IPv6 is on: what the router serves over
+#: IPv6 is accepted there, management traffic returns to the input chain
+#: to meet the admin's rules as IPv4 does, the rest is dropped.
+IPV6_INPUT_CHAIN = "ipv6_input"
+
 #: AI IDS/IPS quarantine set (phase 11, see frfw.ids_quarantine and
 #: frfw.ai_ids): a source IP the unprivileged `fr-ai-ids` daemon has
 #: flagged as anomalous (connection-rate spike, destination-scan
@@ -160,6 +175,8 @@ class RuntimeSets:
     iot_isolated: tuple[str, ...] = ()
     #: (mac, seconds left), see IDS_QUARANTINE_MAC_SET_NAME.
     ids_quarantine_mac: tuple[tuple[str, int], ...] = ()
+    #: ("<network>/64", seconds left), see BRUTEFORCE_JAIL6_SET_NAME.
+    bruteforce_jail6: tuple[tuple[str, int], ...] = ()
 
 
 def build_ruleset(config: Config, *, clock: ScheduleClock | None = None, now: float | None = None,
@@ -182,6 +199,7 @@ def build_ruleset(config: Config, *, clock: ScheduleClock | None = None, now: fl
 
     lines.append("")
     lines.extend(_render_bruteforce_jail_set(runtime.bruteforce_jail))
+    lines.extend(_render_bruteforce_jail6_set(runtime.bruteforce_jail6))
 
     lines.append("")
     lines.extend(_render_ids_quarantine_set(runtime.ids_quarantine))
@@ -217,6 +235,10 @@ def build_ruleset(config: Config, *, clock: ScheduleClock | None = None, now: fl
     # ones below) gets a chance to match it first.
     lines.append(f"\t\t{_render_bruteforce_drop_rule()}")
     lines.append(f"\t\t{_render_ids_quarantine_drop_rule()}")
+    # ROADMAP FND-1c: the same two over IPv6 -- the jail by /64, a
+    # quarantined host by its MAC (the router now serves IPv6 on the LAN).
+    lines.append(f"\t\t{_render_bruteforce_jail6_drop_rule()}")
+    lines.append(f"\t\t{_render_ids_quarantine_mac_forward_rule()}")
     if config.iot.enabled:
         # Ahead of `ct state established,related accept` on purpose: an
         # isolated device's already-open sessions to the router are cut
@@ -234,11 +256,12 @@ def build_ruleset(config: Config, *, clock: ScheduleClock | None = None, now: fl
     lines.extend(f"\t\t{line}" for r in input_cut for line in _render_rule(r, clock))
     lines.append("\t\tct state established,related accept")
     lines.append("\t\tct state invalid drop")
-    # Every other IPv6 packet to the router, before any rule below: those
-    # were written for IPv4 -- the brute-force jail, the IDS quarantine and
-    # ZTNA hold IPv4 addresses only -- and would otherwise match IPv6 too.
-    lines.extend(f"\t\t{r}" for r in _render_ipv6_input_drop(config))
-    dns_zones = _dns_resolver_zones(config)
+    # Every IPv6 packet to the router, before any rule below: those were
+    # written for IPv4 -- the brute-force jail, the IDS quarantine and ZTNA
+    # hold IPv4 addresses only -- and would otherwise match IPv6 too. What
+    # the router serves over IPv6 is decided in IPV6_INPUT_CHAIN (FND-1c).
+    lines.extend(f"\t\t{r}" for r in _render_ipv6_input_jump(config))
+    dns_zones = dns_resolver_zones(config)
     for zone in dns_zones:
         for proto in ("udp", "tcp"):
             lines.append(
@@ -268,6 +291,12 @@ def build_ruleset(config: Config, *, clock: ScheduleClock | None = None, now: fl
     lines.extend(_render_drop_log(config, "input"))
     lines.append("\t}")
 
+    if config.ipv6.enabled:
+        lines.append("")
+        lines.append(f"\tchain {IPV6_INPUT_CHAIN} {{")
+        lines.extend(f"\t\t{r}" for r in _render_ipv6_input_chain(config))
+        lines.append("\t}")
+
     lines.append("")
     lines.append("\tchain forward {")
     lines.append("\t\ttype filter hook forward priority filter; policy drop;")
@@ -276,6 +305,8 @@ def build_ruleset(config: Config, *, clock: ScheduleClock | None = None, now: fl
     # have it, and only from a LAN host's own network -- or, with no LAN
     # zone getting IPv6, not at all.
     lines.extend(f"\t\t{r}" for r in _render_ipv6_forward_guard(config))
+    # FND-1c: unique local addresses never cross the border (RFC 4193).
+    lines.extend(f"\t\t{r}" for r in _render_ula_border(config))
     # A quarantined host is cut off from everything it would reach
     # *through* the router too (the internet, other zones), not only from
     # the router itself -- and ahead of the established accept, so its
@@ -298,7 +329,9 @@ def build_ruleset(config: Config, *, clock: ScheduleClock | None = None, now: fl
     # ROADMAP FND-1b: nothing new from the internet to the LAN over IPv6.
     # Its addresses are public, and an admin rule written for a port
     # forward ("allow 443 from wan to dmz", next to a DNAT to one host)
-    # would otherwise open that port on every host of the zone.
+    # would otherwise open that port on every host of the zone. A pinhole
+    # (FND-1c) is the one way in, so it goes just ahead.
+    lines.extend(f"\t\t{r}" for r in _render_ipv6_pinholes(config))
     lines.extend(f"\t\t{r}" for r in _render_ipv6_no_inbound(config))
     if config.adblocker.enabled and config.adblocker.force_dns:
         # DNS-over-TLS (853/tcp) and DNS-over-QUIC (853/udp) would bypass
@@ -311,16 +344,6 @@ def build_ruleset(config: Config, *, clock: ScheduleClock | None = None, now: fl
                     f"\t\tiifname @{_iface_set_name(zone)} {proto} dport 853 reject "
                     f"{_comment('force-dns-block-dot')}"
                 )
-        # ROADMAP FND-1b: plain DNS over IPv6 can't be redirected to the
-        # resolver (it doesn't serve IPv6 yet, FND-1c), so it is refused:
-        # a client falls back to the resolver it got over IPv4.
-        if _ipv6_lan_devices(config):
-            for zone in dns_zones:
-                for proto in ("udp", "tcp"):
-                    lines.append(
-                        f"\t\tmeta nfproto ipv6 iifname @{_iface_set_name(zone)} {proto} dport 53 reject "
-                        f"{_comment('force-dns-ipv6')}"
-                    )
     if forward_rules:
         lines.append("")
         lines.extend(f"\t\t{line}" for r in forward_rules for line in _render_rule(r, clock))
@@ -393,13 +416,69 @@ def _render_ipv6_wan_input(config: Config) -> list[str]:
     ]
 
 
+def _render_ipv6_input_jump(config: Config) -> list[str]:
+    """IPv6 off: every IPv6 packet to the router is dropped. On: it goes
+    through IPV6_INPUT_CHAIN (_render_ipv6_input_chain)."""
+    if not config.ipv6.enabled:
+        return [f"meta nfproto ipv6 drop {_comment('ipv6-off')}"]
+    return [f"meta nfproto ipv6 jump {IPV6_INPUT_CHAIN}"]
+
+
+def _render_ipv6_input_chain(config: Config) -> list[str]:
+    """What the router serves over IPv6 (ROADMAP FND-1c), then the drop
+    of everything else (_render_ipv6_input_drop).
+
+    - DNS from the LAN devices of the zones the resolver serves -- the
+      same accept as over IPv4, ahead of the admin's rules.
+    - With `management.ipv6`, the webUI and SSH from the management
+      zones' LAN devices, to the router's ULA address on the very device
+      the packet came in on (`fib daddr . iif type local`: not the
+      provider's address, not another zone's): `return`, so it meets the
+      management drop and the admin's input rules after the jump exactly
+      as IPv4 does -- "allow 443 from lan to self" lets it in, nothing
+      else does.
+    - WireGuard from the WAN, as over IPv4: it answers nothing to a packet
+      that isn't from a known key."""
+    from frfw.ipv6 import wan_devices
+
+    lines = []
+    served = set(dns_resolver_zones(config))
+    dns = [d for z, d in _ipv6_lan_zone_devices(config) if z in served]
+    if dns:
+        lines.append(f"iifname {_devices(dns)} meta l4proto {{ tcp, udp }} th dport 53 accept "
+                     f"{_comment('ipv6-dns')}")
+    managed = _ipv6_management_devices(config)
+    if managed:
+        ports = ", ".join(str(p) for p in management.MANAGEMENT_PORTS)
+        lines.append(f"iifname {_devices(managed)} ip6 daddr fc00::/7 fib daddr . iif type local "
+                     f"tcp dport {{ {ports} }} return {_comment('ipv6-management')}")
+    wan = wan_devices(config)
+    if config.wireguard.enabled and wan:
+        lines.append(f"iifname {_devices(wan)} udp dport {config.wireguard.listen_port} accept "
+                     f"{_comment('ipv6-wireguard')}")
+    return lines + _render_ipv6_input_drop(config)
+
+
+def _ipv6_lan_zone_devices(config: Config) -> list[tuple[str, str]]:
+    from frfw.ipv6 import lan_devices
+
+    return lan_devices(config)
+
+
+def _ipv6_management_devices(config: Config) -> list[str]:
+    """The LAN devices management is reachable on over IPv6: those of the
+    management zones that have IPv6, with `management.ipv6` only."""
+    if not config.management.ipv6:
+        return []
+    zones = set(management.management_zones(config))
+    return [d for z, d in _ipv6_lan_zone_devices(config) if z in zones]
+
+
 def _render_ipv6_input_drop(config: Config) -> list[str]:
     """Every other IPv6 packet to the router is dropped. A unicast one is
     logged like any default-deny drop (security-lessons K6); multicast --
     the LAN's own IPv6 chatter, MLD and router solicitations -- is not,
     so it can't use up the log's rate limit."""
-    if not config.ipv6.enabled:
-        return [f"meta nfproto ipv6 drop {_comment('ipv6-off')}"]
     lines = [f"meta nfproto ipv6 meta pkttype != host drop {_comment('ipv6-not-for-the-router')}"]
     if config.logging.drops:
         rate = config.logging.drops_per_minute
@@ -423,7 +502,7 @@ def _render_ipv6_lan_input(config: Config) -> list[str]:
     """What the LAN's IPv6 needs from the router (ROADMAP FND-1b), on the
     LAN zones' devices only: neighbour discovery and router solicitations,
     with hop limit 255 (from the link itself, RFC 4861), and a
-    rate-limited ping. The router's services over IPv6 are FND-1c."""
+    rate-limited ping. The router's services over IPv6: IPV6_INPUT_CHAIN (FND-1c)."""
     devices = _ipv6_lan_devices(config)
     if not devices:
         return []
@@ -471,6 +550,59 @@ def _render_ipv6_no_inbound(config: Config) -> list[str]:
         lines.append(f'{wan} limit rate {rate}/minute burst {rate} packets log prefix '
                      f'"{DROP_LOG_PREFIX}forward: " {_comment("log-ipv6-inbound")}')
     lines.append(f"{wan} drop {_comment('ipv6-no-inbound')}")
+    return lines
+
+
+def _render_ula_border(config: Config) -> list[str]:
+    """RFC 4193 4.3: unique local addresses (fc00::/7) are filtered at the
+    border. From the internet: dropped, whichever way it is addressed.
+    To it: refused with "administratively prohibited", so a LAN host
+    that tries its ULA source anyway (it has one even with no prefix from
+    the provider) gives up at once instead of timing out."""
+    from frfw.ipv6 import wan_devices
+
+    if not _ipv6_lan_devices(config):
+        return []
+    wan = _devices(wan_devices(config))
+    return [
+        f"iifname {wan} ip6 saddr fc00::/7 drop {_comment('ipv6-ula-from-internet')}",
+        f"iifname {wan} ip6 daddr fc00::/7 drop {_comment('ipv6-ula-from-internet')}",
+        f"oifname {wan} ip6 saddr fc00::/7 reject with icmpv6 type admin-prohibited "
+        f"{_comment('ipv6-ula-to-internet')}",
+        f"oifname {wan} ip6 daddr fc00::/7 reject with icmpv6 type admin-prohibited "
+        f"{_comment('ipv6-ula-to-internet')}",
+    ]
+
+
+#: The low 64 bits of an IPv6 address: the interface identifier a
+#: suffix pinhole matches, in whatever prefix its zone has now.
+_IID_MASK = "::ffff:ffff:ffff:ffff"
+
+
+def _render_ipv6_pinholes(config: Config) -> list[str]:
+    """ipv6.pinholes (ROADMAP FND-1c): new connections from the internet
+    to one LAN host's port, the only exceptions to the drop that follows
+    (_render_ipv6_no_inbound). To the zone's devices only, and to one
+    host: its full address, or its interface identifier in whatever
+    prefix the zone has now (`ip6 daddr & ::ffff:ffff:ffff:ffff`)."""
+    from frfw.ipv6 import wan_devices
+
+    if not _ipv6_lan_devices(config) or not config.ipv6.pinholes:
+        return []
+    wan = _devices(wan_devices(config))
+    lines = []
+    for pinhole in config.ipv6.pinholes:
+        exprs = [f"meta nfproto ipv6 iifname {wan} oifname @{_iface_set_name(pinhole.zone)}"]
+        if pinhole.source is not None:
+            exprs.append(f"ip6 saddr {ipaddress.IPv6Network(pinhole.source)}")
+        host = ipaddress.IPv6Address(pinhole.host)
+        if pinhole.is_suffix:
+            exprs.append(f"ip6 daddr & {_IID_MASK} == {host}")
+        else:
+            exprs.append(f"ip6 daddr {host}")
+        exprs.append(f"{pinhole.proto.value} dport {pinhole.port}")
+        exprs.append(f"counter accept {_comment(f'pinhole:{pinhole.name}')}")
+        lines.append(" ".join(exprs))
     return lines
 
 
@@ -529,6 +661,25 @@ def _render_bruteforce_jail_set(members: tuple[tuple[str, int], ...] = ()) -> li
 
 def _render_bruteforce_drop_rule() -> str:
     return f"ip saddr @{BRUTEFORCE_JAIL_SET_NAME} drop {_comment('bruteforce-jail')}"
+
+
+def _render_bruteforce_jail6_set(members: tuple[tuple[str, int], ...] = ()) -> list[str]:
+    """BRUTEFORCE_JAIL6_SET_NAME: /64s, each with its own timeout; the
+    members carried over a reload are re-validated (from `nft -j`)."""
+    items = [f"{ipaddress.IPv6Network(net)} timeout {int(left)}s" for net, left in members if int(left) > 0]
+    return [
+        f"\tset {BRUTEFORCE_JAIL6_SET_NAME} {{",
+        "\t\ttype ipv6_addr",
+        "\t\tflags interval, timeout",
+        *([f"\t\telements = {{ {', '.join(items)} }}"] if items else []),
+        "\t}",
+    ]
+
+
+def _render_bruteforce_jail6_drop_rule() -> str:
+    ports = ", ".join(str(p) for p in management.MANAGEMENT_PORTS)
+    return (f"ip6 saddr @{BRUTEFORCE_JAIL6_SET_NAME} tcp dport {{ {ports} }} drop "
+            f"{_comment('bruteforce-jail6')}")
 
 
 def _render_ids_quarantine_set(members: tuple[tuple[str, int], ...] = ()) -> list[str]:
@@ -751,7 +902,7 @@ def _render_rule_lines(rule: Rule, clock: ScheduleClock | None, ztna_match: str 
     return lines
 
 
-def _dns_resolver_zones(config: Config) -> list[str]:
+def dns_resolver_zones(config: Config) -> list[str]:
     """Zones the ad-block resolver serves (phase 15, adblocker.serve_lan):
     the DHCP zones -- the same set frfw.adblock.dns_service listens on
     and frfw.kea announces the router as DNS server to."""
@@ -767,14 +918,18 @@ def _render_nat_chains(config: Config, force_dns_zones: list[str] | None = None)
         # Any plain-DNS query from these zones, whatever server it was
         # addressed to, is answered by the router's own resolver.
         lines.append("")
+        ipv6_zones = {z for z, _ in _ipv6_lan_zone_devices(config)}
         for zone in force_dns_zones:
-            for proto in ("udp", "tcp"):
-                # IPv4 only: the resolver doesn't serve IPv6 yet (FND-1c);
-                # the forward chain refuses plain DNS over IPv6 instead.
-                lines.append(
-                    f"\t\tmeta nfproto ipv4 iifname @{_iface_set_name(zone)} {proto} dport 53 redirect to :53 "
-                    f"{_comment('force-dns')}"
-                )
+            # Over IPv6 too where the zone has it (ROADMAP FND-1c): the
+            # resolver listens on every address of the zone's devices
+            # (bind-dynamic), whichever one the redirect picks.
+            families = ("ipv4", "ipv6") if zone in ipv6_zones else ("ipv4",)
+            for family in families:
+                for proto in ("udp", "tcp"):
+                    lines.append(
+                        f"\t\tmeta nfproto {family} iifname @{_iface_set_name(zone)} {proto} dport 53 "
+                        f"redirect to :53 {_comment('force-dns')}"
+                    )
     if config.nat.port_forwards:
         lines.append("")
         lines.extend(f"\t\t{_render_port_forward(pf)}" for pf in config.nat.port_forwards)

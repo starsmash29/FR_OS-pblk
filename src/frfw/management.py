@@ -15,6 +15,11 @@ every zone that doesn't face the internet -- in three independent ways:
 
 With `allow_wan` both listen on every address and the nft drop is left
 out; the webUI and `apply` warn while that is on.
+
+Over IPv6 (ROADMAP FND-1c) only with `management.ipv6`, and only on the
+router's stable ULA address of each management zone that has IPv6
+(frfw.ipv6.ula_addresses) -- never on the provider's addresses, which
+change and are public, not even with `allow_wan`.
 """
 
 from __future__ import annotations
@@ -29,7 +34,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from frfw import paths, svc
+from frfw import ipv6, paths, svc
 from frfw.config.loader import internet_facing_zones
 from frfw.config.schema import Config
 
@@ -78,11 +83,23 @@ def listen_addresses(config: Config) -> list[str]:
     the VPN's tunnel, which only the admin adds (security-lessons K5).
     Just loopback if there is none (then only the console can reach them,
     which is the point)."""
+    stable = ipv6_addresses(config)
     if config.management.allow_wan:
-        return [ANY]
+        return [ANY, *stable]
     if config.management.addresses:
-        return [LOOPBACK, *config.management.addresses]
-    return [LOOPBACK, *(address for address, _ in interface_addresses(config))]
+        return [LOOPBACK, *config.management.addresses, *stable]
+    return [LOOPBACK, *(address for address, _ in interface_addresses(config)), *stable]
+
+
+def ipv6_addresses(config: Config) -> list[str]:
+    """With `management.ipv6` (ROADMAP FND-1c): the router's ULA address on
+    each LAN device of a management zone that has IPv6 -- none before an
+    apply generated the ULA prefix."""
+    if not (config.management.ipv6 and config.ipv6.enabled):
+        return []
+    zones = set(management_zones(config))
+    return [str(ipaddress.IPv6Interface(address).ip)
+            for zone, _, address in ipv6.ula_addresses(config, ipv6.ula_prefix(config)) if zone in zones]
 
 
 def interface_addresses(config: Config) -> list[tuple[str, str]]:
@@ -117,7 +134,10 @@ def moves_management(config: Config, previous: Config | None) -> str | None:
     (ROADMAP SEC-27). None when it may."""
     if previous is None or config.management != previous.management:
         return None
-    before, after = listen_addresses(previous), listen_addresses(config)
+    # IPv4 only: the ULA addresses (FND-1c) follow the LAN zones' IPv6, and
+    # IPv4 still reaches the router wherever they come and go.
+    before = [a for a in listen_addresses(previous) if ":" not in a]
+    after = [a for a in listen_addresses(config) if ":" not in a]
     if set(before) == set(after):
         return None
     return (f"it would move the webUI and SSH from {', '.join(before)} to {', '.join(after)}. Only the webUI "
@@ -271,7 +291,11 @@ def sync_sshd(
             svc.systemctl("stop", unit, timeout=60)
         return SyncResult(f"SSH is off: {NOBODY_CAN_LOG_IN}")
     svc.systemctl("enable", SSH_UNITS[0], timeout=60)
-    if previous != content:
+    if previous != content or _misses_addresses(SSH_PORT, listen_addresses(config)):
+        # Also when the drop-in is as it was, but sshd doesn't listen on
+        # one of its addresses: sshd skips an address that isn't on the
+        # router when it starts (a ULA one an apply only now put on,
+        # ROADMAP FND-1c) and never binds it later by itself.
         reload = svc.systemctl("reload-or-restart", SSH_UNITS[0], timeout=60)
     else:
         reload = svc.systemctl("start", SSH_UNITS[0], timeout=60)
@@ -292,6 +316,13 @@ NOBODY_CAN_LOG_IN = (
 
 
 # -- the webUI ---------------------------------------------------------------------
+
+def _misses_addresses(port: int, wanted: list[str]) -> bool:
+    """Whether something listens at TCP `port`, but not on every one of
+    `wanted` (False when that can't be told, or nothing listens)."""
+    found = webui_listening(port)
+    return bool(found) and not set(wanted) <= found
+
 
 def webui_listening(port: int = WEBUI_PORT) -> set[str] | None:
     """The addresses something listens on at TCP `port` (`ss`), or None
@@ -327,7 +358,7 @@ def recorded_webui_listen(path: Path | None = None) -> list[str] | None:
         addresses = json.loads(path.read_text())["addresses"]
         if not isinstance(addresses, list) or not addresses:
             return None
-        return [str(ipaddress.IPv4Address(a)) for a in addresses]
+        return [str(ipaddress.ip_address(a)) for a in addresses]
     except (OSError, ValueError, KeyError, TypeError):
         return None
 

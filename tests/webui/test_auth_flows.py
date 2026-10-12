@@ -395,6 +395,17 @@ def test_parallel_ztna_logins_authorize_once_per_address(app, ztna):
     assert status["authorized"] and status["username"] == "alice"
 
 
+def test_a_ztna_sign_in_over_ipv6_opens_nothing_and_says_so(app, ztna):
+    """ROADMAP FND-1c/1d: the gate holds IPv4 addresses only, so a sign-in
+    over IPv6 is turned away before the password is even checked (and
+    so doesn't count as a failure either)."""
+    client = TestClient(app, follow_redirects=False, client=("fd12:3456:789a::99", 50000))
+    response = client.post("/ztna/login", data={"username": "alice", "password": "alice-pass-1"})
+    assert "IPv4+only" in response.headers["location"] or "IPv4%20only" in response.headers["location"]
+    assert ztna.ztna_status("fd12:3456:789a::99")["authorized"] is False
+    assert not ztna.banned
+
+
 def test_a_disabled_gate_authorizes_nobody(app, ztna, webui_env):
     raw = yaml.safe_load(webui_env["config_path"].read_text())
     raw["ztna"]["enabled"] = False

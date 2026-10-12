@@ -37,9 +37,10 @@ before anything else comes up:
    `frfw.wireguard`) -- only behind the loaded ruleset
 3. Interface static addresses (`frfw.ifaddr`) -- after the ruleset, so
    no address is brought up before the rules that filter it
-3a. IPv6: the kernel's IPv6 settings, dhcpcd, and the LAN's Router
-   Advertisements (`frfw.ipv6`, ROADMAP FND-1a/1b) -- after the
-   addresses, before the services
+3a. IPv6: the kernel's IPv6 settings, dhcpcd, the LAN's stable (ULA)
+   addresses and its Router Advertisements (`frfw.ipv6`, ROADMAP
+   FND-1a/1b/1c) -- after the addresses, before the services, which
+   listen on the ULA ones
 4. Kea DHCP config, if any zone has a DHCP pool (`frfw.kea`)
 5. Ad-block DNS resolver: (re)start/stop the dedicated dnsmasq instance
    to match `config.adblocker.enabled`, serving whatever
@@ -376,7 +377,7 @@ class _Run:
         # creates the VLAN devices whose settings this writes. With IPv6
         # off now and before, there is nothing to undo.
         ipv6_touched = (config.ipv6.enabled or paths.IPV6_DHCPCD_CONF_PATH.exists()
-                        or paths.IPV6_RA_CONF_PATH.exists()
+                        or paths.IPV6_RA_CONF_PATH.exists() or paths.IPV6_ULA_STATE_PATH.exists()
                         or (self.previous is not None and self.previous.ipv6.enabled))
         if not dry_run and ipv6_touched:
             keys = set(ipv6.sysctl_settings(config))
@@ -387,9 +388,12 @@ class _Run:
             dhcpcd_unit = ServiceState.capture(paths.IPV6_SERVICE_NAME)
             ra_file = FileState.capture(paths.IPV6_RA_CONF_PATH)
             ra_unit = ServiceState.capture(paths.IPV6_RA_SERVICE_NAME)
-            # The RA instance goes back first: it advertises what dhcpcd set.
+            ula = ipv6.UlaState.capture()
+            # The RA instance goes back first: it advertises what dhcpcd and
+            # the ULA addresses (FND-1c) set.
             self.begin("IPv6", lambda: (ipv6.write_sysctls(sysctls),
                                         _restore_service(ra_file, ra_unit),
+                                        ula.restore(),
                                         _restore_service(dhcpcd_file, dhcpcd_unit)))
         messages.append(ipv6.sync(config, dry_run=dry_run).message)
 
@@ -646,6 +650,7 @@ def _read_runtime_sets(config: Config) -> RuntimeSets:
          config.iot.enabled),
         ("the AI IDS quarantine's MACs", ids_quarantine.snapshot_macs_before_reload,
          ids_quarantine.IdsQuarantineError, True),
+        ("the IPv6 brute-force jail", bruteforce.snapshot6_before_reload, bruteforce.BruteforceError, True),
     ]
     found = []
     for what, read, error, wanted in readers:
