@@ -1268,9 +1268,10 @@ def check_ipv6_services(check, opener, boot_timeout: float) -> bool:
           f"force-DNS: a query to another server over IPv6 is answered by the router's resolver: {forced}")
     saved = urllib.parse.unquote_plus(post(opener, "/system/management-ipv6", {}))
     applied = urllib.parse.unquote_plus(post(opener, "/apply", {}))
-    deadline = time.monotonic() + boot_timeout
-    while tcp_from_lan(ula, WEBUI_PORT, ula_source) == "open" and time.monotonic() < deadline:
-        time.sleep(1)
+    # The new ruleset closes the ULA at once, while the old webUI process
+    # still runs: nothing outside tells its restart (3 s after the apply)
+    # apart, so give it the time before waiting for the webUI.
+    time.sleep(10)
     wait_for_webui(opener, boot_timeout)
     confirmed = check(confirm_pending(opener), "management over IPv6 turned off again, on an Apply confirmed "
                                                "from the dashboard" + ("" if "Management over IPv6 off" in saved
