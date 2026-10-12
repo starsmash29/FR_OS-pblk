@@ -16,6 +16,12 @@
   anywhere; the page says so.
 - `POST /vpn/peers/remove/{name}`.
 
+IPv6 (ROADMAP FND-1d): a configuration the router makes has the device's
+IPv6 tunnel address and, for a full tunnel, `::/0`, so the device's IPv6
+can't go around the tunnel (H1). A device added before, or with its own
+key, isn't marked `dual_stack`; the screen says what its configuration
+lacks.
+
 A new device, and turning the VPN on, are security alerts (G9): each is
 a way into the network.
 """
@@ -29,8 +35,9 @@ from pathlib import Path
 import segno
 from fastapi import APIRouter, Depends, Form, Request
 
-from frfw import wireguard
+from frfw import ipv6, wireguard
 from frfw.config import ConfigError, parse_config
+from frfw.config.loader import ipv6_lan_exclusions
 from frfw.webui import audit
 from frfw.webui.actions import try_save
 from frfw.webui.client_ip import client_ip
@@ -67,6 +74,19 @@ def _peers(raw: dict) -> list[dict]:
     return [p for p in (raw.get("wireguard") or {}).get("peers") or [] if isinstance(p, dict)]
 
 
+def _tunnel_ipv6(config) -> str:
+    """What the router does with the VPN clients' IPv6 (FND-1d), in words."""
+    if not config.wireguard.enabled:
+        return ""
+    if ipv6.tunnel_served(config):
+        return "Reaches the router and the LAN's stable (ULA) addresses; the rest is refused, never sent around the tunnel."
+    if not config.ipv6.enabled:
+        return "Refused: IPv6 is off on this router. Devices use IPv4 through the tunnel, never IPv6 around it."
+    why = ipv6_lan_exclusions(config.interfaces, config.zones, config.nat, config.rules,
+                                   config.xdp_sni_filter).get(config.wireguard.zone, "")
+    return f"Refused: zone {config.wireguard.zone} gets no IPv6 ({why}). Devices use IPv4 through the tunnel."
+
+
 @router.get("/vpn")
 def show_vpn(
     request: Request,
@@ -77,11 +97,23 @@ def show_vpn(
     section = raw.get("wireguard") or {}
     status = _status(helper)
     handshakes = status.get("peers") or {}
+    try:
+        config = parse_config(raw)
+    except ConfigError:
+        config = None
+    ula = ipv6.ula_prefix(config) if config is not None and config.wireguard.address else None
     peers = []
     for peer in _peers(raw):
         live = handshakes.get(peer.get("public_key"), {})
         ts = live.get("latest_handshake") or 0
-        peers.append({**peer, "endpoint_seen": live.get("endpoint", ""),
+        address6 = ""
+        if ula is not None:
+            try:
+                address6 = wireguard.peer_address6(config.wireguard, peer.get("address"), ula)
+            except (TypeError, ValueError):
+                pass
+        peers.append({**peer, "endpoint_seen": live.get("endpoint", ""), "address6": address6,
+                      "dual_stack": peer.get("dual_stack") is True,
                       "handshake": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts)) if ts else ""})
     return templates.TemplateResponse(request, "vpn.html", {
         "username": username,
@@ -90,6 +122,7 @@ def show_vpn(
         "listen_port": section.get("listen_port", 51820),
         "endpoint": section.get("endpoint", ""),
         "peers": peers,
+        "tunnel_ipv6": _tunnel_ipv6(config) if config is not None else "",
         "router_key": status.get("public_key"),
         "up": status.get("up", False),
         "error": request.query_params.get("error"),
@@ -160,8 +193,14 @@ def add_peer(
         address = wireguard.next_free_address(config.wireguard)
     except wireguard.WireguardError as exc:
         return redirect_with("/vpn", error=str(exc))
-    raw["wireguard"].setdefault("peers", []).append(
-        {"name": name.strip(), "public_key": public_key, "address": address})
+    # FND-1d: the device's IPv6 tunnel address, once an apply with the VPN
+    # on made the ULA prefix. Only a configuration made here is known to
+    # carry it (and ::/0 for a full tunnel).
+    ula = ipv6.ula_prefix(config)
+    peer = {"name": name.strip(), "public_key": public_key, "address": address}
+    if private_key is not None and ula is not None:
+        peer["dual_stack"] = True
+    raw["wireguard"].setdefault("peers", []).append(peer)
     ok, message = try_save(raw, helper)
     if not ok:
         return redirect_with("/vpn", error=message)
@@ -170,7 +209,7 @@ def add_peer(
     if private_key is None:
         return redirect_with("/vpn", success=f"VPN device {name.strip()!r} added -- click Apply to load it")
     text = wireguard.client_config(parse_config(raw), private_key=private_key, address=address,
-                                   router_key=router_key, full_tunnel=full_tunnel)
+                                   router_key=router_key, full_tunnel=full_tunnel, ula=ula)
     svg = io.BytesIO()
     segno.make(text, error="m").save(svg, kind="svg", scale=4, dark="#0C141F", light="#FFFFFF", xmldecl=False)
     response = templates.TemplateResponse(request, "vpn_peer.html", {

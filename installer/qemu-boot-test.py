@@ -176,6 +176,12 @@ NEIGHBOUR_NS = "fr-lan2"
 NEIGHBOUR_LINK = "frlan2"
 #: The interface IDs it adds by hand, as an attacker picking addresses.
 JAIL_IIDS = ("::a1", "::a2", "::a3", "::a4", "::a5")
+#: A WireGuard client (ROADMAP FND-1d, 1d-1): its link is made in the
+#: runner's namespace, so its UDP socket reaches the router over the LAN
+#: tap, then moved into a namespace of its own, where the tunnel is the
+#: only way out, as on a phone with everything sent through the VPN.
+VPN_CLIENT_NS = "fr-wg"
+VPN_CLIENT_LINK = "frwgc"
 WAN_MAC = "52:54:00:00:00:01"
 WAN_MAC_IID = "5054:ff:fe00:1"
 DISK_SIZE = 2 * 2**30
@@ -693,6 +699,97 @@ def check_ipv6_jail(check, ula: str, ula_network: ipaddress.IPv6Network, ula_sou
         neighbour = tcp_from_lan(ula, WEBUI_PORT, ula_source)
         check(neighbour == "open",
               f"...while the other LAN host on the same /64 still reaches the webUI over IPv6: {neighbour}")
+
+
+def _client_config_field(text: str, key: str) -> str | None:
+    match = re.search(rf"^{key} = (.+)$", text, re.M)
+    return match.group(1).strip() if match else None
+
+
+@contextmanager
+def vpn_client(config_text: str):
+    """The device's configuration from the webUI, brought up on the
+    kernel's WireGuard as the device would: its addresses, and a default
+    route for each family into the tunnel. Its endpoint is the router's
+    LAN address rather than the configuration's DNS name."""
+    subprocess.run(["ip", "netns", "del", VPN_CLIENT_NS], capture_output=True)
+    subprocess.run(["ip", "link", "del", VPN_CLIENT_LINK], capture_output=True)
+    key_file = tempfile.NamedTemporaryFile("w", prefix="fros-wg-", delete=False)
+    try:
+        os.chmod(key_file.name, 0o600)
+        key_file.write(_client_config_field(config_text, "PrivateKey") + "\n")
+        key_file.close()
+        subprocess.run(["ip", "netns", "add", VPN_CLIENT_NS], check=True)
+        subprocess.run(["ip", "link", "add", VPN_CLIENT_LINK, "type", "wireguard"], check=True)
+        subprocess.run(["wg", "set", VPN_CLIENT_LINK, "private-key", key_file.name,
+                        "peer", _client_config_field(config_text, "PublicKey"),
+                        "endpoint", f"{WEBUI_HOST}:51820", "persistent-keepalive", "5",
+                        "allowed-ips", _client_config_field(config_text, "AllowedIPs").replace(" ", "")],
+                       check=True)
+        subprocess.run(["ip", "link", "set", VPN_CLIENT_LINK, "netns", VPN_CLIENT_NS], check=True)
+        inside = ["ip", "netns", "exec", VPN_CLIENT_NS]
+        for address in _client_config_field(config_text, "Address").split(","):
+            subprocess.run([*inside, "ip", "addr", "add", address.strip(), "dev", VPN_CLIENT_LINK]
+                           + (["nodad"] if ":" in address else []), check=True)
+        for link in ("lo", VPN_CLIENT_LINK):
+            subprocess.run([*inside, "ip", "link", "set", link, "up"], check=True)
+        subprocess.run([*inside, "ip", "-4", "route", "add", "default", "dev", VPN_CLIENT_LINK], check=True)
+        subprocess.run([*inside, "ip", "-6", "route", "add", "default", "dev", VPN_CLIENT_LINK], check=True)
+        yield
+    finally:
+        subprocess.run(["ip", "netns", "del", VPN_CLIENT_NS], capture_output=True)
+        os.unlink(key_file.name)
+
+
+def check_vpn_ipv6(check, opener, boot_timeout: float) -> None:
+    """ROADMAP FND-1d (1d-1, H1): a device added on the VPN screen after
+    the router made its ULA prefix gets an IPv6 address in the tunnel,
+    and its full-tunnel configuration sends IPv6 into the tunnel too
+    (::/0) -- not around it, in the clear. Here the LAN has no IPv6 (the
+    SNI filter is on its port), so the router answers the device's ping
+    over IPv6 but refuses to route its IPv6 anywhere: refused at once,
+    rather than dropped, so the device's apps fall back to IPv4."""
+    post(opener, "/vpn/peers/add", {"name": "phone", "full_tunnel": "true"})
+    page = html.unescape(opener.last_page)
+    config_text = re.search(r"<pre>(.*?)</pre>", page, re.S)
+    config_text = config_text.group(1) if config_text else ""
+    address = _client_config_field(config_text, "Address") or ""
+    v6 = [a.strip() for a in address.split(",") if ":" in a]
+    if not check(_client_config_field(config_text, "AllowedIPs") == "0.0.0.0/0, ::/0" and len(v6) == 1
+                 and ":ffff::" in v6[0],
+                 f"a device added with its whole traffic through the VPN gets an IPv6 address in the tunnel, and "
+                 f"::/0 in its AllowedIPs: no IPv6 around the tunnel (ROADMAP FND-1d, H1): {config_text[:400]}"):
+        return
+    screen = get(opener, "/vpn")
+    check('id="vpn-ipv6"' in screen and 'data-reissue="laptop"' in screen and 'data-reissue="phone"' not in screen,
+          "...the VPN screen shows the tunnel's IPv6, and marks the device added with its own key, whose "
+          "configuration has no IPv6, for reissuing")
+    applied = urllib.parse.unquote_plus(post(opener, "/apply", {}))
+    wait_for_webui(opener, boot_timeout)
+    check(confirm_pending(opener) and "IPv6" in applied and "in the tunnel" in applied,
+          "...the Apply brings the tunnel up with IPv6 too, confirmed from the dashboard"
+          + ("" if "in the tunnel" in applied else f": {applied[:300]}"))
+    if not check(shutil.which("wg") is not None, "...the runner has wireguard-tools for the device's side"):
+        return
+    router6 = str(ipaddress.IPv6Interface(f"{v6[0].split('/')[0]}/64").network.network_address + 1)
+    inside = ["ip", "netns", "exec", VPN_CLIENT_NS]
+    with vpn_client(config_text):
+        pinged = subprocess.run([*inside, "ping", "-6", "-n", "-c", "3", "-i", "0.5", "-w", "15", router6],
+                                capture_output=True, text=True)
+        handshake = subprocess.run([*inside, "wg", "show", VPN_CLIENT_LINK, "latest-handshakes"],
+                                   capture_output=True, text=True).stdout.strip()
+        check(pinged.returncode == 0,
+              f"the device reaches the router over IPv6 in the tunnel, at {router6}"
+              + ("" if pinged.returncode == 0 else f": {pinged.stdout[-300:]} handshake {handshake!r}"))
+        listener = echo_sources_at_isp(8)
+        started = time.monotonic()
+        out = subprocess.run([*inside, "ping", "-6", "-n", "-c", "2", "-i", "0.5", "-w", "4", ISP_ADDRESS],
+                             capture_output=True, text=True)
+        took = time.monotonic() - started
+        seen = listener.communicate(timeout=30)[0].split()
+        check("Administratively prohibited" in out.stdout + out.stderr and not seen,
+              f"...its IPv6 to the internet is refused by the router at once (the LAN has no IPv6 here), and "
+              f"never reaches the provider: {out.stdout.strip()[-200:]} in {took:.1f} s; at the provider: {seen}")
 
 
 def ping_from_lan(target: str, source: str) -> bool:
@@ -2023,6 +2120,7 @@ def run(args: argparse.Namespace, provider: Isp) -> int:
         check("confirm it within 300 s" in applied, "the Apply is held until it is confirmed (ROADMAP SEC-26)")
         check(confirm_pending(opener), "...the dashboard confirms it, and the router keeps it")
         check_lan_ipv6_withdrawn(check, opener, lan_host)
+        check_vpn_ipv6(check, opener, boot_timeout)
         # Security-lessons K5, ROADMAP SEC-27: the admin puts the webUI on
         # the VPN's tunnel address too -- its own action, held as well.
         moved = urllib.parse.unquote_plus(post(opener, "/system/management-addresses",

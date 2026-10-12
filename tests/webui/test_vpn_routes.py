@@ -121,7 +121,47 @@ def test_full_tunnel_devices(env):
     _, router_pub = wireguard.generate_keypair()
     env["helper"].wireguard = {"public_key": router_pub, "up": True, "peers": {}}
     text = client.post("/vpn/peers/add", data={"name": "phone", "full_tunnel": "true"}).text
-    assert "AllowedIPs = 0.0.0.0/0" in text
+    # ROADMAP FND-1d (H1): IPv6 too, or the device sends it around the tunnel.
+    assert "AllowedIPs = 0.0.0.0/0, ::/0\n" in text
+
+
+def _with_ula():
+    from frfw import ipv6
+
+    ipv6._write_ula_state({"generated": "fd12:3456:789a::/48"})
+
+
+def test_a_new_configuration_has_the_devices_ipv6_address(env):
+    """ROADMAP FND-1d: once an apply made the ULA prefix, a configuration
+    made here carries the device's IPv6 tunnel address, and the device is
+    marked dual_stack."""
+    _with_ula()
+    client = _signed_in(env)
+    _turn_on(client)
+    _, router_pub = wireguard.generate_keypair()
+    env["helper"].wireguard = {"public_key": router_pub, "up": True, "peers": {}}
+    text = client.post("/vpn/peers/add", data={"name": "phone"}).text
+    assert "Address = 10.99.0.2/32, fd12:3456:789a:ffff::2/128\n" in text
+    # A split tunnel: the tunnel's IPv6 network too (IPv6 is off on this
+    # router, so no LAN network of it).
+    assert "AllowedIPs = 10.99.0.0/24, 192.168.1.0/24, fd12:3456:789a:ffff::/64\n" in text
+    assert load_config(env["config_path"]).wireguard.peers[0].dual_stack is True
+    page = client.get("/vpn").text
+    assert "fd12:3456:789a:ffff::2/128" in page and 'data-reissue="phone"' not in page
+    assert "IPv6 in the tunnel: Refused: IPv6 is off on this router" in page
+
+
+def test_a_device_whose_configuration_has_no_ipv6_is_marked(env):
+    """A device added before, or with its own key: what its configuration
+    lacks, and that a full-tunnel one leaks IPv6 (H1)."""
+    _with_ula()
+    client = _signed_in(env)
+    _turn_on(client)
+    client.post("/vpn/peers/add", data={"name": "laptop", "public_key": DEVICE_KEY})
+    assert load_config(env["config_path"]).wireguard.peers[0].dual_stack is False
+    page = client.get("/vpn").text
+    assert 'data-reissue="laptop"' in page and 'id="vpn-reissue"' in page
+    assert "fd12:3456:789a:ffff::2/128" in page  # what to add by hand
 
 
 def test_bad_devices_are_refused(env):
