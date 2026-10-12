@@ -138,9 +138,9 @@ def test_a_pinhole_is_kept_while_ipv6_is_off(minimal_config_dict):
 
 def test_a_pinhole_to_a_lan_zone_without_ipv6_is_kept_and_off(minimal_config_dict, kernel):
     """A zone left out of lan_zones -- or taken off IPv6 later by an
-    IPv4-only protection, the SNI filter (found by the boot test: the
-    filter's setting was refused) -- keeps its pinhole, unused: a
-    pinhole never stands in the way of a protection."""
+    IPv4-only protection (a drop rule by IPv4 address; until FND-1d the
+    SNI filter too, which the boot test found refused) -- keeps its
+    pinhole, unused: a pinhole never stands in the way of a protection."""
     _with_guest(minimal_config_dict)
     config = _config(minimal_config_dict, lan_zones=["lan"], pinholes=[{**PINHOLE, "zone": "guest"}])
     assert config.ipv6.pinholes[0].zone == "guest"
@@ -150,8 +150,17 @@ def test_a_pinhole_to_a_lan_zone_without_ipv6_is_kept_and_off(minimal_config_dic
     assert state.as_dict()["pinholes"] == [["nas-https", "guest", "tcp 443", None]]
 
 
-def test_the_sni_filter_turns_a_zones_pinholes_off_rather_than_being_refused(minimal_config_dict):
+def test_a_zones_pinholes_stay_on_with_the_sni_filter(minimal_config_dict):
+    """FND-1d: the SNI filter reads IPv6, so its zone keeps IPv6 and its
+    pinholes (1c turned them off with the zone)."""
     minimal_config_dict["xdp_sni_filter"] = {"enabled": True, "interfaces": ["lan"], "blocklist": ["x.example"]}
+    config = _config(minimal_config_dict, pinholes=[PINHOLE])
+    assert config.ipv6.pinholes and "pinhole:nas-https" in build_ruleset(config)
+
+
+def test_a_drop_rule_by_ipv4_address_still_turns_a_zones_pinholes_off(minimal_config_dict):
+    minimal_config_dict["rules"].insert(0, {"name": "no-tv", "action": "drop", "from_zone": "lan",
+                                            "to_zone": "wan", "src_address": "10.0.0.9/32"})
     config = _config(minimal_config_dict, pinholes=[PINHOLE])
     assert config.ipv6.pinholes and "pinhole:" not in build_ruleset(config)
 

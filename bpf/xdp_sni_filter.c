@@ -2,7 +2,7 @@
 //
 // Everything below runs in the kernel, before any context switch to
 // userspace: parse Ethernet (unwrapping 802.1Q/802.1ad VLAN tags), then
-// IPv4/TCP, find a TLS ClientHello, extract the SNI (Server Name
+// IPv4 or IPv6 (ROADMAP FND-1d), then TCP, find a TLS ClientHello, extract the SNI (Server Name
 // Indication) extension, and look it up in an LPM trie blocklist. A match
 // returns XDP_DROP; everything else (not
 // TLS, not a ClientHello, SNI absent, no match) returns XDP_PASS. Match
@@ -79,9 +79,24 @@
 // on a label boundary. See tests/test_xdp_sni_key.py (or the equivalent
 // Python reference implementation) for worked examples.
 //
-// IMPORTANT -- IPv4 only. Matches the rest of frfw (frfw.nft, DHCP/Kea
-// etc. are all IPv4-only today); IPv6 support is a follow-up, not a
-// silent gap specific to this file.
+// IMPORTANT -- IPv4 and IPv6, and IP fragments (ROADMAP FND-1d).
+// xdp_sni_filter() parses IPv4 itself and hands an IPv6 frame to a third
+// program, xdp_sni_filter6, by a tail call (filter_prog): the main
+// program alone uses most of the verifier's budget. Both run the same
+// TCP and TLS code (filter_tcp()) against the same blocklist, so a name
+// blocked is blocked over both. Addresses are kept as 16 bytes, an IPv4
+// one IPv4-mapped (::ffff:a.b.c.d), in the flow keys and in the events.
+//   - IPv6 extension headers (hop-by-hop, routing, destination options)
+//     are walked, at most MAX_IPV6_EXT_HEADERS of them; a packet with
+//     more is dropped, as is one with an IPv4-mapped address (never valid
+//     on the wire, RFC 4291 2.5.5.2) -- a LAN host sends neither.
+//   - A TCP fragment, IPv4 or IPv6, is dropped (H2, RFC 1858's "tiny
+//     fragment"): cut so that its first fragment holds the TCP header
+//     and not the ClientHello, a hello for a blocked name passed in two
+//     pieces, and the server put it back together. The program can't
+//     reassemble, and a LAN host's TCP never fragments: it sends with DF
+//     (or, over IPv6, never fragments in the network) and segments by
+//     MSS. Fragments of anything else (a large UDP datagram) pass.
 //
 // IMPORTANT -- VLAN tags (ROADMAP SEC-16). Up to MAX_VLAN_TAGS 802.1Q /
 // 802.1ad tags are unwrapped before the IPv4 parse, so a tagged frame --
@@ -100,6 +115,7 @@
 #include <linux/bpf.h>
 #include <linux/if_ether.h>
 #include <linux/ip.h>
+#include <linux/ipv6.h>
 #include <linux/tcp.h>
 #include <linux/in.h>
 #include <bpf/bpf_helpers.h>
@@ -160,6 +176,9 @@ enum {
 	                         // in order (ROADMAP SEC-24)
 	STAT_DROP_BAD_CHECKSUM,  // a followed hello's segment with a bad TCP checksum (ROADMAP SEC-28)
 	STAT_DROP_UNFOLLOWED,    // the rest of a hello the walk can't follow to its end (SEC-28)
+	STAT_DROP_FRAGMENT,      // a TCP fragment, IPv4 or IPv6 (FND-1d, H2)
+	STAT_DROP_IPV6_HEADERS,  // IPv6 headers the program won't read to their end: more than
+	                         // MAX_IPV6_EXT_HEADERS extension headers, an IPv4-mapped address
 	STAT_MAX,
 };
 
@@ -178,9 +197,11 @@ struct {
 	__uint(map_flags, BPF_F_NO_PREALLOC); // required for LPM_TRIE
 } sni_blocklist SEC(".maps");
 
+// An address as 16 bytes: IPv6, or IPv4-mapped (::ffff:a.b.c.d), so one
+// flow key and one event layout serve both families (FND-1d).
 struct sni_event {
-	__u32 saddr;
-	__u32 daddr;
+	__be32 saddr[4];
+	__be32 daddr[4];
 	__u16 sport;
 	__u16 dport;
 	__u8 action; // 0 = pass (only with SETTING_REPORT_PASS), 1 = drop
@@ -233,9 +254,9 @@ struct {
 #define HELLO_MAX_EXTRA_SEGMENTS 3
 
 struct hello_flow_key {
-	__u32 saddr;
-	__u32 daddr;
-	__u16 sport;
+	__be32 saddr[4]; // IPv6, or IPv4-mapped
+	__be32 daddr[4];
+	__u16 sport;     // network order, as in the TCP header
 	__u16 dport;
 };
 
@@ -253,8 +274,8 @@ struct {
 } hello_flows SEC(".maps");
 
 struct hello_pkt {
-	__u32 saddr;
-	__u32 daddr;
+	__be32 saddr[4];
+	__be32 daddr[4];
 	__u16 sport;
 	__u16 dport;
 	__u32 seq;
@@ -389,15 +410,19 @@ struct {
 } split_job SEC(".maps");
 
 int xdp_sni_split(struct xdp_md *ctx);
+int xdp_sni_filter6(struct xdp_md *ctx);
 
-// libbpf puts xdp_sni_split in slot 0 when it loads the object.
+#define PROG_SPLIT 0   // xdp_sni_split (ROADMAP SEC-17)
+#define PROG_FILTER6 1 // xdp_sni_filter6: an IPv6 frame (ROADMAP FND-1d)
+
+// libbpf fills both slots when it loads the object.
 struct {
 	__uint(type, BPF_MAP_TYPE_PROG_ARRAY);
-	__uint(max_entries, 1);
+	__uint(max_entries, 2);
 	__uint(key_size, sizeof(__u32)); // sizes, not BTF types: a program
 	__array(values, int (struct xdp_md *)); // array takes none
 } split_prog SEC(".maps") = {
-	.values = { [0] = (void *)&xdp_sni_split },
+	.values = { [PROG_SPLIT] = (void *)&xdp_sni_split, [PROG_FILTER6] = (void *)&xdp_sni_filter6 },
 };
 
 static __always_inline void bump(__u32 idx)
@@ -1155,8 +1180,8 @@ static __always_inline int report_pass_enabled(void)
 }
 
 // Copy one segment's TCP payload to hello_pkts. Best effort, like
-// emit_event(): a full buffer just loses the segment.
-static __always_inline void emit_hello_segment(struct xdp_md *ctx, struct iphdr *ip,
+// emit_flow_event(): a full buffer just loses the segment.
+static __always_inline void emit_hello_segment(struct xdp_md *ctx, struct hello_flow_key *key,
 					       struct tcphdr *tcp, __u32 offset,
 					       __u32 payload_len, __u8 first)
 {
@@ -1171,8 +1196,8 @@ static __always_inline void emit_hello_segment(struct xdp_md *ctx, struct iphdr 
 	struct hello_pkt *pkt = bpf_ringbuf_reserve(&hello_pkts, sizeof(*pkt), 0);
 	if (!pkt)
 		return;
-	pkt->saddr = ip->saddr;
-	pkt->daddr = ip->daddr;
+	__builtin_memcpy(pkt->saddr, key->saddr, sizeof(pkt->saddr));
+	__builtin_memcpy(pkt->daddr, key->daddr, sizeof(pkt->daddr));
 	pkt->sport = bpf_ntohs(tcp->source);
 	pkt->dport = bpf_ntohs(tcp->dest);
 	pkt->seq = bpf_ntohl(tcp->seq);
@@ -1186,30 +1211,17 @@ static __always_inline void emit_hello_segment(struct xdp_md *ctx, struct iphdr 
 	bpf_ringbuf_submit(pkt, 0);
 }
 
-// Best effort: if the ring buffer is full the event is simply lost --
-// the drop/pass decision never depends on userspace keeping up.
-static __always_inline void emit_event(struct iphdr *ip, struct tcphdr *tcp,
-				       const char *sni, __u32 name_len, __u8 action)
+// Whether a flow key's addresses are IPv4 ones (IPv4-mapped). An IPv6
+// frame with such an address never gets this far (xdp_sni_filter6).
+static __always_inline int key_is_ipv4(struct hello_flow_key *key)
 {
-	struct sni_event *ev = bpf_ringbuf_reserve(&events, sizeof(*ev), 0);
-	if (!ev)
-		return;
-	ev->saddr = ip->saddr;
-	ev->daddr = ip->daddr;
-	ev->sport = bpf_ntohs(tcp->source);
-	ev->dport = bpf_ntohs(tcp->dest);
-	ev->action = action;
-	ev->sni_len = name_len;
-#pragma unroll
-	for (int i = 0; i < MAX_SNI_LEN; i++)
-		ev->sni[i] = (i < name_len) ? sni[i] : 0;
-	bpf_ringbuf_submit(ev, 0);
+	return key->saddr[0] == 0 && key->saddr[1] == 0 && key->saddr[2] == bpf_htonl(0xffff);
 }
 
 // ROADMAP SEC-28: whether the TCP checksum of the segment in job->seg
 // (its whole payload, seg_len bytes, already copied out) is right -- the
-// pseudo-header, the TCP header read from the packet, the payload padded
-// with zeros to a multiple of 4. bpf_csum_diff() sums at most 512 bytes a
+// pseudo-header (IPv4's or IPv6's, FND-1d), the TCP header read from the
+// packet, the payload padded with zeros to a multiple of 4. bpf_csum_diff() sums at most 512 bytes a
 // call, a multiple of 4; the payload goes in such chunks.
 static __always_inline int tcp_checksum_ok(struct xdp_md *ctx, struct split_job *job, __u32 seg_len)
 {
@@ -1218,8 +1230,21 @@ static __always_inline int tcp_checksum_ok(struct xdp_md *ctx, struct split_job 
 		return 0;
 	if (bpf_xdp_load_bytes(ctx, job->payload_off - hlen, job->tcph, hlen) < 0)
 		return 0;
-	__be32 pseudo[3] = { job->key.saddr, job->key.daddr, bpf_htonl((IPPROTO_TCP << 16) | (hlen + seg_len)) };
-	__s64 sum = bpf_csum_diff(0, 0, pseudo, sizeof(pseudo), 0);
+	__s64 sum;
+	if (key_is_ipv4(&job->key)) {
+		__be32 pseudo[3] = { job->key.saddr[3], job->key.daddr[3],
+				     bpf_htonl((IPPROTO_TCP << 16) | (hlen + seg_len)) };
+		sum = bpf_csum_diff(0, 0, pseudo, sizeof(pseudo), 0);
+	} else {
+		// RFC 8200 8.1: the addresses, the upper-layer length (32 bits),
+		// three zero bytes and the next header.
+		__be32 pseudo[10];
+		__builtin_memcpy(pseudo, job->key.saddr, 16);
+		__builtin_memcpy(pseudo + 4, job->key.daddr, 16);
+		pseudo[8] = bpf_htonl(hlen + seg_len);
+		pseudo[9] = bpf_htonl(IPPROTO_TCP);
+		sum = bpf_csum_diff(0, 0, pseudo, sizeof(pseudo), 0);
+	}
 	if (sum < 0)
 		return 0;
 	sum = bpf_csum_diff(0, 0, (__be32 *)job->tcph, hlen, (__wsum)sum);
@@ -1275,7 +1300,7 @@ static __always_inline void hand_over(struct xdp_md *ctx, __u32 mode, struct hel
 				      __u32 pos, __u32 ext_total, int found)
 {
 	if (prepare_job(mode, key, payload_off, payload_len, seq, pos, ext_total, found, 0))
-		bpf_tail_call(ctx, &split_prog, 0);
+		bpf_tail_call(ctx, &split_prog, PROG_SPLIT);
 }
 
 // ROADMAP SEC-17: what becomes of a segment of a flow xdp_sni_split may
@@ -1337,16 +1362,18 @@ static __noinline int follow_flow(struct hello_flow_key *key, struct tcphdr *tcp
 	return FOLLOW_HAND_OVER;
 }
 
-// emit_event() for xdp_sni_split, which has the flow's addresses and
-// ports from its job rather than the packet's headers.
+// Best effort: if the ring buffer is full the event is simply lost --
+// the drop/pass decision never depends on userspace keeping up. The
+// addresses and ports are the flow's (`key`); `sni` is MAX_SNI_LEN bytes,
+// zero past the name (normalize_name()).
 static __always_inline void emit_flow_event(struct hello_flow_key *key, const char *sni,
 					    __u32 name_len, __u8 action)
 {
 	struct sni_event *ev = bpf_ringbuf_reserve(&events, sizeof(*ev), 0);
 	if (!ev)
 		return;
-	ev->saddr = key->saddr;
-	ev->daddr = key->daddr;
+	__builtin_memcpy(ev->saddr, key->saddr, sizeof(ev->saddr));
+	__builtin_memcpy(ev->daddr, key->daddr, sizeof(ev->daddr));
 	ev->sport = bpf_ntohs(key->sport);
 	ev->dport = bpf_ntohs(key->dport);
 	ev->action = action;
@@ -1497,58 +1524,15 @@ give_up:
 	return XDP_DROP;
 }
 
-SEC("xdp")
-int xdp_sni_filter(struct xdp_md *ctx)
+// The TCP and TLS part of the filter, for both families (ROADMAP FND-1d):
+// inlined into xdp_sni_filter() (IPv4) and xdp_sni_filter6() (IPv6), each
+// verified on its own budget. `tcp` is the TCP header, at packet offset
+// `l4_off`, with `l4_len` bytes of the datagram from it on (from the IP
+// header's length field, so never Ethernet padding: ROADMAP SEC-7).
+// `flow_key` has the flow's addresses; its ports are set here.
+static __always_inline int filter_tcp(struct xdp_md *ctx, unsigned char *data_end, struct tcphdr *tcp,
+				      __u32 l4_off, __u32 l4_len, struct hello_flow_key *flow_key)
 {
-	unsigned char *data = (unsigned char *)(long)ctx->data;
-	unsigned char *data_end = (unsigned char *)(long)ctx->data_end;
-
-	struct ethhdr *eth = (struct ethhdr *)data;
-	if ((unsigned char *)(eth + 1) > data_end)
-		return XDP_PASS;
-
-	// VLAN tags. An 802.1Q/802.1ad frame carries 4 bytes per tag between
-	// the Ethernet header and IP, so an untagged-only parse reads the tag
-	// as the EtherType, never matches ETH_P_IP, and returns XDP_PASS --
-	// i.e. every VLAN-tagged frame reached the internet unfiltered, on
-	// the very segments this router itself tags (see frfw.segments). Peel
-	// the tags first, then continue into the unchanged IPv4 path.
-	//
-	// l3_off is carried alongside the pointer because phase 19's hello
-	// copies address the TCP payload by absolute packet offset rather
-	// than by pointer (see emit_hello_segment); without the tag bytes
-	// added here those copies would start 4 (or 8) bytes early, inside
-	// the TCP header. The same rule as everywhere else in this file: bounds check
-	// the whole 4-byte tag before reading its inner EtherType.
-	__u16 proto = eth->h_proto;
-	unsigned char *l3 = (unsigned char *)(eth + 1);
-	__u32 l3_off = sizeof(struct ethhdr);
-#pragma unroll
-	for (int i = 0; i < MAX_VLAN_TAGS; i++) {
-		if (proto != bpf_htons(ETH_P_8021Q) && proto != bpf_htons(ETH_P_8021AD))
-			break;
-		struct vlan_tag_hdr *vlan = (struct vlan_tag_hdr *)l3;
-		if ((unsigned char *)(vlan + 1) > data_end)
-			return XDP_PASS;
-		proto = vlan->inner;
-		l3 = (unsigned char *)(vlan + 1);
-		l3_off += sizeof(struct vlan_tag_hdr);
-	}
-	if (proto != bpf_htons(ETH_P_IP))
-		return XDP_PASS;
-
-	struct iphdr *ip = (struct iphdr *)l3;
-	if ((unsigned char *)(ip + 1) > data_end)
-		return XDP_PASS;
-	if (ip->protocol != IPPROTO_TCP)
-		return XDP_PASS;
-	if (ip->ihl < 5)
-		return XDP_PASS;
-	unsigned char *ip_opts_end = (unsigned char *)ip + (ip->ihl * 4);
-	if (ip_opts_end > data_end)
-		return XDP_PASS;
-
-	struct tcphdr *tcp = (struct tcphdr *)ip_opts_end;
 	if ((unsigned char *)(tcp + 1) > data_end)
 		return XDP_PASS;
 	if (tcp->dest != bpf_htons(443))
@@ -1562,40 +1546,37 @@ int xdp_sni_filter(struct xdp_md *ctx)
 	// Phase 19: the rest of a ClientHello that didn't fit its first
 	// segment. Checked before the "starts a TLS record" test below,
 	// since a continuation segment never does.
-	// Offset and length as plain scalars from header fields (the IP total
-	// length also excludes any Ethernet padding); pointer differences
-	// would be rejected by the verifier once the compiler shifts them.
-	__u32 hdr_len = (__u32)ip->ihl * 4 + (__u32)tcp->doff * 4;
-	__u32 ip_len = bpf_ntohs(ip->tot_len);
-	__u32 payload_off = l3_off + hdr_len;
-	__u32 payload_len = ip_len > hdr_len ? ip_len - hdr_len : 0;
+	// Offset and length as plain scalars from header fields (the IP length
+	// also excludes any Ethernet padding); pointer differences would be
+	// rejected by the verifier once the compiler shifts them.
+	__u32 tcp_len = (__u32)tcp->doff * 4;
+	__u32 payload_off = l4_off + tcp_len;
+	__u32 payload_len = l4_len > tcp_len ? l4_len - tcp_len : 0;
 	int report_hello = setting_flags() & SETTING_REPORT_HELLO;
-	struct hello_flow_key flow_key = {
-		.saddr = ip->saddr, .daddr = ip->daddr,
-		.sport = tcp->source, .dport = tcp->dest,
-	};
+	flow_key->sport = tcp->source;
+	flow_key->dport = tcp->dest;
 	// (A pointer comparison, not payload_len > 0: the verifier only
 	// accepts a packet read it can prove in bounds that way.)
-	// payload_len, from the IP total length, is what tells a segment
-	// with data from a pure ACK whose short frame was padded on the
-	// wire: the padding must not count as one of the flow's segments
-	// (ROADMAP SEC-7).
+	// payload_len, from the IP length, is what tells a segment with data
+	// from a pure ACK whose short frame was padded on the wire: the
+	// padding must not count as one of the flow's segments (ROADMAP
+	// SEC-7).
 	if (report_hello && payload_len > 0 && payload + 1 <= data_end &&
 	    payload[0] != TLS_CONTENT_TYPE_HANDSHAKE) {
-		struct hello_flow *flow = bpf_map_lookup_elem(&hello_flows, &flow_key);
+		struct hello_flow *flow = bpf_map_lookup_elem(&hello_flows, flow_key);
 		if (flow) {
-			emit_hello_segment(ctx, ip, tcp, payload_off, payload_len, 0);
+			emit_hello_segment(ctx, flow_key, tcp, payload_off, payload_len, 0);
 			flow->segments += 1;
 			if (flow->segments >= HELLO_MAX_EXTRA_SEGMENTS)
-				bpf_map_delete_elem(&hello_flows, &flow_key);
+				bpf_map_delete_elem(&hello_flows, flow_key);
 		}
 	}
 
 	// ROADMAP SEC-17: the next segment of a ClientHello being followed
 	// goes to xdp_sni_split (see sni_flow).
-	int verdict = follow_flow(&flow_key, tcp, payload_off, payload_len);
+	int verdict = follow_flow(flow_key, tcp, payload_off, payload_len);
 	if (verdict == FOLLOW_HAND_OVER) {
-		bpf_tail_call(ctx, &split_prog, 0);
+		bpf_tail_call(ctx, &split_prog, PROG_SPLIT);
 		return XDP_PASS; // the tail call failed: as without following
 	}
 	if (verdict != FOLLOW_NOT)
@@ -1608,9 +1589,9 @@ int xdp_sni_filter(struct xdp_md *ctx)
 	// this file's header comment, point 1).
 	//
 	// Every check below tests the frame (data_end, for the verifier)
-	// and then the datagram (payload_len, from the IP total length):
-	// bytes past the datagram are Ethernet padding or junk the router
-	// never forwards, not TLS (ROADMAP SEC-7, review v0.2.0 R9).
+	// and then the datagram (payload_len, from the IP length): bytes
+	// past the datagram are Ethernet padding or junk the router never
+	// forwards, not TLS (ROADMAP SEC-7, review v0.2.0 R9).
 	if (payload + 5 > data_end) {
 		bump(STAT_PASS_NOT_TLS);
 		return XDP_PASS;
@@ -1639,13 +1620,13 @@ int xdp_sni_filter(struct xdp_md *ctx)
 	}
 
 	if (report_hello) {
-		emit_hello_segment(ctx, ip, tcp, payload_off, payload_len, 1);
+		emit_hello_segment(ctx, flow_key, tcp, payload_off, payload_len, 1);
 		// Record length (header bytes 3-4) larger than what this segment
 		// carries: remember the flow so its next segments are reported too.
 		__u32 record_len = ((__u32)payload[3] << 8) | payload[4];
 		if (record_len + 5 > payload_len) {
 			struct hello_flow fresh = { .segments = 0 };
-			bpf_map_update_elem(&hello_flows, &flow_key, &fresh, BPF_ANY);
+			bpf_map_update_elem(&hello_flows, flow_key, &fresh, BPF_ANY);
 		}
 	}
 
@@ -1668,7 +1649,7 @@ int xdp_sni_filter(struct xdp_md *ctx)
 	// in the flow's next ones -- xdp_sni_split follows it from where the
 	// extension walk stopped (ref: the extensions block, see sni_ref).
 	if (found != 1 && ref.off && goes_on)
-		hand_over(ctx, SPLIT_FIRST, &flow_key, payload_off, payload_len, bpf_ntohl(tcp->seq),
+		hand_over(ctx, SPLIT_FIRST, flow_key, payload_off, payload_len, bpf_ntohl(tcp->seq),
 			  9 + ref.off, ref.len, found);
 
 	if (found == -1) {
@@ -1736,13 +1717,216 @@ int xdp_sni_filter(struct xdp_md *ctx)
 		bump(STAT_PASS_NO_MATCH);
 		if (report_pass_enabled() &&
 		    bpf_ringbuf_query(&events, BPF_RB_AVAIL_DATA) < PASS_EVENT_MAX_BACKLOG)
-			emit_event(ip, tcp, sni, name_len, 0);
+			emit_flow_event(flow_key, sni, name_len, 0);
 		return XDP_PASS;
 	}
 
 	bump(STAT_DROP_MATCH);
-	emit_event(ip, tcp, sni, name_len, 1);
+	emit_flow_event(flow_key, sni, name_len, 1);
 	return XDP_DROP;
+}
+
+// The Ethernet header and up to MAX_VLAN_TAGS 802.1Q/802.1ad tags, for
+// both programs: the EtherType they lead to, and where its header starts
+// (as a packet offset in *l3_off; returned 0 for a frame too short).
+//
+// VLAN tags. An 802.1Q/802.1ad frame carries 4 bytes per tag between the
+// Ethernet header and IP, so an untagged-only parse reads the tag as the
+// EtherType, never matches ETH_P_IP, and returns XDP_PASS -- i.e. every
+// VLAN-tagged frame reached the internet unfiltered, on the very segments
+// this router itself tags (see frfw.segments). The tags are peeled first.
+//
+// l3_off is carried alongside the pointer because phase 19's hello
+// copies address the TCP payload by absolute packet offset rather than
+// by pointer (see emit_hello_segment); without the tag bytes added here
+// those copies would start 4 (or 8) bytes early, inside the TCP header.
+// The same rule as everywhere else in this file: bounds check the whole
+// 4-byte tag before reading its inner EtherType.
+static __always_inline __u16 l3_proto(unsigned char *data, unsigned char *data_end, __u32 *l3_off)
+{
+	struct ethhdr *eth = (struct ethhdr *)data;
+	if ((unsigned char *)(eth + 1) > data_end)
+		return 0;
+	__u16 proto = eth->h_proto;
+	unsigned char *l3 = (unsigned char *)(eth + 1);
+	*l3_off = sizeof(struct ethhdr);
+#pragma unroll
+	for (int i = 0; i < MAX_VLAN_TAGS; i++) {
+		if (proto != bpf_htons(ETH_P_8021Q) && proto != bpf_htons(ETH_P_8021AD))
+			break;
+		struct vlan_tag_hdr *vlan = (struct vlan_tag_hdr *)l3;
+		if ((unsigned char *)(vlan + 1) > data_end)
+			return 0;
+		proto = vlan->inner;
+		l3 = (unsigned char *)(vlan + 1);
+		*l3_off += sizeof(struct vlan_tag_hdr);
+	}
+	return proto;
+}
+
+// IPv4's fragment fields (the uapi has no names for them).
+#define IP4_MF 0x2000
+#define IP4_OFFSET 0x1fff
+
+SEC("xdp")
+int xdp_sni_filter(struct xdp_md *ctx)
+{
+	unsigned char *data = (unsigned char *)(long)ctx->data;
+	unsigned char *data_end = (unsigned char *)(long)ctx->data_end;
+
+	__u32 l3_off = 0;
+	__u16 proto = l3_proto(data, data_end, &l3_off);
+	if (proto == bpf_htons(ETH_P_IPV6)) {
+		// ROADMAP FND-1d: IPv6 goes to xdp_sni_filter6. If that tail call
+		// fails, the frame is dropped: passed, every IPv6 ClientHello
+		// would get past the filter of a zone that has IPv6 because the
+		// filter covers it.
+		bpf_tail_call(ctx, &split_prog, PROG_FILTER6);
+		return XDP_DROP;
+	}
+	if (proto != bpf_htons(ETH_P_IP))
+		return XDP_PASS;
+	// l3_off is at most 14 + 4 * MAX_VLAN_TAGS; the mask says so to the
+	// verifier, for the pointer below.
+	unsigned char *l3 = data + (l3_off & 31);
+
+	struct iphdr *ip = (struct iphdr *)l3;
+	if ((unsigned char *)(ip + 1) > data_end)
+		return XDP_PASS;
+	if (ip->protocol != IPPROTO_TCP)
+		return XDP_PASS;
+	// H2 (FND-1d): a TCP fragment -- the first one, whose TCP header may be
+	// all it carries, or any later one, which has none -- is dropped. The
+	// server would reassemble a ClientHello this program never saw whole.
+	if (ip->frag_off & bpf_htons(IP4_MF | IP4_OFFSET)) {
+		bump(STAT_DROP_FRAGMENT);
+		return XDP_DROP;
+	}
+	if (ip->ihl < 5)
+		return XDP_PASS;
+	unsigned char *ip_opts_end = (unsigned char *)ip + (ip->ihl * 4);
+	if (ip_opts_end > data_end)
+		return XDP_PASS;
+
+	__u32 ip_hlen = (__u32)ip->ihl * 4;
+	__u32 ip_len = bpf_ntohs(ip->tot_len);
+	struct hello_flow_key flow_key = {
+		.saddr = { 0, 0, bpf_htonl(0xffff), ip->saddr },
+		.daddr = { 0, 0, bpf_htonl(0xffff), ip->daddr },
+	};
+	return filter_tcp(ctx, data_end, (struct tcphdr *)ip_opts_end, (l3_off & 31) + ip_hlen,
+			  ip_len > ip_hlen ? ip_len - ip_hlen : 0, &flow_key);
+}
+
+// --- ROADMAP FND-1d: IPv6 -----------------------------------------------------
+
+// Extension headers walked to find TCP: hop-by-hop options, routing,
+// destination options (RFC 8200 4.1's order allows the last twice). More
+// than this is dropped -- a LAN host never sends it -- rather than passed
+// unread.
+#define MAX_IPV6_EXT_HEADERS 4
+
+#define NEXTHDR_HOP 0
+#define NEXTHDR_ROUTING 43
+#define NEXTHDR_FRAGMENT 44
+#define NEXTHDR_DEST 60
+
+#define IP6_NOT_TCP -1   // pass: the chain doesn't end in TCP
+#define IP6_FRAGMENT -2  // drop: a fragment of TCP (or of what may lead to it)
+#define IP6_TOO_DEEP -3  // drop: more extension headers than are walked
+#define IP6_UNREADABLE -4 // pass: the chain runs off the frame; the kernel drops it too
+
+static __always_inline int is_walked(__u8 nh)
+{
+	return nh == NEXTHDR_HOP || nh == NEXTHDR_ROUTING || nh == NEXTHDR_DEST;
+}
+
+// Walks an IPv6 packet's extension headers from packet offset `off` (just
+// past the fixed header), `nh` being the fixed header's next header.
+// Returns the TCP header's packet offset, or one of the IP6_ codes.
+//
+// A global function (not static): the verifier checks it once, on its
+// own, and its caller sees only "some scalar" come back. Inlined, or as a
+// static subprogram, each number of headers walked would be a path of its
+// own through all of filter_tcp() after it -- five times the budget. It
+// reads the packet only through bpf_xdp_load_bytes(), at scalar offsets.
+__attribute__((noinline))
+int ipv6_tcp_offset(struct xdp_md *ctx, __u32 off, __u32 nh)
+{
+	unsigned char h[2];
+	for (int i = 0; i < MAX_IPV6_EXT_HEADERS; i++) {
+		if (nh == IPPROTO_TCP)
+			return off;
+		if (nh == NEXTHDR_FRAGMENT) {
+			// The fragment header names what follows it in every
+			// fragment, the first and the later ones alike.
+			if (bpf_xdp_load_bytes(ctx, off, h, 1) < 0)
+				return IP6_UNREADABLE;
+			return (h[0] == IPPROTO_TCP || is_walked(h[0]) || h[0] == NEXTHDR_FRAGMENT) ? IP6_FRAGMENT
+												  : IP6_NOT_TCP;
+		}
+		if (!is_walked(nh))
+			return IP6_NOT_TCP;
+		if (bpf_xdp_load_bytes(ctx, off, h, 2) < 0)
+			return IP6_UNREADABLE;
+		nh = h[0];
+		off += ((__u32)h[1] + 1) * 8;
+	}
+	if (nh == IPPROTO_TCP)
+		return off;
+	return (is_walked(nh) || nh == NEXTHDR_FRAGMENT) ? IP6_TOO_DEEP : IP6_NOT_TCP;
+}
+
+static __always_inline int ipv4_mapped(const __be32 *addr)
+{
+	return addr[0] == 0 && addr[1] == 0 && addr[2] == bpf_htonl(0xffff);
+}
+
+// ROADMAP FND-1d: an IPv6 frame, from xdp_sni_filter()'s tail call. The
+// same TCP and TLS code as IPv4's (filter_tcp()), once the extension
+// headers are walked.
+SEC("xdp")
+int xdp_sni_filter6(struct xdp_md *ctx)
+{
+	unsigned char *data = (unsigned char *)(long)ctx->data;
+	unsigned char *data_end = (unsigned char *)(long)ctx->data_end;
+
+	__u32 l3_off = 0;
+	if (l3_proto(data, data_end, &l3_off) != bpf_htons(ETH_P_IPV6))
+		return XDP_PASS;
+	l3_off &= 31;
+	struct ipv6hdr *ip6 = (struct ipv6hdr *)(data + l3_off);
+	if ((unsigned char *)(ip6 + 1) > data_end)
+		return XDP_PASS;
+
+	struct hello_flow_key flow_key = {};
+	__builtin_memcpy(flow_key.saddr, &ip6->saddr, 16);
+	__builtin_memcpy(flow_key.daddr, &ip6->daddr, 16);
+	// Never valid on the wire; and this program's flow keys tell IPv4 by
+	// that prefix (key_is_ipv4()).
+	if (ipv4_mapped(flow_key.saddr) || ipv4_mapped(flow_key.daddr)) {
+		bump(STAT_DROP_IPV6_HEADERS);
+		return XDP_DROP;
+	}
+	__u32 dgram_end = l3_off + sizeof(struct ipv6hdr) + bpf_ntohs(ip6->payload_len);
+
+	int l4 = ipv6_tcp_offset(ctx, l3_off + sizeof(struct ipv6hdr), ip6->nexthdr);
+	if (l4 == IP6_FRAGMENT) {
+		bump(STAT_DROP_FRAGMENT);
+		return XDP_DROP;
+	}
+	if (l4 == IP6_TOO_DEEP) {
+		bump(STAT_DROP_IPV6_HEADERS);
+		return XDP_DROP;
+	}
+	if (l4 < 0)
+		return XDP_PASS;
+	// At most 14 + 8 bytes of tags, 40 of IPv6 and 4 extension headers of
+	// at most 2048 bytes each: under 2^14. The mask says so to the verifier.
+	__u32 l4_off = (__u32)l4 & 16383;
+	if (l4_off >= dgram_end)
+		return XDP_PASS; // headers past the datagram's end: the kernel drops it
+	return filter_tcp(ctx, data_end, (struct tcphdr *)(data + l4_off), l4_off, dgram_end - l4_off, &flow_key);
 }
 
 char _license[] SEC("license") = "GPL";

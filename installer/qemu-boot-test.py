@@ -745,10 +745,11 @@ def check_vpn_ipv6(check, opener, boot_timeout: float) -> None:
     """ROADMAP FND-1d (1d-1, H1): a device added on the VPN screen after
     the router made its ULA prefix gets an IPv6 address in the tunnel,
     and its full-tunnel configuration sends IPv6 into the tunnel too
-    (::/0) -- not around it, in the clear. Here the LAN has no IPv6 (the
-    SNI filter is on its port), so the router answers the device's ping
-    over IPv6 but refuses to route its IPv6 anywhere: refused at once,
-    rather than dropped, so the device's apps fall back to IPv4."""
+    (::/0) -- not around it, in the clear. The router answers the
+    device's ping over IPv6 and routes its IPv6 to the LAN's stable (ULA)
+    addresses (the LAN keeps its IPv6 with the SNI filter on since 1d-2),
+    and refuses the rest at once, rather than dropping it, so the device's
+    apps fall back to IPv4 for the internet."""
     post(opener, "/vpn/peers/add", {"name": "phone", "full_tunnel": "true"})
     page = html.unescape(opener.last_page)
     config_text = re.search(r"<pre>(.*?)</pre>", page, re.S)
@@ -791,8 +792,28 @@ def check_vpn_ipv6(check, opener, boot_timeout: float) -> None:
         took = time.monotonic() - started
         seen = listener.communicate(timeout=30)[0].split()
         check("Administratively prohibited" in out.stdout + out.stderr and not seen,
-              f"...its IPv6 to the internet is refused by the router at once (the LAN has no IPv6 here), and "
-              f"never reaches the provider: {out.stdout.strip()[-200:]} in {took:.1f} s; at the provider: {seen}")
+              f"...its IPv6 to the internet is refused by the router at once, and never reaches the provider: "
+              f"{out.stdout.strip()[-200:]} in {took:.1f} s; at the provider: {seen}")
+        # The LAN host's stable address, through the zone rule vpn-to-lan.
+        # The host routes the tunnel's /64 back through the router's ULA,
+        # as a LAN host does through its default route.
+        tunnel = ipaddress.IPv6Interface(v6[0]).network.supernet(new_prefix=64)
+        ula_host = next((a for a in lan_host_addresses()
+                         if a.ip in ipaddress.IPv6Network("fc00::/7") and a.ip in tunnel.supernet(new_prefix=48)), None)
+        if not check(ula_host is not None, f"...the LAN host has a stable (ULA) address to be reached at: "
+                                           f"{[str(a) for a in lan_host_addresses()]}"):
+            return
+        route = ["ip", "-6", "route", "replace", str(tunnel), "via", str(ula_host.network.network_address + 1),
+                 "dev", LAN_TAP]
+        subprocess.run(route, check=True)
+        try:
+            reached = subprocess.run([*inside, "ping", "-6", "-n", "-c", "3", "-i", "0.5", "-w", "10",
+                                      str(ula_host.ip)], capture_output=True, text=True)
+        finally:
+            subprocess.run(["ip", "-6", "route", "del", str(tunnel), "dev", LAN_TAP], capture_output=True)
+        check(reached.returncode == 0,
+              f"...and it reaches the LAN host's stable address {ula_host.ip} over IPv6 in the tunnel"
+              + ("" if reached.returncode == 0 else f": {reached.stdout[-300:]}"))
 
 
 def ping_from_lan(target: str, source: str) -> bool:
@@ -1488,25 +1509,126 @@ def check_ipv6_services(check, opener, boot_timeout: float) -> bool:
     return confirmed
 
 
-def check_lan_ipv6_withdrawn(check, opener, host: str | None) -> None:
-    """ROADMAP FND-1b, after the Apply that turned the XDP SNI filter on
-    on the LAN port: the filter reads IPv4 only, so the LAN zone is off
-    IPv6 -- the card says why -- and nothing goes through any more."""
+#: Listens on the provider's side for one TLS connection to port 443 and
+#: prints how many bytes of it arrived within 3 s (ROADMAP FND-1d): a
+#: ClientHello the SNI filter dropped never does.
+_ISP_TLS_LISTENER = """\
+import socket, sys, time
+s = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("::", 443)); s.listen(1); s.settimeout(20)
+print("ready", flush=True)
+c, _ = s.accept()
+data, deadline = b"", time.time() + 3
+try:
+    while (left := deadline - time.time()) > 0:
+        c.settimeout(left)
+        chunk = c.recv(4096)
+        if not chunk:
+            break
+        data += chunk
+except OSError:
+    pass
+print(len(data), data[:1].hex() or "-", flush=True)
+"""
+
+
+def client_hello(server_name: str) -> bytes:
+    """Python's own ClientHello naming `server_name`: one segment."""
+    context = ssl.create_default_context()
+    incoming, outgoing = ssl.MemoryBIO(), ssl.MemoryBIO()
+    tls = context.wrap_bio(incoming, outgoing, server_hostname=server_name)
+    try:
+        tls.do_handshake()
+    except ssl.SSLWantReadError:
+        pass
+    return outgoing.read()
+
+
+def hello_bytes_at_isp(source: str, record: bytes, cut: int | None = None) -> int:
+    """Send `record` from the LAN host's `source` to the provider's port
+    443, through the router -- in two segments if `cut` -- and return how
+    many of its bytes the provider got (-1 if no connection)."""
+    listener = subprocess.Popen(["ip", "netns", "exec", ISP_NS, "python3", "-I", "-c", _ISP_TLS_LISTENER],
+                                stdout=subprocess.PIPE, text=True)
+    try:
+        if listener.stdout.readline().strip() != "ready":
+            return -1
+        with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as conn:
+            conn.settimeout(5)
+            conn.bind((source, 0))
+            conn.connect((ISP_ADDRESS, 443))
+            conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            conn.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+            for part in ((record,) if cut is None else (record[:cut], record[cut:])):
+                conn.sendall(part)
+                time.sleep(0.2)
+            time.sleep(3.5)
+        got = listener.communicate(timeout=30)[0].split()
+        return int(got[0]) if got else -1
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return -1
+    finally:
+        if listener.poll() is None:
+            listener.kill()
+            listener.wait()
+
+
+def udp6_to_isp(port: int, source: str, timeout: float = 3) -> str:
+    """udp_through_router() over IPv6, from the LAN host's `source` to the
+    provider's address."""
+    with socket.socket(socket.AF_INET6, socket.SOCK_DGRAM) as sock:
+        sock.settimeout(timeout)
+        sock.bind((source, 0))
+        sock.connect((ISP_ADDRESS, port))
+        try:
+            sock.send(b"\xc0" + os.urandom(1199))
+            sock.recv(1)
+            return "answered"
+        except ConnectionRefusedError:
+            return "refused"
+        except OSError:
+            return "no answer"
+
+
+def check_lan_ipv6_kept(check, opener, host: str | None) -> None:
+    """ROADMAP FND-1d, after the Apply that turned the XDP SNI filter on
+    on the LAN port. Until 1d the filter read IPv4 only, and the LAN zone
+    was taken off IPv6 (FND-1b). It reads IPv6 now: the LAN keeps its
+    IPv6, its stable address and its pinhole, and a blocked name's
+    ClientHello is dropped over IPv6 too -- whole, or split across
+    segments -- while an allowed one goes through; QUIC over IPv6 is
+    refused from the port as over IPv4 (ROADMAP SEC-1)."""
     deadline = time.monotonic() + 120  # dhcpcd asks the provider again with its new config
     summary, lan = ipv6_card_lan(opener)
-    while "Zone lan gets no IPv6" not in summary and time.monotonic() < deadline:
+    while not any(d.startswith("lan (") for d in lan) and time.monotonic() < deadline:
         time.sleep(5)
         summary, lan = ipv6_card_lan(opener)
-    check("Zone lan gets no IPv6: the SNI filter" in summary and not any(d.startswith("lan (") for d in lan),
-          f"with the SNI filter on the LAN port, the LAN zone is off IPv6, and the card says why: {summary}")
+    check(any(d.startswith("lan (") for d in lan) and "Zone lan gets no IPv6" not in summary,
+          f"with the SNI filter on the LAN port, the LAN zone keeps its IPv6: the filter reads IPv6 (ROADMAP "
+          f"FND-1d): {summary} {lan}")
     stable, pinholes = ipv6_card_stable(opener)
-    check(not any(d.startswith("lan (") for d in stable),
-          f"...its stable (ULA) address is gone from the LAN port too (ROADMAP FND-1c): {stable}")
-    check(pinholes.get("boot-test-nas", "").endswith("off: zone lan has no IPv6"),
-          f"...and its pinhole is kept but off, rather than refusing the filter: {pinholes}")
-    if host:
-        check(not ping_from_lan(ISP_ADDRESS, host),
-              "...and the router routes nothing of it any more: the filter can't be got around over IPv6")
+    check(any(d.startswith("lan (") for d in stable),
+          f"...and its stable (ULA) address (ROADMAP FND-1c): {stable}")
+    check("off" not in pinholes.get("boot-test-nas", "off"),
+          f"...and its pinhole stays on: {pinholes}")
+    if not host:
+        return
+    check(ping_from_lan(ISP_ADDRESS, host), "...the router still routes the LAN's IPv6 to the provider")
+    allowed = client_hello(XDP_ALLOWED_NAME)
+    got = hello_bytes_at_isp(host, allowed)
+    check(got == len(allowed), f"a ClientHello naming an allowed host reaches the provider over IPv6, through "
+                               f"the XDP filter: {got} of {len(allowed)} bytes")
+    got = hello_bytes_at_isp(host, client_hello(XDP_BLOCKED_NAME))
+    check(got == 0, f"...one naming a blocked host is dropped over IPv6 (ROADMAP FND-1d): {got} bytes arrived")
+    record, cut = split_client_hello(XDP_BLOCKED_NAME)
+    got = hello_bytes_at_isp(host, record, cut)
+    check(0 <= got < len(record), f"...so is a browser-sized one, split across segments, whose name is in the "
+                                  f"second (ROADMAP SEC-17): {got} of {len(record)} bytes arrived")
+    quic, other = udp6_to_isp(443, host), udp6_to_isp(4443, host)
+    check(quic == "refused" and other != "refused",
+          f"...and QUIC over IPv6 is refused from the filtered port (ROADMAP SEC-1): UDP/443 {quic}, "
+          f"UDP/4443 {other}")
 
 
 def webui_opener() -> urllib.request.OpenerDirector:
@@ -2122,7 +2244,7 @@ def run(args: argparse.Namespace, provider: Isp) -> int:
         # through the new ruleset.
         check("confirm it within 300 s" in applied, "the Apply is held until it is confirmed (ROADMAP SEC-26)")
         check(confirm_pending(opener), "...the dashboard confirms it, and the router keeps it")
-        check_lan_ipv6_withdrawn(check, opener, lan_host)
+        check_lan_ipv6_kept(check, opener, lan_host)
         check_vpn_ipv6(check, opener, boot_timeout)
         # Security-lessons K5, ROADMAP SEC-27: the admin puts the webUI on
         # the VPN's tunnel address too -- its own action, held as well.

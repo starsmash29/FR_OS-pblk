@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import random
+import socket
 import struct
 
 import pytest
@@ -253,12 +254,24 @@ def test_unparseable_segments_are_counted_not_fatal(minimal_config_dict, tmp_pat
 
 
 def test_hello_segment_decoding():
-    header = struct.pack("<4s4sHHIHBB", bytes([10, 0, 0, 9]), bytes([1, 2, 3, 4]), 40000, 443, 77, 5, 1, 0)
+    mapped = bytes(10) + b"\xff\xff"
+    header = struct.pack("<16s16sHHIHBB", mapped + bytes([10, 0, 0, 9]), mapped + bytes([1, 2, 3, 4]),
+                         40000, 443, 77, 5, 1, 0)
     segment = xdp.HelloSegment.from_bytes(header + b"hello" + bytes(xdp.HELLO_SNAP - 5))
     assert (segment.saddr, segment.dport, segment.seq, segment.first, segment.payload) == (
         "10.0.0.9", 443, 77, True, b"hello")
+    # ROADMAP FND-1d: a hello over IPv6.
+    header6 = struct.pack("<16s16sHHIHBB", socket.inet_pton(socket.AF_INET6, "fd00:1::9"),
+                          socket.inet_pton(socket.AF_INET6, "2001:db8::4"), 40000, 443, 77, 5, 1, 0)
+    segment6 = xdp.HelloSegment.from_bytes(header6 + b"hello" + bytes(xdp.HELLO_SNAP - 5))
+    assert (segment6.saddr, segment6.daddr) == ("fd00:1::9", "2001:db8::4")
     with pytest.raises(xdp.XdpError):
         xdp.HelloSegment.from_bytes(b"short")
+    # The previous release's record (IPv4 addresses, a 20-byte header) is
+    # refused whole, not read as made-up IPv6 addresses.
+    old_record = struct.pack("<4s4sHHIHBB", bytes([10, 0, 0, 9]), bytes([1, 2, 3, 4]), 40000, 443, 77, 5, 1, 0)
+    with pytest.raises(xdp.XdpError):
+        xdp.HelloSegment.from_bytes(old_record + b"hello" + bytes(xdp.HELLO_SNAP - 5))
 
 
 def test_xdp_sync_sets_the_hello_bit(minimal_config_dict, tmp_path, monkeypatch):

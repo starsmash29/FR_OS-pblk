@@ -290,8 +290,9 @@ they're documented design decisions:
    peer's sequence number, recomputing the checksum, and re-injecting via
    `XDP_TX`; real, but substantially more complex, and not necessary for
    the "block the connection" goal.
-4. IPv4 only — consistent with the rest of the project (`frfw.nft`, Kea
-   DHCP are IPv4-only today too).
+4. **IPv4 and IPv6, and IP fragments (ROADMAP FND-1d).** See "The XDP
+   SNI filter over IPv6" in the FND-1d section below. Until then the
+   program read IPv4 only, and a zone it protected was kept off IPv6.
 5. **VLAN tags: up to two (ROADMAP SEC-16).** 802.1Q and 802.1ad tags
    are unwrapped before the IPv4 parse, so the IoT and guest segments
    (VLANs on the LAN port, `frfw.segments`) are filtered like untagged
@@ -3773,17 +3774,19 @@ forwarding doesn't change (checked in the boot test).
 
 **What stays IPv4-only, and how that is kept from opening a hole.** IPv6
 must not quietly open what the admin closed. Wherever a protection is
-IPv4-only, the zone it protects doesn't get IPv6 (FND-1d lifts these):
+IPv4-only, the zone it protects doesn't get IPv6 (FND-1d lifts these one
+by one):
 - **A drop/reject forward rule by address.** `src_address`/`dst_address`
   are IPv4 networks, so the same host would get around the rule over
   IPv6. `frfw.config.loader.ipv6_lan_exclusions` leaves the zone out of
   the default `lan_zones`, and the status says why ("block it by MAC
   instead"). An explicit `lan_zones` naming it is refused. A rule from an
   internet-facing zone doesn't count: nothing new comes in over IPv6.
-- **The XDP SNI filter (and app control).** It parses IPv4 only. The
-  same treatment applies to its devices and their VLANs. The boot test
-  turns the filter on after IPv6 and checks that the LAN zone goes off
-  IPv6.
+- **The XDP SNI filter (and app control).** It parsed IPv4 only, and
+  the same treatment applied to its devices and their VLANs: the boot
+  test turned the filter on after IPv6 and checked that the LAN zone
+  went off IPv6. Lifted in FND-1d (1d-2): the program reads IPv6, and
+  the zone keeps it.
 - **The IDS quarantine.** It holds IPv4 addresses, and a host picks its
   own IPv6 addresses. When a host is quarantined, the helper also looks
   its MAC up in the neighbour table, on a LAN device only (on the WAN it
@@ -4102,13 +4105,97 @@ the /128s), `dual_stack` parsing, the split tunnel's networks,
 (each by `nft -c`), the forwarding switch and the tunnel's sync (stale
 addresses removed, the ULA made, no IPv6 in the kernel). The webUI tests
 cover the new configuration's address and the mark on a device without
-one. In the boot test, after the SNI filter's Apply (so the LAN has no
-IPv6): a device added with the whole traffic through the VPN gets an IPv6
-address and `::/0`, the screen marks the device added with its own key,
-and on the next Apply a WireGuard client on the runner's kernel, in a
-namespace whose only way out is the tunnel, pings the router's tunnel
-address over IPv6, and has its IPv6 to the internet refused
-("administratively prohibited") without any of it reaching the provider.
+one. In the boot test, after the SNI filter's Apply: a device added with
+the whole traffic through the VPN gets an IPv6 address and `::/0`, the
+screen marks the device added with its own key, and on the next Apply a
+WireGuard client on the runner's kernel, in a namespace whose only way
+out is the tunnel, pings the router's tunnel address over IPv6, and has
+its IPv6 to the internet refused ("administratively prohibited") without
+any of it reaching the provider. In 1d-1 the LAN had no IPv6 there (the
+SNI filter took it off); since 1d-2 it keeps it, and the client also
+reaches the LAN host's stable address through the tunnel.
+
+## The XDP SNI filter over IPv6 (ROADMAP FND-1d, 1d-2)
+
+Until 1d the filter (phase 4) read IPv4 only, so a zone it protected was
+kept off IPv6 (FND-1b): a blocked site would otherwise have stayed
+reachable over IPv6. 1d-2 makes the program read IPv6, and fixes a
+bypass found on the way (H2 in the FND-1d design).
+
+- **A third program.** `xdp_sni_filter` (the one attached) parses
+  Ethernet and its VLAN tags, then IPv4 itself; an IPv6 frame goes to
+  `xdp_sni_filter6` by a tail call (`split_prog`, slot 1; the split
+  follower is slot 0). The kernel's verifier checks each program on its
+  own 1,000,000-instruction budget, which the main one already used most
+  of. The TCP and TLS part, from the port check to the blocklist lookup,
+  is one function (`filter_tcp()`) inlined into both, so the two
+  families are filtered by the same code, against one blocklist. If the
+  tail call ever failed, the frame is dropped: passed, every IPv6 hello
+  would get past a filter whose zone has IPv6 because of it.
+- **Extension headers.** A server skips hop-by-hop, routing (with no
+  segments left) and destination options headers, so a client could put
+  its hello behind them. `ipv6_tcp_offset()` walks up to four; a packet
+  with more is dropped (`drop_ipv6_headers`), as is one with an
+  IPv4-mapped address (never valid on the wire, RFC 4291 2.5.5.2, and
+  the program tells an IPv4 flow by that prefix). It is a global BPF
+  function, verified once on its own: inlined, each number of headers
+  walked was a path of its own through all of `filter_tcp()` after it.
+  AH and ESP are not walked: behind them the hello is IPsec-protected,
+  out of the filter's sight like any VPN's, and the packet passes.
+- **H2: IP fragments.** A client could cut its datagram so that the
+  first fragment held the TCP header and only the first bytes of the TLS
+  record (RFC 1858's "tiny fragment"), the second the rest. The program
+  saw neither as a ClientHello and passed both, and the server's kernel
+  put the hello back together: a blocked name got through. Reproduced in
+  the lab before the fix (`tests/test_xdp_fragments_live.py`: the
+  server's reassembly counter went up, `drop_match` didn't). Now a TCP
+  fragment of either family is dropped (`drop_fragment`): the first, and
+  every later one, which has no TCP header to look at. The program can't
+  reassemble, and a LAN host's TCP never fragments: it sends with DF (an
+  IPv6 router never fragments at all) and segments by MSS. A fragmented
+  UDP datagram passes.
+- **16-byte addresses.** The flow keys (`hello_flows`, `sni_flows`), the
+  events and the hello copies hold an address as 16 bytes, an IPv4 one
+  IPv4-mapped. `frfw.xdp.address_text` turns an IPv4-mapped address back
+  into plain IPv4 text, so the event file, app identification and TLS
+  fingerprinting see IPv4 sources as before, and IPv6 ones as IPv6.
+  The SEC-28 checksum of a followed segment uses IPv6's pseudo-header
+  for an IPv6 flow. (The AI IDS scores IPv4 sources only until 1d-3.)
+  The records grew (an event from 48 to 72 bytes, a hello copy's header
+  from 20 to 44), and a reader refuses one shorter than its layout: on
+  an upgrade the new object's digest makes the apply replace the pinned
+  program and restart the readers (SEC-19), and if the new program were
+  rejected the old one keeps running, its records ignored, not misread.
+- **QUIC** is rejected from the filtered ports by `udp dport 443
+  reject` in the `inet` table, which already matched both families.
+- **What changes for the admin.** The SNI filter no longer takes its
+  zones off IPv6 (`ipv6_lan_exclusions` lost that reason): the LAN keeps
+  its delegated and stable networks, and its pinholes stay on.
+- **Cost.** On a 6.18 kernel the main program now verifies in about
+  371,000 instructions (it was 768,000: its IPv4 path is shorter now
+  that the VLAN offset is masked once and the IPv6 path left it), the
+  IPv6 one in about 245,000, the split follower in about 101,000. The
+  image's kernel is Debian 12's 6.1, which prunes less; only the boot
+  test loads them there.
+
+**Checked.** `tests/test_xdp_ipv6_live.py` injects IPv6 frames into the
+lab's router: a blocked name dropped and reported with its IPv6
+addresses, untagged, behind 802.1Q and QinQ; an allowed one passed; the
+same name blocked over both families; SEC-7's datagram end; the hello
+copy's addresses; one to four extension headers walked, five dropped;
+an IPv4-mapped address dropped; TCP fragments (first, later, atomic,
+behind a header) dropped and a UDP one left alone; a split hello
+followed over IPv6, with a bad IPv6 checksum dropped unread and a
+segment out of order held. `tests/test_xdp_fragments_live.py` covers H2
+over IPv4 (tiny fragments either way round never reassembled at the
+server; a whole datagram with DF parsed as before; UDP fragments
+reassembled). The existing live suites run unchanged on the new program.
+In the boot test, after the SNI filter's Apply, the LAN keeps its IPv6,
+its stable address and its pinhole; from the LAN host over IPv6 an
+allowed name's ClientHello reaches the provider, a blocked one's
+doesn't, whole or split across segments, and QUIC to port 443 is
+refused. The VPN client of 1d-1 then also reaches the LAN host's stable
+address through the tunnel.
 
 ## Coarse application identification (phase 16)
 
@@ -4536,7 +4623,8 @@ device through the helper's existing `quarantine_ip` command.
   encrypted with keys derivable from the packet itself (RFC 9001) --
   public, but decrypting it needs AES-GCM, which Python's standard library
   lacks. JA4's `q` prefix is ready for it.
-- IPv6 isn't seen (the XDP program is IPv4-only, see phase 4).
+- IPv6 is seen since FND-1d: the program copies an IPv6 ClientHello
+  like an IPv4 one, its addresses as IPv6.
 - Fingerprints identify TLS *libraries*, not apps: every app built on the
   same OS TLS stack shares one. Useful for "this device suddenly speaks
   TLS differently", not as proof of identity -- a client can copy

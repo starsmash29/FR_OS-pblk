@@ -507,3 +507,12 @@ def test_the_gaps_card_names_where_quic_is_rejected(logged_in_client):
     assert "Rejected from eth0 while the filter is on" in gap
     for other in ("Encrypted Client Hello", "ports other than 443", "IPv6"):
         assert other in logged_in_client.get("/xdp").text
+
+
+def test_the_gaps_card_says_ipv6_is_read(logged_in_client):
+    """ROADMAP FND-1d: the filter reads IPv6; what it doesn't is more
+    extension headers than it walks, and fragments, which it drops."""
+    page = logged_in_client.get("/xdp").text
+    gap = page.split('id="gap-ipv6"', 1)[1].split("</li>", 1)[0]
+    assert "reads IPv6 like IPv4" in gap and "is dropped instead" in gap
+    assert "reads IPv4 only" not in page
