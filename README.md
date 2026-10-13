@@ -521,6 +521,10 @@ your modified version.
 Plugins that only use FR_OS's plugin interface may be under any license:
 see the additional permission in [LICENSE-EXCEPTION.md](LICENSE-EXCEPTION.md).
 
+FR_OS contains cryptography and is subject to US and EU export control
+laws. Export control, sanctions and the regulatory compliance disclaimer:
+[LEGAL.md](LEGAL.md).
+
 Code published before the switch to the AGPL (releases up to v0.2.1 and the
 commits after them on `main`) was released under the Apache License 2.0 and
 stays available under it. Third-party parts keep their own licenses (the
