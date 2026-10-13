@@ -25,6 +25,16 @@ over. Now it is one device:
   still one device to the router: whoever is behind it shares its
   sign-in, the same limit any address-based gate has.
 
+**IPv6 (ROADMAP FND-1d).** A sign-in admits the device, not the one
+address it came from: a device has an IPv4 address and several IPv6
+ones (SLAAC, privacy addresses), and picks among them per connection.
+So `authorize_client` also puts every other address the router's
+neighbour table holds for the same MAC on the same link
+(`device_addresses`) into the IPv4 and IPv6 sets (ZTNA6_SET_NAME), and a
+WireGuard client's other tunnel address into the tunnel ones. An IPv6
+address the device picks *after* signing in (a new privacy address, RFC
+4941) is not in the sets until it signs in again: fail closed.
+
 There is no per-connection/per-request identity check, no session token,
 no cloud identity provider, and no userspace timer -- granting access
 means one `nft add element ... { ip . mac timeout Ns }` call, and the
@@ -73,7 +83,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from frfw import paths, validate
-from frfw.nft.builder import FILTER_TABLE, ZTNA_SET_NAME, ZTNA_TUNNEL_SET_NAME
+from frfw.nft.builder import FILTER_TABLE, ZTNA6_SET_NAME, ZTNA_SET_NAME, ZTNA_TUNNEL6_SET_NAME, ZTNA_TUNNEL_SET_NAME
 
 
 class ZtnaError(Exception):
@@ -105,15 +115,17 @@ class ClientLink:
     device: str
 
 
-def client_link(ip: str) -> ClientLink | None:
-    """The MAC and device the router reaches `ip` at, from its own
-    neighbour table (`ip -j neigh show to IP`), or None if `ip` is not a
-    neighbour -- not on a network the router is directly attached to.
-    The client has just sent the router a request, so a neighbour on the
-    LAN has a fresh entry. Root only reads it; the client tells nothing."""
-    validate.ipv4(ip)
+def _validated_address(ip: str) -> str:
+    """`ip` (either family) as `ip` writes it, or ZtnaError."""
     try:
-        proc = subprocess.run(["ip", "-j", "neigh", "show", "to", ip], capture_output=True, text=True, timeout=10)
+        return validate.ipv6(ip) if ":" in ip else validate.ipv4(ip)
+    except validate.ArgumentError as exc:
+        raise ZtnaError(str(exc)) from exc
+
+
+def _neighbours(*args: str) -> list:
+    try:
+        proc = subprocess.run(["ip", "-j", "neigh", "show", *args], capture_output=True, text=True, timeout=10)
     except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
         raise ZtnaError(f"could not read the neighbour table: {exc}") from exc
     if proc.returncode != 0:
@@ -122,8 +134,27 @@ def client_link(ip: str) -> ClientLink | None:
         entries = json.loads(proc.stdout or "[]")
     except json.JSONDecodeError as exc:
         raise ZtnaError(f"could not parse ip neigh output: {exc}") from exc
-    for entry in entries if isinstance(entries, list) else []:
-        if not isinstance(entry, dict) or entry.get("dst") != ip:
+    return entries if isinstance(entries, list) else []
+
+
+def _same_address(dst: object, ip: str) -> bool:
+    """`ip -j` writes an address in its own form; compare the values."""
+    try:
+        return isinstance(dst, str) and ipaddress.ip_address(dst) == ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+
+
+def client_link(ip: str) -> ClientLink | None:
+    """The MAC and device the router reaches `ip` (IPv4 or IPv6) at, from
+    its own neighbour table (`ip -j neigh show to IP`), or None if `ip`
+    is not a neighbour -- not on a network the router is directly
+    attached to. The client has just sent the router a request, so a
+    neighbour on the LAN has a fresh entry. Root only reads it; the
+    client tells nothing."""
+    ip = _validated_address(ip)
+    for entry in _neighbours("to", ip):
+        if not isinstance(entry, dict) or not _same_address(entry.get("dst"), ip):
             continue
         states = set(entry.get("state") or [])
         lladdr, dev = entry.get("lladdr"), entry.get("dev")
@@ -136,36 +167,70 @@ def client_link(ip: str) -> ClientLink | None:
     return None
 
 
+def device_addresses(link: ClientLink) -> list[str]:
+    """Every address the router's neighbour table holds for the device
+    at `link` -- its MAC, on that link -- IPv4 and IPv6, link-local ones
+    left out (ROADMAP FND-1d): what one sign-in admits. Read by root from
+    the router's own table, like client_link."""
+    out = []
+    for entry in _neighbours("dev", validate.ifname(link.device)):
+        if not isinstance(entry, dict) or not set(entry.get("state") or []) & _USABLE_NEIGH_STATES:
+            continue
+        lladdr, dst = entry.get("lladdr"), entry.get("dst")
+        if not isinstance(lladdr, str) or lladdr.lower() != link.mac or not isinstance(dst, str):
+            continue
+        try:
+            address = ipaddress.ip_address(dst)
+        except ValueError:
+            continue
+        if address.is_link_local or address.is_multicast or address.is_unspecified:
+            continue
+        if str(address) not in out:
+            out.append(str(address))
+    return out
+
+
 def authorize_client(
     ip: str,
     mac: str,
     ttl_seconds: int,
     username: str,
     *,
+    also: tuple[str, ...] = (),
     state_path: Path = paths.ZTNA_STATE_PATH,
-) -> None:
+) -> list[str]:
     """Grants the client access for `ttl_seconds` by adding it to the
     kernel's ZTNA sets -- the actual, sole enforcement action; everything
     else here is bookkeeping for the /ztna/status page. `mac` names the
-    device on the router's own networks (ZTNA_SET_NAME); "" is a
-    WireGuard client, by its tunnel address (ZTNA_TUNNEL_SET_NAME) --
-    frfw.helper.server decides which, never the client. Requires root
-    (see this module's docstring) and the sets to exist, i.e. a firewall
-    apply must have run at least once.
+    device on the router's own networks (ZTNA_SET_NAME, ZTNA6_SET_NAME);
+    "" is a WireGuard client, by its tunnel address
+    (ZTNA_TUNNEL_SET_NAME, ZTNA_TUNNEL6_SET_NAME) -- frfw.helper.server
+    decides which, never the client. `also`: the same device's other
+    addresses (see this module's docstring), each added the same way.
+    Returns every address added. Requires root (see this module's
+    docstring) and the sets to exist, i.e. a firewall apply must have run
+    at least once.
     """
-    try:
-        ipaddress.IPv4Address(ip)
-    except ValueError as exc:
-        raise ZtnaError(f"invalid IPv4 address {ip!r}: {exc}") from exc
+    addresses: list[str] = []
+    for address in (ip, *also):
+        address = _validated_address(address)
+        if address not in addresses:
+            addresses.append(address)
     if mac:
         try:
             mac = validate.mac(mac)
         except validate.ArgumentError as exc:
             raise ZtnaError(str(exc)) from exc
-        _nft(["add", "element", "inet", FILTER_TABLE, ZTNA_SET_NAME, "{", f"{ip} . {mac} timeout {ttl_seconds}s", "}"])
-    else:
-        _nft(["add", "element", "inet", FILTER_TABLE, ZTNA_TUNNEL_SET_NAME, "{", f"{ip} timeout {ttl_seconds}s", "}"])
-    _record_authorization(ip, mac, username, state_path)
+    for address in addresses:
+        v6 = ":" in address
+        if mac:
+            _nft(["add", "element", "inet", FILTER_TABLE, ZTNA6_SET_NAME if v6 else ZTNA_SET_NAME,
+                  "{", f"{address} . {mac} timeout {ttl_seconds}s", "}"])
+        else:
+            _nft(["add", "element", "inet", FILTER_TABLE, ZTNA_TUNNEL6_SET_NAME if v6 else ZTNA_TUNNEL_SET_NAME,
+                  "{", f"{address} timeout {ttl_seconds}s", "}"])
+        _record_authorization(address, mac, username, state_path)
+    return addresses
 
 
 def get_authorization(ip: str, mac: str = "", *, state_path: Path = paths.ZTNA_STATE_PATH) -> ZtnaAuthorization | None:
@@ -176,8 +241,8 @@ def get_authorization(ip: str, mac: str = "", *, state_path: Path = paths.ZTNA_S
     should be: there is no separate "expired but still remembered" state.
     """
     for elem_ip, elem_mac, remaining in _list_elements():
-        if elem_ip == ip and elem_mac == mac.lower():
-            return ZtnaAuthorization(ip=ip, username=_lookup_username(ip, state_path),
+        if _same_address(elem_ip, ip) and elem_mac == mac.lower():
+            return ZtnaAuthorization(ip=ip, username=_lookup_username(elem_ip, state_path),
                                      expires_in_seconds=remaining, mac=elem_mac)
     return None
 
@@ -210,7 +275,9 @@ def snapshot_before_reload() -> list[tuple[str, str, int]]:
 
 
 def _list_elements() -> list[tuple[str, str, int]]:
-    return _list_set_elements(ZTNA_SET_NAME, paired=True) + _list_set_elements(ZTNA_TUNNEL_SET_NAME, paired=False)
+    return (_list_set_elements(ZTNA_SET_NAME, paired=True) + _list_set_elements(ZTNA_TUNNEL_SET_NAME, paired=False)
+            + _list_set_elements(ZTNA6_SET_NAME, paired=True)
+            + _list_set_elements(ZTNA_TUNNEL6_SET_NAME, paired=False))
 
 
 def _list_set_elements(set_name: str, *, paired: bool) -> list[tuple[str, str, int]]:

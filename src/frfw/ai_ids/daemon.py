@@ -29,6 +29,20 @@ fr-xdp-sni-logger alone cannot supply connection-rate/destination-
 diversity signal (it only ever logs a *blocklist match*, never a plain
 pass), which is why conntrack sampling exists as a second, independent
 telemetry source rather than everything being read from one log.
+
+**IPv6 (ROADMAP FND-1d).** An IPv6 host is scored by its MAC, not its
+address: it picks its addresses itself and may change them (privacy
+addresses, RFC 4941), so scoring per address would let it reset its own
+score by changing address. The helper labels an IPv6 conntrack source
+with the MAC the router's neighbour table holds for it on a LAN link
+(`src_mac`, read as root; this daemon gets no new rights); a source
+without one -- the router itself, the internet -- is not scored. The
+SNI and DNS observations of an IPv6 address are put on the same MAC,
+from the addresses the samples labelled. A flagged MAC is quarantined
+through its latest IPv6 address: the helper looks the MAC up again
+itself, never taking it from this daemon, and holds the host by it and
+by its IPv4 addresses (frfw.ids_quarantine). A host's IPv4 and IPv6
+traffic are scored apart, by address and by MAC.
 """
 
 from __future__ import annotations
@@ -39,7 +53,7 @@ import re
 import subprocess
 import sys
 import time
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Callable
 
@@ -66,6 +80,13 @@ TICK_SECONDS = 5.0
 #: file over an appliance's lifetime for no benefit past "the last
 #: several".
 RECENT_EVENTS_LIMIT = 50
+
+#: An IPv6 host's score key (ROADMAP FND-1d): its MAC.
+_MAC_KEY_RE = re.compile(r"[0-9a-f]{2}(?::[0-9a-f]{2}){5}\Z")
+
+#: At most this many IPv6 address -> MAC labels are remembered between
+#: samples (a LAN's hosts each have a few; the bound only stops growth).
+_IPV6_LABELS_LIMIT = 4096
 
 #: The systemd unit this process runs under -- see `is_daemon_active`.
 AI_IDS_SERVICE_NAME = "fr-ai-ids.service"
@@ -219,7 +240,12 @@ class IDSDaemon:
         self._events_path = events_path
         self._clock = clock or time.monotonic
         self._excluded_ips = resolve_excluded_ips(config)
+        self._excluded_macs = set(config.ai_ids.excluded_macs)
         self._internal = internal_networks(config)
+        #: ROADMAP FND-1d: IPv6 address -> MAC (the helper's labels), and
+        #: each MAC's latest IPv6 address, to quarantine it through.
+        self._ipv6_macs: dict[str, str] = {}
+        self._mac_address: dict[str, str] = {}
         self._route_path = route_path
         self._resolv_path = resolv_path
         self._known_flow_keys: set[tuple[str, str, int, str, int]] = set()
@@ -240,6 +266,17 @@ class IDSDaemon:
             return False
         return any(address in network for network in self._internal)
 
+    def _source(self, ip: str) -> str | None:
+        """The key a source is scored under, or None to leave it alone: an
+        internal IPv4 address itself; an IPv6 address's MAC, if a sample
+        labelled it (this module's docstring)."""
+        if ":" not in ip:
+            return ip if self._is_internal(ip) else None
+        try:
+            return self._ipv6_macs.get(str(ipaddress.IPv6Address(ip)))
+        except ValueError:
+            return None
+
     def handle_sni_event_line(self, line: str) -> None:
         """One line of fr-xdp-sni-logger's event file (see
         `frfw.xdp.format_event_json`). Malformed/unrelated lines are
@@ -253,8 +290,9 @@ class IDSDaemon:
         if not isinstance(event, dict) or event.get("action") != "drop":
             return
         src_ip = event.get("saddr")
-        if isinstance(src_ip, str) and self._is_internal(src_ip):
-            self.engine.observe_sni_block(src_ip, now=self._clock())
+        source = self._source(src_ip) if isinstance(src_ip, str) else None
+        if source is not None:
+            self.engine.observe_sni_block(source, now=self._clock())
 
     def handle_dns_log_line(self, line: str) -> None:
         """One line of the resolver's query log (paths.DNS_QUERY_LOG_PATH,
@@ -268,8 +306,9 @@ class IDSDaemon:
         match = _DNS_LINE_RE.match(dnsmasq_message(line))
         if not match:
             return
-        client, rest = match.group("client"), match.group("rest")
-        if not self._is_internal(client):
+        address, rest = match.group("client"), match.group("rest")
+        client = self._source(address)
+        if client is None:
             return
         now = self._clock()
         nx = _DNS_NXDOMAIN_RE.match(rest)
@@ -300,16 +339,41 @@ class IDSDaemon:
             return
 
         now = self._clock()
+        flows = [f for f in response.get("flows", []) if isinstance(f, dict)]
+        self._learn_ipv6_labels(flows)
         current_keys: set[tuple[str, str, int, str, int]] = set()
-        for flow in response.get("flows", []):
+        for flow in flows:
             try:
                 key = (flow["proto"], flow["src"], int(flow["sport"]), flow["dst"], int(flow["dport"]))
             except (KeyError, TypeError, ValueError):
                 continue
             current_keys.add(key)
-            if key not in self._known_flow_keys and self._is_internal(flow["src"]):
-                self.engine.observe_connection(flow["src"], flow["dst"], now=now)
+            if key in self._known_flow_keys:
+                continue
+            source = self._source(flow["src"]) if isinstance(flow["src"], str) else None
+            if source is not None:
+                self.engine.observe_connection(source, flow["dst"], now=now)
         self._known_flow_keys = current_keys
+
+    def _learn_ipv6_labels(self, flows: list[dict]) -> None:
+        """The helper's IPv6 source -> MAC labels of one sample."""
+        labels: dict[str, str] = {}
+        for flow in flows:
+            src, mac = flow.get("src"), flow.get("src_mac")
+            if not (isinstance(src, str) and ":" in src and isinstance(mac, str)):
+                continue
+            mac = mac.lower()
+            if not _MAC_KEY_RE.match(mac):
+                continue
+            try:
+                labels[str(ipaddress.IPv6Address(src))] = mac
+            except ValueError:
+                continue
+        if len(self._ipv6_macs) + len(labels) > _IPV6_LABELS_LIMIT:
+            self._ipv6_macs = {}
+        self._ipv6_macs.update(labels)
+        for address, mac in labels.items():
+            self._mac_address[mac] = address
 
     def evaluate_and_enforce(self) -> list[AnomalyEvent]:
         """Score every currently-tracked IP once, quarantine (via the
@@ -328,7 +392,7 @@ class IDSDaemon:
             if event is None:
                 continue
             flagged.append(event)
-            if ip in self._excluded_ips:
+            if ip in self._excluded_ips or ip in self._excluded_macs:
                 continue
             if ip in infrastructure:
                 print(
@@ -342,31 +406,39 @@ class IDSDaemon:
 
     def _enforce(self, event: AnomalyEvent) -> None:
         duration = self.config.ai_ids.quarantine_duration_seconds
+        mac = event.ip if _MAC_KEY_RE.match(event.ip) else ""
+        # An IPv6 host is quarantined through its latest IPv6 address; the
+        # helper finds its MAC again itself (this module's docstring).
+        target = self._mac_address.get(mac) if mac else event.ip
+        if target is None:
+            print(f"fr-ai-ids: {mac} scored {event.score} but has no IPv6 address to quarantine it through",
+                  file=sys.stderr, flush=True)
+            return
         try:
-            response = self._quarantine_fn(event.ip, duration)
+            response = self._quarantine_fn(target, duration)
         except HelperError as exc:
             print(f"fr-ai-ids: quarantine request failed: {exc}", file=sys.stderr, flush=True)
             return
         if not response.get("ok"):
             print(
-                f"fr-ai-ids: apply-helper refused to quarantine {event.ip}: "
+                f"fr-ai-ids: apply-helper refused to quarantine {target}: "
                 f"{response.get('message')}",
                 file=sys.stderr,
                 flush=True,
             )
             return
         print(
-            f"fr-ai-ids: quarantined {event.ip} for {duration}s "
+            f"fr-ai-ids: quarantined {target}{f' ({mac})' if mac else ''} for {duration}s "
             f"(score={event.score}, reasons={', '.join(event.reasons)})",
             flush=True,
         )
-        self._append_event_log(event)
+        self._append_event_log(replace(event, ip=target), mac)
 
     # -- display-only recent-events log ------------------------------------
 
-    def _append_event_log(self, event: AnomalyEvent) -> None:
+    def _append_event_log(self, event: AnomalyEvent, mac: str = "") -> None:
         events = _load_events(self._events_path)
-        events.append({"ts": time.time(), **asdict(event)})
+        events.append({"ts": time.time(), **asdict(event), **({"mac": mac} if mac else {})})
         events = events[-RECENT_EVENTS_LIMIT:]
         self._events_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = self._events_path.with_suffix(".tmp")

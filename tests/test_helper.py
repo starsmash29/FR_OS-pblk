@@ -41,6 +41,8 @@ def neighbours(monkeypatch):
     neigh` is in test_ztna.py."""
     table: dict[str, ztna_mod.ClientLink] = {}
     monkeypatch.setattr(ztna_mod, "client_link", lambda ip: table.get(ip))
+    # ROADMAP FND-1d: a device's other addresses, the same table's.
+    monkeypatch.setattr(ztna_mod, "device_addresses", lambda link: [ip for ip, at in table.items() if at == link])
     # The quarantine's lookup (ROADMAP FND-1b) reads the same table.
     monkeypatch.setattr(ids_quarantine_mod, "lan_neighbour_mac",
                         lambda ip, devices: table[ip].mac if ip in table and table[ip].device in devices else None)
@@ -72,7 +74,8 @@ def running_server(tmp_path, monkeypatch, neighbours):
     # ...), so a tiny in-memory fake stands in for the kernel sets --
     # same reasoning as apply_mod._run_nft being faked above. Keyed by
     # set name: the device set holds "ip . mac", the tunnel set "ip".
-    ztna_sets: dict[str, dict[str, int]] = {ztna_mod.ZTNA_SET_NAME: {}, ztna_mod.ZTNA_TUNNEL_SET_NAME: {}}
+    ztna_sets: dict[str, dict[str, int]] = {ztna_mod.ZTNA_SET_NAME: {}, ztna_mod.ZTNA_TUNNEL_SET_NAME: {},
+                                            ztna_mod.ZTNA6_SET_NAME: {}, ztna_mod.ZTNA_TUNNEL6_SET_NAME: {}}
 
     def fake_ztna_run_nft(args):
         if args[:2] == ["add", "element"]:
@@ -122,16 +125,17 @@ def running_server(tmp_path, monkeypatch, neighbours):
     # Same fakery, for the same reason, as jail_set above -- this socket
     # protocol test only cares that "quarantine_ip" maps to a
     # correctly-formed nft add-element call.
-    quarantine_set: dict[str, int] = {}
+    # One per set: the IPv4 addresses and the MACs (ROADMAP FND-1d).
+    quarantine_sets: dict[str, dict[str, int]] = {}
 
     def fake_ids_quarantine_run_nft(args):
         if args[:2] == ["add", "element"]:
             ip, ttl = args[-2].split(" timeout ")
-            quarantine_set[ip] = int(ttl.rstrip("s"))
+            quarantine_sets.setdefault(args[4], {})[ip.strip("{ ")] = int(ttl.strip(" }").rstrip("s"))
             return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
         if args[:2] == ["-j", "list"]:
             import json as _json
-            elems = [{"elem": {"val": ip, "expires": ttl}} for ip, ttl in quarantine_set.items()]
+            elems = [{"elem": {"val": ip, "expires": ttl}} for ip, ttl in quarantine_sets.get(args[5], {}).items()]
             return subprocess.CompletedProcess(
                 args, 0, stdout=_json.dumps({"nftables": [{"set": {"elem": elems}}]}), stderr=""
             )
@@ -190,13 +194,15 @@ def running_server(tmp_path, monkeypatch, neighbours):
 
 
 def _enable_ztna(config_path: Path, username: str = "alice", password: str = "hunter22", *,
-                 wireguard: bool = False) -> None:
+                 wireguard: bool = False, ula_prefix: str | None = None) -> None:
     raw = yaml.safe_load(config_path.read_text())
     raw["ztna"] = {"enabled": True, "session_ttl_seconds": 3600,
                    "users": [{"username": username, "password_hash": hash_password(password)}]}
     if wireguard:
         raw["zones"]["vpn"] = {}
         raw["wireguard"] = {"enabled": True, "address": "10.99.0.1/24"}
+    if ula_prefix:
+        raw["ipv6"] = {"ula_prefix": ula_prefix}
     config_path.write_text(yaml.safe_dump(raw))
 
 
@@ -348,6 +354,40 @@ def test_ztna_binds_a_wireguard_client_to_its_tunnel_address(running_server, tmp
     assert sessions == [{"ip": "10.99.0.2", "mac": "", "expires_in": 3600}]
 
 
+def test_a_sign_in_over_ipv6_admits_the_whole_device(running_server, tmp_path, neighbours):
+    """ROADMAP FND-1d: the device, not the address it signed in from --
+    its IPv4 address and its other IPv6 ones (the router's neighbour
+    table for its MAC on that link) are signed in with it. Another
+    device's are not."""
+    _enable_ztna(tmp_path / "config.yaml")
+    neighbours["fd00:1::5"] = LAPTOP
+    neighbours["2001:db8:1::5"] = LAPTOP
+    neighbours["10.0.0.5"] = LAPTOP
+    neighbours["10.0.0.9"] = ztna_mod.ClientLink(mac="aa:bb:cc:00:11:99", device="eth1")
+
+    authorize = client.authorize_ztna("fd00:1::5", "alice", running_server)
+    assert authorize["ok"] is True and authorize["mac"] == LAPTOP.mac
+    assert authorize["addresses"] == ["fd00:1::5", "2001:db8:1::5", "10.0.0.5"]
+    for ip in ("fd00:1::5", "2001:db8:1::5", "10.0.0.5"):
+        assert client.ztna_status(ip, running_server)["authorized"] is True, ip
+    assert client.ztna_status("10.0.0.9", running_server)["authorized"] is False
+    sessions = {s["ip"] for s in client.ztna_sessions_status(running_server)["sessions"]}
+    assert sessions == {"fd00:1::5", "2001:db8:1::5", "10.0.0.5"}
+
+
+def test_a_wireguard_client_is_signed_in_at_both_its_tunnel_addresses(running_server, tmp_path, neighbours):
+    """ROADMAP FND-1d: a WireGuard client's IPv4 and IPv6 tunnel addresses
+    (the same host number, frfw.wireguard.peer_address6) are both bound to
+    its key, so one sign-in admits it over either family."""
+    _enable_ztna(tmp_path / "config.yaml", wireguard=True, ula_prefix="fd12:3456:789a::/48")
+    authorize = client.authorize_ztna("fd12:3456:789a:ffff::2", "alice", running_server)
+    assert authorize["ok"] is True and authorize["mac"] == ""
+    assert authorize["addresses"] == ["fd12:3456:789a:ffff::2", "10.99.0.2"]
+    assert client.ztna_status("10.99.0.2", running_server)["authorized"] is True
+    # An IPv6 address outside the tunnel is not taken for a tunnel client.
+    assert client.authorize_ztna("fd12:3456:789a:1::2", "alice", running_server)["ok"] is False
+
+
 def test_ztna_tunnel_addresses_are_not_special_without_wireguard(running_server, tmp_path):
     """With WireGuard off nothing is bound to a key, so an address in
     that range is just another address the router isn't attached to."""
@@ -471,6 +511,36 @@ def test_quarantine_ip_holds_a_lan_hosts_mac_for_ipv6(running_server, neighbours
         assert added == ["ids_quarantine"]
 
 
+def test_quarantine_ip_holds_an_ipv6_host_by_its_mac(running_server, neighbours, monkeypatch):
+    """ROADMAP FND-1d: the AI IDS sends an IPv6 address; the helper finds
+    the MAC itself, on a LAN device only, and holds the host by it."""
+    neighbours["2001:db8:1::a"] = ztna_mod.ClientLink(mac="aa:bb:cc:dd:ee:0a", device="eth1")
+    monkeypatch.setattr(ids_quarantine_mod, "lan_ipv4_addresses", lambda mac, devices: [])
+    response = client.quarantine_ip("2001:db8:1::a", 7200, running_server)
+    assert response["ok"] is True and "by its MAC aa:bb:cc:dd:ee:0a" in response["message"]
+    neighbours["2001:db8:2::b"] = ztna_mod.ClientLink(mac="aa:bb:cc:dd:ee:0b", device="eth0")  # the WAN
+    response = client.quarantine_ip("2001:db8:2::b", 7200, running_server)
+    assert response["ok"] is False and "no MAC" in response["message"]
+
+
+def test_the_conntrack_sample_labels_ipv6_lan_sources_with_their_mac(running_server, monkeypatch):
+    """ROADMAP FND-1d: the IDS scores an IPv6 host by MAC; only root reads
+    the neighbour table, so the sample carries it -- for a LAN neighbour
+    only."""
+    from frfw import conntrack as conntrack_mod
+    flows = [conntrack_mod.ConntrackFlow("tcp", "2001:db8:1::a", 40000, "2001:db8:ff::1", 443),
+             conntrack_mod.ConntrackFlow("tcp", "2001:db8:ff::1", 443, "2001:db8:1::a", 40001),
+             conntrack_mod.ConntrackFlow("udp", "10.0.0.9", 5353, "10.0.0.1", 53)]
+    monkeypatch.setattr(conntrack_mod, "read_snapshot", lambda: flows)
+    seen = []
+    monkeypatch.setattr(ids_quarantine_mod, "lan_neighbours",
+                        lambda devices, family: seen.append((set(devices), family)) or
+                        {"2001:db8:1::a": "aa:bb:cc:dd:ee:0a"})
+    sample = client.conntrack_sample(running_server)["flows"]
+    assert [f.get("src_mac") for f in sample] == ["aa:bb:cc:dd:ee:0a", None, None]
+    assert seen and seen[0][1] == "-6" and "eth0" not in seen[0][0]
+
+
 def test_quarantine_ip_defaults_to_two_hours(running_server):
     response = client.send_command({"cmd": "quarantine_ip", "ip": "10.0.0.10"}, running_server)
     assert response == {"ok": True, "message": "10.0.0.10 quarantined for 7200s"}
@@ -506,7 +576,7 @@ def test_quarantine_ip_caps_the_duration(running_server):
 
 def test_ids_quarantine_status_empty_when_nothing_quarantined(running_server):
     response = client.ids_quarantine_status(running_server)
-    assert response == {"ok": True, "quarantined": [], "count": 0}
+    assert response == {"ok": True, "quarantined": [], "count": 0, "macs": []}
 
 
 def test_ids_quarantine_status_reflects_kernel_state_after_quarantine(running_server):
@@ -515,6 +585,17 @@ def test_ids_quarantine_status_reflects_kernel_state_after_quarantine(running_se
     assert response["ok"] is True
     assert response["count"] == 1
     assert response["quarantined"][0]["ip"] == "10.0.0.11"
+
+
+def test_ids_quarantine_status_lists_the_macs_held(running_server, neighbours, monkeypatch):
+    """ROADMAP FND-1d: an IPv6 host is held by its MAC only, so the status
+    lists the MACs too; `count` stays the IPv4 addresses'."""
+    neighbours["2001:db8:1::a"] = ztna_mod.ClientLink(mac="aa:bb:cc:dd:ee:0a", device="eth1")
+    monkeypatch.setattr(ids_quarantine_mod, "lan_ipv4_addresses", lambda mac, devices: [])
+    assert client.quarantine_ip("2001:db8:1::a", 100, running_server)["ok"] is True
+    response = client.ids_quarantine_status(running_server)
+    assert response["count"] == 0
+    assert [m["mac"] for m in response["macs"]] == ["aa:bb:cc:dd:ee:0a"]
 
 
 # --- conntrack sample command ------------------------------------------------

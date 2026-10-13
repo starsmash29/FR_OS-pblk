@@ -449,10 +449,22 @@ def test_wireguard_over_ipv6_from_the_wan(minimal_config_dict):
     assert 'iifname { "eth0" } udp dport 51820 accept comment "ipv6-wireguard"' in chain
 
 
+def test_a_lan_source_from_the_internet_is_dropped(minimal_config_dict):
+    """ROADMAP FND-1d: a packet from the WAN whose source the router routes
+    to a LAN device is spoofed -- a pinhole must not let it make a LAN host
+    look like it opened connections (the AI IDS scores IPv6 by MAC). Not a
+    strict reverse-path check on the WAN: with two providers the reply
+    route may be the other one."""
+    rules = _chain(build_ruleset(_config(minimal_config_dict)), "forward")
+    assert ('meta nfproto ipv6 iifname { "eth0" } fib saddr oifname { "eth1" } drop '
+            'comment "ipv6-lan-source-from-wan"') in rules
+    assert not any("iifname { \"eth0\" } fib saddr . iif" in r for r in rules)
+
+
 def test_ula_never_crosses_the_border(minimal_config_dict):
     rules = _chain(build_ruleset(_config(minimal_config_dict)), "forward")
     wan = '{ "eth0" }'
-    assert rules[4:8] == [
+    assert rules[5:9] == [
         f'iifname {wan} ip6 saddr fc00::/7 drop comment "ipv6-ula-from-internet"',
         f'iifname {wan} ip6 daddr fc00::/7 drop comment "ipv6-ula-from-internet"',
         f'oifname {wan} ip6 saddr fc00::/7 reject with icmpv6 type admin-prohibited comment "ipv6-ula-to-internet"',

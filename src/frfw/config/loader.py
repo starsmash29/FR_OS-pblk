@@ -335,13 +335,15 @@ def _parse_rules(raw: Any, zones: dict[str, Zone], tz_name: str | None = None) -
                 )
             dst_port = _validate_port_spec(dst_port, f"Rule {name!r} dst_port")
 
-        src_address = body.get("src_address")
-        if src_address is not None:
-            _validate_network(src_address, f"Rule {name!r} src_address")
-
-        dst_address = body.get("dst_address")
-        if dst_address is not None:
-            _validate_network(dst_address, f"Rule {name!r} dst_address")
+        src_address = _parse_networks(body.get("src_address"), f"Rule {name!r} src_address")
+        dst_address = _parse_networks(body.get("dst_address"), f"Rule {name!r} dst_address")
+        if src_address and dst_address and not (
+                {ipaddress.ip_network(n).version for n in src_address}
+                & {ipaddress.ip_network(n).version for n in dst_address}):
+            raise ConfigError(
+                f"Rule {name!r}: src_address and dst_address have no address family in common, "
+                "so the rule could never match"
+            )
 
         log = bool(body.get("log", False))
         require_ztna = bool(body.get("require_ztna", False))
@@ -415,15 +417,29 @@ def _validate_port_spec(value: Any, what: str) -> str:
     )
 
 
-def _validate_network(value: Any, what: str) -> None:
-    # Phase 1 targets IPv4 homelab setups only; IPv6 is future work (see
-    # ROADMAP.md) and would need family-aware nft matches (`ip6 saddr`).
-    if not isinstance(value, str):
-        raise ConfigError(f"{what}: expected a string, got {value!r}")
-    try:
-        ipaddress.IPv4Network(value, strict=False)
-    except ValueError as exc:
-        raise ConfigError(f"{what}: invalid IPv4 address/network {value!r}: {exc}") from exc
+def _parse_networks(value: Any, what: str) -> tuple[str, ...] | None:
+    """A rule's address field (ROADMAP FND-1d): one network, or a list of
+    them, of either family -- `10.0.0.5/32`, `[10.0.0.0/24,
+    2001:db8:5::/48]`. Normalized and without repeats, in the order given."""
+    if value is None:
+        return None
+    items = value if isinstance(value, list) else [value]
+    if not items:
+        raise ConfigError(f"{what}: an empty list matches nothing; leave the key out instead")
+    out: list[str] = []
+    for item in items:
+        if not isinstance(item, str):
+            raise ConfigError(f"{what}: expected an address/network string, got {item!r}")
+        try:
+            parsed = ipaddress.ip_network(item.strip(), strict=False)
+        except ValueError as exc:
+            raise ConfigError(f"{what}: invalid IPv4 or IPv6 address/network {item!r}: {exc}") from exc
+        if _scoped(parsed):
+            raise ConfigError(f"{what}: invalid IPv4 or IPv6 address/network {item!r}: no scope (%) allowed")
+        network = str(parsed)
+        if network not in out:
+            out.append(network)
+    return tuple(out)
 
 
 def _validate_address(value: Any, what: str) -> None:
@@ -734,11 +750,13 @@ def ipv6_lan_exclusions(zones: dict[str, Zone], nat: NatConfig, rules: list[Rule
     over IPv6. Left out of the default `lan_zones`, refused in an explicit
     one.
 
-    - A forward drop/reject rule by address (`src_address`,
-      `dst_address`: IPv4 networks, rendered `ip saddr`/`ip daddr`)
-      touching the zone -- naming it, or no zone at all. One whose traffic
-      comes from the internet is no gap: nothing new comes in from the
-      internet over IPv6.
+    - A forward drop/reject rule by IPv4 address only (`src_address`,
+      `dst_address` naming no IPv6 network, rendered `ip saddr`/`ip
+      daddr`) touching the zone -- naming it, or no zone at all. One whose
+      traffic comes from the internet is no gap: nothing new comes in
+      from the internet over IPv6. One that names IPv6 networks too
+      (ROADMAP FND-1d) is rendered for IPv6 as well: the admin covered
+      the other family.
 
     The XDP SNI filter (and with it app control) kept its zones off IPv6
     too, until it read IPv6 itself (ROADMAP FND-1d)."""
@@ -747,12 +765,13 @@ def ipv6_lan_exclusions(zones: dict[str, Zone], nat: NatConfig, rules: list[Rule
     for rule in rules:
         if rule.action == Action.ACCEPT or rule.to_zone == SELF_ZONE:
             continue
-        if rule.src_address is None and rule.dst_address is None:
+        if not rule.ipv4_addresses_only:
             continue
         if rule.from_zone is not None and rule.from_zone in facing:
             continue
-        reason = (f"rule {rule.name!r} blocks by IPv4 address, which IPv6 would get around "
-                  "(block the host by MAC, src_mac, instead)")
+        reason = (f"rule {rule.name!r} blocks by IPv4 address only, which IPv6 would get around "
+                  "(block a LAN host by MAC, src_mac: it picks its IPv6 addresses itself; "
+                  "or name the IPv6 networks in the rule too)")
         for zone in zones:
             if zone not in facing and (rule.from_zone in (None, zone) or rule.to_zone in (None, zone)):
                 out.setdefault(zone, reason)
@@ -802,12 +821,22 @@ def _parse_ipv6(raw: Any, interfaces: dict[str, Interface], zones: dict[str, Zon
 _ULA_LOCAL = ipaddress.IPv6Network("fd00::/8")
 
 
+def _scoped(value: ipaddress.IPv6Address | ipaddress.IPv6Network | ipaddress.IPv4Network | None) -> bool:
+    """An IPv6 address or network with a scope (`%...`). Python's ipaddress
+    takes any text after the `%` as one and gives it back in str() -- so
+    into the nft script, unchecked (security-lessons F1)."""
+    address = value.network_address if isinstance(value, ipaddress.IPv6Network) else value
+    return getattr(address, "scope_id", None) is not None
+
+
 def _parse_ula_prefix(raw: Any) -> str | None:
     if raw is None:
         return None
     try:
         network = ipaddress.IPv6Network(raw) if isinstance(raw, str) else None
     except ValueError:
+        network = None
+    if _scoped(network):
         network = None
     if network is None or network.prefixlen != 48 or not network.subnet_of(_ULA_LOCAL):
         raise ConfigError(f"ipv6.ula_prefix must be a ULA /48 in fd00::/8 (RFC 4193), e.g. fd12:3456:789a::/48, "
@@ -836,6 +865,8 @@ def _pinhole_host(raw: Any, what: str) -> str:
     try:
         address = ipaddress.IPv6Address(raw) if isinstance(raw, str) else None
     except ValueError:
+        address = None
+    if _scoped(address):
         address = None
     if address is None:
         raise ConfigError(f"{what}: host must be an IPv6 address or an interface identifier such as "
@@ -909,6 +940,8 @@ def _parse_pinholes(raw: Any, enabled: bool, zones: set[str], facing: set[str],
                 network = ipaddress.IPv6Network(source, strict=False) if isinstance(source, str) else None
             except ValueError:
                 network = None
+            if _scoped(network):
+                network = None
             if network is None:
                 raise ConfigError(f"{what}: from must be an IPv6 network such as 2001:db8:42::/48, got {source!r}")
             if network.overlaps(_ULA) or network.is_link_local or network.is_multicast:
@@ -931,12 +964,14 @@ def _rule_dropping_pinhole(pinhole: Ipv6Pinhole, facing: set[str], rules: list[R
     from the internet, to its zone, its protocol and a port of it. The
     pinholes are rendered ahead of every rule (after the "nothing new
     from the internet" drop, which they are the exceptions to), so such a
-    rule would silently stop holding. A rule by IPv4 address never
-    matches IPv6: no conflict."""
+    rule would silently stop holding. A rule by IPv4 address only never
+    matches IPv6: no conflict. One naming IPv6 networks is taken to match
+    (ROADMAP FND-1d): a pinhole's host has whatever address its prefix
+    gives it, which the config can't compare."""
     for rule in rules:
         if rule.action == Action.ACCEPT or rule.to_zone == SELF_ZONE:
             continue
-        if rule.src_address is not None or rule.dst_address is not None:
+        if 6 not in rule.families:
             continue
         if rule.from_zone is not None and rule.from_zone not in facing:
             continue
@@ -976,7 +1011,7 @@ def _check_management_ipv6(management: ManagementConfig, ipv6: Ipv6Config, inter
     for rule in rules:
         if rule.action == Action.ACCEPT or rule.to_zone != SELF_ZONE:
             continue
-        if rule.src_address is None and rule.dst_address is None:
+        if not rule.ipv4_addresses_only:
             continue
         if rule.from_zone is not None and rule.from_zone not in over_ipv6:
             continue
@@ -987,7 +1022,7 @@ def _check_management_ipv6(management: ManagementConfig, ipv6: Ipv6Config, inter
             if not any(low <= port <= high for port in _MANAGEMENT_PORTS):
                 continue
         raise ConfigError(
-            f"management.ipv6: rule {rule.name!r} keeps hosts off the webUI or SSH by IPv4 address, which "
+            f"management.ipv6: rule {rule.name!r} keeps hosts off the webUI or SSH by IPv4 address only, which "
             "IPv6 would get around. Block them by MAC (src_mac) instead, or leave management.ipv6 off"
         )
 

@@ -41,6 +41,12 @@ the provider's must never be held -- and puts it in a second set,
 the same timeout; the forward chain drops IPv6 from it. A host the
 neighbour table doesn't know (yet) is held by its IPv4 address alone.
 
+An IPv6 source (ROADMAP FND-1d: the AI IDS scores IPv6 hosts by MAC) is
+quarantined the other way round: by its MAC -- which the router must find
+in its neighbour table on a LAN link, or the request is refused: an IPv6
+host can't be held by one address it picked itself -- and with it every
+IPv4 address the table holds for that MAC on the LAN.
+
 Once quarantined, the kernel evicts the element itself when its own
 element timeout elapses -- no userspace polling, cron job, or background
 thread involved, the identical mechanism frfw.bruteforce/frfw.ztna
@@ -81,14 +87,21 @@ class IdsQuarantineError(Exception):
 MAX_DURATION_SECONDS = 7 * 24 * 3600
 
 
-def check_target(ip: str, own_addresses: frozenset[str] = frozenset()) -> ipaddress.IPv4Address:
-    """`ip` as an address that may be quarantined, or IdsQuarantineError."""
+def check_target(ip: str, own_addresses: frozenset[str] = frozenset()
+                 ) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
+    """`ip` (IPv4, or IPv6 since ROADMAP FND-1d) as an address that may be
+    quarantined, or IdsQuarantineError."""
     try:
-        addr = ipaddress.IPv4Address(ip)
+        addr = ipaddress.IPv6Address(ip) if ":" in ip else ipaddress.IPv4Address(ip)
     except ValueError as exc:
-        raise IdsQuarantineError(f"invalid IPv4 address {ip!r}: {exc}") from exc
+        family = "IPv6" if ":" in ip else "IPv4"
+        raise IdsQuarantineError(f"invalid {family} address {ip!r}: {exc}") from exc
+    if getattr(addr, "scope_id", None) is not None:
+        # Any text after a `%` parses as a scope (frfw.validate.ipv6).
+        raise IdsQuarantineError(f"invalid IPv6 address {ip!r}: no scope (%) allowed")
     if (addr.is_loopback or addr.is_unspecified or addr.is_multicast or addr.is_link_local
-            or addr.is_reserved or addr == ipaddress.IPv4Address("255.255.255.255")):
+            or addr.is_reserved or addr == ipaddress.IPv4Address("255.255.255.255")
+            or (addr.version == 6 and addr.ipv4_mapped is not None)):
         raise IdsQuarantineError(f"refusing to quarantine {ip}: not a host address")
     if str(addr) in own_addresses:
         raise IdsQuarantineError(f"refusing to quarantine {ip}: it is one of the router's own addresses")
@@ -97,14 +110,17 @@ def check_target(ip: str, own_addresses: frozenset[str] = frozenset()) -> ipaddr
 
 def quarantine_ip(ip: str, duration_seconds: int, *, own_addresses: frozenset[str] = frozenset(),
                   lan_devices: Iterable[str] = (),
-                  neighbour: Callable[[str, Iterable[str]], str | None] | None = None) -> str | None:
+                  neighbour: Callable[[str, Iterable[str]], str | None] | None = None,
+                  device_ipv4: Callable[[str, Iterable[str]], list[str]] | None = None) -> str | None:
     """Adds `ip` to the kernel's IDS quarantine set for
     `duration_seconds` -- the sole enforcement action -- and its MAC, if
     the neighbour table has one for it on one of `lan_devices`, to the
-    IPv6 one (see this module's docstring). Returns that MAC. Requires
-    root and the sets to already exist (i.e. at least one firewall apply
-    must have run since install, same precondition frfw.bruteforce.ban_ip
-    has for its own set). `own_addresses`: the router's addresses, never
+    IPv6 one (see this module's docstring). Returns that MAC. An IPv6
+    `ip` is held by its MAC, and the IPv4 addresses that MAC has on the
+    LAN (`device_ipv4`); without a MAC it is refused. Requires root and
+    the sets to already exist (i.e. at least one firewall apply must have
+    run since install, same precondition frfw.bruteforce.ban_ip has for
+    its own set). `own_addresses`: the router's addresses, never
     quarantined (see this module's docstring)."""
     address = check_target(ip, own_addresses)
     if duration_seconds <= 0:
@@ -113,6 +129,10 @@ def quarantine_ip(ip: str, duration_seconds: int, *, own_addresses: frozenset[st
         raise IdsQuarantineError(
             f"duration_seconds may be at most {MAX_DURATION_SECONDS} (7 days), got {duration_seconds}"
         )
+    lan_devices = tuple(lan_devices)
+    if address.version == 6:
+        return _quarantine_ipv6_host(str(address), duration_seconds, own_addresses, lan_devices,
+                                     neighbour or lan_neighbour_mac, device_ipv4 or lan_ipv4_addresses)
 
     _nft(
         [
@@ -128,6 +148,29 @@ def quarantine_ip(ip: str, duration_seconds: int, *, own_addresses: frozenset[st
                 "{", f"{mac} timeout {duration_seconds}s", "}",
             ]
         )
+    return mac
+
+
+def _quarantine_ipv6_host(ip: str, duration_seconds: int, own_addresses: frozenset[str],
+                          lan_devices: tuple[str, ...], neighbour: Callable[[str, Iterable[str]], str | None],
+                          device_ipv4: Callable[[str, Iterable[str]], list[str]]) -> str:
+    """An IPv6 source: its MAC, and its IPv4 addresses (this module's
+    docstring)."""
+    mac = neighbour(ip, lan_devices)
+    if mac is None:
+        raise IdsQuarantineError(
+            f"refusing to quarantine {ip}: the router has no MAC for it on a LAN link, and an IPv6 "
+            "host can't be held by one address it picked itself"
+        )
+    _nft(["add", "element", "inet", FILTER_TABLE, IDS_QUARANTINE_MAC_SET_NAME,
+          "{", f"{mac} timeout {duration_seconds}s", "}"])
+    for ipv4 in device_ipv4(mac, lan_devices):
+        try:
+            check_target(ipv4, own_addresses)
+        except IdsQuarantineError:
+            continue
+        _nft(["add", "element", "inet", FILTER_TABLE, IDS_QUARANTINE_SET_NAME,
+              "{", f"{ipv4} timeout {duration_seconds}s", "}"])
     return mac
 
 
@@ -167,6 +210,38 @@ def lan_neighbour_mac(ip: str, lan_devices: Iterable[str]) -> str | None:
     return None
 
 
+def lan_neighbours(lan_devices: Iterable[str], family: str = "-6") -> dict[str, str]:
+    """address -> MAC for every usable neighbour entry of `family` ("-4"
+    or "-6") on one of `lan_devices`, in one read of the table: what the
+    AI IDS's conntrack sample is labelled with (ROADMAP FND-1d). Never a
+    WAN entry, so never the provider's gateway's MAC."""
+    devices = set(lan_devices)
+    if not devices or family not in ("-4", "-6"):
+        return {}
+    try:
+        proc = subprocess.run(["ip", "-j", family, "neigh", "show"], capture_output=True, text=True, timeout=10)
+        entries = json.loads(proc.stdout or "[]") if proc.returncode == 0 else []
+    except (FileNotFoundError, subprocess.TimeoutExpired, json.JSONDecodeError):
+        return {}
+    out: dict[str, str] = {}
+    for entry in entries if isinstance(entries, list) else []:
+        if not isinstance(entry, dict) or entry.get("dev") not in devices:
+            continue
+        if not set(entry.get("state") or []) & _USABLE_NEIGH_STATES:
+            continue
+        try:
+            address = str(ipaddress.ip_address(entry.get("dst")))
+            out[address] = validate.mac(entry.get("lladdr"))
+        except (ValueError, TypeError, validate.ArgumentError):
+            continue
+    return out
+
+
+def lan_ipv4_addresses(mac: str, lan_devices: Iterable[str]) -> list[str]:
+    """The IPv4 addresses the neighbour table holds for `mac` on the LAN."""
+    return sorted(ip for ip, at in lan_neighbours(lan_devices, "-4").items() if at == mac)
+
+
 def _same_address(dst: object, ip: str) -> bool:
     """`ip -j` writes an address in its own form; compare the values."""
     try:
@@ -181,6 +256,14 @@ def list_quarantined() -> list[tuple[str, int]]:
     genuine nft problem to the admin rather than silently reporting zero
     quarantined hosts."""
     return _list_set_elements()
+
+
+def list_quarantined_macs() -> list[tuple[str, int]]:
+    """Live (mac, remaining_seconds) pairs: the hosts held by their MAC
+    -- an IPv6 host always (ROADMAP FND-1d), a LAN host quarantined by
+    IPv4 too (FND-1b). An IPv6 host has no entry in the IPv4 list, so the
+    AI IDS screen shows these as well."""
+    return _list_set_elements(IDS_QUARANTINE_MAC_SET_NAME)
 
 
 def snapshot_before_reload() -> list[tuple[str, int]]:

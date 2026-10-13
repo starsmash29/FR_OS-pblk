@@ -93,9 +93,9 @@ Scheduled drop/reject rules that cut open connections are evaluated before all o
     </select>
     <label>Destination port (tcp/udp only; single port or "1000-2000")</label>
     <input type="text" name="dst_port" placeholder="443">
-    <label>Source address (optional, CIDR)</label>
-    <input type="text" name="src_address" placeholder="10.0.0.0/24">
-    <label>Destination address (optional, CIDR)</label>
+    <label>Source address (optional, CIDR, IPv4 or IPv6; several separated by commas)</label>
+    <input type="text" name="src_address" placeholder="10.0.0.0/24, 2001:db8:5::/48">
+    <label>Destination address (optional, CIDR, IPv4 or IPv6; several separated by commas)</label>
     <input type="text" name="dst_address">
     <label>Source MAC address (optional, aa:bb:cc:dd:ee:ff -- a device, whatever address DHCP gave it)</label>
     <input type="text" name="src_mac" placeholder="aa:bb:cc:dd:ee:ff">

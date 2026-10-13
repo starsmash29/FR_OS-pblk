@@ -131,15 +131,19 @@ def test_require_ztna_rule_adds_saddr_match(minimal_config_dict):
     config = parse_config(minimal_config_dict)
     ruleset = build_ruleset(config)
 
-    # One line per way a client can be signed in, and no address-only
-    # match anywhere (ROADMAP SEC-6).
+    # One line per way a client can be signed in, over IPv4 and IPv6
+    # (ROADMAP FND-1d), and no address-only match anywhere (ROADMAP SEC-6).
     gated = [line.strip() for line in ruleset.splitlines() if "rule:gated" in line]
-    assert len(gated) == 2
-    assert "ip saddr . ether saddr @authenticated_ztna_users" in gated[0]
-    assert 'iifname "wg0" ip saddr @authenticated_ztna_tunnel' in gated[1]
+    assert len(gated) == 4
+    assert "ip saddr . ether saddr @authenticated_ztna_users " in gated[0]
+    assert 'iifname "wg0" ip saddr @authenticated_ztna_tunnel ' in gated[1]
+    assert "ip6 saddr . ether saddr @authenticated_ztna_users6 " in gated[2]
+    assert 'iifname "wg0" ip6 saddr @authenticated_ztna_tunnel6 ' in gated[3]
     for line in gated:
         assert line.endswith('accept comment "rule:gated"')
     assert "ip saddr @authenticated_ztna_users" not in ruleset
+    assert "ip6 saddr @authenticated_ztna_users6" not in ruleset
+    assert "type ipv6_addr . ether_addr" in ruleset
 
 
 def test_rule_without_require_ztna_has_no_saddr_match(minimal_config_dict):

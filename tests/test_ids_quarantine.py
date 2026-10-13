@@ -96,6 +96,54 @@ def test_quarantine_ip_without_a_known_mac_holds_the_address_alone(monkeypatch):
     assert len(calls) == 1
 
 
+def test_an_ipv6_host_is_held_by_its_mac_and_its_ipv4(monkeypatch):
+    """ROADMAP FND-1d: an IPv6 source is quarantined by the MAC the
+    router finds for it on the LAN, and every IPv4 address that MAC has
+    there -- except the router's own."""
+    calls = []
+    monkeypatch.setattr(ids_quarantine_mod, "_run_nft", lambda args: (calls.append(args), _fake_completed())[1])
+    mac = ids_quarantine_mod.quarantine_ip(
+        "2001:db8:1::a", 600, lan_devices=("eth1",), own_addresses=frozenset({"10.0.0.1"}),
+        neighbour=lambda ip, devices: "aa:bb:cc:dd:ee:01",
+        device_ipv4=lambda mac, devices: ["10.0.0.5", "10.0.0.1"])
+    assert mac == "aa:bb:cc:dd:ee:01"
+    assert [(c[4], c[-2]) for c in calls] == [
+        (ids_quarantine_mod.IDS_QUARANTINE_MAC_SET_NAME, "aa:bb:cc:dd:ee:01 timeout 600s"),
+        (ids_quarantine_mod.IDS_QUARANTINE_SET_NAME, "10.0.0.5 timeout 600s"),
+    ]
+
+
+def test_an_ipv6_host_without_a_mac_is_refused(monkeypatch):
+    """It can't be held by the one address it picked itself."""
+    monkeypatch.setattr(ids_quarantine_mod, "_run_nft", lambda args: pytest.fail("nft should not be invoked"))
+    with pytest.raises(ids_quarantine_mod.IdsQuarantineError, match="no MAC for it on a LAN link"):
+        ids_quarantine_mod.quarantine_ip("2001:db8:1::a", 600, lan_devices=("eth1",),
+                                         neighbour=lambda ip, devices: None)
+
+
+@pytest.mark.parametrize("ip", ["::1", "::", "fe80::1", "ff02::1", "::ffff:10.0.0.5", "2001:db8::zz"])
+def test_quarantine_ip_refuses_non_host_ipv6_addresses(monkeypatch, ip):
+    monkeypatch.setattr(ids_quarantine_mod, "_run_nft", lambda args: pytest.fail("nft should not be invoked"))
+    with pytest.raises(ids_quarantine_mod.IdsQuarantineError):
+        ids_quarantine_mod.quarantine_ip(ip, 600, lan_devices=("eth1",), neighbour=lambda ip, d: "aa:bb:cc:dd:ee:01")
+
+
+def test_lan_neighbours_reads_the_table_once_for_the_lan_only(monkeypatch):
+    seen = _neigh(monkeypatch, [
+        {"dst": "2001:db8:1::a", "dev": "eth1", "lladdr": "AA:BB:CC:DD:EE:01", "state": ["REACHABLE"]},
+        {"dst": "2001:db8:1:0::b", "dev": "eth1", "lladdr": "aa:bb:cc:dd:ee:02", "state": ["STALE"]},
+        {"dst": "2001:db8:ff::1", "dev": "eth0", "lladdr": "aa:bb:cc:dd:ee:99", "state": ["REACHABLE"]},
+        {"dst": "2001:db8:1::c", "dev": "eth1", "lladdr": "aa:bb:cc:dd:ee:03", "state": ["FAILED"]},
+        {"dst": "2001:db8:1::d", "dev": "eth1", "lladdr": "not-a-mac", "state": ["REACHABLE"]},
+    ])
+    assert ids_quarantine_mod.lan_neighbours({"eth1"}, "-6") == {
+        "2001:db8:1::a": "aa:bb:cc:dd:ee:01", "2001:db8:1::b": "aa:bb:cc:dd:ee:02"}
+    assert seen == [["ip", "-j", "-6", "neigh", "show"]]
+    assert ids_quarantine_mod.lan_neighbours((), "-6") == {}
+    assert ids_quarantine_mod.lan_neighbours({"eth1"}, "-6; reboot") == {}
+    assert len(seen) == 1
+
+
 def _neigh(monkeypatch, entries, returncode=0):
     seen = []
 

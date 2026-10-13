@@ -154,7 +154,8 @@ class FakeHelper:
 
     def ids_quarantine_status(self) -> dict:
         quarantined = [{"ip": ip, "expires_in": exp} for ip, exp in self.quarantined.items()]
-        return {"ok": True, "quarantined": quarantined, "count": len(quarantined)}
+        macs = [{"mac": mac, "expires_in": exp} for mac, exp in getattr(self, "quarantined_macs", {}).items()]
+        return {"ok": True, "quarantined": quarantined, "count": len(quarantined), "macs": macs}
 
     def bruteforce_status(self) -> dict:
         banned = [{"ip": ip, "expires_in": exp} for ip, exp in self.banned_ips.items()]

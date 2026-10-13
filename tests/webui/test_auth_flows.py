@@ -395,14 +395,13 @@ def test_parallel_ztna_logins_authorize_once_per_address(app, ztna):
     assert status["authorized"] and status["username"] == "alice"
 
 
-def test_a_ztna_sign_in_over_ipv6_opens_nothing_and_says_so(app, ztna):
-    """ROADMAP FND-1c/1d: the gate holds IPv4 addresses only, so a sign-in
-    over IPv6 is turned away before the password is even checked (and
-    so doesn't count as a failure either)."""
+def test_a_ztna_sign_in_over_ipv6_signs_the_client_in(app, ztna):
+    """ROADMAP FND-1d: the gate holds IPv6 addresses too, so a sign-in
+    over IPv6 goes through like one over IPv4 (until 1d it was turned
+    away: it would have opened nothing)."""
     client = TestClient(app, follow_redirects=False, client=("fd12:3456:789a::99", 50000))
-    response = client.post("/ztna/login", data={"username": "alice", "password": "alice-pass-1"})
-    assert "IPv4+only" in response.headers["location"] or "IPv4%20only" in response.headers["location"]
-    assert ztna.ztna_status("fd12:3456:789a::99")["authorized"] is False
+    client.post("/ztna/login", data={"username": "alice", "password": "alice-pass-1"})
+    assert ztna.ztna_status("fd12:3456:789a::99")["authorized"] is True
     assert not ztna.banned
 
 

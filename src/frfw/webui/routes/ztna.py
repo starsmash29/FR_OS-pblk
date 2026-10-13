@@ -79,10 +79,6 @@ def _format_duration(seconds: int) -> str:
 # --- public: end-user login + status ----------------------------------------
 
 
-IPV6_NOT_YET = ("ZTNA sign-in works over IPv4 only for now: open this page at the router's IPv4 address "
-                "(for example https://192.168.1.1/ztna/login)")
-
-
 @router.get("/ztna/login")
 def login_form(request: Request):
     return templates.TemplateResponse(
@@ -109,11 +105,6 @@ def login_submit(
     ztna_raw = raw.get("ztna") or {}
     if not ztna_raw.get("enabled"):
         return redirect_with("/ztna/login", error="The ZTNA gate is currently disabled")
-    if ":" in ip:
-        # ROADMAP FND-1c/1d: the gate holds IPv4 addresses only (its rules
-        # match `ip saddr`), so a sign-in over IPv6 would open nothing.
-        return redirect_with("/ztna/login", error=IPV6_NOT_YET)
-
     account = f"ztna:{username}"
     locked = guard.account_locked(account, ip)
     if locked:

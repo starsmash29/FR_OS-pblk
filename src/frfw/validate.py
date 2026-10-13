@@ -68,13 +68,14 @@ def ipv4(value: object) -> str:
 
 def ipv6(value: object) -> str:
     """An IPv6 address in its compressed form (ROADMAP FND-1d: a jailed
-    host's neighbour lookup)."""
+    host's neighbour lookup). No scope: Python takes any text after a
+    `%` as one, and gives it back in the address's text."""
     value = _text(value, "IPv6 address")
     try:
         parsed = ipaddress.IPv6Address(value)
     except ValueError as exc:
         raise ArgumentError(f"invalid IPv6 address {value!r}") from exc
-    if str(parsed) != value:
+    if str(parsed) != value or parsed.scope_id is not None:
         raise ArgumentError(f"invalid IPv6 address {value!r}")
     return value
 

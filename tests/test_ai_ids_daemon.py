@@ -411,3 +411,76 @@ def test_default_gateways_read_every_default_route(tmp_path):
     route.write_text(_ROUTE_TABLE)
     assert _default_gateways(route) == {"192.168.1.1", "10.0.0.254"}
     assert _default_gateways(tmp_path / "missing") == set()
+
+
+# --- IPv6: scored by MAC (ROADMAP FND-1d) ---------------------------------------------
+
+PHONE = "aa:bb:cc:00:66:01"
+
+
+def _scan6(daemon, sources: list[tuple[str, str | None]], *, count: int = 20) -> None:
+    """A destination scan over IPv6, spread over `sources` -- (address,
+    the helper's MAC label or None) -- one per flow in turn."""
+    flows = []
+    for i in range(count):
+        src, mac = sources[i % len(sources)]
+        flow = {"proto": "tcp", "src": src, "sport": 40000 + i, "dst": f"2001:db8:ff::{i + 1}", "dport": 443}
+        if mac:
+            flow["src_mac"] = mac
+        flows.append(flow)
+    daemon._conntrack_fn = lambda: {"ok": True, "flows": flows}
+    daemon.poll_conntrack_once()
+
+
+def test_an_ipv6_host_is_scored_by_its_mac_whatever_address_it_uses(config_with_reservation, tmp_path):
+    """Changing address (privacy addresses) doesn't split the score: the
+    flows of three addresses with one MAC are one host's scan, quarantined
+    through its latest address -- the helper finds the MAC again itself."""
+    quarantined = []
+    daemon = _daemon(config_with_reservation, tmp_path=tmp_path,
+                     quarantine_fn=lambda ip, d: quarantined.append(ip) or {"ok": True})
+    _scan6(daemon, [("2001:db8:1::a", PHONE), ("2001:db8:1::b", PHONE), ("fd00:1::c", PHONE)])
+    assert daemon.engine.tracked_ips() == [PHONE]
+    daemon._clock.t += 10.0
+    assert [e.ip for e in daemon.evaluate_and_enforce()] == [PHONE]
+    assert len(quarantined) == 1 and quarantined[0] in {"2001:db8:1::a", "2001:db8:1::b", "fd00:1::c"}
+    logged = json.loads((tmp_path / "events.json").read_text())
+    assert logged[-1]["ip"] == quarantined[0] and logged[-1]["mac"] == PHONE
+
+
+def test_an_ipv6_source_without_a_mac_is_never_scored(config_with_reservation, tmp_path):
+    """No label: not a host on a LAN link (the router itself, the internet)."""
+    daemon = _daemon(config_with_reservation, tmp_path=tmp_path)
+    _scan6(daemon, [("2001:db8:ff::99", None)])
+    for _ in range(5):
+        daemon.handle_sni_event_line(json.dumps({"action": "drop", "saddr": "2001:db8:ff::99", "sni": "x.example"}))
+    assert daemon.engine.tracked_ips() == []
+
+
+def test_sni_and_dns_observations_of_an_ipv6_address_go_to_its_mac(config_with_reservation, tmp_path):
+    daemon = _daemon(config_with_reservation, tmp_path=tmp_path)
+    _scan6(daemon, [("2001:db8:1::a", PHONE)], count=1)
+    for _ in range(5):
+        daemon.handle_sni_event_line(json.dumps({"action": "drop", "saddr": "2001:db8:1:0::a", "sni": "x.example"}))
+    daemon.handle_dns_log_line("3 2001:db8:1::a/46443 reply qwzxkjhv.example is NXDOMAIN")
+    assert daemon.engine.tracked_ips() == [PHONE]
+    event = daemon.engine.evaluate(PHONE, now=daemon._clock())
+    assert event is not None and "SNI-blocklist beacon" in event.reasons
+
+
+def test_an_excluded_mac_is_not_quarantined_over_ipv6(config_with_reservation, tmp_path):
+    """ai_ids.excluded_macs holds for an IPv6 host directly: its key is
+    the MAC."""
+    quarantined = []
+    daemon = _daemon(config_with_reservation, tmp_path=tmp_path,
+                     quarantine_fn=lambda ip, d: quarantined.append(ip) or {"ok": True})
+    _scan6(daemon, [("2001:db8:1::e", "aa:bb:cc:dd:ee:ff")])
+    daemon._clock.t += 10.0
+    assert [e.ip for e in daemon.evaluate_and_enforce()] == ["aa:bb:cc:dd:ee:ff"]
+    assert quarantined == []
+
+
+def test_a_label_that_is_not_a_mac_is_ignored(config_with_reservation, tmp_path):
+    daemon = _daemon(config_with_reservation, tmp_path=tmp_path)
+    _scan6(daemon, [("2001:db8:1::a", "10.0.0.9")])
+    assert daemon.engine.tracked_ips() == []

@@ -3777,10 +3777,11 @@ must not quietly open what the admin closed. Wherever a protection is
 IPv4-only, the zone it protects doesn't get IPv6 (FND-1d lifts these one
 by one):
 - **A drop/reject forward rule by address.** `src_address`/`dst_address`
-  are IPv4 networks, so the same host would get around the rule over
+  were IPv4 networks, so the same host would get around the rule over
   IPv6. `frfw.config.loader.ipv6_lan_exclusions` leaves the zone out of
   the default `lan_zones`, and the status says why ("block it by MAC
-  instead"). An explicit `lan_zones` naming it is refused. A rule from an
+  instead"). Since FND-1d (1d-3) a rule may name IPv6 networks too, and
+  then it doesn't count; one by IPv4 address only still does. An explicit `lan_zones` naming it is refused. A rule from an
   internet-facing zone doesn't count: nothing new comes in over IPv6.
 - **The XDP SNI filter (and app control).** It parsed IPv4 only, and
   the same treatment applied to its devices and their VLANs: the boot
@@ -3798,8 +3799,8 @@ by one):
   resolver didn't serve IPv6 yet), so plain DNS over IPv6 from the LAN
   was refused, and a client fell back at once to the resolver it got
   over IPv4. FND-1c redirects it instead.
-- **ZTNA.** Its sets hold IPv4 addresses, so a `require_ztna` accept
-  rule matches no IPv6 and fails closed.
+- **ZTNA.** Its sets held IPv4 addresses, so a `require_ztna` accept
+  rule matched no IPv6 and failed closed. Lifted in FND-1d (1d-3).
 - **IoT isolation.** It is already by MAC and covers IPv6 as it is.
 
 **Checked.** The unit tests cover:
@@ -3918,9 +3919,10 @@ off).**
 - The brute-force guard holds an IPv6 source as its host, by MAC
   (FND-1d, H3; see "The brute-force jail over IPv6" below). 1c keyed it
   by its /64, which was wrong on the LAN.
-- ZTNA sign-in over IPv6 is refused with a message to use IPv4: its
+- ZTNA sign-in over IPv6 was refused with a message to use IPv4: its
   binding is to an IPv4 address and the router's view of its MAC
-  (SEC-6), and the IPv6 version is FND-1d.
+  (SEC-6). FND-1d (1d-3) signs the device in over both families (see
+  "Rules, ZTNA and the AI IDS over IPv6").
 
 **The brute-force jail over IPv6 (FND-1d, H3).** 1c counted and jailed
 an IPv6 source by its /64, because a host picks its own interface
@@ -4095,8 +4097,8 @@ of exactly what the user meant the VPN to cover. Now:
   /128). WireGuard drops such packets on the router's side before any
   rule sees them, so they can't be refused: the device waits for its
   timeout. It doesn't leak: `::/0` holds the traffic in the tunnel.
-- **ZTNA over the tunnel's IPv6** stays refused (fails closed) until
-  1d-3.
+- **ZTNA over the tunnel's IPv6** stayed refused (failed closed) until
+  1d-3, which signs a device in at both its tunnel addresses.
 
 **Checked.** `tests/test_wireguard_ipv6.py` covers the addresses, the
 router's and the device's configuration (`::/0` in every full tunnel,
@@ -4196,6 +4198,109 @@ allowed name's ClientHello reaches the provider, a blocked one's
 doesn't, whole or split across segments, and QUIC to port 443 is
 refused. The VPN client of 1d-1 then also reaches the LAN host's stable
 address through the tunnel.
+
+## Rules, ZTNA and the AI IDS over IPv6 (ROADMAP FND-1d, 1d-3)
+
+The last of FND-1d: what still held IPv4 addresses only. A rule by
+address kept its zone off IPv6, a `require_ztna` rule matched no IPv6
+and a sign-in over IPv6 was refused, and the AI IDS scored IPv4 sources
+only, so a LAN host scanning over IPv6 was never seen.
+
+**Rules by address.** `src_address`/`dst_address` take one network or a
+list, of either family, normalized and de-duplicated at load
+(`frfw.config.loader._parse_networks`). `Rule.families` is the set of
+families every address field allows (no field: both); a rule whose two
+fields share none is refused, since it could never match. The builder
+renders the rule once per family, each line with that family's networks
+only (`ip saddr { ... }` / `ip6 saddr ...`): one `{ }` set per field,
+not one line per network, so the counter and the order are the rule's.
+A rule without addresses stays one family-agnostic line.
+- A drop rule by IPv4 address only still keeps its zone off IPv6
+  (`Rule.ipv4_addresses_only`), and still blocks `management.ipv6`: the
+  same host would get around it. The reason now says to block a LAN
+  host by MAC, or to name its IPv6 networks in the rule. By MAC is
+  usually right: the host picks its own IPv6 addresses (SLAAC, privacy
+  addresses that change daily).
+- The pinhole check (1c) counts a drop rule only if it can match IPv6.
+- The surface (`frfw.surface`) and the rule check (`frfw.rule_lint`)
+  read the families: a rule covers another only if every network of the
+  other's lies inside one of its networks of the same family.
+
+**ZTNA.** A sign-in admits the *device*, not the one address it signed
+in from. The helper reads the neighbour table for the MAC the client was
+seen at (SEC-6, unchanged), then every address that MAC has on that link
+in a usable state, both families, skipping link-local, multicast and
+unspecified ones (`frfw.ztna.device_addresses`). Each goes into the set
+of its family: `authenticated_ztna_users` (`ipv4_addr . ether_addr`) or
+the new `authenticated_ztna_users6` (`ipv6_addr . ether_addr`), so the
+MAC binding holds for IPv6 too. A WireGuard client is signed in at both
+its tunnel addresses (`authenticated_ztna_tunnel6`): the tunnel's IPv6
+address is derived from its IPv4 one (1d-1), and WireGuard's cryptokey
+routing pins both to the key. A `require_ztna` rule renders one line
+per family and per kind (LAN by address and MAC, tunnel by address).
+- *Fails closed:* an address the device takes after signing in -- an
+  RFC 4941 privacy address made later, typically a day on -- is not
+  admitted until the next sign-in. Admitting by MAC alone would follow
+  it, but would also admit anything that spoofs the MAC from any
+  address; address plus MAC is what SEC-6 decided.
+- The webUI's 1c refusal of a sign-in over IPv6 is gone. An address with
+  a `%scope` is refused at the helper.
+
+**The AI IDS.** Over IPv6 a LAN host is scored by its MAC: it picks its
+own addresses, so scoring addresses would let it spread a scan across
+fresh ones, each below the floor. The sensor (`fr_os-sensor`) can't read
+the neighbour table (it needs root) and gets no new right: the helper
+labels each IPv6 source of the conntrack sample with its MAC, looked up
+on a LAN device only (`ids_quarantine.lan_neighbours`; on the WAN it
+would be the provider's gateway). The daemon keys the engine by that MAC
+(`IDSDaemon._source`); an IPv6 source without a label -- the router
+itself, the internet -- is left alone, as an external IPv4 source is
+(SEC-2). SNI drops and DNS log lines reach the same key through the
+labels the daemon last learned (bounded at 4096). A flagged MAC is
+quarantined through its latest IPv6 address: `quarantine_ip` accepts
+IPv6, finds the MAC again itself (the sensor's word is not trusted for
+it), adds it to `ids_quarantine_mac`, and adds the device's IPv4
+addresses on the LAN to `ids_quarantine`. Without a MAC on a LAN link it
+refuses. `excluded_macs` applies to a MAC key directly. The AI IDS
+screen lists the MACs held, since an IPv6 host has no IPv4 entry.
+- *Known limit:* a dual-stack host's IPv4 traffic (by address) and its
+  IPv6 traffic (by MAC) are scored apart, so a scan split evenly across
+  the families counts half on each side.
+
+**A WAN source posing as a LAN host.** Scoring by MAC rests on the
+neighbour table, and a pinhole (1c) lets connections in from the
+internet. A packet arriving on the WAN with a source address of a LAN
+network would be routed back towards the LAN and could be attributed to
+that LAN host. The IPv6 forward guard now drops a WAN packet whose
+source the router routes out a LAN-only device (`fib saddr oifname`,
+`ipv6-lan-source-from-wan`). It is not a strict reverse-path check on
+the WAN: with two WANs a legitimate source may route out the other.
+
+**Scoped addresses (security-lessons F1).** Python's `ipaddress` takes
+anything after a `%` as an IPv6 address's scope, and `str()` returns it
+unchanged. A pinhole host of `::5%a" ; flush ruleset ; #` reached the
+nft script as written (reproduced on main, from 1c: config.yaml is
+admin-written, but it is still input to the ruleset). A scope is now
+refused wherever an IPv6 address is parsed: the config (rules, pinholes'
+`host` and `from`, `ula_prefix`), `frfw.validate.ipv6`, the quarantine
+target, the brute-force jail key and the ZTNA helper commands.
+
+**Checked.** `tests/test_rules_ipv6.py` covers parsing, the per-family
+rendering (checked with the real `nft -c`), the zone exclusion, the
+management and pinhole checks, the surface, the rule check, and the
+scope refusal everywhere. `tests/test_ztna.py` signs a device in at
+every address its MAC has, and round-trips an IPv6 sign-in through real
+nft sets; `tests/test_helper.py` covers the helper's sign-in (both
+families, both tunnel addresses), the conntrack labels and the IPv6
+quarantine; `tests/test_ai_ids_daemon.py` the MAC keys, exclusion and
+enforcement. In the boot test: with management over IPv6 on, a drop rule
+naming the provider's IPv6 address holds over IPv6 and the LAN zone
+keeps IPv6; a ZTNA sign-in over IPv6 at the router's stable address
+opens the gated port from the device's delegated address too. In boot 4
+the AI IDS (turned on in boot 3; it starts at boot) quarantines a second
+LAN host that scans the provider's ports over IPv6, by its MAC: held on
+every address, one it hadn't used too, while the first host still gets
+through.
 
 ## Coarse application identification (phase 16)
 
