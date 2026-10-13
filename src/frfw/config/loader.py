@@ -162,8 +162,8 @@ def parse_config(raw: Any) -> Config:
     wireguard = _parse_wireguard(raw.get("wireguard", {}) or {}, zones, nat, interfaces)
     _check_management_addresses(management, zones, nat, interfaces, wireguard)
     logging_config = _parse_logging(raw.get("logging", {}) or {})
-    ipv6 = _parse_ipv6(raw.get("ipv6", {}) or {}, interfaces, zones, nat, rules, xdp_sni_filter)
-    _check_management_ipv6(management, ipv6, interfaces, zones, nat, rules, xdp_sni_filter)
+    ipv6 = _parse_ipv6(raw.get("ipv6", {}) or {}, interfaces, zones, nat, rules)
+    _check_management_ipv6(management, ipv6, interfaces, zones, nat, rules)
 
     return Config(
         version=version,
@@ -712,8 +712,7 @@ def internet_facing_zones(zones: dict[str, Zone], nat: NatConfig) -> set[str]:
 
 
 def ipv6_lan_zones(ipv6: Ipv6Config, interfaces: dict[str, Interface], zones: dict[str, Zone],
-                   nat: NatConfig, rules: list[Rule] = (),
-                   xdp_sni_filter: XdpSniFilterConfig | None = None) -> list[str]:
+                   nat: NatConfig, rules: list[Rule] = ()) -> list[str]:
     """The zones the delegated prefix goes to (ROADMAP FND-1b), in order:
     `ipv6.lan_zones`, or every zone with an interface that doesn't face
     the internet, in config order -- but those IPv6 would get around a
@@ -724,12 +723,11 @@ def ipv6_lan_zones(ipv6: Ipv6Config, interfaces: dict[str, Interface], zones: di
         return list(ipv6.lan_zones)
     facing = internet_facing_zones(zones, nat)
     with_interface = {i.zone for i in interfaces.values()}
-    excluded = ipv6_lan_exclusions(interfaces, zones, nat, rules, xdp_sni_filter)
+    excluded = ipv6_lan_exclusions(zones, nat, rules)
     return [z for z in zones if z not in facing and z in with_interface and z not in excluded]
 
 
-def ipv6_lan_exclusions(interfaces: dict[str, Interface], zones: dict[str, Zone], nat: NatConfig,
-                        rules: list[Rule] = (), xdp_sni_filter: XdpSniFilterConfig | None = None) -> dict[str, str]:
+def ipv6_lan_exclusions(zones: dict[str, Zone], nat: NatConfig, rules: list[Rule] = ()) -> dict[str, str]:
     """Zone -> why it can't have IPv6 (ROADMAP FND-1b): something that
     protects it is IPv4-only, so IPv6 would quietly open what the admin
     closed -- the host blocked by its IPv4 address reaching the same place
@@ -741,9 +739,9 @@ def ipv6_lan_exclusions(interfaces: dict[str, Interface], zones: dict[str, Zone]
       touching the zone -- naming it, or no zone at all. One whose traffic
       comes from the internet is no gap: nothing new comes in from the
       internet over IPv6.
-    - The XDP SNI filter (and with it app control) on one of its devices:
-      it reads IPv4 only (FND-1d), so a blocked site would stay reachable
-      over IPv6."""
+
+    The XDP SNI filter (and with it app control) kept its zones off IPv6
+    too, until it read IPv6 itself (ROADMAP FND-1d)."""
     facing = internet_facing_zones(zones, nat)
     out: dict[str, str] = {}
     for rule in rules:
@@ -758,17 +756,11 @@ def ipv6_lan_exclusions(interfaces: dict[str, Interface], zones: dict[str, Zone]
         for zone in zones:
             if zone not in facing and (rule.from_zone in (None, zone) or rule.to_zone in (None, zone)):
                 out.setdefault(zone, reason)
-    if xdp_sni_filter is not None and xdp_sni_filter.enabled:
-        ports = {interfaces[n].device for n in xdp_sni_filter.interfaces if n in interfaces}
-        for name, iface in interfaces.items():
-            if iface.zone not in facing and (iface.device in ports or iface.vlan_parent in ports):
-                out.setdefault(iface.zone, f"the SNI filter on interface {name!r} sees IPv4 only (ROADMAP FND-1d), "
-                                           "so the sites it blocks would stay reachable over IPv6")
     return out
 
 
 def _parse_ipv6(raw: Any, interfaces: dict[str, Interface], zones: dict[str, Zone], nat: NatConfig,
-                rules: list[Rule] = (), xdp_sni_filter: XdpSniFilterConfig | None = None) -> Ipv6Config:
+                rules: list[Rule] = ()) -> Ipv6Config:
     if not isinstance(raw, dict):
         raise ConfigError("'ipv6' must be a mapping")
     unknown = set(raw) - {"enabled", "lan_zones", "ula_prefix", "pinholes"}
@@ -785,7 +777,7 @@ def _parse_ipv6(raw: Any, interfaces: dict[str, Interface], zones: dict[str, Zon
         if len(set(lan_zones)) != len(lan_zones):
             raise ConfigError("ipv6.lan_zones names a zone more than once")
         with_interface = {i.zone for i in interfaces.values()}
-        excluded = ipv6_lan_exclusions(interfaces, zones, nat, rules, xdp_sni_filter) if enabled else {}
+        excluded = ipv6_lan_exclusions(zones, nat, rules) if enabled else {}
         for zone in lan_zones:
             if zone not in zones:
                 raise ConfigError(f"ipv6.lan_zones: unknown zone {zone!r}")
@@ -965,8 +957,7 @@ _MANAGEMENT_PORTS = (22, 443)
 
 
 def _check_management_ipv6(management: ManagementConfig, ipv6: Ipv6Config, interfaces: dict[str, Interface],
-                           zones: dict[str, Zone], nat: NatConfig, rules: list[Rule],
-                           xdp_sni_filter: XdpSniFilterConfig) -> None:
+                           zones: dict[str, Zone], nat: NatConfig, rules: list[Rule]) -> None:
     """ROADMAP FND-1c: management over IPv6 goes through the same input
     rules as over IPv4 -- and a drop/reject rule by IPv4 address can't
     hold there. So with such a rule on the management ports from a zone
@@ -981,7 +972,7 @@ def _check_management_ipv6(management: ManagementConfig, ipv6: Ipv6Config, inter
         managed = set(zones)
     else:
         managed = {z for z in zones if z not in facing}
-    over_ipv6 = managed & set(ipv6_lan_zones(ipv6, interfaces, zones, nat, rules, xdp_sni_filter))
+    over_ipv6 = managed & set(ipv6_lan_zones(ipv6, interfaces, zones, nat, rules))
     for rule in rules:
         if rule.action == Action.ACCEPT or rule.to_zone != SELF_ZONE:
             continue

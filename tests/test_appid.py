@@ -382,12 +382,12 @@ def test_xdp_sync_explains_when_the_loaded_program_predates_pass_reporting(minim
 
 def test_pass_event_decoding_and_json():
     raw = bytearray(xdp._EVENT_SIZE)
-    raw[0:4] = socket.inet_aton("10.0.0.5")
-    raw[4:8] = socket.inet_aton("1.2.3.4")
-    raw[8:12] = (40000).to_bytes(2, "little") + (443).to_bytes(2, "little")
-    raw[12] = 0
-    raw[14:16] = (7).to_bytes(2, "little")
-    raw[16:23] = b"zoom.us"
+    raw[0:16] = bytes(10) + b"\xff\xff" + socket.inet_aton("10.0.0.5")
+    raw[16:32] = bytes(10) + b"\xff\xff" + socket.inet_aton("1.2.3.4")
+    raw[32:36] = (40000).to_bytes(2, "little") + (443).to_bytes(2, "little")
+    raw[36] = 0
+    raw[38:40] = (7).to_bytes(2, "little")
+    raw[40:47] = b"zoom.us"
     event = xdp.SniEvent.from_bytes(bytes(raw))
     assert (event.action, event.hostname, event.saddr) == ("pass", "zoom.us", "10.0.0.5")
     assert json.loads(xdp.format_event_json(event))["action"] == "pass"

@@ -526,19 +526,19 @@ def test_a_drop_rule_by_address_without_a_zone_touches_every_lan(minimal_config_
     assert [zone for zone, _ in ipv6.excluded_zones(config)] == ["lan", "guest"]
 
 
-def test_the_sni_filter_keeps_its_zones_off_ipv6(minimal_config_dict):
-    """The XDP SNI filter reads IPv4 only (FND-1d): a blocked site would
-    stay reachable over IPv6 -- from the port and from its VLANs."""
+def test_the_sni_filter_no_longer_keeps_its_zones_off_ipv6(minimal_config_dict):
+    """Until FND-1d the XDP SNI filter read IPv4 only, and its zones were
+    kept off IPv6 (a blocked site would have stayed reachable over it).
+    It reads IPv6 now: the port and its VLANs get IPv6 like any LAN, and
+    an explicit lan_zones may name them."""
     minimal_config_dict["interfaces"]["iot"] = {"device": "eth1.30", "zone": "iot",
                                                 "vlan": {"parent": "eth1", "id": 30}}
     minimal_config_dict["zones"]["iot"] = {}
     minimal_config_dict["xdp_sni_filter"] = {"enabled": True, "interfaces": ["lan"], "blocklist": ["x.test"]}
     config = _config(_three_zones(minimal_config_dict))
-    assert ipv6.lan_devices(config) == [("guest", "eth2"), ("guest", "eth2.40")]
-    excluded = dict(ipv6.excluded_zones(config))
-    assert set(excluded) == {"lan", "iot"} and "SNI filter" in excluded["iot"]
-    with pytest.raises(ConfigError, match="SNI filter"):
-        _config(minimal_config_dict, lan_zones=["lan"])
+    assert ("lan", "eth1") in ipv6.lan_devices(config) and ("iot", "eth1.30") in ipv6.lan_devices(config)
+    assert ipv6.excluded_zones(config) == []
+    assert list(_config(minimal_config_dict, lan_zones=["lan"]).ipv6.lan_zones) == ["lan"]
 
 
 def test_dhcpcd_hands_a_64_of_the_prefix_to_each_lan_device(minimal_config_dict):

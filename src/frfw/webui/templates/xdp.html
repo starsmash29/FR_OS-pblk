@@ -64,8 +64,10 @@
       2,048 bytes is dropped.</li>
     <li><strong>Names of 32 bytes or more.</strong> Refused when you add them, so none is
       silently ineffective.</li>
-    <li><strong>IPv6.</strong> The filter reads IPv4 only, and FR_OS routes IPv4 only, so
-      clients have no IPv6 path through the router around it.</li>
+    <li id="gap-ipv6"><strong>IPv6 with more than four extension headers, and TCP fragments.</strong>
+      The filter reads IPv6 like IPv4, behind up to four extension headers. A packet with
+      more, and a TCP fragment of either family, is dropped instead: no LAN device sends one,
+      and the server would put a hello back together that the filter never saw whole.</li>
   </ul>
 </div>
 

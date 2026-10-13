@@ -66,6 +66,7 @@ import ctypes
 import ctypes.util
 import fcntl
 import hashlib
+import ipaddress
 import json
 import os
 import socket
@@ -98,13 +99,12 @@ BLOCKLIST_MAX_ENTRIES = 4096
 #: size (`bpftool map show` prints "key 40B") during manual testing.
 _KEY_STRUCT_SIZE = ((4 + LPM_KEY_LEN + 7) // 8) * 8
 
-#: struct sni_event's field offsets and total size, confirmed against a
-#: real compiled instance of that exact struct definition (see the
-#: xdp.py commit message / session notes for how) rather than assumed:
-#: saddr(4)@0, daddr(4)@4, sport(2)@8, dport(2)@10, action(1)@12,
-#: sni_len(2)@14 (one padding byte at 13 for its 2-byte alignment),
-#: sni[MAX_SNI_LEN]@16 -- total 48 bytes for MAX_SNI_LEN=32.
-_EVENT_SIZE = 16 + MAX_SNI_LEN
+#: struct sni_event's field offsets and total size: saddr(16)@0,
+#: daddr(16)@16, sport(2)@32, dport(2)@34, action(1)@36, sni_len(2)@38
+#: (one padding byte at 37 for its 2-byte alignment), sni[MAX_SNI_LEN]@40
+#: -- total 72 bytes for MAX_SNI_LEN=32. Addresses are 16 bytes since
+#: ROADMAP FND-1d: IPv6, or IPv4-mapped (see `address_text`).
+_EVENT_SIZE = 40 + MAX_SNI_LEN
 
 #: Where the compiled program and its maps are pinned once loaded, so
 #: multiple interfaces (and multiple frfw processes -- the CLI, the
@@ -127,10 +127,10 @@ PIN_HELLO_FLOWS_PATH = _PIN_MAPS_DIR / "hello_flows"
 SETTING_REPORT_PASS = 0x1
 SETTING_REPORT_HELLO = 0x2
 
-#: struct hello_pkt: saddr(4) daddr(4) sport(2) dport(2) seq(4) len(2)
+#: struct hello_pkt: saddr(16) daddr(16) sport(2) dport(2) seq(4) len(2)
 #: first(1) pad(1), then HELLO_SNAP data bytes.
 HELLO_SNAP = 2048
-_HELLO_HEADER = struct.Struct("<4s4sHHIHBB")
+_HELLO_HEADER = struct.Struct("<16s16sHHIHBB")
 
 #: Index order must match bpf/xdp_sni_filter.c's `enum { STAT_... }`.
 #: drop_reordered: a followed split hello's segment that came out of order,
@@ -138,8 +138,24 @@ _HELLO_HEADER = struct.Struct("<4s4sHHIHBB")
 #: one with a bad TCP checksum, dropped before the walk reads it;
 #: drop_unfollowed: the rest of a hello the walk can't follow to its end
 #: (ROADMAP SEC-28).
+#: drop_fragment: a TCP fragment, IPv4 or IPv6 (ROADMAP FND-1d, H2);
+#: drop_ipv6_headers: an IPv6 packet whose headers the program won't read
+#: to their end (more extension headers than it walks, an IPv4-mapped
+#: address).
 STAT_NAMES = ["pass_not_tls", "pass_truncated", "pass_no_sni", "pass_no_match", "drop_match", "drop_reordered",
-              "drop_bad_checksum", "drop_unfollowed"]
+              "drop_bad_checksum", "drop_unfollowed", "drop_fragment", "drop_ipv6_headers"]
+
+
+_IPV4_MAPPED_PREFIX = bytes(10) + b"\xff\xff"
+
+
+def address_text(raw: bytes) -> str:
+    """A 16-byte address from the program (ROADMAP FND-1d) as text: an
+    IPv4-mapped one as plain IPv4 ("10.0.0.5"), as the readers of the
+    events and the hello copies always got it; any other as IPv6."""
+    if raw[:12] == _IPV4_MAPPED_PREFIX:
+        return socket.inet_ntoa(raw[12:16])
+    return str(ipaddress.IPv6Address(raw[:16]))
 
 
 class XdpError(Exception):
@@ -176,12 +192,12 @@ class SniEvent:
     def from_bytes(cls, raw: bytes) -> "SniEvent":
         if len(raw) < _EVENT_SIZE:
             raise XdpError(f"short ring buffer record: {len(raw)} < {_EVENT_SIZE} bytes")
-        saddr = socket.inet_ntoa(raw[0:4])
-        daddr = socket.inet_ntoa(raw[4:8])
-        sport, dport = struct.unpack_from("<HH", raw, 8)
-        action = "drop" if raw[12] == 1 else "pass"
-        sni_len = min(struct.unpack_from("<H", raw, 14)[0], MAX_SNI_LEN)
-        hostname = raw[16 : 16 + sni_len].decode("ascii", errors="replace")
+        saddr = address_text(raw[0:16])
+        daddr = address_text(raw[16:32])
+        sport, dport = struct.unpack_from("<HH", raw, 32)
+        action = "drop" if raw[36] == 1 else "pass"
+        sni_len = min(struct.unpack_from("<H", raw, 38)[0], MAX_SNI_LEN)
+        hostname = raw[40 : 40 + sni_len].decode("ascii", errors="replace")
         return cls(
             saddr=saddr, daddr=daddr, sport=sport, dport=dport, hostname=hostname, action=action
         )
@@ -202,12 +218,17 @@ class HelloSegment:
 
     @classmethod
     def from_bytes(cls, raw: bytes) -> "HelloSegment":
-        if len(raw) < _HELLO_HEADER.size:
+        # The whole record, not just the header: the previous release's
+        # record (IPv4 addresses only, 2068 bytes) is shorter, and one read
+        # with this layout would turn its bytes into made-up addresses --
+        # which a failed program swap after an upgrade (the old program
+        # kept, the new readers started) would otherwise do (FND-1d).
+        if len(raw) < _HELLO_HEADER.size + HELLO_SNAP:
             raise XdpError(f"short hello record: {len(raw)} bytes")
         saddr, daddr, sport, dport, seq, length, first, _pad = _HELLO_HEADER.unpack_from(raw)
         length = min(length, HELLO_SNAP, len(raw) - _HELLO_HEADER.size)
         return cls(
-            saddr=socket.inet_ntoa(saddr), daddr=socket.inet_ntoa(daddr),
+            saddr=address_text(saddr), daddr=address_text(daddr),
             sport=sport, dport=dport, seq=seq, first=bool(first),
             payload=bytes(raw[_HELLO_HEADER.size:_HELLO_HEADER.size + length]),
         )

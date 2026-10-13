@@ -104,8 +104,7 @@ def lan_devices(config: Config) -> list[tuple[str, str]]:
     goes last and renumbers nobody. Not the VPN tunnel: it has a ULA /64
     of its own and no delegated one (tunnel_network6, FND-1d). Empty while
     IPv6 is off."""
-    zones = ipv6_lan_zones(config.ipv6, config.interfaces, config.zones, config.nat, config.rules,
-                           config.xdp_sni_filter)
+    zones = ipv6_lan_zones(config.ipv6, config.interfaces, config.zones, config.nat, config.rules)
     out: list[tuple[str, str]] = []
     for zone in zones:
         for iface in config.interfaces.values():
@@ -122,9 +121,8 @@ def excluded_zones(config: Config) -> list[tuple[str, str]]:
     if not config.ipv6.enabled or config.ipv6.lan_zones is not None:
         return []
     with_interface = {i.zone for i in config.interfaces.values()}
-    return [(zone, why) for zone, why in ipv6_lan_exclusions(
-        config.interfaces, config.zones, config.nat, config.rules, config.xdp_sni_filter).items()
-        if zone in with_interface]
+    return [(zone, why) for zone, why in ipv6_lan_exclusions(config.zones, config.nat, config.rules).items()
+            if zone in with_interface]
 
 
 _DHCPCD_TEMPLATE = """\
@@ -312,8 +310,7 @@ def tunnel_served(config: Config) -> bool:
     wg = config.wireguard
     if not (wg.enabled and config.ipv6.enabled):
         return False
-    return wg.zone not in ipv6_lan_exclusions(config.interfaces, config.zones, config.nat, config.rules,
-                                              config.xdp_sni_filter)
+    return wg.zone not in ipv6_lan_exclusions(config.zones, config.nat, config.rules)
 
 
 def forwarding_wanted(config: Config) -> bool:

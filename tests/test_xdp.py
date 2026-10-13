@@ -17,6 +17,7 @@ import shutil
 import socket
 import struct
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -400,20 +401,29 @@ def test_the_kernel_normalizer_refuses_a_name_at_the_length_limit_on_both_sides(
 # --- SniEvent decoding --------------------------------------------------------
 
 
-def test_sni_event_decodes_real_struct_layout():
-    # Matches struct sni_event's confirmed layout (offsetof, compiled and
-    # checked, not assumed): saddr@0, daddr@4, sport@8, dport@10,
-    # action@12, sni_len@14, sni@16, total 48 bytes.
-    raw = (
-        socket.inet_aton("127.0.0.1")
-        + socket.inet_aton("93.184.216.34")
+def _event(saddr: bytes, daddr: bytes, name: bytes = b"example.com", action: int = 1) -> bytes:
+    """struct sni_event's layout (ROADMAP FND-1d): saddr@0, daddr@16,
+    sport@32, dport@34, action@36, sni_len@38, sni@40, total 72 bytes
+    (checked against the C itself by
+    test_the_event_and_hello_layouts_are_the_compiled_ones)."""
+    return (
+        saddr
+        + daddr
         + struct.pack("<HH", 51234, 443)
-        + bytes([1])
+        + bytes([action])
         + b"\x00"  # padding before sni_len's 2-byte alignment
-        + struct.pack("<H", 11)
-        + b"example.com".ljust(xdp_mod.MAX_SNI_LEN, b"\x00")
+        + struct.pack("<H", len(name))
+        + name.ljust(xdp_mod.MAX_SNI_LEN, b"\x00")
     )
-    assert len(raw) == 48
+
+
+def _mapped(ipv4: str) -> bytes:
+    return bytes(10) + b"\xff\xff" + socket.inet_aton(ipv4)
+
+
+def test_sni_event_decodes_real_struct_layout():
+    raw = _event(_mapped("127.0.0.1"), _mapped("93.184.216.34"))
+    assert len(raw) == 72
 
     event = xdp_mod.SniEvent.from_bytes(raw)
     assert event.saddr == "127.0.0.1"
@@ -421,6 +431,64 @@ def test_sni_event_decodes_real_struct_layout():
     assert event.sport == 51234
     assert event.dport == 443
     assert event.hostname == "example.com"
+
+
+def test_an_ipv6_event_has_ipv6_addresses():
+    """ROADMAP FND-1d: an address that isn't IPv4-mapped is IPv6, written
+    in its short form."""
+    raw = _event(socket.inet_pton(socket.AF_INET6, "fd00:1::5"), socket.inet_pton(socket.AF_INET6, "2001:db8::1"))
+    event = xdp_mod.SniEvent.from_bytes(raw)
+    assert (event.saddr, event.daddr, event.hostname) == ("fd00:1::5", "2001:db8::1", "example.com")
+
+
+def test_only_the_ipv4_mapped_prefix_reads_as_ipv4():
+    assert xdp_mod.address_text(_mapped("10.0.0.5")) == "10.0.0.5"
+    # ::a00:5 (IPv4-compatible, deprecated) and ::ffff:0:a00:5 are not
+    # IPv4-mapped: shown as the IPv6 they are.
+    assert xdp_mod.address_text(bytes(12) + socket.inet_aton("10.0.0.5")) == "::a00:5"
+    assert xdp_mod.address_text(bytes(8) + b"\xff\xff\x00\x00" + socket.inet_aton("10.0.0.5")) == "::ffff:0:a00:5"
+
+
+_LAYOUT_HARNESS = r"""
+#include <stddef.h>
+#include <stdio.h>
+#include <linux/types.h>
+#define MAX_SNI_LEN %(sni)d
+#define HELLO_SNAP %(snap)d
+%(structs)s
+int main(void)
+{
+	printf("%%zu %%zu %%zu %%zu %%zu %%zu %%zu %%zu\n", sizeof(struct sni_event),
+	       offsetof(struct sni_event, daddr), offsetof(struct sni_event, sport),
+	       offsetof(struct sni_event, action), offsetof(struct sni_event, sni_len),
+	       offsetof(struct sni_event, sni), offsetof(struct hello_pkt, seq), offsetof(struct hello_pkt, data));
+	return 0;
+}
+"""
+
+
+def _c_struct(source: str, name: str) -> str:
+    start = source.index(f"struct {name} {{")
+    return source[start:source.index("};", start) + 2]
+
+
+def test_the_event_and_hello_layouts_are_the_compiled_ones(tmp_path):
+    """The decoders' offsets against the program's own struct definitions,
+    compiled: a field added or widened in the C (FND-1d's 16-byte
+    addresses) can't drift from the Python unnoticed."""
+    source = (Path(__file__).resolve().parents[1] / "bpf" / "xdp_sni_filter.c").read_text()
+    harness = tmp_path / "layout.c"
+    harness.write_text(_LAYOUT_HARNESS % {
+        "sni": xdp_mod.MAX_SNI_LEN, "snap": xdp_mod.HELLO_SNAP,
+        "structs": _c_struct(source, "sni_event") + "\n" + _c_struct(source, "hello_pkt"),
+    })
+    binary = tmp_path / "layout"
+    built = subprocess.run(["cc", "-o", str(binary), str(harness)], capture_output=True, text=True)
+    assert built.returncode == 0, built.stderr
+    size, daddr, sport, action, sni_len, sni, seq, data = map(int, subprocess.run(
+        [str(binary)], capture_output=True, text=True, check=True).stdout.split())
+    assert (size, daddr, sport, action, sni_len, sni) == (xdp_mod._EVENT_SIZE, 16, 32, 36, 38, 40)
+    assert (seq, data) == (36, xdp_mod._HELLO_HEADER.size)
 
 
 def test_sni_event_rejects_short_record():

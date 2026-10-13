@@ -360,8 +360,8 @@ ipv6:
     renumbers nobody.
   - `[]`: no LAN gets IPv6, and the router alone has it (FND-1a).
   - A zone listed must exist, not face the internet, and have an
-    interface. WireGuard's tunnel doesn't count as one: its clients are
-    IPv4-only.
+    interface. WireGuard's tunnel doesn't count as one: it has a ULA /64
+    of its own (FND-1d, see `wireguard`).
 - A zone can't have IPv6 while something that protects it is IPv4-only.
   IPv6 would quietly open what was closed, because the same host would
   reach the same place over IPv6. Such a zone is left out of the default
@@ -370,9 +370,9 @@ ipv6:
     (IPv4 networks) that names the zone or no zone. Block the host by
     MAC (`src_mac`) instead. A rule whose traffic comes from an
     internet-facing zone doesn't count, since nothing new comes in from
-    the internet over IPv6;
-  - the XDP SNI filter (and with it app control) on one of its devices
-    or their VLANs. The filter reads IPv4 only (FND-1d).
+    the internet over IPv6.
+  - (Until FND-1d the XDP SNI filter, and with it app control, kept its
+    devices' zones off IPv6 too. It reads IPv6 now.)
 - What the rules do over IPv6:
   - They apply to both families. A rule by `proto` without a port now
     matches IPv6 too (`meta l4proto`), and `proto: icmp` also matches
@@ -415,8 +415,8 @@ ipv6:
 - `pinholes` (FND-1c): the exceptions to "nothing new comes in from the
   internet over IPv6", one host and port (range) each:
   - `zone`: a LAN zone. While it has no IPv6 -- left out of
-    `lan_zones`, or taken off by an IPv4-only protection such as the SNI
-    filter -- the pinhole is kept but off (the card says so): a pinhole
+    `lan_zones`, or taken off by an IPv4-only protection such as a drop
+    rule by IPv4 address -- the pinhole is kept but off (the card says so): a pinhole
     never stands in the way of a protection.
   - `host`: an interface ID (`::…`, the low 64 bits) matches that host
     in whatever /64 the zone has now, so it survives the provider
@@ -528,6 +528,11 @@ app_control:
   over TCP, whose name the filter sees (ROADMAP SEC-1). There is no key
   to turn this off: QUIC's name is encrypted, so allowing it would let
   any client get past the blocklist.
+- The filter reads IPv4 and IPv6 alike (ROADMAP FND-1d), so the zones of
+  its interfaces keep their IPv6. On those interfaces it drops a TCP
+  fragment of either family, and an IPv6 packet with more than four
+  extension headers: no LAN device sends one, and the server would put
+  back together a ClientHello the filter never saw whole.
 - These cross-section requirements are only checked while `enabled` is
   true. Changes take effect on the next `apply`; the daemon picks up
   config changes by itself.

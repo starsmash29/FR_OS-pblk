@@ -82,8 +82,7 @@ def _tunnel_ipv6(config) -> str:
         return "Reaches the router and the LAN's stable (ULA) addresses; the rest is refused, never sent around the tunnel."
     if not config.ipv6.enabled:
         return "Refused: IPv6 is off on this router. Devices use IPv4 through the tunnel, never IPv6 around it."
-    why = ipv6_lan_exclusions(config.interfaces, config.zones, config.nat, config.rules,
-                                   config.xdp_sni_filter).get(config.wireguard.zone, "")
+    why = ipv6_lan_exclusions(config.zones, config.nat, config.rules).get(config.wireguard.zone, "")
     return f"Refused: zone {config.wireguard.zone} gets no IPv6 ({why}). Devices use IPv4 through the tunnel."
 
 
