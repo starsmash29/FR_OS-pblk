@@ -1,7 +1,7 @@
 # Legal notices
 
 This file applies to the FR_OS Community Edition. The licence terms are in
-[LICENSE](LICENSE) and [LICENSE-EXCEPTION.md](LICENSE-EXCEPTION.md).
+[LICENSE](LICENSE) (GNU AGPLv3, with no additional permissions).
 
 ## International Compliance & Export Control
 
@@ -16,3 +16,7 @@ The software cannot be downloaded, exported, or re-exported to any country or en
 While this software provides core networking and logging features that can assist administrators in aligning with cybersecurity frameworks (such as the EU NIS2 Directive, GDPR, or US NIST SP 800-53), the software is provided "AS IS" without any warranty of any kind.
 
 The authors and contributors do not guarantee that using this software automatically ensures compliance with any legal or regulatory standard. Ensuring full network compliance and auditing obligations remains the sole responsibility of the user.
+
+### 3. Trademarks & Contributions
+- **Trademarks.** "FR_OS" and the FR_OS logo are trademarks of the FR_OS maintainer. The GNU AGPLv3 grants rights to the code, not to the name: modified versions, extensions and services may not use the FR_OS name or logo in a way that suggests they are official, endorsed by the maintainer, or part of a commercial FR_OS edition, without written permission. Stating truthfully that a work is based on FR_OS is allowed.
+- **Contributions.** The Community Edition does not accept contributions that add compliance auditing features (automated compliance reporting, audit-trail exports and regulatory log management). Such features are offered in the commercial FR_OS Enterprise Edition.

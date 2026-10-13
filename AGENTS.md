@@ -46,9 +46,10 @@ AI tool working on someone's behalf.
 ## Ground rules (not negotiable)
 
 **Licence**
-- FR_OS is under the GNU AGPLv3 ([LICENSE](LICENSE)), with a plugin exception ([LICENSE-EXCEPTION.md](LICENSE-EXCEPTION.md)).
+- FR_OS is under the GNU AGPLv3 ([LICENSE](LICENSE)), with no additional permissions or exceptions.
 - Every contribution is accepted under the [Contributor License Agreement](CLA.md); opening a PR means agreeing to it.
 - Third-party code keeps its licence and must be compatible with the AGPLv3; name it in the PR.
+- The Community Edition does not take compliance auditing features (automated compliance reporting, audit-trail exports, regulatory log management); such PRs are closed. The FR_OS name is a trademark ([LEGAL.md](LEGAL.md), section 3).
 
 **Language and style**
 - Everything committed is in **English**: code, comments, docs, commit messages and UI text.
