@@ -13,7 +13,7 @@ import socket
 from pathlib import Path
 
 from frfw import paths
-from frfw.helper.protocol import MAX_LINE_BYTES
+from frfw.helper.protocol import CONNTRACK_SAMPLE_MAX_BYTES, MAX_LINE_BYTES
 
 
 class HelperError(Exception):
@@ -21,7 +21,8 @@ class HelperError(Exception):
 
 
 def send_command(
-    cmd: dict, socket_path: Path = paths.APPLY_SOCKET_PATH, timeout: float = 10.0
+    cmd: dict, socket_path: Path = paths.APPLY_SOCKET_PATH, timeout: float = 10.0,
+    max_bytes: int = MAX_LINE_BYTES,
 ) -> dict:
     """Send one JSON request and return the decoded JSON response.
 
@@ -36,13 +37,14 @@ def send_command(
             sock.sendall(json.dumps(cmd).encode() + b"\n")
             sock.shutdown(socket.SHUT_WR)
 
-            chunks = []
+            chunks, size = [], 0
             while True:
-                chunk = sock.recv(4096)
+                chunk = sock.recv(65536)
                 if not chunk:
                     break
                 chunks.append(chunk)
-                if sum(len(c) for c in chunks) > MAX_LINE_BYTES:
+                size += len(chunk)
+                if size > max_bytes:
                     raise HelperError("response from apply-helper exceeded size limit")
     except OSError as exc:
         raise HelperError(f"cannot reach apply-helper at {socket_path}: {exc}") from exc
@@ -136,7 +138,9 @@ def ids_quarantine_status(socket_path: Path = paths.APPLY_SOCKET_PATH) -> dict:
 
 
 def conntrack_sample(socket_path: Path = paths.APPLY_SOCKET_PATH) -> dict:
-    return send_command({"cmd": "conntrack_sample"}, socket_path)
+    # A busy router's table is larger than any other response (see
+    # CONNTRACK_SAMPLE_MAX_BYTES).
+    return send_command({"cmd": "conntrack_sample"}, socket_path, max_bytes=CONNTRACK_SAMPLE_MAX_BYTES)
 
 
 def bruteforce_status(socket_path: Path = paths.APPLY_SOCKET_PATH) -> dict:

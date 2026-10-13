@@ -193,6 +193,33 @@ NO_RULE_PORT = 8447
 #: all refused at once, enough new connections in a minute for the AI
 #: IDS's connection-rate floor (5/s).
 SCAN_PORTS = range(20000, 21000)
+#: Those rules, ahead of first boot's lan-to-wan accept: the Rules screen
+#: adds a rule at the end, where that accept shadows it. Written into
+#: config.yaml before boot 3, like the pinhole.
+RULES_V6 = f"""\
+- name: boot-test-drop-v6
+  action: drop
+  from_zone: lan
+  to_zone: wan
+  proto: tcp
+  dst_port: {RULE_DROP_PORT}
+  dst_address: ["{BEYOND_HOST}", "{ISP_ADDRESS}"]
+- name: boot-test-ztna-v6
+  action: accept
+  from_zone: lan
+  to_zone: wan
+  proto: tcp
+  dst_port: {ZTNA_GATED_PORT}
+  dst_address: "{ISP_ADDRESS}"
+  require_ztna: true
+- name: boot-test-ztna-v6-closed
+  action: drop
+  from_zone: lan
+  to_zone: wan
+  proto: tcp
+  dst_port: {ZTNA_GATED_PORT}
+  dst_address: "{ISP_ADDRESS}"
+"""
 #: A WireGuard client (ROADMAP FND-1d, 1d-1): its link is made in the
 #: runner's namespace, so its UDP socket reaches the router over the LAN
 #: tap, then moved into a namespace of its own, where the tunnel is the
@@ -774,7 +801,7 @@ print(refused)
 """
 
 
-def check_ids_ipv6(check, opener) -> None:
+def check_ids_ipv6(check, opener) -> bool:
     """ROADMAP FND-1d (1d-3), in boot 4, with the AI IDS turned on in boot
     3: a second LAN host scans the provider's ports over IPv6. The IDS
     scores it by its MAC (the helper labels the conntrack sample) and
@@ -784,7 +811,7 @@ def check_ids_ipv6(check, opener) -> None:
     with second_lan_host():
         address = second_host_address(pool, timeout=180)
         if not check(address is not None, "a second LAN host took a delegated address by SLAAC (boot 4)"):
-            return
+            return False
         mac_file = f"/sys/class/net/{NEIGHBOUR_LINK}/address"
         mac = subprocess.run(["ip", "netns", "exec", NEIGHBOUR_NS, "cat", mac_file],
                              capture_output=True, text=True).stdout.strip()
@@ -813,6 +840,7 @@ def check_ids_ipv6(check, opener) -> None:
         first = next((a for a in lan_host_addresses() if a.ip in pool), None)
         check(first is not None and ping_from_lan(ISP_ADDRESS, str(first.ip)),
               f"...while the other LAN host still reaches the provider over IPv6: {first}")
+        return held_mac
 
 
 def _client_config_field(text: str, key: str) -> str | None:
@@ -2240,7 +2268,10 @@ def run(args: argparse.Namespace, provider: Isp) -> int:
         text = config_file.read_text() if config_file.exists() else ""
         check(bool(text) and not re.search(r"^ipv6:", text, re.M),
               "first boot's config.yaml has no ipv6 section; the boot test's pinhole goes in by hand")
-        if text:
+        rules_at = re.search(r"^rules:\n(?=- )", text, re.M)
+        check(rules_at is not None, "first boot's config.yaml has rules; the boot test's IPv6 ones go first")
+        if text and rules_at:
+            text = text[:rules_at.end()] + RULES_V6 + text[rules_at.end():]
             config_file.write_text(text.rstrip("\n") + "\n" + PINHOLE_YAML)
         # A DHCP client on the LAN port flushed the router's own address on
         # the boots after this one (live-boot used to put one on every port).
@@ -2329,20 +2360,12 @@ def run(args: argparse.Namespace, provider: Isp) -> int:
         lan_host = check_lan_ipv6(check, opener, provider, wan_address)
         # ROADMAP SEC-6: the ZTNA gate, with one user, signed in over IPv6
         # (check_ipv6_rules_and_ztna) and over IPv4 below; ROADMAP FND-1d:
-        # rules by IPv6 address, one of them gated by it.
+        # it gates one of the rules by IPv6 address (RULES_V6_YAML).
         post(opener, "/ztna/users/add", {"new_username": ZTNA_USERNAME, "new_password": ZTNA_PASSWORD})
         post(opener, "/ztna/settings", {"enabled": "true", "session_ttl_seconds": "3600"})
-        for rule in ({"name": "boot-test-drop-v6", "action": "drop", "from_zone": "lan", "to_zone": "wan",
-                      "proto": "tcp", "dst_port": str(RULE_DROP_PORT),
-                      "dst_address": f"{BEYOND_HOST}, {ISP_ADDRESS}"},
-                     {"name": "boot-test-ztna-v6", "action": "accept", "from_zone": "lan", "to_zone": "wan",
-                      "proto": "tcp", "dst_port": str(ZTNA_GATED_PORT), "dst_address": ISP_ADDRESS,
-                      "require_ztna": "true"},
-                     {"name": "boot-test-ztna-v6-closed", "action": "drop", "from_zone": "lan", "to_zone": "wan",
-                      "proto": "tcp", "dst_port": str(ZTNA_GATED_PORT), "dst_address": ISP_ADDRESS}):
-            saved = urllib.parse.unquote_plus(post(opener, "/rules/add", rule))
-            check(f"Rule '{rule['name']}' saved" in saved,
-                  f"the Rules screen saves {rule['name']}, by IPv6 address (ROADMAP FND-1d): {saved[:300]}")
+        rules_page = get(opener, "/rules")
+        check(all(name in rules_page for name in ("boot-test-drop-v6", "boot-test-ztna-v6")),
+              "the Rules screen lists the rules by IPv6 address written before boot 3 (ROADMAP FND-1d)")
         if lan_host:
             check_ipv6_services(check, opener, boot_timeout)
         else:  # the resolver's settings, for ROADMAP DNS-1 below
@@ -2639,11 +2662,12 @@ def run(args: argparse.Namespace, provider: Isp) -> int:
         system_page = get(opener, "/system")
         check("badge-red" in system_page and IMPLANT.rsplit("/", 1)[1] in system_page,
               "the router's own check finds the planted module too, and says the software changed (ROADMAP SEC-15)")
-    if landed:
-        check_ids_ipv6(check, opener)
+    ids_held = check_ids_ipv6(check, opener) if landed else False
     check(vm.power_off(), "powered off")
     vm.kill()
     with persistence_partition(disk) as upper:
+        if not ids_held:  # say why, right here in the CI log
+            print_journal(upper, "fr-ai-ids.service", "-b", lines=40)
         firewall = journal(upper, "-b", "-u", "fr-firewall.service")
         check("WARNING: config.yaml could not be applied at boot, so the router runs the last config" in firewall
               and SPARE_DEVICE in firewall and "WireGuard up" in firewall,

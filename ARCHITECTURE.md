@@ -4263,6 +4263,14 @@ it), adds it to `ids_quarantine_mac`, and adds the device's IPv4
 addresses on the LAN to `ids_quarantine`. Without a MAC on a LAN link it
 refuses. `excluded_macs` applies to a MAC key directly. The AI IDS
 screen lists the MACs held, since an IPv6 host has no IPv4 entry.
+- *Found on the way:* the conntrack sample went through the helper
+  socket's 64 KiB response limit, about 500 flows. A busy LAN, or a scan
+  of a few hundred ports, made every sample fail, and the IDS saw no
+  connections at all -- for either family, and for as long as the scan
+  or the load lasted. The boot test's IPv6 scan showed it. The sample
+  has a limit of its own now (`CONNTRACK_SAMPLE_MAX_BYTES`, 16 MiB), and
+  the helper sends at most 65,536 flows; every other response keeps
+  64 KiB.
 - *Known limit:* a dual-stack host's IPv4 traffic (by address) and its
   IPv6 traffic (by MAC) are scored apart, so a scan split evenly across
   the families counts half on each side.
@@ -4293,12 +4301,14 @@ every address its MAC has, and round-trips an IPv6 sign-in through real
 nft sets; `tests/test_helper.py` covers the helper's sign-in (both
 families, both tunnel addresses), the conntrack labels and the IPv6
 quarantine; `tests/test_ai_ids_daemon.py` the MAC keys, exclusion and
-enforcement. In the boot test: with management over IPv6 on, a drop rule
+enforcement. In the boot test (the rules are written into config.yaml ahead of first
+boot's `lan-to-wan` accept: the Rules screen appends, where it would
+shadow them): with management over IPv6 on, a drop rule
 naming the provider's IPv6 address holds over IPv6 and the LAN zone
 keeps IPv6; a ZTNA sign-in over IPv6 at the router's stable address
 opens the gated port from the device's delegated address too. In boot 4
 the AI IDS (turned on in boot 3; it starts at boot) quarantines a second
-LAN host that scans the provider's ports over IPv6, by its MAC: held on
+LAN host that scans 1,000 of the provider's ports over IPv6, by its MAC: held on
 every address, one it hadn't used too, while the first host still gets
 through.
 

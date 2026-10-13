@@ -125,3 +125,12 @@ COMMANDS = (
 #: Maximum accepted request/response line length, to bound memory use from
 #: a misbehaving or malicious local peer.
 MAX_LINE_BYTES = 64 * 1024
+
+#: The one larger response: the "conntrack_sample" for the AI IDS. A
+#: flow is about 100-150 bytes of JSON, so 64 KiB held some 500 flows: a
+#: busy LAN -- or a scan of a few hundred ports -- made every sample fail,
+#: and the IDS saw no connections at all (found in ROADMAP FND-1d's boot
+#: test). The helper sends at most CONNTRACK_SAMPLE_MAX_FLOWS flows,
+#: which fit in this.
+CONNTRACK_SAMPLE_MAX_FLOWS = 65536
+CONNTRACK_SAMPLE_MAX_BYTES = 16 * 1024 * 1024

@@ -43,7 +43,7 @@ from frfw.config.export import refresh_sensor_copy, write_sensor_copy
 from frfw.config.loader import internet_facing_zones
 from frfw.conntrack import ConntrackError
 from frfw.helper.peer import PeerPolicy, peer_credentials
-from frfw.helper.protocol import MAX_LINE_BYTES
+from frfw.helper.protocol import CONNTRACK_SAMPLE_MAX_FLOWS, MAX_LINE_BYTES
 from frfw.hwinfo import HwInfoError
 from frfw.ids_quarantine import IdsQuarantineError
 from frfw.ifaddr import IfaddrError
@@ -528,7 +528,9 @@ def _handle_conntrack_sample(server: "ApplyHelperServer") -> dict:
     changes don't change, and reading the table needs root it doesn't
     have. A source without one (the router itself, the internet) gets no
     label, and the IDS leaves it alone."""
-    flows = conntrack.read_snapshot()
+    # Bounded, so the response fits CONNTRACK_SAMPLE_MAX_BYTES; the
+    # kernel's own table limit is usually below this anyway.
+    flows = conntrack.read_snapshot()[:CONNTRACK_SAMPLE_MAX_FLOWS]
     macs = ids_quarantine.lan_neighbours(_lan_devices(server), "-6") if any(":" in f.src for f in flows) else {}
     out = []
     for f in flows:

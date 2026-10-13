@@ -523,6 +523,28 @@ def test_quarantine_ip_holds_an_ipv6_host_by_its_mac(running_server, neighbours,
     assert response["ok"] is False and "no MAC" in response["message"]
 
 
+def test_a_large_conntrack_sample_reaches_the_ids(running_server, monkeypatch):
+    """Found in ROADMAP FND-1d's boot test: a sample of a few hundred flows
+    passed the 64 KiB response limit, so a busy LAN -- or a scan of a
+    thousand ports -- left the AI IDS blind. The sample has a limit of its
+    own, and the helper bounds the number of flows to it."""
+    from frfw import conntrack as conntrack_mod
+    from frfw.helper import protocol
+    flows = [conntrack_mod.ConntrackFlow("tcp", "2001:db8:100::a1", 40000 + i % 20000, "2001:db8:1::1", 20000 + i)
+             for i in range(5000)]
+    monkeypatch.setattr(conntrack_mod, "read_snapshot", lambda: flows)
+    sample = client.conntrack_sample(running_server)["flows"]
+    assert len(sample) == 5000 and sample[-1]["dport"] == 24999
+    from frfw.helper import server as server_mod
+    monkeypatch.setattr(server_mod, "CONNTRACK_SAMPLE_MAX_FLOWS", 10)
+    assert len(client.conntrack_sample(running_server)["flows"]) == 10
+    monkeypatch.setattr(server_mod, "CONNTRACK_SAMPLE_MAX_FLOWS", protocol.CONNTRACK_SAMPLE_MAX_FLOWS)
+    monkeypatch.setattr(conntrack_mod, "read_snapshot", lambda: flows)
+    # Every other response keeps the 64 KiB limit.
+    with pytest.raises(client.HelperError, match="size limit"):
+        client.send_command({"cmd": "conntrack_sample"}, running_server)
+
+
 def test_the_conntrack_sample_labels_ipv6_lan_sources_with_their_mac(running_server, monkeypatch):
     """ROADMAP FND-1d: the IDS scores an IPv6 host by MAC; only root reads
     the neighbour table, so the sample carries it -- for a LAN neighbour
