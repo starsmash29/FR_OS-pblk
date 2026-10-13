@@ -59,3 +59,22 @@ def test_timezone_is_saved_validated_and_cleared(logged_in_client, webui_env):
 
     logged_in_client.post("/rules/timezone", data={"timezone": ""})
     assert load_config(webui_env["config_path"]).timezone is None
+
+
+def test_a_rule_takes_several_addresses_of_either_family(logged_in_client, webui_env):
+    """ROADMAP FND-1d: the form's address fields take networks of both
+    families, separated by commas -- a list in the config; one stays a
+    string."""
+    _seed_wan_lan(logged_in_client)
+    r = logged_in_client.post("/rules/add", data={
+        "name": "no-nas", "action": "drop", "from_zone": "lan", "to_zone": "wan",
+        "src_address": "192.168.1.50/32, 2001:db8:1::50 ,", "dst_address": "198.51.100.0/24",
+    })
+    assert "success" in r.headers["location"], r.headers["location"]
+    rule = load_config(webui_env["config_path"]).rules[0]
+    assert rule.src_address == ("192.168.1.50/32", "2001:db8:1::50/128")
+    assert rule.dst_address == ("198.51.100.0/24",)
+    r = logged_in_client.post("/rules/add", data={
+        "name": "bad", "action": "drop", "from_zone": "lan", "to_zone": "wan", "src_address": "fe80::1%eth1",
+    })
+    assert "error=" in r.headers["location"]

@@ -206,22 +206,21 @@ def _rule_matches(rule: Rule, zone: str, proto: str, port: int, family: int) -> 
         return False
     if rule.dst_port is not None and not _port_matches(rule.dst_port, port):
         return False
-    # `ip saddr`/`ip daddr` matches (addresses, the ZTNA set) never match IPv6.
-    if family == 6 and (rule.src_address or rule.dst_address or rule.require_ztna):
-        return False
-    return True
+    # A rule by address matches the families it names addresses of
+    # (ROADMAP FND-1d); the ZTNA sets hold both.
+    return family in rule.families
 
 
 def _conditions(rule: Rule) -> list[str]:
     out = []
     if rule.src_address:
-        out.append(f"from {rule.src_address}")
+        out.append(f"from {', '.join(rule.src_address)}")
     if rule.src_mac:
         out.append(f"from device {rule.src_mac}")
     if rule.require_ztna:
         out.append("ZTNA-signed-in clients")
     if rule.dst_address:
-        out.append(f"to {rule.dst_address}")
+        out.append(f"to {', '.join(rule.dst_address)}")
     if rule.schedule is not None:
         out.append("on a schedule")
     return out

@@ -101,6 +101,11 @@ class Rule:
     alongside it: "accept this specific zone/port combination, but only
     from ZTNA-authorized sources" is just one more match condition on an
     ordinary rule, not a different kind of rule.
+
+    `src_address`/`dst_address` are networks of either family, one or a
+    list of them (ROADMAP FND-1d): the rule is rendered once per family
+    every address field it has names (`families`), `ip saddr` for IPv4
+    and `ip6 saddr` for IPv6.
     """
 
     name: str
@@ -109,8 +114,9 @@ class Rule:
     to_zone: str | None = None
     proto: Protocol = Protocol.ANY
     dst_port: str | None = None
-    src_address: str | None = None
-    dst_address: str | None = None
+    #: Normalized networks (`ipaddress.ip_network(..., strict=False)`).
+    src_address: tuple[str, ...] | None = None
+    dst_address: tuple[str, ...] | None = None
     log: bool = False
     require_ztna: bool = False
     #: Source MAC address (lowercase aa:bb:cc:dd:ee:ff), phase 17 -- names
@@ -121,6 +127,28 @@ class Rule:
     #: longer matches. The kernel enforces it (`meta time`), and rulesets
     #: built after it leave the rule out.
     expires: int | None = None
+
+    def networks(self, field_name: str, version: int) -> tuple[str, ...]:
+        """The networks of family `version` (4 or 6) in `src_address` or
+        `dst_address`."""
+        return tuple(n for n in getattr(self, field_name) or ()
+                     if ipaddress.ip_network(n).version == version)
+
+    @property
+    def families(self) -> frozenset[int]:
+        """The address families the rule can match: both without an
+        address; with addresses, those every address field names."""
+        out = {4, 6}
+        for field_name in ("src_address", "dst_address"):
+            if getattr(self, field_name):
+                out &= {v for v in (4, 6) if self.networks(field_name, v)}
+        return frozenset(out)
+
+    @property
+    def ipv4_addresses_only(self) -> bool:
+        """It names addresses, and no IPv6 ones: over IPv6 the hosts it
+        names get around it (ROADMAP FND-1b, FND-1d)."""
+        return bool(self.src_address or self.dst_address) and 6 not in self.families
 
 
 @dataclass(frozen=True)

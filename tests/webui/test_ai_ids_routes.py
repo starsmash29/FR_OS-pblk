@@ -52,6 +52,15 @@ def test_page_shows_currently_quarantined_hosts(logged_in_client, webui_env):
     assert "3599s" in response.text
 
 
+def test_page_shows_a_host_held_by_its_mac(logged_in_client, webui_env):
+    """ROADMAP FND-1d: an IPv6 host is held by its MAC alone; it has no
+    IPv4 entry to show, so the MAC is listed."""
+    webui_env["helper"].quarantined_macs = {"aa:bb:cc:dd:ee:0a": 7100}
+    response = logged_in_client.get("/ai-ids")
+    assert "No hosts currently quarantined" not in response.text
+    assert "MAC aa:bb:cc:dd:ee:0a (all its IPv6 addresses)" in response.text and "7100s" in response.text
+
+
 def test_page_shows_no_hosts_quarantined_message_when_empty(logged_in_client):
     response = logged_in_client.get("/ai-ids")
     assert "No hosts currently quarantined" in response.text

@@ -69,6 +69,10 @@ def jail_key(ip: str) -> str:
     The host itself is held by its MAC instead -- device_key for
     counting, ban_ip for the jail."""
     address = ipaddress.ip_address(ip)
+    if address.version == 6 and address.scope_id is not None:
+        # Any text after a `%` parses as a scope, and str() gives it back
+        # -- into the nft command (frfw.validate.ipv6).
+        raise ValueError("no scope (%) allowed")
     if address.version == 6 and address.ipv4_mapped is not None:
         return str(address.ipv4_mapped)
     return str(address)

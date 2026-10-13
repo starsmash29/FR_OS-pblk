@@ -94,8 +94,8 @@ rules:
     to_zone: self           # optional, absent = any zone; "self" = the router itself
     proto: tcp               # optional, default: any; any|tcp|udp|icmp
     dst_port: 22               # optional, only with proto: tcp/udp; int or a "1000-2000" range string
-    src_address: 10.0.0.0/24    # optional, IPv4 address/network
-    dst_address: 10.0.0.5         # optional, IPv4 address/network
+    src_address: 10.0.0.0/24    # optional, IPv4 or IPv6 address/network, or a list of them
+    dst_address: 10.0.0.5         # optional, IPv4 or IPv6 address/network, or a list of them
     src_mac: aa:bb:cc:dd:ee:ff     # optional, source MAC address (a device, whatever its IP)
     log: false                     # optional, default: false
     schedule:                      # optional, default: always
@@ -109,6 +109,29 @@ rules:
 With `to_zone: self`, the rule goes into the `input` chain (no `oifname`
 constraint, since the destination is the router itself); otherwise into
 the `forward` chain.
+
+### Addresses of either family (ROADMAP FND-1d)
+
+`src_address` and `dst_address` take one network or a list of them, IPv4
+or IPv6, mixed: `src_address: [192.168.1.50, "2001:db8:1::/48"]`. A bare
+address is a single host (`/32`, `/128`); host bits are cleared
+(`10.0.0.5/24` is `10.0.0.0/24`), repeats dropped. An address with a
+scope (`fe80::1%eth0`) is refused: the scope is free text, and it would
+reach the ruleset (security-lessons F1).
+
+The rule is rendered once per family it names, each line with that
+family's networks only (`ip saddr`, `ip6 saddr`). A family only one of
+the two fields names gets no line: `src_address: [10.0.0.0/24,
+2001:db8::/32]` with `dst_address: 198.51.100.7` matches IPv4 only. When
+the two fields share no family the rule could never match, and is
+refused. A rule without addresses matches both families, as before.
+
+A drop/reject rule by IPv4 address only still keeps its zone off IPv6
+(see `ipv6.lan_zones`); one that names the IPv6 networks too doesn't.
+For a LAN host, `src_mac` is usually the better key: the host picks its
+own IPv6 addresses, and a temporary (privacy) address changes daily.
+
+On the Rules screen, separate several networks with commas.
 
 ### Temporary rules and the rule check (security-lessons K2)
 
@@ -216,7 +239,15 @@ ai_ids:
 (`dhcp.<zone>.reservations`) at daemon startup, into the set of IP
 addresses that are never scored or quarantined (e.g. a backup server
 that legitimately opens many connections). A MAC with no matching
-reservation currently excludes nothing.
+reservation excludes nothing over IPv4.
+
+Over IPv6 (ROADMAP FND-1d) a LAN host is scored by its MAC, which the
+router's neighbour table has for it, not by its addresses: it picks
+those itself and can change them at will. A flagged host is quarantined
+by its MAC (all its IPv6 addresses, an address it hasn't used yet too)
+and its IPv4 addresses on the LAN. `excluded_macs` applies to it
+directly. Its IPv4 and IPv6 traffic are still scored apart (one by
+address, one by MAC).
 
 Note: `enabled`/`excluded_macs`/`quarantine_duration_seconds` are only
 picked up when the `fr-ai-ids` daemon (re)starts -- like several other
@@ -367,10 +398,11 @@ ipv6:
   reach the same place over IPv6. Such a zone is left out of the default
   and refused in an explicit `lan_zones`, with the reason:
   - a forward `drop`/`reject` rule with `src_address`/`dst_address`
-    (IPv4 networks) that names the zone or no zone. Block the host by
-    MAC (`src_mac`) instead. A rule whose traffic comes from an
-    internet-facing zone doesn't count, since nothing new comes in from
-    the internet over IPv6.
+    naming IPv4 networks only, for the zone or no zone. Block the host
+    by MAC (`src_mac`) instead, or name its IPv6 networks in the rule
+    too (FND-1d). A rule whose traffic comes from an internet-facing
+    zone doesn't count, since nothing new comes in from the internet
+    over IPv6.
   - (Until FND-1d the XDP SNI filter, and with it app control, kept its
     devices' zones off IPv6 too. It reads IPv6 now.)
 - What the rules do over IPv6:
@@ -378,7 +410,11 @@ ipv6:
     matches IPv6 too (`meta l4proto`), and `proto: icmp` also matches
     ICMPv6.
   - IPv6 is routed only between the WAN and the LAN zones' devices.
-  - A LAN host may send only from its own network (BCP 38).
+  - A rule by address matches the families it names (FND-1d, see
+    `rules`); `require_ztna` asks for a sign-in over both.
+  - A LAN host may send only from its own network (BCP 38), and nothing
+    from the internet may claim a LAN-only address as its source
+    (FND-1d): a pinhole doesn't let a stranger pose as a LAN host.
   - Nothing new comes in from the internet over IPv6, whatever the rules
     say. A rule written for a port forward would otherwise open that
     port on every host of the zone.
@@ -711,9 +747,11 @@ management:
   asked (security-lessons F2/G4). It only adds addresses, so it is not a
   move of the webUI (`addresses`): the System screen's "Over IPv6"
   switch saves it like any setting, and Apply loads it. Refused while a
-  `drop`/`reject` rule by IPv4 address keeps hosts of such a zone off
-  22/443 -- it couldn't hold over IPv6. A ZTNA sign-in over IPv6 is not
-  possible yet (FND-1d): it says to use IPv4.
+  `drop`/`reject` rule by IPv4 address only keeps hosts of such a zone
+  off 22/443 -- it couldn't hold over IPv6; name the IPv6 networks in
+  it too (FND-1d). A ZTNA sign-in works over IPv6 since FND-1d: it
+  admits the device at every address its MAC has, both families
+  (ARCHITECTURE.md, "Rules, ZTNA and the AI IDS over IPv6").
 
 ## `update`
 
@@ -749,12 +787,9 @@ update:
 
 ## Known limitations
 
-- Only IPv4 addresses/networks are supported in `src_address`/
-  `dst_address`/`to_address`/`address` fields. A rule with one matches
-  IPv4 only, so a drop rule by address keeps its zone off IPv6
-  (`ipv6.lan_zones`) and is refused with `management.ipv6` when it
-  covers the webUI or SSH. Address rules in IPv6 are planned (ROADMAP
-  FND-1d).
+- `to_address` (port forwards) and interface `address` fields are IPv4
+  only. Rules' `src_address`/`dst_address` take both families since
+  ROADMAP FND-1d (see `rules`).
 - No hairpin/reflection NAT for port forwards (an internal client
   cannot reach its own WAN-side forwarded service via the public IP) --
   this can be added later if needed.

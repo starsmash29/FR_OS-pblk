@@ -47,12 +47,15 @@ def _ports(spec: str) -> tuple[int, int]:
     return int(lo), int(hi or lo)
 
 
-def _net_covers(outer: str | None, inner: str | None) -> bool:
+def _net_covers(outer: tuple[str, ...] | None, inner: tuple[str, ...] | None) -> bool:
+    """Every network of `inner` inside one of `outer`'s (None: any)."""
     if outer is None:
         return True
     if inner is None:
         return False
-    return ipaddress.ip_network(inner, strict=False).subnet_of(ipaddress.ip_network(outer, strict=False))
+    outers = [ipaddress.ip_network(n) for n in outer]
+    return all(any(i.version == o.version and i.subnet_of(o) for o in outers)
+               for i in (ipaddress.ip_network(n) for n in inner))
 
 
 def covers(a: Rule, b: Rule) -> bool:

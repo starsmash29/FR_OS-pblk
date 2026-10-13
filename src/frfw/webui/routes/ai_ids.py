@@ -59,6 +59,7 @@ def show_ai_ids(
 
     quarantine_status = helper.ids_quarantine_status()
     quarantined = quarantine_status.get("quarantined", []) if quarantine_status.get("ok") else []
+    quarantined_macs = quarantine_status.get("macs", []) if quarantine_status.get("ok") else []
     quarantine_error = None if quarantine_status.get("ok") else quarantine_status.get("message")
 
     return templates.TemplateResponse(
@@ -71,6 +72,7 @@ def show_ai_ids(
             "quarantine_duration_seconds": ai_ids_raw.get("quarantine_duration_seconds", 2 * 3600),
             "daemon_active": is_daemon_active(),
             "quarantined": quarantined,
+            "quarantined_macs": quarantined_macs,
             "quarantine_error": quarantine_error,
             "recent_events": list(reversed(load_recent_events(state_path))),
             "config_error": config_error,

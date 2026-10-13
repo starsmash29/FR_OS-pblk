@@ -31,12 +31,16 @@ boxes: the LAN must stay out of its way (ROADMAP NET-12).
    back by itself at the deadline. IPv6 is turned on against a test
    provider (ROADMAP FND-1): the router's WAN and LAN addresses, the LAN
    host's, its stable (ULA) address and DNS over IPv6, management over
-   IPv6 on and off again, and the admin's pinhole. At its end a config
-   is saved that names a device the VM doesn't have; its apply changes
-   nothing.
+   IPv6 on and off again, and the admin's pinhole. A rule by IPv6
+   address holds, and a ZTNA sign-in over IPv6 opens the port it gates
+   for the whole device (ROADMAP FND-1d). At its end the AI IDS is turned
+   on, and a config is saved that names a device the VM doesn't have;
+   its apply changes nothing.
 4. Fourth boot: config.yaml can't be applied (that device), so the router
    comes up with the config last applied in full, says so, raises a
-   security alert, and the webUI is reachable (ROADMAP SEC-5).
+   security alert, and the webUI is reachable (ROADMAP SEC-5). The AI
+   IDS, started at boot, quarantines a LAN host scanning over IPv6 by
+   its MAC (ROADMAP FND-1d).
 5. Fifth to eighth boot: a kernel staged on the persistence partition
    (ROADMAP SEC-14) -- the image's own, copied there by
    frfw.kernel_boot.stage() from the host, as the router would. Boot 5
@@ -72,6 +76,7 @@ import argparse
 import base64
 import hashlib
 import html
+import http.client
 import http.cookiejar
 import ipaddress
 import json
@@ -176,6 +181,49 @@ NEIGHBOUR_NS = "fr-lan2"
 NEIGHBOUR_LINK = "frlan2"
 #: The interface IDs it adds by hand, as an attacker picking addresses.
 JAIL_IIDS = ("::a1", "::a2", "::a3", "::a4", "::a5")
+#: ROADMAP FND-1d (1d-3), rules by IPv6 address, on the provider's
+#: closed ports (it refuses them, so "refused" means the router let the
+#: connection through): a drop rule naming IPv4 and IPv6 destinations
+#: holds one port; a ZTNA-gated accept, then a drop, the next one; the
+#: third has no rule.
+RULE_DROP_PORT = 8445
+ZTNA_GATED_PORT = 8446
+NO_RULE_PORT = 8447
+#: The ports the second LAN host scans (ROADMAP FND-1d), enough new
+#: connections in a minute for the AI IDS's connection-rate floor (5/s),
+#: at an address beyond the provider, which refuses them at once with an
+#: ICMPv6 error. Not at the provider's own closed ports: the kernel drops
+#: a connection's conntrack entry the moment a RST answers its SYN, so
+#: the IDS's sample never sees those (a known limit, ARCHITECTURE.md).
+SCAN_PORTS = range(20000, 21000)
+SCAN_TARGET = "2001:db8:dead::1"
+#: Those rules, ahead of first boot's lan-to-wan accept: the Rules screen
+#: adds a rule at the end, where that accept shadows it. Written into
+#: config.yaml before boot 3, like the pinhole.
+RULES_V6 = f"""\
+- name: boot-test-drop-v6
+  action: drop
+  from_zone: lan
+  to_zone: wan
+  proto: tcp
+  dst_port: {RULE_DROP_PORT}
+  dst_address: ["{BEYOND_HOST}", "{ISP_ADDRESS}"]
+- name: boot-test-ztna-v6
+  action: accept
+  from_zone: lan
+  to_zone: wan
+  proto: tcp
+  dst_port: {ZTNA_GATED_PORT}
+  dst_address: "{ISP_ADDRESS}"
+  require_ztna: true
+- name: boot-test-ztna-v6-closed
+  action: drop
+  from_zone: lan
+  to_zone: wan
+  proto: tcp
+  dst_port: {ZTNA_GATED_PORT}
+  dst_address: "{ISP_ADDRESS}"
+"""
 #: A WireGuard client (ROADMAP FND-1d, 1d-1): its link is made in the
 #: runner's namespace, so its UDP socket reaches the router over the LAN
 #: tap, then moved into a namespace of its own, where the tunnel is the
@@ -699,6 +747,105 @@ def check_ipv6_jail(check, ula: str, ula_network: ipaddress.IPv6Network, ula_sou
         neighbour = tcp_from_lan(ula, WEBUI_PORT, ula_source)
         check(neighbour == "open",
               f"...while the other LAN host on the same /64 still reaches the webUI over IPv6: {neighbour}")
+
+
+def ztna_sign_in_over_ipv6(router: str, source: str) -> str:
+    """A ZTNA sign-in from the LAN host, over IPv6 from `source`: where it
+    lands. The gate's sign-in needs no session (and so no CSRF token)."""
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    try:
+        c = http.client.HTTPSConnection(router, WEBUI_PORT, timeout=30, context=context,
+                                        source_address=(source, 0))
+        c.request("POST", "/ztna/login", urllib.parse.urlencode({"username": ZTNA_USERNAME,
+                                                                 "password": ZTNA_PASSWORD}),
+                  {"Content-Type": "application/x-www-form-urlencoded"})
+        response = c.getresponse()
+        return urllib.parse.unquote_plus(response.getheader("Location") or str(response.status))
+    except OSError as exc:
+        return f"error: {exc}"
+
+
+def check_ipv6_rules_and_ztna(check, ula: str, ula_source: str, source: str) -> None:
+    """ROADMAP FND-1d (1d-3), with management over IPv6 on: the drop rule
+    naming the provider's IPv6 address holds over IPv6 (and, naming IPv6
+    too, didn't take the LAN zone off it); the ZTNA-gated port is closed
+    until the LAN host signs in over IPv6 -- at its stable address -- and
+    then open from its delegated one too: a sign-in admits the device,
+    every address its MAC has."""
+    ping_from_lan(ISP_ADDRESS, source)  # the router knows the address's MAC
+    ports = {port: tcp_from_lan(ISP_ADDRESS, port, source) for port in (RULE_DROP_PORT, NO_RULE_PORT)}
+    check(ports == {RULE_DROP_PORT: "no answer", NO_RULE_PORT: "refused"},
+          f"a drop rule by IPv6 address holds over IPv6, and only for its port (ROADMAP FND-1d): {ports}")
+    before = tcp_from_lan(ISP_ADDRESS, ZTNA_GATED_PORT, source)
+    landed = ztna_sign_in_over_ipv6(ula, ula_source)
+    after = tcp_from_lan(ISP_ADDRESS, ZTNA_GATED_PORT, source)
+    check(before == "no answer" and "/ztna/status" in landed and "access granted" in landed
+          and after == "refused",
+          f"a ZTNA sign-in over IPv6 at the router's stable address opens the gated port from the device's "
+          f"other address too (ROADMAP FND-1d): before {before}, sign-in {landed[:200]}, after {after}")
+
+
+#: Run in the second host's namespace: argv is the source, the target and
+#: the first and last port. Sends each port one SYN, as a fast scanner
+#: does, without waiting for the answer: the provider rate-limits its
+#: ICMPv6 errors, and waiting for them made the scan too slow to count.
+#: A socket closed before an answer sends nothing more, and the router's
+#: conntrack entry stays (SYN_SENT). Prints how many SYNs went out.
+_SCAN = """\
+import socket, sys
+source, target, first, last = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
+sent = 0
+for port in range(first, last + 1):
+    s = socket.socket(socket.AF_INET6, socket.SOCK_STREAM); s.setblocking(False)
+    s.bind((source, 0))
+    sent += s.connect_ex((target, port)) in (0, 115)  # EINPROGRESS: the SYN is out
+    s.close()
+print(f"{sent} SYNs sent")
+"""
+
+
+def check_ids_ipv6(check, opener) -> bool:
+    """ROADMAP FND-1d (1d-3), in boot 4, with the AI IDS turned on in boot
+    3: a second LAN host scans a thousand ports over IPv6 (SCAN_TARGET). The IDS
+    scores it by its MAC (the helper labels the conntrack sample) and
+    quarantines it by its MAC: held on every address, one it hadn't used
+    too, while the first LAN host still gets through."""
+    pool = ipaddress.IPv6Network(PD_POOL)
+    with second_lan_host():
+        address = second_host_address(pool, timeout=180)
+        if not check(address is not None, "a second LAN host took a delegated address by SLAAC (boot 4)"):
+            return False
+        mac_file = f"/sys/class/net/{NEIGHBOUR_LINK}/address"
+        mac = subprocess.run(["ip", "netns", "exec", NEIGHBOUR_NS, "cat", mac_file],
+                             capture_output=True, text=True).stdout.strip()
+        before = from_second_host(ISP_ADDRESS, "tcp", [address])
+        scan = subprocess.run(["ip", "netns", "exec", NEIGHBOUR_NS, "python3", "-I", "-c", _SCAN, address,
+                               SCAN_TARGET, str(SCAN_PORTS[0]), str(SCAN_PORTS[-1])],
+                              capture_output=True, text=True, timeout=600)
+        page = ""
+        deadline = time.monotonic() + 240  # the IDS scores once a minute
+        while time.monotonic() < deadline:
+            page = get(opener, "/ai-ids")
+            if f"MAC {mac}" in page:
+                break
+            time.sleep(10)
+        held_mac = f"MAC {mac}" in page
+        check(before == ["refused"] and held_mac,
+              f"the AI IDS quarantines a LAN host scanning over IPv6 by its MAC, {mac} (ROADMAP FND-1d): scan "
+              f"{scan.stdout.strip() or scan.stderr[-200:]}, before {before}")
+        network = ipaddress.IPv6Interface(f"{address}/64").network
+        other = str(network.network_address + int(ipaddress.IPv6Address("::a6")))
+        subprocess.run(["ip", "netns", "exec", NEIGHBOUR_NS, "ip", "addr", "add", f"{other}/64", "dev",
+                        NEIGHBOUR_LINK, "nodad"], check=True)
+        held = from_second_host(ISP_ADDRESS, "tcp", [address, other])
+        check(held_mac and held == ["no answer", "no answer"],
+              f"...held by its MAC on every address, and on one it hadn't used yet: {held}")
+        first = next((a for a in lan_host_addresses() if a.ip in pool), None)
+        check(first is not None and ping_from_lan(ISP_ADDRESS, str(first.ip)),
+              f"...while the other LAN host still reaches the provider over IPv6: {first}")
+        return held_mac
 
 
 def _client_config_field(text: str, key: str) -> str | None:
@@ -1479,6 +1626,7 @@ def check_ipv6_services(check, opener, boot_timeout: float) -> bool:
     check(set(elsewhere.values()) == {"no answer"},
           f"...and not on its delegated address {router}, which the provider may change: {elsewhere}")
     check_ipv6_jail(check, ula, router_ula.network, ula_source)
+    check_ipv6_rules_and_ztna(check, ula, ula_source, source)
     for _ in range(5):  # the resolver was (re)started by the apply
         answer = dns_answer(ula, LOCAL_DNS_NAME, source=ula_source)
         if answer:
@@ -2125,7 +2273,10 @@ def run(args: argparse.Namespace, provider: Isp) -> int:
         text = config_file.read_text() if config_file.exists() else ""
         check(bool(text) and not re.search(r"^ipv6:", text, re.M),
               "first boot's config.yaml has no ipv6 section; the boot test's pinhole goes in by hand")
-        if text:
+        rules_at = re.search(r"^rules:\n(?=- )", text, re.M)
+        check(rules_at is not None, "first boot's config.yaml has rules; the boot test's IPv6 ones go first")
+        if text and rules_at:
+            text = text[:rules_at.end()] + RULES_V6 + text[rules_at.end():]
             config_file.write_text(text.rstrip("\n") + "\n" + PINHOLE_YAML)
         # A DHCP client on the LAN port flushed the router's own address on
         # the boots after this one (live-boot used to put one on every port).
@@ -2212,6 +2363,14 @@ def run(args: argparse.Namespace, provider: Isp) -> int:
               + ("" if "confirm it" in first else f": {first[:300]}"))
         wan_address = check_wan_ipv6(check, opener, provider)
         lan_host = check_lan_ipv6(check, opener, provider, wan_address)
+        # ROADMAP SEC-6: the ZTNA gate, with one user, signed in over IPv6
+        # (check_ipv6_rules_and_ztna) and over IPv4 below; ROADMAP FND-1d:
+        # it gates one of the rules by IPv6 address (RULES_V6_YAML).
+        post(opener, "/ztna/users/add", {"new_username": ZTNA_USERNAME, "new_password": ZTNA_PASSWORD})
+        post(opener, "/ztna/settings", {"enabled": "true", "session_ttl_seconds": "3600"})
+        rules_page = get(opener, "/rules")
+        check(all(name in rules_page for name in ("boot-test-drop-v6", "boot-test-ztna-v6")),
+              "the Rules screen lists the rules by IPv6 address written before boot 3 (ROADMAP FND-1d)")
         if lan_host:
             check_ipv6_services(check, opener, boot_timeout)
         else:  # the resolver's settings, for ROADMAP DNS-1 below
@@ -2232,9 +2391,6 @@ def run(args: argparse.Namespace, provider: Isp) -> int:
         # ROADMAP P4-1: the XDP SNI filter, on the image's own compiled
         # program, on the LAN port.
         post(opener, "/xdp/settings", {"enabled": "true", "interfaces": ["lan"], "blocklist": XDP_BLOCKED_NAME})
-        # ROADMAP SEC-6: the ZTNA gate, with one user, signed in below.
-        post(opener, "/ztna/users/add", {"new_username": ZTNA_USERNAME, "new_password": ZTNA_PASSWORD})
-        post(opener, "/ztna/settings", {"enabled": "true", "session_ttl_seconds": "3600"})
         try:
             applied = urllib.parse.unquote_plus(post(opener, "/apply", {}))
         except urllib.error.HTTPError as err:
@@ -2344,6 +2500,11 @@ def run(args: argparse.Namespace, provider: Isp) -> int:
             dashboard = get(opener, "/")
             check("An apply was not confirmed" in dashboard and "Load it to fix it" in dashboard,
                   "...and the dashboard says so, with the unconfirmed config kept")
+        # ROADMAP FND-1d: the AI IDS, which starts at boot -- in boot 4,
+        # where a LAN host scans over IPv6 (check_ids_ipv6).
+        ids_saved = urllib.parse.unquote_plus(post(opener, "/ai-ids/settings", {
+            "enabled": "true", "quarantine_duration_seconds": "7200"}))
+        check("AI IDS settings saved" in ids_saved, f"the AI IDS screen turns it on: {ids_saved[:300]}")
         # ROADMAP SEC-5: a config that can't be applied on this machine (a
         # device it doesn't have) changes nothing -- the ZTNA session in the
         # running ruleset is still there. It stays saved for boot 4.
@@ -2506,9 +2667,12 @@ def run(args: argparse.Namespace, provider: Isp) -> int:
         system_page = get(opener, "/system")
         check("badge-red" in system_page and IMPLANT.rsplit("/", 1)[1] in system_page,
               "the router's own check finds the planted module too, and says the software changed (ROADMAP SEC-15)")
+    ids_held = check_ids_ipv6(check, opener) if landed else False
     check(vm.power_off(), "powered off")
     vm.kill()
     with persistence_partition(disk) as upper:
+        if not ids_held:  # say why, right here in the CI log
+            print_journal(upper, "fr-ai-ids.service", "-b", lines=40)
         firewall = journal(upper, "-b", "-u", "fr-firewall.service")
         check("WARNING: config.yaml could not be applied at boot, so the router runs the last config" in firewall
               and SPARE_DEVICE in firewall and "WireGuard up" in firewall,

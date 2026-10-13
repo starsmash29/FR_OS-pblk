@@ -149,6 +149,15 @@ ZTNA_SET_NAME = "authenticated_ztna_users"
 #: on that interface. Same timeout and reload handling as ZTNA_SET_NAME.
 ZTNA_TUNNEL_SET_NAME = "authenticated_ztna_tunnel"
 
+#: The same two sets for IPv6 (ROADMAP FND-1d): `ipv6_addr . ether_addr`
+#: and the tunnel's IPv6 addresses. A sign-in admits the device, not the
+#: one address it signed in from: frfw.ztna.authorize_client puts every
+#: address the router's neighbour table holds for its MAC on that link
+#: into these sets and the IPv4 one, so a device signed in over IPv4 also
+#: reaches a `require_ztna` service over IPv6, and the other way round.
+ZTNA6_SET_NAME = "authenticated_ztna_users6"
+ZTNA_TUNNEL6_SET_NAME = "authenticated_ztna_tunnel6"
+
 #: IoT isolation set (phase 14, see frfw.iot_isolation and frfw.iot):
 #: MAC addresses (not IPs -- a DHCP renewal must not let a device slip
 #: out) the privileged apply-helper puts here, never this module.
@@ -591,7 +600,22 @@ def _render_ipv6_forward_guard(config: Config) -> list[str]:
         f"meta nfproto ipv6 iifname != {routed} drop {_comment('ipv6-not-routed-here')}",
         f"meta nfproto ipv6 oifname != {routed} drop {_comment('ipv6-not-routed-here')}",
         f"meta nfproto ipv6 iifname {_devices(lan)} fib saddr . iif oif missing drop {_comment('ipv6-lan-spoofed')}",
+        *_render_lan_source_from_wan(wan, lan),
     ]
+
+
+def _render_lan_source_from_wan(wan: list[str], lan: list[str]) -> list[str]:
+    """From the internet, a source the router routes to a LAN device is
+    spoofed (ROADMAP FND-1d): dropped. Not a strict reverse-path check on
+    the WAN -- with two providers the reply route may be the other one --
+    only the LAN's own networks, so a pinhole can't be used to make a LAN
+    host look like it opened connections it never did (the AI IDS scores
+    an IPv6 source by the MAC its address has on the LAN)."""
+    inside = [d for d in lan if d not in wan]
+    if not inside:
+        return []
+    return [f"meta nfproto ipv6 iifname {_devices(wan)} fib saddr oifname {_devices(inside)} drop "
+            f"{_comment('ipv6-lan-source-from-wan')}"]
 
 
 def _render_ipv6_no_inbound(config: Config) -> list[str]:
@@ -820,37 +844,45 @@ def _render_ztna_sets(config: Config, members: tuple[tuple[str, str, int], ...] 
     # config-derived: the only elements here are the sessions carried
     # over a reload (see this module's ZTNA_SET_NAME comment).
     ttl = config.ztna.session_ttl_seconds
-    device_items, tunnel_items = [], []
+    items: dict[str, list[str]] = {ZTNA_SET_NAME: [], ZTNA_TUNNEL_SET_NAME: [], ZTNA6_SET_NAME: [],
+                                   ZTNA_TUNNEL6_SET_NAME: []}
     for ip, mac, left in members:
         if int(left) <= 0:
             continue
-        address = ipaddress.IPv4Address(ip)  # re-validated: it comes from `nft -j` output
+        try:
+            address = ipaddress.ip_address(ip)  # re-validated: it comes from `nft -j` output
+        except ValueError:
+            continue
+        v6 = address.version == 6
         if mac:
             if not _MAC_RE.fullmatch(mac):
                 continue
-            device_items.append(f"{address} . {mac} timeout {int(left)}s")
+            items[ZTNA6_SET_NAME if v6 else ZTNA_SET_NAME].append(f"{address} . {mac} timeout {int(left)}s")
         else:
-            tunnel_items.append(f"{address} timeout {int(left)}s")
+            items[ZTNA_TUNNEL6_SET_NAME if v6 else ZTNA_TUNNEL_SET_NAME].append(f"{address} timeout {int(left)}s")
     out = []
-    for name, kind, items in ((ZTNA_SET_NAME, "ipv4_addr . ether_addr", device_items),
-                              (ZTNA_TUNNEL_SET_NAME, "ipv4_addr", tunnel_items)):
+    for name, kind in ((ZTNA_SET_NAME, "ipv4_addr . ether_addr"), (ZTNA_TUNNEL_SET_NAME, "ipv4_addr"),
+                       (ZTNA6_SET_NAME, "ipv6_addr . ether_addr"), (ZTNA_TUNNEL6_SET_NAME, "ipv6_addr")):
         out += [
             f"\tset {name} {{",
             f"\t\ttype {kind}",
             "\t\tflags dynamic,timeout",
             f"\t\ttimeout {ttl}s",
-            *([f"\t\telements = {{ {', '.join(items)} }}"] if items else []),
+            *([f"\t\telements = {{ {', '.join(items[name])} }}"] if items[name] else []),
             "\t}",
         ]
     return out
 
 
-#: What a `require_ztna` rule matches, one line each (ROADMAP SEC-6): a
-#: device on the router's own networks by its address and MAC, or a
-#: WireGuard client by its tunnel address, on the tunnel only.
+#: What a `require_ztna` rule matches, (family, match), one line each
+#: (ROADMAP SEC-6): a device on the router's own networks by its address
+#: and MAC, or a WireGuard client by its tunnel address, on the tunnel
+#: only -- over IPv4 and, since FND-1d, IPv6.
 ZTNA_MATCHES = (
-    f"ip saddr . ether saddr @{ZTNA_SET_NAME}",
-    f'iifname "{WIREGUARD_IFACE}" ip saddr @{ZTNA_TUNNEL_SET_NAME}',
+    (4, f"ip saddr . ether saddr @{ZTNA_SET_NAME}"),
+    (4, f'iifname "{WIREGUARD_IFACE}" ip saddr @{ZTNA_TUNNEL_SET_NAME}'),
+    (6, f"ip6 saddr . ether saddr @{ZTNA6_SET_NAME}"),
+    (6, f'iifname "{WIREGUARD_IFACE}" ip6 saddr @{ZTNA_TUNNEL6_SET_NAME}'),
 )
 
 
@@ -935,13 +967,28 @@ def _render_rule(rule: Rule, clock: ScheduleClock | None = None) -> list[str]:
     segment (frfw.nft.schedule.segments), all carrying the same comment.
     A `require_ztna` rule is rendered once per way a client can be signed
     in (ZTNA_MATCHES): nft has no "or" between set lookups of different
-    types."""
-    if rule.require_ztna:
-        return [line for match in ZTNA_MATCHES for line in _render_rule_lines(rule, clock, match)]
-    return _render_rule_lines(rule, clock, None)
+    types. A rule by address is rendered once per family it names
+    (Rule.families, ROADMAP FND-1d): `ip saddr` and `ip6 saddr` can't
+    share a line."""
+    addressed = bool(rule.src_address or rule.dst_address)
+    if not addressed and not rule.require_ztna:
+        return _render_rule_lines(rule, clock, None, None)
+    lines = []
+    for family in (4, 6):
+        if family not in rule.families:
+            continue
+        matches = [m for f, m in ZTNA_MATCHES if f == family] if rule.require_ztna else [None]
+        for match in matches:
+            lines += _render_rule_lines(rule, clock, family if addressed else None, match)
+    return lines
 
 
-def _render_rule_lines(rule: Rule, clock: ScheduleClock | None, ztna_match: str | None) -> list[str]:
+def _address_match(networks: tuple[str, ...]) -> str:
+    return networks[0] if len(networks) == 1 else f"{{ {', '.join(networks)} }}"
+
+
+def _render_rule_lines(rule: Rule, clock: ScheduleClock | None, family: int | None,
+                       ztna_match: str | None) -> list[str]:
     exprs: list[str] = []
 
     if rule.expires is not None:
@@ -970,10 +1017,12 @@ def _render_rule_lines(rule: Rule, clock: ScheduleClock | None, ztna_match: str 
 
     if rule.src_mac is not None:
         exprs.append(f"ether saddr {rule.src_mac}")
-    if rule.src_address is not None:
-        exprs.append(f"ip saddr {rule.src_address}")
-    if rule.dst_address is not None:
-        exprs.append(f"ip daddr {rule.dst_address}")
+    if family is not None:
+        keyword = "ip" if family == 4 else "ip6"
+        for field_name, direction in (("src_address", "saddr"), ("dst_address", "daddr")):
+            networks = rule.networks(field_name, family)
+            if networks:
+                exprs.append(f"{keyword} {direction} {_address_match(networks)}")
 
     if rule.log:
         exprs.append(f'log prefix "fr_os/{rule.name}: "')

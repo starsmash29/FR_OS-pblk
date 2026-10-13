@@ -54,13 +54,17 @@
   <h3>Currently quarantined hosts</h3>
   {% if quarantine_error %}
   <p class="flash-error">Could not read kernel quarantine state: {{ quarantine_error }}</p>
-  {% elif not quarantined %}
+  {% elif not quarantined and not quarantined_macs %}
   <p class="muted">No hosts currently quarantined.</p>
   {% else %}
   <table>
-    <tr><th>IP</th><th>Remaining</th></tr>
+    <tr><th>Held by</th><th>Remaining</th></tr>
     {% for q in quarantined %}
     <tr><td>{{ q.ip }}</td><td>{{ q.expires_in }}s</td></tr>
+    {% endfor %}
+    {# ROADMAP FND-1d: an IPv6 host is held by its MAC, on every address it picks. #}
+    {% for q in quarantined_macs %}
+    <tr><td class="quarantined-mac">MAC {{ q.mac }} (all its IPv6 addresses)</td><td>{{ q.expires_in }}s</td></tr>
     {% endfor %}
   </table>
   <p class="muted">No manual early-release action yet -- a quarantine expires on its own via the kernel's native timeout (see ARCHITECTURE.md's open issues).</p>
@@ -76,7 +80,7 @@
     <tr><th>IP</th><th>Score</th><th>Reasons</th><th>Conn. rate</th><th>Unique dst. ratio</th><th>SNI blocks</th><th>NXDOMAIN names</th><th>DGA-like</th><th>Threat lookups</th></tr>
     {% for e in recent_events %}
     <tr>
-      <td>{{ e.ip }}</td>
+      <td>{{ e.ip }}{% if e.mac %} (MAC {{ e.mac }}){% endif %}</td>
       <td>{{ e.score }}</td>
       <td>{{ e.reasons|join(", ") }}</td>
       <td>{{ e.conn_rate }}</td>

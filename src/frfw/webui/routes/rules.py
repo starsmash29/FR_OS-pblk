@@ -108,10 +108,12 @@ def add_rule(
         rule["proto"] = proto
     if dst_port.strip():
         rule["dst_port"] = int(dst_port) if dst_port.strip().isdigit() else dst_port.strip()
-    if src_address.strip():
-        rule["src_address"] = src_address.strip()
-    if dst_address.strip():
-        rule["dst_address"] = dst_address.strip()
+    for key, value in (("src_address", src_address), ("dst_address", dst_address)):
+        # Several networks, of either family, separated by commas
+        # (ROADMAP FND-1d): a list in the config; one stays a string.
+        networks = [n.strip() for n in value.split(",") if n.strip()]
+        if networks:
+            rule[key] = networks if len(networks) > 1 else networks[0]
     if log:
         rule["log"] = True
     if require_ztna:

@@ -43,7 +43,7 @@ from frfw.config.export import refresh_sensor_copy, write_sensor_copy
 from frfw.config.loader import internet_facing_zones
 from frfw.conntrack import ConntrackError
 from frfw.helper.peer import PeerPolicy, peer_credentials
-from frfw.helper.protocol import MAX_LINE_BYTES
+from frfw.helper.protocol import CONNTRACK_SAMPLE_MAX_FLOWS, MAX_LINE_BYTES
 from frfw.hwinfo import HwInfoError
 from frfw.ids_quarantine import IdsQuarantineError
 from frfw.ifaddr import IfaddrError
@@ -144,7 +144,7 @@ def _handle_request(request: dict, server: "ApplyHelperServer") -> dict:
             return _handle_ids_quarantine_status()
 
         if cmd == "conntrack_sample":
-            return _handle_conntrack_sample()
+            return _handle_conntrack_sample(server)
 
         if cmd == "bruteforce_status":
             return _handle_bruteforce_status()
@@ -297,18 +297,40 @@ def _handle_apply_status() -> dict:
             "rejected": apply_confirm.has_rejected()}
 
 
-def _ztna_client_mac(ip: str, config) -> str:
-    """Which client `ip` is, for the ZTNA gate (ROADMAP SEC-6): "" for a
-    WireGuard client -- an address in the tunnel's network, bound to its
-    key by WireGuard, and only ever matched on the tunnel (a TCP
-    connection from such an address can't complete from anywhere else:
-    the router's replies go into the tunnel) -- else the MAC the router
-    sees `ip` at in its own neighbour table. A client not directly
-    attached -- behind another router or NAT -- raises ztna.ClientNotDirect."""
-    address = ipaddress.IPv4Address(ip)
-    if config.wireguard.enabled and config.wireguard.address:
-        if address in ipaddress.IPv4Interface(config.wireguard.address).network:
-            return ""
+def _ztna_tunnel_twin(address: ipaddress.IPv4Address | ipaddress.IPv6Address, config) -> str | None:
+    """For a WireGuard client's tunnel address, its tunnel address of the
+    other family (frfw.wireguard.peer_address6: the same host number),
+    "" if it has none (no ULA prefix yet), None if `address` isn't in the
+    tunnel at all."""
+    if not (config.wireguard.enabled and config.wireguard.address):
+        return None
+    network4 = wireguard.tunnel_network(config.wireguard)
+    prefix = ipv6.ula_prefix(config)
+    network6 = ipv6.tunnel_network6(prefix) if prefix is not None else None
+    if address.version == 4 and address in network4:
+        host = int(address) - int(network4.network_address)
+        return "" if network6 is None else str(network6.network_address + host)
+    if network6 is not None and address.version == 6 and address in network6:
+        host = int(address) - int(network6.network_address)
+        return str(network4.network_address + host) if 0 < host < network4.num_addresses - 1 else ""
+    return None
+
+
+def _ztna_client(ip: str, config) -> tuple[str, list[str]]:
+    """Which client `ip` (IPv4 or IPv6) is, for the ZTNA gate (ROADMAP
+    SEC-6), and its other addresses (ROADMAP FND-1d): ("", its other
+    tunnel address) for a WireGuard client -- an address in the tunnel's
+    network, bound to its key by WireGuard, and only ever matched on the
+    tunnel (a TCP connection from such an address can't complete from
+    anywhere else: the router's replies go into the tunnel) -- else the
+    MAC the router sees `ip` at in its own neighbour table, and every
+    address the table holds for that MAC on that link. A client not
+    directly attached -- behind another router or NAT -- raises
+    ztna.ClientNotDirect."""
+    address = ipaddress.ip_address(ip)
+    twin = _ztna_tunnel_twin(address, config)
+    if twin is not None:
+        return "", [twin] if twin else []
     link = ztna.client_link(ip)
     if link is None:
         raise ztna.ClientNotDirect(
@@ -316,7 +338,12 @@ def _ztna_client_mac(ip: str, config) -> str:
             "NAT, so the router can't tell its devices apart and won't sign them all in at once. "
             "From outside, connect through the router's WireGuard VPN and sign in there."
         )
-    return link.mac
+    return link.mac, [a for a in ztna.device_addresses(link) if a != str(address)]
+
+
+def _ztna_client_mac(ip: str, config) -> str:
+    """_ztna_client's MAC alone (the status query)."""
+    return _ztna_client(ip, config)[0]
 
 
 def _handle_authorize_ztna(request: dict, server: "ApplyHelperServer") -> dict:
@@ -327,9 +354,11 @@ def _handle_authorize_ztna(request: dict, server: "ApplyHelperServer") -> dict:
     if not isinstance(username, str) or not username:
         return {"ok": False, "message": "'username' is required"}
     try:
-        ipaddress.IPv4Address(ip)
+        if "%" in ip:  # any text after a `%` parses as a scope (frfw.validate.ipv6)
+            raise ValueError("no scope (%) allowed")
+        ipaddress.ip_address(ip)
     except ValueError as exc:
-        return {"ok": False, "message": f"invalid IPv4 address {ip!r}: {exc}"}
+        return {"ok": False, "message": f"invalid IP address {ip!r}: {exc}"}
 
     config = load_config(server.config_path)
     if not config.ztna.enabled:
@@ -345,16 +374,19 @@ def _handle_authorize_ztna(request: dict, server: "ApplyHelperServer") -> dict:
     # ROADMAP SEC-6: the device, not just its address. Decided here, by
     # root, from the router's own view -- never from the request.
     try:
-        mac = _ztna_client_mac(ip, config)
+        mac, others = _ztna_client(ip, config)
     except ztna.ClientNotDirect as exc:
         return {"ok": False, "message": str(exc)}
-    ztna.authorize_client(ip, mac, config.ztna.session_ttl_seconds, username, state_path=server.ztna_state_path)
+    addresses = ztna.authorize_client(ip, mac, config.ztna.session_ttl_seconds, username, also=tuple(others),
+                                      state_path=server.ztna_state_path)
     basis = f"this device ({mac})" if mac else "your WireGuard key"
     return {
         "ok": True,
-        "message": f"{ip} authorized as {username!r} for {config.ztna.session_ttl_seconds}s, bound to {basis}",
+        "message": (f"{', '.join(addresses)} authorized as {username!r} for {config.ztna.session_ttl_seconds}s, "
+                    f"bound to {basis}"),
         "expires_in": config.ztna.session_ttl_seconds,
         "mac": mac,
+        "addresses": addresses,
     }
 
 
@@ -363,9 +395,11 @@ def _handle_ztna_status(request: dict, server: "ApplyHelperServer") -> dict:
     if not isinstance(ip, str) or not ip:
         return {"ok": False, "message": "'ip' is required"}
     try:
-        ipaddress.IPv4Address(ip)
+        if "%" in ip:  # any text after a `%` parses as a scope (frfw.validate.ipv6)
+            raise ValueError("no scope (%) allowed")
+        ipaddress.ip_address(ip)
     except ValueError as exc:
-        return {"ok": False, "message": f"invalid IPv4 address {ip!r}: {exc}"}
+        return {"ok": False, "message": f"invalid IP address {ip!r}: {exc}"}
     try:
         mac = _ztna_client_mac(ip, load_config(server.config_path))
     except ztna.ClientNotDirect:
@@ -468,7 +502,11 @@ def _handle_quarantine_ip(request: dict, server: "ApplyHelperServer") -> dict:
 
     mac = ids_quarantine.quarantine_ip(ip, duration_seconds, own_addresses=_router_addresses(server),
                                        lan_devices=_lan_devices(server))
-    held = f" (and its IPv6, by MAC {mac})" if mac else ""
+    if ":" in ip:
+        # ROADMAP FND-1d: an IPv6 host is held by its MAC, with its IPv4.
+        held = f" by its MAC {mac}, with its IPv4 addresses on the LAN"
+    else:
+        held = f" (and its IPv6, by MAC {mac})" if mac else ""
     return {"ok": True, "message": f"{ip} quarantined for {duration_seconds}s{held}"}
 
 
@@ -477,18 +515,35 @@ def _handle_ids_quarantine_status() -> dict:
         {"ip": ip, "expires_in": remaining}
         for ip, remaining in ids_quarantine.list_quarantined()
     ]
-    return {"ok": True, "quarantined": quarantined, "count": len(quarantined)}
+    # The MACs held (ROADMAP FND-1d): an IPv6 host is in no IPv4 list.
+    # `count` stays the IPv4 addresses' (the dashboard's and /metrics').
+    macs = [{"mac": mac, "expires_in": remaining} for mac, remaining in ids_quarantine.list_quarantined_macs()]
+    return {"ok": True, "quarantined": quarantined, "count": len(quarantined), "macs": macs}
 
 
-def _handle_conntrack_sample() -> dict:
-    flows = conntrack.read_snapshot()
-    return {
-        "ok": True,
-        "flows": [
-            {"proto": f.proto, "src": f.src, "sport": f.sport, "dst": f.dst, "dport": f.dport}
-            for f in flows
-        ],
-    }
+def _handle_conntrack_sample(server: "ApplyHelperServer") -> dict:
+    """The conntrack flows, an IPv6 source labelled with its MAC where the
+    router's neighbour table has one for it on a LAN link (ROADMAP
+    FND-1d): the AI IDS scores an IPv6 host by its MAC, which its address
+    changes don't change, and reading the table needs root it doesn't
+    have. A source without one (the router itself, the internet) gets no
+    label, and the IDS leaves it alone."""
+    # Bounded, so the response fits CONNTRACK_SAMPLE_MAX_BYTES; the
+    # kernel's own table limit is usually below this anyway.
+    flows = conntrack.read_snapshot()[:CONNTRACK_SAMPLE_MAX_FLOWS]
+    macs = ids_quarantine.lan_neighbours(_lan_devices(server), "-6") if any(":" in f.src for f in flows) else {}
+    out = []
+    for f in flows:
+        flow = {"proto": f.proto, "src": f.src, "sport": f.sport, "dst": f.dst, "dport": f.dport}
+        if ":" in f.src:
+            try:
+                mac = macs.get(str(ipaddress.ip_address(f.src)))
+            except ValueError:
+                mac = None
+            if mac:
+                flow["src_mac"] = mac
+        out.append(flow)
+    return {"ok": True, "flows": out}
 
 
 def _handle_bruteforce_status() -> dict:

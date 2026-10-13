@@ -37,15 +37,17 @@ def _fake_completed(returncode=0, stdout="", stderr=""):
     return subprocess.CompletedProcess(["nft"], returncode, stdout=stdout, stderr=stderr)
 
 
-def _sets(device=(), tunnel=()):
-    """`nft -j list set` output for the device set (address . MAC) or the
-    tunnel set (address), chosen by the set the call names."""
+def _sets(device=(), tunnel=(), device6=(), tunnel6=()):
+    """`nft -j list set` output for the device sets (address . MAC) or the
+    tunnel sets (address), IPv4 and IPv6, chosen by the set the call names."""
     def run(args):
         name = args[-1]
-        if name == ztna_mod.ZTNA_SET_NAME:
-            elems = [{"elem": {"val": {"concat": [ip, mac]}, "expires": left}} for ip, mac, left in device]
+        if name in (ztna_mod.ZTNA_SET_NAME, ztna_mod.ZTNA6_SET_NAME):
+            members = device if name == ztna_mod.ZTNA_SET_NAME else device6
+            elems = [{"elem": {"val": {"concat": [ip, mac]}, "expires": left}} for ip, mac, left in members]
         else:
-            elems = [{"elem": {"val": ip, "expires": left}} for ip, left in tunnel]
+            members = tunnel if name == ztna_mod.ZTNA_TUNNEL_SET_NAME else tunnel6
+            elems = [{"elem": {"val": ip, "expires": left}} for ip, left in members]
         return _fake_completed(stdout=json.dumps({"nftables": [{"set": {"elem": elems}}]}))
     return run
 
@@ -109,9 +111,51 @@ def test_get_authorization_needs_the_same_device_not_just_the_address(monkeypatc
 
 
 def test_list_and_snapshot_cover_both_sets(monkeypatch):
-    monkeypatch.setattr(ztna_mod, "_run_nft", _sets(device=[("10.0.0.5", MAC, 10)], tunnel=[("10.99.0.2", 20)]))
-    assert ztna_mod.list_authorized() == [("10.0.0.5", MAC, 10), ("10.99.0.2", "", 20)]
+    monkeypatch.setattr(ztna_mod, "_run_nft", _sets(device=[("10.0.0.5", MAC, 10)], tunnel=[("10.99.0.2", 20)],
+                                                    device6=[("fd00:1::5", MAC, 30)],
+                                                    tunnel6=[("fd00:2:ffff::2", 40)]))
+    assert ztna_mod.list_authorized() == [("10.0.0.5", MAC, 10), ("10.99.0.2", "", 20),
+                                          ("fd00:1::5", MAC, 30), ("fd00:2:ffff::2", "", 40)]
     assert ztna_mod.snapshot_before_reload() == ztna_mod.list_authorized()
+
+
+def test_a_device_is_authorized_at_every_address_it_has(monkeypatch, tmp_path):
+    """ROADMAP FND-1d: each address goes into its family's set, paired
+    with the device's MAC; a tunnel client's into the tunnel sets."""
+    calls = []
+    monkeypatch.setattr(ztna_mod, "_run_nft", lambda args: (calls.append(args), _fake_completed())[1])
+    added = ztna_mod.authorize_client("fd00:1::5", MAC, 60, "alice", also=("10.0.0.5", "fd00:1::5"),
+                                      state_path=tmp_path / "state.json")
+    assert added == ["fd00:1::5", "10.0.0.5"]
+    assert [c[4] for c in calls] == [ztna_mod.ZTNA6_SET_NAME, ztna_mod.ZTNA_SET_NAME]
+    assert calls[0][-2] == f"fd00:1::5 . {MAC} timeout 60s"
+    calls.clear()
+    ztna_mod.authorize_client("10.99.0.2", "", 60, "alice", also=("fd00:2:ffff::2",),
+                              state_path=tmp_path / "state.json")
+    assert [(c[4], c[-2]) for c in calls] == [(ztna_mod.ZTNA_TUNNEL_SET_NAME, "10.99.0.2 timeout 60s"),
+                                              (ztna_mod.ZTNA_TUNNEL6_SET_NAME, "fd00:2:ffff::2 timeout 60s")]
+
+
+def test_device_addresses_are_the_macs_on_its_link(monkeypatch):
+    """Every usable neighbour entry with the device's MAC on its link,
+    both families; not link-local ones, not another device's, not one
+    without an answer."""
+    calls = _neigh(monkeypatch, [
+        {"dst": "10.0.0.5", "dev": "eth1", "lladdr": MAC, "state": ["REACHABLE"]},
+        {"dst": "2001:db8:1:0:a8bb:ccff:fe00:1122", "dev": "eth1", "lladdr": MAC.upper(), "state": ["STALE"]},
+        {"dst": "fe80::a8bb:ccff:fe00:1122", "dev": "eth1", "lladdr": MAC, "state": ["REACHABLE"]},
+        {"dst": "fd00:1::7", "dev": "eth1", "lladdr": MAC, "state": ["FAILED"]},
+        {"dst": "10.0.0.9", "dev": "eth1", "lladdr": "aa:bb:cc:00:11:99", "state": ["REACHABLE"]},
+    ])
+    link = ztna_mod.ClientLink(mac=MAC, device="eth1")
+    assert ztna_mod.device_addresses(link) == ["10.0.0.5", "2001:db8:1:0:a8bb:ccff:fe00:1122"]
+    assert calls == [["ip", "-j", "neigh", "show", "dev", "eth1"]]
+
+
+def test_client_link_reads_an_ipv6_neighbour(monkeypatch):
+    calls = _neigh(monkeypatch, [{"dst": "fd00:1::5", "dev": "eth1", "lladdr": MAC, "state": ["REACHABLE"]}])
+    assert ztna_mod.client_link("fd00:1::5") == ztna_mod.ClientLink(mac=MAC, device="eth1")
+    assert calls == [["ip", "-j", "neigh", "show", "to", "fd00:1::5"]]
 
 
 def test_snapshot_before_reload_returns_empty_when_set_missing(monkeypatch):
@@ -175,9 +219,12 @@ def real_ztna_table(monkeypatch):
     monkeypatch.setattr(ztna_mod, "FILTER_TABLE", table)
     monkeypatch.setattr(ztna_mod, "ZTNA_SET_NAME", "authed_test")
     monkeypatch.setattr(ztna_mod, "ZTNA_TUNNEL_SET_NAME", "authed_tunnel_test")
+    monkeypatch.setattr(ztna_mod, "ZTNA6_SET_NAME", "authed6_test")
+    monkeypatch.setattr(ztna_mod, "ZTNA_TUNNEL6_SET_NAME", "authed_tunnel6_test")
 
     subprocess.run(["nft", "add", "table", "inet", table], check=True)
-    for name, kind in (("authed_test", "ipv4_addr . ether_addr"), ("authed_tunnel_test", "ipv4_addr")):
+    for name, kind in (("authed_test", "ipv4_addr . ether_addr"), ("authed_tunnel_test", "ipv4_addr"),
+                       ("authed6_test", "ipv6_addr . ether_addr"), ("authed_tunnel6_test", "ipv6_addr")):
         subprocess.run(["nft", f"add set inet {table} {name} {{ type {kind}; flags dynamic,timeout; }}"], check=True)
     yield table
     subprocess.run(["nft", "delete", "table", "inet", table], check=False)
@@ -194,6 +241,20 @@ def test_real_authorize_and_get_authorization_round_trip(real_ztna_table, tmp_pa
     assert auth is not None and auth.username == "alice" and 3590 <= auth.expires_in_seconds <= 3600
     assert ztna_mod.get_authorization("10.98.0.1", "aa:bb:cc:00:11:99", state_path=state_path) is None
     assert ztna_mod.get_authorization("10.99.0.1", "", state_path=state_path).username == "bob"
+
+
+@requires_nft
+@requires_root
+def test_real_ipv6_sign_in_round_trip(real_ztna_table, tmp_path):
+    """ROADMAP FND-1d: the IPv6 sets take the device's addresses, and the
+    lookup finds one written another way."""
+    state_path = tmp_path / "state.json"
+    ztna_mod.authorize_client("fd00:98::1", MAC, 3600, "alice", also=("10.98.0.9",), state_path=state_path)
+    ztna_mod.authorize_client("fd00:99::2", "", 3600, "bob", state_path=state_path)
+    assert ztna_mod.get_authorization("fd00:98:0::1", MAC, state_path=state_path).username == "alice"
+    assert ztna_mod.get_authorization("10.98.0.9", MAC, state_path=state_path) is not None
+    assert ztna_mod.get_authorization("fd00:99::2", "", state_path=state_path).username == "bob"
+    assert ztna_mod.get_authorization("fd00:98::1", "aa:bb:cc:00:11:99", state_path=state_path) is None
 
 
 @requires_nft
