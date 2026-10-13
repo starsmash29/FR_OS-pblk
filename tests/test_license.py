@@ -35,3 +35,14 @@ def test_exception_and_cla_are_where_the_docs_point():
         assert f"]({name})" in agents, name
     exception = (ROOT / "LICENSE-EXCEPTION.md").read_text()
     assert "section 7" in exception
+
+
+def test_legal_notice_covers_export_control_and_is_linked():
+    legal = (ROOT / "LEGAL.md").read_text()
+    assert "](LEGAL.md)" in (ROOT / "README.md").read_text()
+    assert "## International Compliance & Export Control" in legal
+    for url in ("https://www.sanctionsmap.eu/",
+                "https://ofac.treasury.gov/sanctions-programs-and-country-information",
+                "https://www.bis.gov/licensing/country-guidance"):
+        assert f"]({url} " in legal, url
+    assert "2021/821" in legal and '"AS IS"' in legal
