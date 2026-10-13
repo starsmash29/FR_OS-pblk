@@ -4657,7 +4657,7 @@ signature algorithms the client's TLS library offers.
 - **Not implemented: JA4+** (JA4S, JA4H, JA4T, JA4X, ...). Unlike JA4
   itself these are under the FoxIO License 1.1, which forbids
   monetization without an OEM license, and are patent pending -- checked
-  in FoxIO's own License FAQ before starting. An Apache-2.0 router OS that
+  in FoxIO's own License FAQ before starting. An open-source router OS that
   anyone may sell should not ship them.
 - Both implemented from the published specifications, no code copied.
 
