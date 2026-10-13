@@ -45,6 +45,11 @@ AI tool working on someone's behalf.
 
 ## Ground rules (not negotiable)
 
+**Licence**
+- FR_OS is under the GNU AGPLv3 ([LICENSE](LICENSE)), with a plugin exception ([LICENSE-EXCEPTION.md](LICENSE-EXCEPTION.md)).
+- Every contribution is accepted under the [Contributor License Agreement](CLA.md); opening a PR means agreeing to it.
+- Third-party code keeps its licence and must be compatible with the AGPLv3; name it in the PR.
+
 **Language and style**
 - Everything committed is in **English**: code, comments, docs, commit messages and UI text.
 - Match the surrounding code: its comment density, its naming, and its habit of saying *why* (with security-lessons or review IDs) in docstrings.

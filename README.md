@@ -1,6 +1,6 @@
 # FR_OS 🚀 (Firewall-Router Operating System)
 
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-blue.svg)](pyproject.toml)
 [![100%25 Local](https://img.shields.io/badge/Cloud%20dependency-none-brightgreen.svg)](ARCHITECTURE.md)
 
@@ -513,7 +513,19 @@ Full rationale for every phase: [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## License
 
-[Apache License 2.0](LICENSE).
+FR_OS is free software under the [GNU Affero General Public License v3.0](LICENSE)
+(`AGPL-3.0-only`). If you run a modified FR_OS and let others use it over a
+network (its webUI, for example), the AGPL asks you to offer them the source of
+your modified version.
+
+Plugins that only use FR_OS's plugin interface may be under any license:
+see the additional permission in [LICENSE-EXCEPTION.md](LICENSE-EXCEPTION.md).
+
+Code published before the switch to the AGPL (releases up to v0.2.1 and the
+commits after them on `main`) was released under the Apache License 2.0 and
+stays available under it. Third-party parts keep their own licenses (the
+Material Symbols icons and the vendored `.claude/skills/` are Apache-2.0; the
+eBPF programs in `bpf/` are GPL, as the kernel requires).
 
 ---
 
@@ -522,7 +534,8 @@ Full rationale for every phase: [ARCHITECTURE.md](ARCHITECTURE.md).
 Open work is listed with stable IDs in [ROADMAP.md, "Planned work"](ROADMAP.md#planned-work-open-for-contributors) --
 from small security fixes to multi-WAN, QoS and HA. How to claim an item, the
 rules every change follows and what "done" means (for people and AI agents
-alike): [AGENTS.md](AGENTS.md). Security issues: [SECURITY.md](SECURITY.md),
+alike): [AGENTS.md](AGENTS.md). Contributions are accepted under the
+[Contributor License Agreement](CLA.md). Security issues: [SECURITY.md](SECURITY.md),
 never a public issue.
 
 *Built for the homelab community. Contributions — especially real 10/40GbE hardware benchmarking (P4-2) and UEFI Secure Boot support (FND-3) — are welcome.*
