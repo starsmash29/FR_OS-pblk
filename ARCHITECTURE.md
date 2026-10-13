@@ -4271,6 +4271,13 @@ screen lists the MACs held, since an IPv6 host has no IPv4 entry.
   has a limit of its own now (`CONNTRACK_SAMPLE_MAX_BYTES`, 16 MiB), and
   the helper sends at most 65,536 flows; every other response keeps
   64 KiB.
+- *Known limit, both families (found in the same boot test):* the kernel
+  drops a connection's conntrack entry the moment a RST answers its SYN
+  (an unanswered, unassured connection), so a scan of a host's closed
+  ports leaves almost nothing for a 5-second sample to see. A scan of
+  addresses that don't answer, or answer with an ICMP error, is seen.
+  Catching the first needs conntrack's event stream (netlink) instead
+  of sampling: a follow-up.
 - *Known limit:* a dual-stack host's IPv4 traffic (by address) and its
   IPv6 traffic (by MAC) are scored apart, so a scan split evenly across
   the families counts half on each side.
@@ -4308,7 +4315,8 @@ naming the provider's IPv6 address holds over IPv6 and the LAN zone
 keeps IPv6; a ZTNA sign-in over IPv6 at the router's stable address
 opens the gated port from the device's delegated address too. In boot 4
 the AI IDS (turned on in boot 3; it starts at boot) quarantines a second
-LAN host that scans 1,000 of the provider's ports over IPv6, by its MAC: held on
+LAN host that scans 1,000 ports over IPv6 (beyond the provider, which
+refuses them), by its MAC: held on
 every address, one it hadn't used too, while the first host still gets
 through.
 

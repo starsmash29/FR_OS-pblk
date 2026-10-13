@@ -189,10 +189,14 @@ JAIL_IIDS = ("::a1", "::a2", "::a3", "::a4", "::a5")
 RULE_DROP_PORT = 8445
 ZTNA_GATED_PORT = 8446
 NO_RULE_PORT = 8447
-#: The ports the second LAN host scans at the provider (ROADMAP FND-1d):
-#: all refused at once, enough new connections in a minute for the AI
-#: IDS's connection-rate floor (5/s).
+#: The ports the second LAN host scans (ROADMAP FND-1d), enough new
+#: connections in a minute for the AI IDS's connection-rate floor (5/s),
+#: at an address beyond the provider, which refuses them at once with an
+#: ICMPv6 error. Not at the provider's own closed ports: the kernel drops
+#: a connection's conntrack entry the moment a RST answers its SYN, so
+#: the IDS's sample never sees those (a known limit, ARCHITECTURE.md).
 SCAN_PORTS = range(20000, 21000)
+SCAN_TARGET = "2001:db8:dead::1"
 #: Those rules, ahead of first boot's lan-to-wan accept: the Rules screen
 #: adds a rule at the end, where that accept shadows it. Written into
 #: config.yaml before boot 3, like the pinhole.
@@ -784,26 +788,28 @@ def check_ipv6_rules_and_ztna(check, ula: str, ula_source: str, source: str) -> 
 
 
 #: Run in the second host's namespace: argv is the source, the target and
-#: the first and last port. Prints how many connections were refused;
-#: gives up after 30 s (a port that doesn't answer costs a second).
+#: the first and last port. Prints how many connection attempts ended in
+#: each error; gives up after 30 s (a port that doesn't answer costs a
+#: second).
 _SCAN = """\
-import socket, sys, time
+import collections, errno, socket, sys, time
 source, target, first, last = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
-refused, deadline = 0, time.monotonic() + 30
+seen, deadline = collections.Counter(), time.monotonic() + 30
 for port in range(first, last + 1):
     if time.monotonic() > deadline:
         break
     s = socket.socket(socket.AF_INET6, socket.SOCK_STREAM); s.settimeout(1)
     s.bind((source, 0))
-    refused += s.connect_ex((target, port)) == 111
+    code = s.connect_ex((target, port))
+    seen[errno.errorcode.get(code, str(code))] += 1
     s.close()
-print(refused)
+print(dict(seen))
 """
 
 
 def check_ids_ipv6(check, opener) -> bool:
     """ROADMAP FND-1d (1d-3), in boot 4, with the AI IDS turned on in boot
-    3: a second LAN host scans the provider's ports over IPv6. The IDS
+    3: a second LAN host scans a thousand ports over IPv6 (SCAN_TARGET). The IDS
     scores it by its MAC (the helper labels the conntrack sample) and
     quarantines it by its MAC: held on every address, one it hadn't used
     too, while the first LAN host still gets through."""
@@ -817,7 +823,7 @@ def check_ids_ipv6(check, opener) -> bool:
                              capture_output=True, text=True).stdout.strip()
         before = from_second_host(ISP_ADDRESS, "tcp", [address])
         scan = subprocess.run(["ip", "netns", "exec", NEIGHBOUR_NS, "python3", "-I", "-c", _SCAN, address,
-                               ISP_ADDRESS, str(SCAN_PORTS[0]), str(SCAN_PORTS[-1])],
+                               SCAN_TARGET, str(SCAN_PORTS[0]), str(SCAN_PORTS[-1])],
                               capture_output=True, text=True, timeout=600)
         page = ""
         deadline = time.monotonic() + 240  # the IDS scores once a minute
@@ -828,8 +834,8 @@ def check_ids_ipv6(check, opener) -> bool:
             time.sleep(10)
         held_mac = f"MAC {mac}" in page
         check(before == ["refused"] and held_mac,
-              f"the AI IDS quarantines a LAN host scanning over IPv6 ({scan.stdout.strip() or scan.stderr[-200:]} "
-              f"ports refused) by its MAC, {mac} (ROADMAP FND-1d): before {before}")
+              f"the AI IDS quarantines a LAN host scanning over IPv6 by its MAC, {mac} (ROADMAP FND-1d): scan "
+              f"{scan.stdout.strip() or scan.stderr[-200:]}, before {before}")
         network = ipaddress.IPv6Interface(f"{address}/64").network
         other = str(network.network_address + int(ipaddress.IPv6Address("::a6")))
         subprocess.run(["ip", "netns", "exec", NEIGHBOUR_NS, "ip", "addr", "add", f"{other}/64", "dev",
