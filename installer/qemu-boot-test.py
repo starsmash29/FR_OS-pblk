@@ -788,22 +788,21 @@ def check_ipv6_rules_and_ztna(check, ula: str, ula_source: str, source: str) -> 
 
 
 #: Run in the second host's namespace: argv is the source, the target and
-#: the first and last port. Prints how many connection attempts ended in
-#: each error; gives up after 30 s (a port that doesn't answer costs a
-#: second).
+#: the first and last port. Sends each port one SYN, as a fast scanner
+#: does, without waiting for the answer: the provider rate-limits its
+#: ICMPv6 errors, and waiting for them made the scan too slow to count.
+#: A socket closed before an answer sends nothing more, and the router's
+#: conntrack entry stays (SYN_SENT). Prints how many SYNs went out.
 _SCAN = """\
-import collections, errno, socket, sys, time
+import socket, sys
 source, target, first, last = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
-seen, deadline = collections.Counter(), time.monotonic() + 30
+sent = 0
 for port in range(first, last + 1):
-    if time.monotonic() > deadline:
-        break
-    s = socket.socket(socket.AF_INET6, socket.SOCK_STREAM); s.settimeout(1)
+    s = socket.socket(socket.AF_INET6, socket.SOCK_STREAM); s.setblocking(False)
     s.bind((source, 0))
-    code = s.connect_ex((target, port))
-    seen[errno.errorcode.get(code, str(code))] += 1
+    sent += s.connect_ex((target, port)) in (0, 115)  # EINPROGRESS: the SYN is out
     s.close()
-print(dict(seen))
+print(f"{sent} SYNs sent")
 """
 
 
