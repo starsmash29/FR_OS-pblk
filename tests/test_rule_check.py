@@ -246,3 +246,30 @@ def test_the_cli(tmp_path, capsys):
     assert "everything: accepts everything" in capsys.readouterr().out
     path.write_text(yaml.safe_dump(_config([_rule("lan-out", from_zone="lan", to_zone="wan")])))
     assert cli.main(["rule-check", str(path)]) == 0
+
+
+def _ordered(path) -> list[str]:
+    return [r["name"] for r in (yaml.safe_load(path.read_text()).get("rules") or [])]
+
+
+def test_rule_move_cli(tmp_path, capsys):
+    """ROADMAP SEC-30: `firewall-cli rule-move` reorders config.yaml. It only
+    rewrites the file; Apply still waits for confirmation."""
+    path = tmp_path / "config.yaml"
+    rules = [_rule("a", from_zone="lan", to_zone="wan", proto="tcp", dst_port=1),
+             _rule("b", from_zone="lan", to_zone="wan", proto="tcp", dst_port=2),
+             _rule("c", from_zone="lan", to_zone="wan", proto="tcp", dst_port=3)]
+    path.write_text(yaml.safe_dump(_config(rules)))
+
+    assert cli.main(["rule-move", "c", "--up", "--config", str(path)]) == 0
+    assert "run `firewall-cli apply`" in capsys.readouterr().out
+    assert _ordered(path) == ["a", "c", "b"]
+
+    assert cli.main(["rule-move", "a", "--before", "b", "--config", str(path)]) == 0
+    assert _ordered(path) == ["c", "a", "b"]
+
+    # at the edge, and an unknown rule: exit 1, config untouched
+    assert cli.main(["rule-move", "c", "--up", "--config", str(path)]) == 1
+    assert "top" in capsys.readouterr().err
+    assert cli.main(["rule-move", "z", "--down", "--config", str(path)]) == 1
+    assert _ordered(path) == ["c", "a", "b"]

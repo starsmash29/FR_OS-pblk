@@ -5,7 +5,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, Form, Request
 
-from frfw import rule_hits, rule_lint
+from frfw import rule_hits, rule_lint, rule_order
 from frfw.config import ConfigError, parse_config
 from frfw.nft.schedule import WEEKDAY_KEYS, describe, is_active, local_minute_of_week
 from frfw.webui.actions import try_save
@@ -136,15 +136,50 @@ def add_rule(
     rules[:] = [r for r in rules if r.get("name") != name]  # replace if it already existed
     rules.append(rule)
 
+    # SEC-30: put the new rule where it takes effect -- just before the rule
+    # that would otherwise match all of it first and decide the other way,
+    # instead of at the end where it would never run.
+    placed_before = None
+    try:
+        placed_before = rule_order.place(rules, name, parse_config(raw))
+    except ConfigError:
+        pass  # try_save reports the real error below
+
     ok, message = try_save(raw, helper)
     if not ok:
         return redirect_with("/rules", error=message)
-    # Say it right away if the new rule trips the rule check (K2).
+    if placed_before:
+        return redirect_with("/rules", success=f"Rule {name!r} saved, placed above {placed_before!r}, "
+                             "which would have matched it first")
+    # Say it right away if the new rule still trips the rule check (K2).
     warnings = [f.message for f in rule_lint.lint(parse_config(raw), hits={})
                 if f.rule == name and f.severity == rule_lint.WARNING]
     if warnings:
         return redirect_with("/rules", error=f"Rule {name!r} saved, but it " + "; ".join(warnings))
     return redirect_with("/rules", success=f"Rule {name!r} saved")
+
+
+@router.post("/rules/move/{name}")
+def move_rule(
+    name: str,
+    direction: str = Form(...),
+    username: str = Depends(require_login),
+    raw: dict = Depends(get_raw_config),
+    helper: HelperClient = Depends(get_helper),
+):
+    """SEC-30: move a rule up or down the list, so the admin can fix the
+    order from the screen instead of editing config.yaml. Apply still waits
+    for confirmation afterwards (SEC-26)."""
+    if direction not in ("up", "down"):
+        return redirect_with("/rules", error="direction must be 'up' or 'down'")
+    moved, message = rule_order.swap(raw.get("rules") or [], name, direction)
+    if moved is None:
+        return redirect_with("/rules", error=message)
+    raw["rules"] = moved
+    ok, save_message = try_save(raw, helper)
+    if ok:
+        return redirect_with("/rules", success=message)
+    return redirect_with("/rules", error=save_message)
 
 
 @router.post("/rules/remove-expired")

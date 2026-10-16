@@ -26,6 +26,7 @@
     firewall-cli metrics-token (--generate | --disable) [--site NAME] [config.yaml]
     firewall-cli schedule-check [config.yaml]
     firewall-cli rule-check [config.yaml]
+    firewall-cli rule-move NAME (--up | --down | --before RULE) [--config config.yaml]
     firewall-cli update check [config.yaml]
     firewall-cli update auto [config.yaml]
     firewall-cli update apply VERSION [--repo OWNER/REPO]
@@ -64,7 +65,7 @@ import yaml
 
 from frfw import __version__, codename_for, netdetect, paths, schedule_refresh, skeleton, xdp as xdp_mod
 from frfw import accounts as accounts_mod
-from frfw import console_ports, initial_password, passwords, rule_hits, rule_lint, validate
+from frfw import console_ports, initial_password, passwords, rule_hits, rule_lint, rule_order, validate
 from frfw import persistence as persistence_mod
 from frfw import update as update_mod
 from frfw.adblock import AdblockError
@@ -442,6 +443,18 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     add_config_arg(p_rule_check)
     p_rule_check.set_defaults(handler=_cmd_rule_check)
+
+    p_rule_move = sub.add_parser(
+        "rule-move",
+        help="reorder a firewall rule in config.yaml (ROADMAP SEC-30); Apply still waits for confirmation",
+    )
+    p_rule_move.add_argument("name", help="the rule to move")
+    where = p_rule_move.add_mutually_exclusive_group(required=True)
+    where.add_argument("--up", action="store_true", help="one step earlier in the list")
+    where.add_argument("--down", action="store_true", help="one step later in the list")
+    where.add_argument("--before", metavar="RULE", help="put it just before this rule")
+    p_rule_move.add_argument("--config", default=str(paths.CONFIG_PATH))
+    p_rule_move.set_defaults(handler=_cmd_rule_move)
 
     p_apps_status = sub.add_parser(
         "apps-status",
@@ -1261,6 +1274,35 @@ def _cmd_rule_check(args: argparse.Namespace) -> int:
     for f in findings:
         print(f"{f.severity:<7} {f.rule}: {f.message}")
     return 1 if any(f.severity == rule_lint.WARNING for f in findings) else 0
+
+
+def _cmd_rule_move(args: argparse.Namespace) -> int:
+    """ROADMAP SEC-30: reorder a rule from the console, the same move the
+    Rules screen offers. Only config.yaml is rewritten; Apply still waits
+    for confirmation (SEC-26), so the order change takes effect on the next
+    apply."""
+    path = Path(args.config)
+    raw = yaml.safe_load(path.read_text()) or {}
+    rules = raw.get("rules") or []
+    if args.before is not None:
+        moved, message = rule_order.move_before(rules, args.name, args.before)
+    else:
+        moved, message = rule_order.swap(rules, args.name, "up" if args.up else "down")
+    if moved is None:
+        print(f"error: {message}", file=sys.stderr)
+        return 1
+    raw["rules"] = moved
+    new_text = yaml.safe_dump(raw, sort_keys=False)
+    try:
+        parse_config(yaml.safe_load(new_text))  # the reorder must still be a valid config
+    except ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    from frfw.transaction import write_keeping_owner
+
+    write_keeping_owner(path, new_text)
+    print(f"{message} -- run `firewall-cli apply` to put it into effect")
+    return 0
 
 
 def _cmd_apps_status(args: argparse.Namespace) -> int:
