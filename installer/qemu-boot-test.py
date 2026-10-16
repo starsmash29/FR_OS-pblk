@@ -31,9 +31,11 @@ boxes: the LAN must stay out of its way (ROADMAP NET-12).
    back by itself at the deadline. IPv6 is turned on against a test
    provider (ROADMAP FND-1): the router's WAN and LAN addresses, the LAN
    host's, its stable (ULA) address and DNS over IPv6, management over
-   IPv6 on and off again, and the admin's pinhole. A rule by IPv6
-   address holds, and a ZTNA sign-in over IPv6 opens the port it gates
-   for the whole device (ROADMAP FND-1d). At its end the AI IDS is turned
+   IPv6 on and off again, and the admin's pinhole. Rules by IPv6
+   address, added through the Rules screen where the screen places each
+   so it takes effect ahead of the lan-to-wan accept (ROADMAP SEC-30),
+   hold, and a ZTNA sign-in over IPv6 opens the port the gated one
+   covers for the whole device (ROADMAP FND-1d). At its end the AI IDS is turned
    on, and a config is saved that names a device the VM doesn't have;
    its apply changes nothing.
 4. Fourth boot: config.yaml can't be applied (that device), so the router
@@ -197,33 +199,24 @@ NO_RULE_PORT = 8447
 #: the IDS's sample never sees those (a known limit, ARCHITECTURE.md).
 SCAN_PORTS = range(20000, 21000)
 SCAN_TARGET = "2001:db8:dead::1"
-#: Those rules, ahead of first boot's lan-to-wan accept: the Rules screen
-#: adds a rule at the end, where that accept shadows it. Written into
-#: config.yaml before boot 3, like the pinhole.
-RULES_V6 = f"""\
-- name: boot-test-drop-v6
-  action: drop
-  from_zone: lan
-  to_zone: wan
-  proto: tcp
-  dst_port: {RULE_DROP_PORT}
-  dst_address: ["{BEYOND_HOST}", "{ISP_ADDRESS}"]
-- name: boot-test-ztna-v6
-  action: accept
-  from_zone: lan
-  to_zone: wan
-  proto: tcp
-  dst_port: {ZTNA_GATED_PORT}
-  dst_address: "{ISP_ADDRESS}"
-  require_ztna: true
-- name: boot-test-ztna-v6-closed
-  action: drop
-  from_zone: lan
-  to_zone: wan
-  proto: tcp
-  dst_port: {ZTNA_GATED_PORT}
-  dst_address: "{ISP_ADDRESS}"
-"""
+#: Those rules all belong ahead of first boot's lan-to-wan accept, or that
+#: accept would decide their traffic first. They are added through the Rules
+#: screen in boot 3 (ROADMAP SEC-30): the screen now puts each new rule where
+#: it takes effect -- the two drops and the ZTNA-gated accept all land in
+#: front of lan-to-wan on their own (the gated accept because an un-gated
+#: accept before it would never let the gate run). The form fields each POST
+#: /rules/add, with dst_address a comma-separated list the way a person types
+#: it. Order of addition does not matter; placement sorts them out.
+RULES_V6 = (
+    {"name": "boot-test-drop-v6", "action": "drop", "from_zone": "lan", "to_zone": "wan",
+     "proto": "tcp", "dst_port": str(RULE_DROP_PORT),
+     "dst_address": f"{BEYOND_HOST}, {ISP_ADDRESS}"},
+    {"name": "boot-test-ztna-v6", "action": "accept", "from_zone": "lan", "to_zone": "wan",
+     "proto": "tcp", "dst_port": str(ZTNA_GATED_PORT), "dst_address": ISP_ADDRESS,
+     "require_ztna": "true"},
+    {"name": "boot-test-ztna-v6-closed", "action": "drop", "from_zone": "lan", "to_zone": "wan",
+     "proto": "tcp", "dst_port": str(ZTNA_GATED_PORT), "dst_address": ISP_ADDRESS},
+)
 #: A WireGuard client (ROADMAP FND-1d, 1d-1): its link is made in the
 #: runner's namespace, so its UDP socket reaches the router over the LAN
 #: tap, then moved into a namespace of its own, where the tunnel is the
@@ -2273,10 +2266,10 @@ def run(args: argparse.Namespace, provider: Isp) -> int:
         text = config_file.read_text() if config_file.exists() else ""
         check(bool(text) and not re.search(r"^ipv6:", text, re.M),
               "first boot's config.yaml has no ipv6 section; the boot test's pinhole goes in by hand")
-        rules_at = re.search(r"^rules:\n(?=- )", text, re.M)
-        check(rules_at is not None, "first boot's config.yaml has rules; the boot test's IPv6 ones go first")
-        if text and rules_at:
-            text = text[:rules_at.end()] + RULES_V6 + text[rules_at.end():]
+        check(re.search(r"^rules:\n(?=- )", text, re.M) is not None,
+              "first boot's config.yaml has rules; the boot test's IPv6 ones are added through the Rules screen "
+              "in boot 3 (ROADMAP SEC-30)")
+        if text:
             config_file.write_text(text.rstrip("\n") + "\n" + PINHOLE_YAML)
         # A DHCP client on the LAN port flushed the router's own address on
         # the boots after this one (live-boot used to put one on every port).
@@ -2365,12 +2358,25 @@ def run(args: argparse.Namespace, provider: Isp) -> int:
         lan_host = check_lan_ipv6(check, opener, provider, wan_address)
         # ROADMAP SEC-6: the ZTNA gate, with one user, signed in over IPv6
         # (check_ipv6_rules_and_ztna) and over IPv4 below; ROADMAP FND-1d:
-        # it gates one of the rules by IPv6 address (RULES_V6_YAML).
+        # it gates one of the rules by IPv6 address (RULES_V6).
         post(opener, "/ztna/users/add", {"new_username": ZTNA_USERNAME, "new_password": ZTNA_PASSWORD})
         post(opener, "/ztna/settings", {"enabled": "true", "session_ttl_seconds": "3600"})
+        # ROADMAP SEC-30 / FND-1d (1d-3): add the rules by IPv6 address the
+        # way an admin does -- one POST /rules/add each, in the order typed.
+        # The screen puts each where it takes effect, ahead of first boot's
+        # lan-to-wan accept, so they are enforced without any hand-ordering.
+        placements = [urllib.parse.unquote_plus(post(opener, "/rules/add", fields)) for fields in RULES_V6]
+        check(all("success" in where for where in placements),
+              f"the Rules screen accepts the three rules by IPv6 address (ROADMAP FND-1d): {placements}")
+        check(any("placed above 'lan-to-wan'" in where for where in placements),
+              "...and says it moved a rule ahead of the lan-to-wan accept that would have matched it first "
+              f"(ROADMAP SEC-30): {placements}")
         rules_page = get(opener, "/rules")
-        check(all(name in rules_page for name in ("boot-test-drop-v6", "boot-test-ztna-v6")),
-              "the Rules screen lists the rules by IPv6 address written before boot 3 (ROADMAP FND-1d)")
+        order = re.findall(r"(boot-test-drop-v6|boot-test-ztna-v6|boot-test-ztna-v6-closed|lan-to-wan)", rules_page)
+        order = [name for i, name in enumerate(order) if name not in order[:i]]  # first mention of each
+        check(order == ["boot-test-drop-v6", "boot-test-ztna-v6", "boot-test-ztna-v6-closed", "lan-to-wan"],
+              "the Rules screen lists the three IPv6 rules ahead of lan-to-wan, the gated accept before its "
+              f"closing drop (ROADMAP SEC-30): {order}")
         if lan_host:
             check_ipv6_services(check, opener, boot_timeout)
         else:  # the resolver's settings, for ROADMAP DNS-1 below

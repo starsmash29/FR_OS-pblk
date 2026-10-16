@@ -1402,6 +1402,35 @@ built later leave it out. Its entry stays in config.yaml, marked
 expired, until the Rules screen's "Remove expired rules" clears it. The
 router never rewrites the admin's config on its own.
 
+### Rules go where they take effect (ROADMAP SEC-30)
+
+Reporting a shadowed rule is not enough when the screen itself creates
+the shadow. The Rules screen used to append each new rule to the end of
+the list, behind first boot's broad `lan-to-wan` accept, so a deny added
+by IPv6 address -- or a ZTNA-gated accept -- never matched. The only fix
+was to hand-edit config.yaml, which the FND-1d boot test had to do.
+
+`frfw.rule_order` closes that gap with the same `rule_lint.covers` test
+the check uses. On save, `place()` finds the **earliest shadower**: the
+first rule in the new rule's chain (input vs forward, and the
+`cut_established` group, which the builder evaluates first) that matches
+everything the new rule does and would stop it taking effect -- one that
+decides the other way, or an un-gated accept sitting in front of a
+ZTNA-gated accept, which would let the traffic through before the gate
+ever ran. The new rule is moved just before it, and the screen says
+which rule it moved ahead of. When nothing shadows it, it stays at the
+end. This only ever moves a rule the admin is adding, at the moment they
+add it, to where they clearly meant it to go; it never reorders the
+config on its own.
+
+An admin can also reorder by hand: ▲/▼ buttons on each row post to
+`/rules/move/{name}` (editor role, CSRF), and `firewall-cli rule-move
+NAME --up|--down|--before OTHER` does the same from the console. Both
+only rewrite config.yaml; Apply still waits for confirmation (SEC-26),
+so a reorder that would cut the admin off is caught like any other. The
+boot test adds its three IPv6/ZTNA rules through the Rules screen and
+checks placement orders them ahead of `lan-to-wan` on its own.
+
 ### Security updates are loud (security-lessons G10)
 
 `fr-update-check.timer` runs `firewall-cli update auto` ten minutes
