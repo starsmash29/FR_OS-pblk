@@ -1,11 +1,16 @@
 # Integrator handover
 
 State and working agreements for the next session of the integrating agent
-(Claude Code), so work picks up where it stopped. Last updated 2026-10-12,
-`main` at `6ad07e5`.
+(Claude Code), so work picks up where it stopped. Last updated 2026-10-27,
+`main` at `aa4cc63`.
 
 ## How the owner and the integrator work
 
+- **Working loop.** `.claude/skills/ecc-workflow/` (#102) is the order of
+  work for every change: plan, research first, test first, fresh-eyes review,
+  verify, hand over (this file), learn. This file and AGENTS.md win on any
+  conflict. Even under a deadline (hackathon, demo) the plan comes first and
+  nothing is edited before the owner's "Mehet" (owner's decision, 2026-10-27).
 - **Language.** Chat with the owner is in Hungarian. Everything committed
   is in English (AGENTS.md).
 - **One item per PR.** The sequence for each one:
@@ -63,6 +68,12 @@ State and working agreements for the next session of the integrating agent
 | #94 | FND-1d (H3) | The brute-force jail over IPv6 per host, by MAC (`bruteforce_jail_mac`, helper `source_device`), instead of 1c's /64 |
 | #95 | FND-1d (1d-1) | WireGuard over IPv6 (`<ULA>:ffff::/64`), full tunnel always `::/0` (H1 leak), the tunnel's IPv6 to the LAN ULAs only, the rest refused |
 | #96 | FND-1d (1d-2) | The XDP SNI filter over IPv6 (`xdp_sni_filter6` by tail call), TCP fragments dropped (H2), 16-byte addresses in events and keys |
+| #97 | FND-1d (1d-3) | Address rules, ZTNA and the AI IDS over IPv6: rules per family, a ZTNA sign-in admits the device at every address of its MAC, the IDS scores and quarantines an IPv6 host by MAC, `%scope` refused everywhere. FND-1 is complete |
+| #98 | Licence | Relicensed under the GNU AGPLv3 with a plugin exception, and a CLA |
+| #99 | Legal | `LEGAL.md`: export control and the regulatory compliance disclaimer |
+| #100 | Licence | Plugin exception dropped: pure AGPLv3, with trademark and contribution rules |
+| #101 | SEC-30 | A new rule from the Rules screen goes just before the first rule that would stop it taking effect (`frfw.rule_order`); ▲/▼ on each row and `firewall-cli rule-move`; the boot test adds the IPv6/ZTNA rules through the screen (boot 3) |
+| #102 | — | The `ecc-workflow` skill (see "Working loop" above), listed in `.claude/skills/VENDOR.md` |
 
 ## Hardware test (owner's box): passed
 
@@ -72,13 +83,21 @@ State and working agreements for the next session of the integrating agent
   - Mellanox ConnectX-3 Pro (dual QSFP, `enp2s0`/`enp2s0d1`), cable-less. Its FlexBoot *Virtualization mode* is now None (it was SR-IOV); Linux sees the card.
 - **Result (2026-10-10, ISO from run 37578866392, NET-13):** the LAN came out as `enp3s0`; the laptop reached `https://10.73.1.1/`, logged in, changed the password, and has internet through the router.
 - **Not yet verified on this hardware:**
+  - everything merged after the 2026-10-10 ISO, notably IPv6 (FND-1, #91–#97) and SEC-30 (#101);
   - generic-mode XDP with GRO off on r8169;
   - the ConnectX-3 under load (P4-2).
 - **Console access.** There is no console login user by design; everything goes through the webUI. The first-boot password shows on tty2 (Alt+F2).
 
+## Did not work, or don't retry
+
+- Running the suites under a Python other than 3.11: `test_the_offline_check_passes_a_clean_medium` fails, because it can't check the router's compiled files.
+- Running `tests` and `tests/webui` in one invocation: the `webui_env` fixture is lost.
+- Packet-level IPv6 tests in the container: its kernel has no IPv6, so they live in the boot test.
+- Reproducing GRO merging on veth (SEC-28): veth didn't merge in the lab; it needs a physical NIC.
+
 ## Open, candidates for next
 
-- **FND-1 (IPv6), four stages agreed with the owner:** 1a the router's own IPv6 on the WAN (done, #91), 1b the LAN (delegated prefix, RA, forwarding; done, #92), 1c services over IPv6 and inbound pinholes (done, branch `claude/project-thread-gq31th`: ULA, RDNSS, DNS, `management.ipv6` off by default, no DHCPv6 server by decision, `ipv6.pinholes`), 1d agreed as four PRs (design `fnd-1d/terv.md` in the project files): first the fix of 1c's /64 jail (H3: per host by MAC, `bruteforce_jail_mac`, helper `source_device`), then 1d-1 WireGuard over IPv6 with the full tunnel's IPv6 leak (H1: tunnel `<ULA>:ffff::/64`, full tunnel always `::/0`, tunnel IPv6 to the LAN ULAs only, the rest refused admin-prohibited; IPv6 forwarding on while the VPN is, so the forward chain can refuse; old peers marked by `dual_stack`; the boot test's runner needs wireguard-tools; done, #95), 1d-2 (a third XDP program `xdp_sni_filter6` by tail call, global `ipv6_tcp_offset()` so the verifier sees one path, TCP fragments dropped for H2, 16-byte addresses in events/keys, the SNI filter no longer takes zones off IPv6; the live XDP lab needs `linux-tools-generic` and `libbpf-dev` in a dev container) the XDP SNI filter over IPv6 with IPv4 tiny fragments (H2), 1d-3 address rules, ZTNA and the AI IDS over IPv6 (rules per family, a ZTNA sign-in admits the device at every address of its MAC, the IDS scores and quarantines an IPv6 host by MAC labelled by the helper, `%scope` refused everywhere; the AI IDS reads its config only at start, so the boot test turns it on at the end of boot 3 and checks it in boot 4). FND-1c gotchas: the boot test's SSH is off (nobody has a key), so over IPv6 it shows as "refused" (let through, nothing listens); pinholes are config-only, so the boot test writes one into config.yaml after boot 2; the container's kernel has no IPv6, so everything with packets is in the boot test. FR_OS is a community edition: every provider (prefix, address only, nothing) must work and be explained.
+- **FND-1 (IPv6): done, all four stages (#91–#97).** Kept for its gotchas: 1a the router's own IPv6 on the WAN (done, #91), 1b the LAN (delegated prefix, RA, forwarding; done, #92), 1c services over IPv6 and inbound pinholes (done, branch `claude/project-thread-gq31th`: ULA, RDNSS, DNS, `management.ipv6` off by default, no DHCPv6 server by decision, `ipv6.pinholes`), 1d agreed as four PRs (design `fnd-1d/terv.md` in the project files): first the fix of 1c's /64 jail (H3: per host by MAC, `bruteforce_jail_mac`, helper `source_device`), then 1d-1 WireGuard over IPv6 with the full tunnel's IPv6 leak (H1: tunnel `<ULA>:ffff::/64`, full tunnel always `::/0`, tunnel IPv6 to the LAN ULAs only, the rest refused admin-prohibited; IPv6 forwarding on while the VPN is, so the forward chain can refuse; old peers marked by `dual_stack`; the boot test's runner needs wireguard-tools; done, #95), 1d-2 (a third XDP program `xdp_sni_filter6` by tail call, global `ipv6_tcp_offset()` so the verifier sees one path, TCP fragments dropped for H2, 16-byte addresses in events/keys, the SNI filter no longer takes zones off IPv6; the live XDP lab needs `linux-tools-generic` and `libbpf-dev` in a dev container) the XDP SNI filter over IPv6 with IPv4 tiny fragments (H2), 1d-3 address rules, ZTNA and the AI IDS over IPv6 (rules per family, a ZTNA sign-in admits the device at every address of its MAC, the IDS scores and quarantines an IPv6 host by MAC labelled by the helper, `%scope` refused everywhere; the AI IDS reads its config only at start, so the boot test turns it on at the end of boot 3 and checks it in boot 4). FND-1c gotchas: the boot test's SSH is off (nobody has a key), so over IPv6 it shows as "refused" (let through, nothing listens); pinholes are config-only, so the boot test writes one into config.yaml after boot 2; the container's kernel has no IPv6, so everything with packets is in the boot test. FR_OS is a community edition: every provider (prefix, address only, nothing) must work and be explained.
 
 - **FND-4:** Realtek firmware (`firmware-realtek`) is in the image (Partly). Other vendors' NIC firmware is still out.
 - **P5-1 / FND-2:** the owner's box is recorded in `docs/hardware.md` (Partly). Add boxes as they are tested.
