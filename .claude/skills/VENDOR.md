@@ -35,6 +35,7 @@ taken; see "Not taken" below.
 | `vibesec` | https://github.com/BehiSecc/VibeSec-Skill | `0590993b35ad51961f65a4d01cf1196dfead05bb` (2026-02-17) | Apache-2.0 (`vibesec/LICENSE`) |
 | `property-based-testing`, `agentic-actions-auditor` | https://github.com/trailofbits/skills (`plugins/<name>/skills/<name>`) | `442fc9d6c89b1e937e6f7a477e7071ea75fcbea4` (2026-10-09) | CC-BY-SA-4.0 (`LICENSE` in each directory); copied unmodified |
 | `agnix` | https://github.com/agent-sh/agnix (`plugin/skills/agnix`) | `004b7ea143de549c13e89614fd73be0497abbdd0` (2026-10-09) | MIT (`agnix/LICENSE`) |
+| `ecc-workflow` | https://github.com/affaan-m/ECC (adapted, not copied: rewritten for FR_OS from its `tdd-workflow`, `verification-loop`, `search-first`, `security-scan`, `strategic-compact`, `continuous-learning-v2` skills, its `plan`, `build-fix`, `save-session`, `resume-session`, `learn-eval` commands and its `planner`, `code-reviewer` agents) | `25278e7d7b6cf6e6a4e7a6c8e10f14ff22f0eb5b` (2026-10-26) | MIT (`ecc-workflow/LICENSE`) |
 
 The `mukul975` library is **not affiliated with Anthropic**; the "anthropic"
 in its name is the author's, not an endorsement.
@@ -61,6 +62,7 @@ Changes from upstream:
 | `property-based-testing` | Hypothesis tests for parsers and validators: `frfw.validate`, the config loader, the ruleset builder's input handling. |
 | `agentic-actions-auditor` | Review of `.github/workflows/` wherever an AI agent runs in CI. |
 | `agnix` | Lints `AGENTS.md`, `CLAUDE.md` and the skills in this directory. A developer tool; nothing of it goes on the router. |
+| `ecc-workflow` | The owner's working loop for every change (plan, research first, test first, fresh-eyes review, verify, handover, learn), adapted from ECC to AGENTS.md and `docs/integrator-handover.md`. Unlike the others it was written for FR_OS; ECC's hooks, agents and scripts were left out. |
 
 The `mukul975` library also carries offensive/dual-use skills (e.g. a VLAN
 double-tagging attack tool). Those were deliberately not vendored: this repo
